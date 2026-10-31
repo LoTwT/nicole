@@ -7,6 +7,7 @@
 | 文档 | 何时阅读 |
 |---|---|
 | [architecture.md](architecture.md) | 了解技术选型、进程与模块结构、依赖边界、IPC 和安全约束，或确认主要风险时。 |
+| [development.md](development.md) | 准备开发环境、安装依赖、启动热更新、构建 `.app`，或查看测试与 CI 命令时。 |
 | [specs/product.md](specs/product.md) | 确认产品定位、命名、范围、功能分期、平台优先级和已定决策时。 |
 | [specs/editor-modes.md](specs/editor-modes.md) | 实现或调整实时预览、沉浸、源码三种模式，或处理中文输入法和渲染粒度时。 |
 | [specs/slash-commands.md](specs/slash-commands.md) | 添加命令、用户模板，或调整 slash 菜单、快捷键、命令面板和浮动工具栏时。 |

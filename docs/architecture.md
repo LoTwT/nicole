@@ -3,7 +3,7 @@
 概要：
 
 - 桌面外壳使用 MyGo Web 模式，前端是 Vue 3 + Vite + Tailwind CSS v4，编辑器是 CodeMirror 6。
-- `editor/` 是纯 TypeScript 模块，不依赖 Vue 和 MyGo；MyGo 调用只出现在 `services/` 和 `main.go`。
+- `src/editor/` 是纯 TypeScript 模块，不依赖 Vue 和 MyGo；MyGo 调用只出现在 `src/services/` 和 `main.go`。
 - 前后端通过 MyGo 的类型化 IPC 通信。
 - 渲染的 HTML 必须经过 DOMPurify，文件与协议访问限制在当前工作区。
 - 各功能的具体行为由对应规格定义，本文只记录结构和共享约束。
@@ -29,48 +29,71 @@ MyGo 的接口与版本情况见 [MyGo 参考](references/mygo.md)。
 ## 进程和模块结构
 
 ```text
-WebView
-  Vue 外壳：文件树 / 标签页 / 大纲 / 命令面板 / 设置
-  editor/（纯 TypeScript）
-    core
-    modes/（live | immersive | source）
-    widgets/
-    commands/
-  services/（对生成的 mygo.ts 的薄封装）
+src/
+  App.vue                 单窗口外壳：编辑区、模式切换、亮暗切换
+  main.ts                 挂载 Vue
+  sample.ts               示例文本
+  style.css               Tailwind、主题和字体变量
+  editor/                 纯 TypeScript，不依赖 Vue 和 MyGo
+    index.ts              createEditor、三种模式、widgets、核心命令
+    types.ts              对外类型
+  services/               MyGo 边界
+    mygo.ts               生成的类型化客户端
+    app.ts                薄封装（getAppInfo）
         │
         │ MyGo 类型化 IPC（绑定方法 / Channel / Event）
         ▼
-Go
-  Workspace：文件树、原子写入、重命名并更新引用
-  Assets：图片存到 assets/
-  Search：通过 Channel 流式返回结果
-  Settings：全局配置 + 工作区配置
-  Export
-  Recovery
-  Protocol：只映射当前工作区
+Go（main.go）
+  Application             版本、平台和 Go 版本（当前）
+  Workspace               文件树、原子写入、重命名并更新引用（后续）
+  Assets                  图片存到 assets/（后续）
+  Search                  通过 Channel 流式返回结果（后续）
+  Settings                全局配置 + 工作区配置（后续）
+  Export / Recovery       导出与崩溃恢复（后续）
+  Protocol                只映射当前工作区（后续）
 ```
+
+`index.html` 是 Vite 入口，`mygo.config.ts` 描述应用并指定前端构建、生成客户端的位置和输出目录。
 
 ## 依赖边界
 
-- `editor/` 是纯 TypeScript，不依赖 Vue，也不依赖 MyGo。它对外只暴露 `createEditor`。
-- MyGo 调用只放在 `services/` 和 `main.go`，其他模块通过这两处间接使用后端能力。
-- `services/` 是生成的 `mygo.ts` 客户端上的薄封装，不承载业务逻辑。
+- `src/editor/` 是纯 TypeScript，不依赖 Vue，也不依赖 MyGo。运行时只导出 `createEditor`；其余导出是调用方需要的类型。
+- MyGo 调用只放在 `src/services/` 和 `main.go`，其他模块通过这两处间接使用后端能力。生成的客户端直接输出到 `src/services/mygo.ts`。
+- `src/services/` 是生成的 `mygo.ts` 客户端上的薄封装，不承载业务逻辑。当前 `app.ts` 只把 `Application.Info` 包装成 `getAppInfo`。
 - `createEditor` 的接口为：
 
   ```ts
-  createEditor({ mode, commands, resolveImage, onChange })
+  type EditorMode = "live" | "immersive" | "source";
+
+  interface EditorCommand {
+    id: string;
+    label: string;
+    key?: string; // CodeMirror 键位，例如 "Mod-b"
+    run: (view: EditorView) => boolean;
+  }
+
+  createEditor({
+    parent,        // 挂载的 DOM 元素
+    doc,           // 初始 Markdown 文本
+    mode,          // 默认 "live"
+    commands,      // 应用层命令；目前注册其中带 key 的绑定，核心 Mod-b 加粗始终可用
+    resolveImage,  // 把图片 URL 解析成可显示地址；返回 null 时保留原文
+    onChange,      // 文档变化时回调全文
+  }): EditorHandle
   ```
 
-  具体参数在实现时再定。
+  `EditorHandle` 提供 `view`、`mode`、`setMode`、`focus` 和 `destroy`。三种模式通过同一个 `Compartment` 重配置，`EditorView` 实例不变。
 
+- 编辑器主题直接读取 CSS 变量；界面切换亮暗时只改 `<html>` 上的 `.dark`，不重建编辑器（见[主题与字体](specs/theming.md#编辑器主题)）。
 - 命令注册表只有一份，各入口共用，见 [Slash 命令](specs/slash-commands.md#命令注册表)。
 - 编辑模式的设计和限制见[编辑模式](specs/editor-modes.md)。
 
 ## IPC 用法
 
 - MyGo 提供类型化 IPC：绑定方法、`Channel` 和 `Event`。
-- 用 `mygo generate` 生成 TypeScript 客户端，输出路径由 `mygo.config.ts` 的 `bindings` 指定。
+- 用 `mygo generate` 生成 TypeScript 客户端，输出路径由 `mygo.config.ts` 的 `bindings` 指定；本项目是 `src/services/mygo.ts`。
 - 前端只通过生成的客户端和 `services/` 调用 Go；Go 用 `mygo.Bind` 暴露服务，用 `*mygo.Channel[T]` 推送流，用 `mygo.NewEvent[T]` 发送事件。
+- 当前的最小服务是 `Application.Info()`，返回应用版本、操作系统、架构和 Go 版本，用来验证前端与 Go 的调用链。
 - 搜索通过 Channel 流式返回结果（见[工作区与文件](specs/workspace.md#搜索)）。
 - 图片数据不经过 IPC，避免 base64 转换和额外拷贝（见[工作区与文件](specs/workspace.md#图片)）。
 
@@ -92,6 +115,6 @@ Go
 | 风险 | 应对 |
 |---|---|
 | 中文输入法在 macOS WKWebView 里的表现 | 技术验证第一周就测；拼音输入过程中不能重建当前行的渲染，见[中文输入法](specs/editor-modes.md#中文输入法)。 |
-| MyGo 的 API 可能变化 | MyGo 还没有正式版本（见[参考](references/mygo.md)）；锁定版本，并把所有调用集中在 `services/` 和 `main.go`。 |
+| MyGo 的 API 可能变化 | MyGo 仍处于 0.x（当前锁定 0.7.3，见[参考](references/mygo.md)）；锁定版本，并把所有调用集中在 `src/services/` 和 `main.go`。 |
 | 沉浸模式的边界情况多 | 先把实时预览做好，再逐步补齐沉浸模式，见[编辑模式](specs/editor-modes.md)。 |
 | Linux 的 WebKitGTK 能力较弱 | 平台优先级排在最后，见[平台优先级](specs/product.md#平台优先级)。 |
