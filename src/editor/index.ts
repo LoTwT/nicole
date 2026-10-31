@@ -7,6 +7,7 @@ import {
 import {
   Compartment,
   EditorState,
+  Prec,
   RangeSetBuilder,
   type Extension,
 } from "@codemirror/state";
@@ -501,7 +502,8 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
         markdown({ base: markdownLanguage }),
         syntaxHighlighting(highlightStyle),
         editorTheme,
-        keymap.of(bindings),
+        // App commands must win over basicSetup's default keymap.
+        Prec.high(keymap.of(bindings)),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) onChange?.(update.state.doc.toString());
         }),

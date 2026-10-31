@@ -80,7 +80,7 @@ bunx mygo-cli@0.7.3 init <name>
 - `package.json`：`dev`（`mygo dev`）、`build`（`mygo build`）、`generate`、`dev:web`、`build:web`；依赖 `mygo-runtime`、`mygo-cli`、Vite 8 和 TypeScript。
 - `index.html`、`src/main.ts`、`src/style.css`、生成的客户端、`vite.config.ts`、`tsconfig.json`。
 - `resources/icon.png`。
-- `.agents/skills/mygo-maintenance/`：随 CLI 版本提供的维护说明。
+- `.agents/skills/mygo-maintenance/`：随 CLI 版本提供的维护说明；本项目不提交该目录，需要时用 `bunx mygo-cli install-skills` 重新生成。
 - `.gitignore`：包含 `node_modules/`、`/dist/`、`/build/`、`/.mygo/` 和 `mygo_windows_*.syso`。
 
 初始化时用 bun 安装依赖。0.7.3 模板安装的是 Vite 8.3.x、TypeScript 7.0.x、`mygo-cli` / `mygo-runtime` 0.7.3。
@@ -92,4 +92,3 @@ bunx mygo-cli@0.7.3 init <name>
 - 开发版应用名为 `<name> Dev`，identifier 为 `<identifier>.dev`。macOS 上是 `.mygo/dev/<name> Dev.app`。
 - `mygo build` 先运行 `buildCommand`，再把 `frontendDist` 嵌入 Go 程序，输出到 `build/<os>-<arch>/`。macOS 生成 `.app` 和 dmg；`-skip-dmg` 可只保留 `.app`。
 - `bunx mygo doctor` 检查开发机环境。
-- `mygo init` 和 `mygo install-skills` 会安装或更新 `.agents/skills/` 下的 MyGo 维护说明。

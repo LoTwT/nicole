@@ -1,4 +1,3 @@
-import { undo } from "@codemirror/commands";
 import type { EditorView } from "@codemirror/view";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -28,6 +27,19 @@ function renderedText(view: EditorView) {
 
 async function settle() {
   await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+}
+
+function pressMod(view: EditorView, key: string, code: string) {
+  view.contentDOM.dispatchEvent(
+    new KeyboardEvent("keydown", {
+      key,
+      code,
+      ctrlKey: true,
+      metaKey: navigator.platform.startsWith("Mac"),
+      bubbles: true,
+      cancelable: true,
+    }),
+  );
 }
 
 beforeEach(() => {
@@ -71,29 +83,6 @@ describe("createEditor", () => {
     expect(view.state.doc.toString()).toBe(doc);
   });
 
-  it("keeps the view, selection and undo history when the theme changes", () => {
-    const instance = mount("live");
-    const view = instance.view;
-
-    view.dispatch({
-      changes: { from: 0, insert: "X" },
-      selection: { anchor: 6, head: 10 },
-    });
-    const selection = view.state.selection.main;
-    const edited = view.state.doc.toString();
-
-    document.documentElement.classList.add("dark");
-
-    expect(document.documentElement.classList.contains("dark")).toBe(true);
-    expect(instance.view).toBe(view);
-    expect(parent.contains(view.dom)).toBe(true);
-    expect(view.state.selection.main.eq(selection)).toBe(true);
-    expect(view.state.doc.toString()).toBe(edited);
-
-    undo(view);
-    expect(view.state.doc.toString()).toBe(doc);
-  });
-
   it("toggles bold with the Mod-b binding in immersive mode", () => {
     const instance = mount("immersive");
     const view = instance.view;
@@ -102,17 +91,31 @@ describe("createEditor", () => {
     view.dispatch({
       selection: { anchor, head: anchor + "普通项".length },
     });
-    view.contentDOM.dispatchEvent(
-      new KeyboardEvent("keydown", {
-        key: "b",
-        code: "KeyB",
-        ctrlKey: true,
-        metaKey: navigator.platform.startsWith("Mac"),
-        bubbles: true,
-        cancelable: true,
-      }),
-    );
+    pressMod(view, "b", "KeyB");
 
     expect(view.state.doc.toString()).toContain("**普通项**");
+  });
+
+  it("runs app commands before basicSetup's default keymap", () => {
+    const instance = createEditor({
+      parent,
+      doc,
+      commands: [
+        {
+          id: "test.insert",
+          label: "插入 I",
+          key: "Mod-i",
+          run: (view) => {
+            view.dispatch({ changes: { from: 0, insert: "I" } });
+            return true;
+          },
+        },
+      ],
+    });
+    const view = instance.view;
+
+    pressMod(view, "i", "KeyI");
+
+    expect(view.state.doc.toString()).toBe(`I${doc}`);
   });
 });

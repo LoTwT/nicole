@@ -12,7 +12,7 @@
 |---|---|---|
 | Go | 1.27.3 以上 | `go.mod` 要求 1.27.3；本机 1.27.2 时用 `GOTOOLCHAIN=auto` 自动下载。 |
 | Bun | 1.4.4 | 管理前端依赖并运行 Vite、Vitest。 |
-| MyGo | 0.7.3 | 由 `go.mod` 的 `github.com/egoist/mygo` 和 `package.json` 的 `mygo-cli` / `mygo-runtime` 锁定。 |
+| MyGo | 0.7.3 | 由 `go.mod` 的 `github.com/egoist/mygo` 和 `package.json` 的 `mygo-cli` / `mygo-runtime` 精确锁定为 `0.7.3`。 |
 | WebView | 系统自带 | macOS 12+ 使用 WKWebView；Windows 10/11 需要 WebView2 Runtime；Linux 需要 GTK 3 和 WebKitGTK 4.1。 |
 
 `bunx mygo doctor` 可以检查开发机是否满足要求。
@@ -97,19 +97,4 @@ Vitest 覆盖三种模式的切换、亮暗主题切换后编辑器实例与选�
 
 ## 目录与依赖边界
 
-```text
-index.html            Vite 入口
-src/main.ts           挂载 Vue
-src/App.vue           单窗口外壳：编辑区、模式切换、亮暗切换
-src/editor/           纯 TypeScript 编辑器模块，不依赖 Vue 和 MyGo
-src/services/         MyGo 生成的客户端（mygo.ts）与薄封装
-src/sample.ts         示例文本
-src/style.css         Tailwind、主题和字体变量
-main.go               Go 入口和绑定服务
-main_test.go          Go 服务测试
-mygo.config.ts        MyGo 应用配置
-```
-
-`src/editor/` 不导入 Vue 或 MyGo。MyGo 调用只出现在 `src/services/` 和 `main.go`。主题切换只修改 `<html>` 上的 `.dark` class，编辑器读取 CSS 变量，不重建 `EditorView`。
-
-不引入 `@ayingott/theme/fonts.css`，也不打包字体文件；字体变量在 `src/style.css` 中覆盖为系统字体。
+目录结构、依赖边界和主题切换约束见[架构](architecture.md#进程和模块结构)与[依赖边界](architecture.md#依赖边界)。字体见[主题与字体](specs/theming.md#字体)。

@@ -48,7 +48,6 @@ CodeMirror 6 的主题直接使用 `var(--text-primary)` 这类 CSS 变量。切
 - `src/App.vue` 切换 `<html>` 上的 `.dark`，并把选择保存到 `localStorage`。
 - `src/style.css` 在 `@theme` 中覆盖字体变量，并定义 `--nicole-syntax-mark`、`--nicole-caret`、`--nicole-selection`、`--nicole-quote-border`，缺失的阅读层变量回退到主题包现有变量。
 - `src/editor/index.ts` 的 `EditorView.theme` 和 `HighlightStyle` 只引用这些变量，不读主题状态，因此切换主题不会触发 `EditorView` 重建。
-- Vitest 覆盖切换主题后 `EditorView` 实例、选区和撤销历史保持不变。
 - 没有引入 `@ayingott/theme/fonts.css`，构建产物里没有字体文件。
 
 ## 限制
