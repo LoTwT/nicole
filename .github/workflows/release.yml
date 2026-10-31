@@ -1,0 +1,436 @@
+# Release builds for both channels, signed for MyGo's auto-update and
+# published on GitHub Releases (LoTwT/nicole) — the update source the apps
+# check (updates in mygo.config.ts). Two channels, kept apart by MyGo's
+# updates.tagPrefix (see docs/release.md):
+#
+#   - test:  tags test-v<version> (test-v0.0.1). Test builds check only
+#     test-v releases, found through the GitHub API. Their releases are
+#     published as ordinary releases — the updater only accepts published,
+#     non-draft, non-prerelease releases — but never as the repository's
+#     latest, and the title and notes say 测试版，勿用.
+#   - stable: tags v<version> (v0.0.1). MyGo treats the prefix "v" as no
+#     prefix: stable builds read the repository's latest release, which
+#     test releases never become.
+#
+# Runners: darwin/universal needs macOS for ad-hoc signing, lipo and the
+# disk image. Nicole needs no cgo, so Ubuntu runners build the Windows and
+# Linux apps; the Windows job installs NSIS first, because MyGo makes the
+# installer only where makensis is present and otherwise skips it with a
+# warning.
+#
+# The draft release is created before the builds so all three platform jobs
+# upload into the same draft. Each platform job passes the tag's version and
+# channel prefix in the environment and verifies its own artifacts and update
+# manifest before uploading; the publish job runs only after all three
+# succeeded, verifies the release's assets are complete, and publishes the
+# draft for the channel. Failed jobs can be re-run: they replace their assets
+# in the same draft (--clobber).
+#
+# Versions come from the tags: the source mygo.config.ts stays at its
+# development version, and the environment tells it which version and channel
+# prefix to build. Nothing is written into the checkout, so Go's VCS stamp
+# stays clean (no "-modified") and the built app, mygo.App.Version() and the
+# tag always agree. Every released version needs a "## <version>" section in
+# CHANGELOG.md: MyGo fails the build without it (the section becomes the
+# in-app release notes), and the draft job checks it before building
+# anything.
+name: Release
+
+on:
+  push:
+    tags:
+      - "test-v*"
+      - "v*"
+
+permissions:
+  contents: write # the draft release, the uploads to it, and publishing it
+
+jobs:
+  draft-release:
+    name: Validate the tag and create the draft release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.validate.outputs.version }}
+      tag_prefix: ${{ steps.validate.outputs.tag_prefix }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+      - name: Validate the tag, the changelog and the update configuration
+        id: validate
+        # Fail before anything is built when the tag is malformed, its
+        # version has no changelog section, or the configuration does not
+        # embed the tagged version, channel and update source. The
+        # configuration is evaluated exactly as the build jobs will
+        # evaluate it, so a wrong environment name or channel wiring stops
+        # the release here.
+        shell: bash
+        run: |
+          set -eu
+          tag="${GITHUB_REF_NAME}"
+          case "$tag" in
+            test-v*) prefix="test-v" ;;
+            v*) prefix="v" ;;
+            *) echo "ERROR: tag $tag matches neither test-v* nor v*"; exit 1 ;;
+          esac
+          version="${tag#"$prefix"}"
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "ERROR: tag $tag — the part after $prefix must be major.minor.patch (each a number), got: $version"
+            exit 1
+          fi
+          echo "channel prefix: $prefix, version: $version"
+          # The update manifests carry the version's CHANGELOG.md section
+          # as the in-app release notes; `mygo build` fails the release
+          # without it, and this early check names the fix.
+          esc=$(printf '%s' "$version" | sed 's/\./\\./g')
+          if ! grep -Eq "^## ${esc}( |\]|$)" CHANGELOG.md; then
+            echo "ERROR: CHANGELOG.md has no \"## $version\" section — add one (its text becomes the release notes of both channels)"
+            exit 1
+          fi
+          NICOLE_RELEASE_VERSION="$version" NICOLE_RELEASE_TAG_PREFIX="$prefix" bun -e '
+            const config = (await import("./mygo.config.ts")).default;
+            const version = process.env.NICOLE_RELEASE_VERSION;
+            const prefix = process.env.NICOLE_RELEASE_TAG_PREFIX;
+            const fail = (message) => {
+              console.error("ERROR: " + message);
+              process.exit(1);
+            };
+            if (typeof config !== "object" || config === null) {
+              fail("mygo.config.ts must export an object for the release checks");
+            }
+            if (config.version !== version) {
+              fail(`mygo.config.ts builds version ${config.version}, want ${version} from the tag`);
+            }
+            if (!config.updates) {
+              fail("mygo.config.ts embeds no updates; a release build must have updates");
+            }
+            if (!config.updates.publicKey) {
+              fail("updates.publicKey is empty");
+            }
+            if (config.updates.github !== process.env.GITHUB_REPOSITORY) {
+              fail(`updates.github is ${config.updates.github}, want this repository (${process.env.GITHUB_REPOSITORY})`);
+            }
+            if (config.updates.tagPrefix !== prefix) {
+              fail(`updates.tagPrefix is ${config.updates.tagPrefix}, want ${prefix} from the tag`);
+            }
+          '
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag_prefix=$prefix" >> "$GITHUB_OUTPUT"
+      - name: Create the draft release
+        # All three platform jobs upload into this one draft; without it each
+        # `mygo build -upload` would create a draft of its own.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+              --draft --verify-tag --title "$GITHUB_REF_NAME" --generate-notes
+          fi
+
+  macos:
+    name: Build and upload (darwin/universal)
+    needs: draft-release
+    runs-on: macos-latest # Apple Silicon: signing, lipo and the disk image need macOS
+    timeout-minutes: 40
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+      - name: Build the universal app, the DMG and the signed update, and upload
+        # MYGO_UPDATER_PRIVATE_KEY signs the update archive and manifest;
+        # without it `-upload` stops before building, and installed apps
+        # could not update to this release. GH_TOKEN lets the upload reach
+        # the draft release (and the delta computation read the published
+        # releases). The version and channel come from the draft job and
+        # reach mygo.config.ts through the environment; the checkout is not
+        # modified.
+        env:
+          NICOLE_RELEASE_VERSION: ${{ needs.draft-release.outputs.version }}
+          NICOLE_RELEASE_TAG_PREFIX: ${{ needs.draft-release.outputs.tag_prefix }}
+          GH_TOKEN: ${{ github.token }}
+          MYGO_UPDATER_PRIVATE_KEY: ${{ secrets.MYGO_UPDATER_PRIVATE_KEY }}
+        run: bun run build -- -platform darwin/universal -upload
+      - name: Verify the bundle, the DMG, the signature and the update files
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.draft-release.outputs.version }}
+        run: |
+          set -u
+          app="build/darwin-universal/Nicole.app"
+          dmg="build/darwin-universal/nicole-${RELEASE_VERSION}.dmg"
+          archive="build/darwin-universal/nicole-${RELEASE_VERSION}-darwin-universal.tar.gz"
+          manifest="build/darwin-universal/update-darwin-universal.json"
+          fail=0
+          if [ ! -d "$app" ]; then
+            echo "ERROR: missing app bundle: $app"
+            fail=1
+          fi
+          if [ ! -f "$dmg" ]; then
+            echo "ERROR: missing DMG: $dmg (MyGo skips the disk image with a warning when hdiutil fails; a release must have one)"
+            fail=1
+          fi
+          for f in "$archive" "$manifest"; do
+            if [ ! -f "$f" ]; then
+              echo "ERROR: missing update file — the build must sign updates, so MYGO_UPDATER_PRIVATE_KEY is missing or does not match updates.publicKey: $f"
+              fail=1
+            fi
+          done
+          if [ "$fail" -ne 0 ]; then
+            exit 1
+          fi
+          # The app's Info.plist is what App.Version() returns on macOS, so
+          # this asserts the injected version reached the built app.
+          got=$(plutil -extract CFBundleShortVersionString raw "$app/Contents/Info.plist")
+          if [ "$got" != "$RELEASE_VERSION" ]; then
+            echo "ERROR: ${app} has version $got, want $RELEASE_VERSION (the tag)"
+            exit 1
+          fi
+          archs=$(lipo -archs "$app/Contents/MacOS/Nicole")
+          for arch in arm64 x86_64; do
+            if ! printf '%s\n' "$archs" | grep -qw "$arch"; then
+              echo "ERROR: ${app} is not universal: $archs"
+              exit 1
+            fi
+          done
+          # The manifest serves the tag's version and points its archive at
+          # this very release, so installed apps can never be fed another
+          # channel's files.
+          jq -e --arg version "$RELEASE_VERSION" --arg tag "$GITHUB_REF_NAME" \
+            '.version == $version and (.url | endswith("/" + $tag + "/nicole-" + $version + "-darwin-universal.tar.gz"))' \
+            "$manifest" > /dev/null || {
+            echo "ERROR: $manifest does not serve version $RELEASE_VERSION from tag $GITHUB_REF_NAME"
+            cat "$manifest"
+            exit 1
+          }
+          # The ad-hoc signature must cover the whole bundle.
+          codesign --verify --deep --strict --verbose=2 "$app"
+
+  windows:
+    name: Build and upload (windows/amd64)
+    needs: draft-release
+    runs-on: ubuntu-latest # no cgo needed; NSIS from apt makes the installer
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+      - name: Install NSIS and 7-Zip
+        # MyGo only makes the Windows installer where makensis is available
+        # (or on Windows, where it downloads NSIS); without it the build
+        # skips the installer with a warning and the check below fails.
+        # 7-Zip lists the installer's contents in the verification step.
+        run: sudo apt-get update && sudo apt-get install -y nsis p7zip-full
+      - name: Build the EXE, the NSIS installer and the signed update, and upload
+        env:
+          NICOLE_RELEASE_VERSION: ${{ needs.draft-release.outputs.version }}
+          NICOLE_RELEASE_TAG_PREFIX: ${{ needs.draft-release.outputs.tag_prefix }}
+          GH_TOKEN: ${{ github.token }}
+          MYGO_UPDATER_PRIVATE_KEY: ${{ secrets.MYGO_UPDATER_PRIVATE_KEY }}
+        run: bun run build -- -platform windows/amd64 -upload
+      - name: Verify the EXE, the installer and the update files
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.draft-release.outputs.version }}
+        run: |
+          set -u
+          exe="build/windows-amd64/Nicole.exe"
+          setup="build/windows-amd64/nicole-setup-${RELEASE_VERSION}-amd64.exe"
+          archive="build/windows-amd64/nicole-${RELEASE_VERSION}-windows-amd64.tar.gz"
+          manifest="build/windows-amd64/update-windows-amd64.json"
+          fail=0
+          for f in "$exe" "$setup" "$archive" "$manifest" "build/windows-amd64/install.ps1"; do
+            if [ ! -f "$f" ]; then
+              echo "ERROR: missing release file: $f"
+              fail=1
+            fi
+          done
+          if [ "$fail" -ne 0 ]; then
+            exit 1
+          fi
+          # The manifest serves the tag's version and points its archive at
+          # this very release.
+          jq -e --arg version "$RELEASE_VERSION" --arg tag "$GITHUB_REF_NAME" \
+            '.version == $version and (.url | endswith("/" + $tag + "/nicole-" + $version + "-windows-amd64.tar.gz"))' \
+            "$manifest" > /dev/null || {
+            echo "ERROR: $manifest does not serve version $RELEASE_VERSION from tag $GITHUB_REF_NAME"
+            cat "$manifest"
+            exit 1
+          }
+          echo "--- installer contents (7z listing) ---"
+          7z l "$setup" | grep -q 'Nicole\.exe' || {
+            echo "ERROR: the installer does not hold Nicole.exe"
+            exit 1
+          }
+
+  linux:
+    name: Build and upload (linux/amd64)
+    needs: draft-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+      - name: Build the app, the Debian package and the signed update, and upload
+        env:
+          NICOLE_RELEASE_VERSION: ${{ needs.draft-release.outputs.version }}
+          NICOLE_RELEASE_TAG_PREFIX: ${{ needs.draft-release.outputs.tag_prefix }}
+          GH_TOKEN: ${{ github.token }}
+          MYGO_UPDATER_PRIVATE_KEY: ${{ secrets.MYGO_UPDATER_PRIVATE_KEY }}
+        run: bun run build -- -platform linux/amd64 -upload
+      - name: Verify the app, the Debian package and the update files
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.draft-release.outputs.version }}
+        run: |
+          set -u
+          exe="build/linux-amd64/nicole"
+          deb="build/linux-amd64/nicole_${RELEASE_VERSION}_amd64.deb"
+          archive="build/linux-amd64/nicole-${RELEASE_VERSION}-linux-amd64.tar.gz"
+          manifest="build/linux-amd64/update-linux-amd64.json"
+          fail=0
+          for f in "$exe" "$deb" "$archive" "$manifest" "build/linux-amd64/install.sh"; do
+            if [ ! -f "$f" ]; then
+              echo "ERROR: missing release file: $f"
+              fail=1
+            fi
+          done
+          if [ "$fail" -ne 0 ]; then
+            exit 1
+          fi
+          got=$(dpkg-deb -f "$deb" Version)
+          if [ "$got" != "$RELEASE_VERSION" ]; then
+            echo "ERROR: $deb declares version $got, want $RELEASE_VERSION (the tag)"
+            exit 1
+          fi
+          # The manifest serves the tag's version and points its archive at
+          # this very release.
+          jq -e --arg version "$RELEASE_VERSION" --arg tag "$GITHUB_REF_NAME" \
+            '.version == $version and (.url | endswith("/" + $tag + "/nicole-" + $version + "-linux-amd64.tar.gz"))' \
+            "$manifest" > /dev/null || {
+            echo "ERROR: $manifest does not serve version $RELEASE_VERSION from tag $GITHUB_REF_NAME"
+            cat "$manifest"
+            exit 1
+          }
+
+  publish:
+    name: Verify the release assets and publish
+    needs: [draft-release, macos, windows, linux]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Verify the assets and publish the release
+        # Only after all three platforms built, verified and uploaded: check
+        # that the release holds every artifact, download the manifests and
+        # confirm they serve the tag's version, then publish the draft for
+        # its channel.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.draft-release.outputs.version }}
+        run: |
+          set -eu
+          tag="${GITHUB_REF_NAME}"
+          case "$tag" in
+            test-v*) channel="test" ;;
+            v*) channel="stable" ;;
+            *) echo "ERROR: unexpected tag $tag (the workflow triggers on test-v* and v*)"; exit 1 ;;
+          esac
+          repo="${GITHUB_REPOSITORY}"
+          assets=$(gh release view "$tag" --repo "$repo" --json assets -q '.assets[].name')
+          # MyGo 0.7.3 names these files without spaces, but GitHub stores
+          # every space of an uploaded name as a dot (youkai's 0.6.2 assets
+          # hit that), so compare the names as GitHub stores them.
+          need=(
+            "nicole-${RELEASE_VERSION}.dmg"
+            "nicole-setup-${RELEASE_VERSION}-amd64.exe"
+            "nicole_${RELEASE_VERSION}_amd64.deb"
+            "nicole-${RELEASE_VERSION}-darwin-universal.tar.gz"
+            "nicole-${RELEASE_VERSION}-windows-amd64.tar.gz"
+            "nicole-${RELEASE_VERSION}-linux-amd64.tar.gz"
+            "update-darwin-universal.json"
+            "update-windows-amd64.json"
+            "update-linux-amd64.json"
+            "install.sh"
+            "install.ps1"
+            "SHA256SUMS"
+          )
+          fail=0
+          for name in "${need[@]}"; do
+            stored="${name// /.}"
+            if ! printf '%s\n' "$assets" | grep -Fxq "$stored"; then
+              echo "ERROR: the release is missing the asset: $stored"
+              fail=1
+            fi
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo "--- the release holds ---"
+            printf '%s\n' "$assets"
+            exit 1
+          fi
+          # The manifests the apps download must serve the tag's version and
+          # point at this tag's files.
+          dir=$(mktemp -d)
+          gh release download "$tag" --repo "$repo" --pattern 'update-*.json' --dir "$dir" --clobber
+          for target in darwin-universal windows-amd64 linux-amd64; do
+            manifest="$dir/update-$target.json"
+            jq -e --arg version "$RELEASE_VERSION" --arg tag "$tag" \
+              '.version == $version and (.url | contains("/" + $tag + "/"))' \
+              "$manifest" > /dev/null || {
+              echo "ERROR: update-$target.json does not serve version $RELEASE_VERSION from tag $tag"
+              cat "$manifest"
+              exit 1
+            }
+          done
+          # Test-channel releases publish as ordinary releases — the MyGo
+          # updater only accepts published, non-draft, non-prerelease
+          # releases — but never as the repository's latest, which the
+          # stable channel reads. The stable release becomes the latest.
+          if [ "$channel" = "test" ]; then
+            body=$(gh release view "$tag" --repo "$repo" --json body -q .body)
+            notes=$(printf '测试版，勿用：此版本只用于自动更新渠道的联调，正式使用请安装最新正式版。\n\n%s' "$body")
+            gh release edit "$tag" --repo "$repo" \
+              --draft=false --prerelease=false --latest=false \
+              --title "Nicole ${RELEASE_VERSION}（测试版，勿用）" \
+              --notes "$notes"
+          else
+            gh release edit "$tag" --repo "$repo" \
+              --draft=false --prerelease=false --latest=true \
+              --title "Nicole $RELEASE_VERSION"
+          fi
+          echo "published $tag on the $channel channel (latest: $([ "$channel" = stable ] && echo yes || echo no))"
