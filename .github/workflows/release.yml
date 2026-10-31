@@ -89,7 +89,11 @@ jobs:
           # as the in-app release notes; `mygo build` fails the release
           # without it, and this early check names the fix.
           esc=$(printf '%s' "$version" | sed 's/\./\\./g')
-          if ! grep -Eq "^## ${esc}( |\]|$)" CHANGELOG.md; then
+          # MyGo accepts "## 0.0.1", "## v0.0.1" and the bracketed
+          # "## [0.0.1] - date" / "## [0.0.1](link)" forms
+          # (internal/update/update.go: headingVersion). The bracketed and
+          # plain forms are separate so "## 0.0.1]" does not pass.
+          if ! grep -Eq "^## (v?${esc}( |$)|\[v?${esc}(\]| |$))" CHANGELOG.md; then
             echo "ERROR: CHANGELOG.md has no \"## $version\" section — add one (its text becomes the release notes of both channels)"
             exit 1
           fi
@@ -355,16 +359,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Verify the assets and publish the release
+      - name: Verify the assets and SHA256SUMS, and publish the release
         # Only after all three platforms built, verified and uploaded: check
         # that the release holds every artifact, download the manifests and
-        # confirm they serve the tag's version, then publish the draft for
-        # its channel.
+        # confirm they serve the tag's version, rebuild and verify
+        # SHA256SUMS, then publish the draft for its channel.
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ needs.draft-release.outputs.version }}
         run: |
           set -eu
+          set -o pipefail
           tag="${GITHUB_REF_NAME}"
           case "$tag" in
             test-v*) channel="test" ;;
@@ -417,6 +422,95 @@ jobs:
               exit 1
             }
           done
+          # MyGo uploads each platform's update files and its own SHA256SUMS
+          # in parallel. Its checksum update is a read-merge-overwrite
+          # without a lock (cmd/mygo/publish.go), so two jobs can lose each
+          # other's lines. Rebuild SHA256SUMS from the release's actual
+          # assets in MyGo's format (cmd/mygo/checksums.go: "<sha256>  <name>",
+          # sorted by name, covering installers, archives, deltas and install
+          # scripts, not the manifests) and upload it over the old file.
+          sums_dir=$(mktemp -d)
+          gh release download "$tag" --repo "$repo" --dir "$sums_dir" --clobber
+          shopt -s nullglob
+          sum_files=()
+          for f in "$sums_dir"/*.dmg "$sums_dir"/*-setup-*.exe "$sums_dir"/*.deb "$sums_dir"/*.tar.gz "$sums_dir"/*.delta "$sums_dir"/install.sh "$sums_dir"/install.ps1; do
+            sum_files+=("$(basename "$f")")
+          done
+          if [ "${#sum_files[@]}" -eq 0 ]; then
+            echo "ERROR: the release holds no installers or archives to checksum"
+            exit 1
+          fi
+          : > "$sums_dir/SHA256SUMS"
+          for name in "${sum_files[@]}"; do
+            printf '%s  %s\n' "$(sha256sum "$sums_dir/$name" | cut -d' ' -f1)" "$name"
+          done | LC_ALL=C sort -k2 > "$sums_dir/SHA256SUMS"
+          echo "--- regenerated SHA256SUMS ---"
+          cat "$sums_dir/SHA256SUMS"
+          gh release upload "$tag" "$sums_dir/SHA256SUMS" --repo "$repo" --clobber
+          # Verify the uploaded file against a fresh download of every asset:
+          # the bytes must match the regenerated file, each line must match
+          # its file, and every installer, archive and script must have one.
+          verify_dir=$(mktemp -d)
+          gh release download "$tag" --repo "$repo" --dir "$verify_dir" --clobber
+          if ! cmp -s "$sums_dir/SHA256SUMS" "$verify_dir/SHA256SUMS"; then
+            echo "ERROR: the uploaded SHA256SUMS differs from the regenerated file"
+            exit 1
+          fi
+          if ! ( cd "$verify_dir" && sha256sum -c --strict SHA256SUMS ); then
+            echo "ERROR: an asset does not match SHA256SUMS — re-run the platform job that produced the FAILED file above, then this job"
+            exit 1
+          fi
+          has_sum() {
+            while IFS= read -r line; do
+              if [ "${line#*  }" = "$1" ]; then
+                return 0
+              fi
+            done < "$verify_dir/SHA256SUMS"
+            return 1
+          }
+          checksummed=(
+            "nicole-${RELEASE_VERSION}.dmg"
+            "nicole-setup-${RELEASE_VERSION}-amd64.exe"
+            "nicole_${RELEASE_VERSION}_amd64.deb"
+            "nicole-${RELEASE_VERSION}-darwin-universal.tar.gz"
+            "nicole-${RELEASE_VERSION}-windows-amd64.tar.gz"
+            "nicole-${RELEASE_VERSION}-linux-amd64.tar.gz"
+            "install.sh"
+            "install.ps1"
+          )
+          fail=0
+          for name in "${checksummed[@]}"; do
+            stored="${name// /.}"
+            if has_sum "$stored"; then
+              continue
+            fi
+            case "$name" in
+              *.dmg|*darwin*) job="macOS" ;;
+              *-setup-*.exe|*windows*) job="Windows" ;;
+              *.deb|*linux*) job="Linux" ;;
+              install.ps1) job="Windows" ;;
+              install.sh) job="macOS or Linux" ;;
+              *) job="platform" ;;
+            esac
+            echo "ERROR: SHA256SUMS has no line for $stored — re-run the $job job, then this job"
+            fail=1
+          done
+          for f in "$verify_dir"/*.delta; do
+            if [ ! -e "$f" ]; then
+              continue
+            fi
+            stored=$(basename "$f")
+            if ! has_sum "$stored"; then
+              echo "ERROR: SHA256SUMS has no line for $stored — re-run the platform job that produced it, then this job"
+              fail=1
+            fi
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo "--- SHA256SUMS ---"
+            cat "$verify_dir/SHA256SUMS"
+            exit 1
+          fi
+          echo "SHA256SUMS covers ${#checksummed[@]} required assets and matches every file"
           # Test-channel releases publish as ordinary releases — the MyGo
           # updater only accepts published, non-draft, non-prerelease
           # releases — but never as the repository's latest, which the

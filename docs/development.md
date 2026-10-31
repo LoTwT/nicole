@@ -78,20 +78,21 @@ macOS 的签名、通用二进制合成和 DMG 需要 macOS；Windows 安装包�
 
 ## 打包与自动更新
 
-`mygo.config.ts` 里的 `updates` 决定构建是否嵌入更新源（`publicKey`、`github`、`tagPrefix`）：
+`mygo.config.ts` 的 `updates` 决定构建是否嵌入更新源。本地命令与结果：
 
-| 命令 | 更新源 | 更新档案 | 应用内更新 |
-|---|---|---|---|
-| `bun run dev` | 不嵌入 | 不生成 | 关闭（菜单说明原因） |
-| `bun run build`，无 `MYGO_UPDATER_PRIVATE_KEY` | 嵌入 | 告警并跳过 macOS/Windows 档案；Linux 仍生成未签名 `.tar.gz`，不生成清单 | 开启（正式渠道） |
-| `MYGO_UPDATER_PRIVATE_KEY=<私钥> bun run build` | 嵌入 | 生成签名归档与 `update-*.json` | 开启 |
-| `MYGO_UPDATER_PRIVATE_KEY=… bun run build -- -upload` | 嵌入 | 同上，并上传到 `tagPrefix+version` 的 Release | 开启 |
-| `NICOLE_DISABLE_UPDATES=1 bun run build` | 不嵌入 | 不生成 | 关闭 |
+| 命令 | 本地结果 |
+|---|---|
+| `bun run dev` | 构建开发版，不嵌入更新配置 |
+| `bun run build`（无 `MYGO_UPDATER_PRIVATE_KEY`） | 告警 “Not signing an update”；macOS/Windows 不生成更新归档与清单 |
+| `MYGO_UPDATER_PRIVATE_KEY=<私钥> bun run build` | 生成签名归档与 `update-*.json` |
+| `MYGO_UPDATER_PRIVATE_KEY=… bun run build -- -upload` | 同上，并上传到对应 Release |
+| `NICOLE_DISABLE_UPDATES=1 bun run build` | 不嵌入更新配置，不生成更新文件 |
 
 - 私钥只从环境变量读取，不写进仓库；本地演练用一次性测试密钥对，见[下文](#自动更新的本地演练)。
-- 不带私钥时，macOS/Windows 只有告警 “Not signing an update” 并跳过更新档案；不要把这个产物当作可发布版本，Release workflow 的 `-upload` 会因缺少私钥直接失败。
-- 完全关闭更新的构建用 `NICOLE_DISABLE_UPDATES=1`，Package workflow 即如此；产物不嵌入更新配置，也不会检查更新。
+- 不带私钥的构建不要当作可发布版本；发布流程见[发布与自动更新](release.md)。
+- 完全关闭更新用 `NICOLE_DISABLE_UPDATES=1`，Package workflow 即如此。
 - 版本与渠道只在发布时注入：`NICOLE_RELEASE_VERSION` 与 `NICOLE_RELEASE_TAG_PREFIX` 由 Release workflow 从标签写入，本地不需要设置（默认 `0.0.1` / `v`）。两个变量必须同时设置。配置通过环境变量取值，不在检出目录写过程文件，Go 的 VCS 戳记因此保持干净。
+- 无/有私钥时更新文件的差异、差量、清单上传顺序和 `Enabled()` 的条件见 [MyGo 参考](references/mygo.md#自动更新)。
 
 ### 打包 workflow
 
@@ -130,7 +131,7 @@ macOS 的签名、通用二进制合成和 DMG 需要 macOS；Windows 安装包�
      bun run build -- -platform darwin/universal -skip-dmg -o "$drill/with-key"
    ```
 
-   检查输出目录 `$drill/with-key/darwin-universal/` 里的 `nicole-0.0.1-darwin-universal.tar.gz`、`update-darwin-universal.json`：清单的 `version` 为 `0.0.1`，`notes` 来自 `CHANGELOG.md` 的 `## 0.0.1` 小节，`url` 指向 `test-v0.0.1` 标签。首次构建没有已发布版本时会记录 “no version is published yet” 并跳过差量，这是正常的。
+   检查输出目录 `$drill/with-key/darwin-universal/` 里的 `nicole-0.0.1-darwin-universal.tar.gz`、`update-darwin-universal.json`：清单的 `version` 为 `0.0.1`，`notes` 来自 `CHANGELOG.md` 的 `## 0.0.1` 小节，`url` 指向 `test-v0.0.1` 标签。
 
 3. 恢复正式公钥，再验证无私钥时的行为：
 
@@ -140,9 +141,9 @@ macOS 的签名、通用二进制合成和 DMG 需要 macOS；Windows 安装包�
    bun run build -- -platform darwin/universal -skip-dmg -o "$drill/without-key"
    ```
 
-   应只看到 “Not signing an update” 告警，输出目录没有更新归档和 `update-*.json`；Linux 的未签名 `.tar.gz` 仍会生成，这是 MyGo 的既有行为。
+   应只看到 “Not signing an update” 告警，输出目录没有更新归档和 `update-*.json`。
 
-4. 清理：`rm -rf "$drill"`，并确认 `git status` 干净。`mygo dev` 构建的开发版不嵌入更新源，更新关闭；可在开发版菜单中点“检查更新…”确认提示。
+4. 清理：`rm -rf "$drill"`，并确认 `git status` 干净。开发版本地不嵌入更新配置；更新开关的判定见 [MyGo 参考](references/mygo.md#自动更新)。
 
 ## 测试与检查
 

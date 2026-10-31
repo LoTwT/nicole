@@ -26,10 +26,10 @@ updates: {
 ```
 
 - 公钥与私钥为 Ed25519 对（`mygo keygen` 生成；私钥文件是 `mygo-update.key` 的内容）。**私钥只存于用户的密码管理器和仓库 secret `MYGO_UPDATER_PRIVATE_KEY`，绝不进仓库，也不交给 agent**。丢失私钥会使已安装应用无法再收到更新（搁浅，只能让用户手动重装新公钥的版本）；泄露则任何持有者都能向用户推送任意代码。
-- 发布构建经 `MYGO_UPDATER_PRIVATE_KEY` 签名。私钥与 `updates.publicKey` 不匹配时 `mygo build` 直接失败；缺失时普通 `mygo build` 只告警并跳过带签名的更新档案与清单（Linux 仍会生成未签名的 `.tar.gz`，但不生成清单），`mygo build -upload` 则会在构建前失败——发布 workflow 因此不会发出一个“没有更新的发布版”。
+- 发布构建必须带 `MYGO_UPDATER_PRIVATE_KEY`；私钥与 `updates.publicKey` 不匹配时构建失败，发布 workflow 缺私钥也会失败。
 - 平台签名不新增任何 secret：macOS 使用 ad-hoc 签名，不配置 Developer ID 与公证；Windows 不签名。见[不依赖付费证书的分发路线](#不依赖付费证书的分发路线)。
-- 应用侧使用 MyGo 的 `updater.Plugin`（`main.go`）：Sparkle 风格的更新窗口、应用菜单中的“检查更新…”，启动约 10 秒后后台检查一次，之后每天一次；可安装、跳过该版本或稍后提醒。开发运行（`mygo dev`）、Package workflow 的测试构建、由包管理器安装的 Linux `.deb` 版都不检查更新，菜单项会说明原因。
-- `mygo build` 在安装包旁产出应用归档 `nicole-<版本>-<target>.tar.gz`、可选的 `.delta` 差量更新（默认对之前 3 个版本生成，取不到已发布档案时跳过并告警）和更新清单 `update-<target>.json`（版本、说明、日期、归档与差量的 URL/大小/签名）。清单最后上传，应用不会看到指向缺失文件的清单。
+- 应用侧使用 MyGo 的 `updater.Plugin`（`main.go`），提供 Sparkle 风格更新窗口和“检查更新…”菜单项；哪些构建能检查更新由 MyGo 决定，见 [MyGo 参考](references/mygo.md#自动更新)。
+- 各平台的更新归档、差量和清单由 `mygo build` 生成，发布资产见下表；生成规则见 [MyGo 参考](references/mygo.md#自动更新)。
 
 ## 发布步骤
 
@@ -39,12 +39,12 @@ updates: {
    - 测试版：`git tag test-v0.0.2 && git push origin test-v0.0.2`
 3. `Release` workflow（[release.yml](../.github/workflows/release.yml)）由标签触发：
    1. **草稿 job**：校验标签（`test-v`/`v` + `major.minor.patch`）、CHANGELOG 小节，并用与构建相同的环境变量求值 `mygo.config.ts`，确认版本、`updates.github`（必须是本仓库）与 `tagPrefix` 正确；然后创建该标签的草稿 Release，三个平台 job 上传到同一草稿。
-   2. **macOS job**（`macos-latest`）：`mygo build -platform darwin/universal -upload`，私钥经 `MYGO_UPDATER_PRIVATE_KEY`，`GH_TOKEN` 供上传与差量计算；校验 `.app`、DMG、通用架构、Info.plist 版本、ad-hoc 签名、归档与清单（清单版本等于标签，归档 URL 指向本标签）。
+   2. **macOS job**（`macos-latest`）：`mygo build -platform darwin/universal -upload`，私钥经 `MYGO_UPDATER_PRIVATE_KEY`，`GH_TOKEN` 供上传；校验 `.app`、DMG、通用架构、Info.plist 版本、ad-hoc 签名、归档与清单（清单版本等于标签，归档 URL 指向本标签）。
    3. **Windows job**（`ubuntu-latest`，先安装 NSIS 与 7-Zip）：`mygo build -platform windows/amd64 -upload`；校验 EXE、NSIS 安装包、`install.ps1`、归档与清单。
    4. **Linux job**（`ubuntu-latest`）：`mygo build -platform linux/amd64 -upload`；校验可执行文件、`.deb`（版本字段等于标签）、`install.sh`、归档与清单。
-   5. **发布 job**（三个平台都成功后）：校验 Release 资产齐全，下载三份清单核对版本与标签；测试渠道以 `--draft=false --prerelease=false --latest=false` 发布，标题“Nicole <版本>（测试版，勿用）”，说明前加警示；正式渠道以 `--draft=false --prerelease=false --latest=true` 发布，标题“Nicole <版本>”。
-4. 失败处理：单平台失败可用 “Re-run failed jobs” 重跑，重跑以 `--clobber` 覆盖同一草稿里的同名资产；草稿 job 幂等（Release 已存在则不重建）。标签或 CHANGELOG 问题需要删远端标签重打（由主会话执行）或补小节后重新推送标签触发；已推送的标签不要在原标签上强推覆盖。
-5. **首次发布重点看**：`MYGO_UPDATER_PRIVATE_KEY` 是否就位（否则三个平台在构建/校验阶段失败）；Windows job 的 NSIS 是否安装成功；Linux job 的 `.deb` 是否生成；差量计算对首版只会记 “no version is published yet”（正常）；发布 job 的资产清单是否与下表一致；发布后 latest 是否指向正式版。
+   5. **发布 job**（三个平台都成功后）：校验 Release 资产齐全，下载三份清单核对版本与标签，按实际资产重新生成并复核 `SHA256SUMS`；测试渠道以 `--draft=false --prerelease=false --latest=false` 发布，标题“Nicole <版本>（测试版，勿用）”，说明前加警示；正式渠道以 `--draft=false --prerelease=false --latest=true` 发布，标题“Nicole <版本>”。
+4. 失败处理：单平台失败可用 “Re-run failed jobs” 重跑，重跑以 `--clobber` 覆盖同一草稿里的同名资产；草稿 job 幂等（Release 已存在则不重建）。发布 job 会在发布前按实际资产重新生成并复核 `SHA256SUMS`，以修复并行上传可能造成的缺行；复核报告缺行或哈希不一致时，先按提示重跑对应平台的 job，再重跑发布 job，不要手动发布草稿。标签或 CHANGELOG 问题需要删远端标签重打（由主会话执行）或补小节后重新推送标签触发；已推送的标签不要在原标签上强推覆盖。
+5. **首次发布重点看**：`MYGO_UPDATER_PRIVATE_KEY` 是否就位（否则三个平台在构建/校验阶段失败）；Windows job 的 NSIS 是否安装成功；Linux job 的 `.deb` 是否生成；发布 job 的资产清单是否与下表一致；发布后 latest 是否指向正式版。
 
 Release 资产一览（`<版本>` 为标签版本，表列为 GitHub 上的存储名）：
 
@@ -52,7 +52,7 @@ Release 资产一览（`<版本>` 为标签版本，表列为 GitHub 上的存�
 | --- | --- |
 | `nicole-<版本>.dmg` | macOS 通用安装镜像（ad-hoc 签名） |
 | `nicole-setup-<版本>-amd64.exe` | Windows NSIS 每用户安装包（未签名） |
-| `nicole_<版本>_amd64.deb` | Linux Debian 包（由包管理器管理更新） |
+| `nicole_<版本>_amd64.deb` | Linux Debian 包（更新边界见[参考](references/mygo.md#自动更新)） |
 | `nicole-<版本>-darwin-universal.tar.gz` | macOS 更新归档（签名） |
 | `nicole-<版本>-windows-amd64.tar.gz` | Windows 更新归档（签名） |
 | `nicole-<版本>-linux-amd64.tar.gz` | Linux 更新归档（签名；`install.sh` 安装用） |
@@ -79,9 +79,7 @@ MyGo 0.7.3 的文件名都不含空格（youkai 的 0.6.2 是 `Youkai 0.0.1 arm6
 
 ## Linux 的更新边界
 
-- 用 `.deb` 安装的应用位于 `/opt/nicole`，由包管理器负责升级。MyGo 的 `mygo.Updater.Enabled()` 检测到安装位置不可写时会关闭自动更新，“检查更新…”也会说明原因；发布 `.deb` 的新版本不会让已安装应用自动升级。
-- 用 `.tar.gz` 中的 `install.sh` 安装的应用位于 `~/.local/nicole.app`，可自动更新。`install.sh` 下载更新清单与归档，并用 `updates.publicKey` 校验 Ed25519 签名（需要 OpenSSL 3.0 及以上；旧版 OpenSSL 下只能手工下载归档再交给脚本安装）。
-- 因此发布说明里要同时给出 `.deb` 与 `install.sh` 两种安装方式，并写清各自的更新行为；不要承诺 `.deb` 用户会自动收到新版本。
+Nicole 同时发布 `.deb` 与 `.tar.gz`；发布说明必须写清两种安装方式分别由谁负责升级，不要承诺 `.deb` 用户会自动收到新版本。两者的安装位置、更新开关和签名校验条件见 [MyGo 参考](references/mygo.md#自动更新)。
 
 ## 发布后验证
 
@@ -95,9 +93,9 @@ MyGo 0.7.3 的文件名都不含空格（youkai 的 0.6.2 是 `Youkai 0.0.1 arm6
 - **安装与重启**：
   1. 下载并安装更新后，应用重启进入新版本；版本号与标签一致（macOS 查 `Info.plist` 与实际界面，Windows 查文件属性或“应用和功能”，Linux 用 `.tar.gz`/`install.sh` 版查可执行文件与菜单）。
   2. 更新后用户数据、窗口状态和历史记录保留。
-  3. Windows 的 NSIS 安装目录（`%LOCALAPPDATA%\Programs\Nicole`）可写。注意 MyGo 0.7.3 的更新器只替换文件，不写卸载注册表，所以“应用和功能”里的版本可能仍是安装时的版本；记录实际表现。若要让它随更新刷新，需要应用在启动时写 HKCU 卸载项，列为后续工作。
+  3. Windows 的 NSIS 安装目录（`%LOCALAPPDATA%\Programs\Nicole`）可写；记录“应用和功能”里的版本显示（MyGo 0.7.3 的已知限制见[参考](references/mygo.md#自动更新)）。若需要随更新刷新，列为后续工作。
 - **签名拒绝**：篡改清单或换密钥的归档应安装失败并显示错误，应用继续运行原版本。可用[开发指南](development.md#自动更新的本地演练)的一次性测试密钥对演练，勿用正式密钥。
 - **macOS Gatekeeper**：安装版首次打开是否被拦截、更新替换后是否再次拦截，记录实际提示与允许方式；ad-hoc 签名不提供 Developer ID 身份，结果以实测为准。
 - **Windows SmartScreen**：首次运行安装包与更新后的 EXE 是否出现 SmartScreen、能否继续，记录系统版本和策略；受管设备可能直接阻止。
-- **Linux**：`.tar.gz`/`install.sh` 版能检测并安装更新；`.deb` 版不应出现后台更新检查，菜单项说明由包管理器更新。
-- **差量更新**（从第二个版本起）：应用应优先下载 `.delta`，失败时回退整包；首版没有差量是正常的。
+- **Linux**：按[参考](references/mygo.md#自动更新)区分两种安装方式：`.tar.gz`/`install.sh` 版应能检测并安装更新；`.deb` 版不应出现后台更新检查。
+- **差量更新**（从第二个版本起）：按[参考](references/mygo.md#自动更新)核对差量下载与整包回退；首版没有差量属正常。

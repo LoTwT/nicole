@@ -112,12 +112,15 @@ bunx mygo-cli@0.7.3 init <name>
   - `publicKey`：`mygo keygen` 生成的 `mygo-update.pub` 内容；`github`（`owner/name`）或 `url`（HTTPS 目录）二选一。
   - `tagPrefix`：默认 `v`。为 `v` 时应用读仓库 latest Release 的清单；其他前缀（如 `test-v`）时通过 GitHub API 找该前缀下最新的非草稿、非预发布 Release。
   - `privateKey`：签名私钥路径；`MYGO_UPDATER_PRIVATE_KEY` 环境变量优先。
-  - `changelog`：默认 `CHANGELOG.md`；每个版本必须有 `## <version>` 小节（也接受 `## [<version>] - 日期`），否则构建失败，小节文字进入清单的 `notes`。
+  - `changelog`：默认 `CHANGELOG.md`；每个版本必须有对应小节，接受 `## <version>`、`## v<version>`、`## [<version>] - 日期` 等写法，否则构建失败，小节文字进入清单的 `notes`。
   - `deltas`：默认 3，对之前已发布的版本生成 `.delta`；首版没有已发布版本时跳过并提示。
 - 带私钥构建时，每个平台额外产出 `<slug>-<version>-<target>.tar.gz`（签名归档）、`update-<target>.json`（版本、说明、日期、归档/差量的 URL、大小、签名）和可选的差量文件。无私钥时只告警并跳过这些文件，**Linux 例外**：仍输出未签名的 `.tar.gz`（供 `install.sh` 手工安装）。
 - `mygo build -upload` 需要私钥与 `updates.github`/`updates.s3`，缺私钥会在构建前失败；它上传安装包、归档、脚本和 `SHA256SUMS`，清单最后上传。上传目标是 `tagPrefix + version` 的 Release，不存在时自动创建草稿。
+- `SHA256SUMS` 的格式是 `sha256sum` 的 `<sha256>  <name>`，按文件名排序；覆盖安装包、归档、差量与安装脚本，不含 `update-*.json`。`install.ps1` 按 `<64 位十六进制>  <名字>` 读取，GitHub 存储名中的空格会变成 `.`。
+- `SHA256SUMS` 的跨平台合并是读取现有文件、合并、整体覆盖上传，没有加锁；多个平台并行上传时可能互相覆盖而丢行。发布流程需要在全部上传后按实际资产重新生成并核对，见[发布](../release.md)。
 - 更新清单必须指向实际存在的归档；应用按平台读取自己的清单（`darwin-universal`、`windows-amd64`、`linux-amd64`）。
-- 应用侧 `mygo.Updater.Enabled()` 要求构建时嵌入更新源与公钥、非开发运行、且安装位置可写。macOS 的 `.app`、Windows 每用户安装目录、Linux 的 `~/.local/<slug>.app` 可更新；`/opt` 下的 `.deb` 安装由包管理器管理，自动更新关闭。
+- 应用侧 `mygo.Updater.Enabled()` 要求构建时嵌入更新源与公钥、非开发运行、且安装位置可写：macOS 的 `.app`、Windows 每用户安装目录、Linux 的 `~/.local/<slug>.app` 满足；`.deb` 安装的系统目录不满足。
+- Linux 的 `.deb` 安装到 `/opt/<slug>`，由包管理器升级，自动更新关闭；`install.sh` 安装到 `~/.local/<slug>.app`，可自动更新，并用 `updates.publicKey` 校验归档的 Ed25519 签名（需要 OpenSSL 3.0 及以上；旧版 OpenSSL 下只能手工下载归档再交给脚本安装）。
 - Windows 更新器只替换安装目录里的文件，不写卸载注册表；NSIS 安装器只在安装时写 `DisplayVersion`，所以原地更新后“应用和功能”里的版本可能仍是旧值。需要应用自己刷新该值（0.7.3 没有内置行为）。
 - `updater.Plugin` 提供 Sparkle 风格更新窗口，启动约 10 秒后后台检查一次、之后每天一次；`updater.MenuItem()` 返回“检查更新…”菜单项。`mygo dev` 与未嵌入更新配置的构建不后台检查，手动检查会说明原因。
 
