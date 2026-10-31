@@ -4,6 +4,7 @@
 
 - 官网：<https://mygo.egoist.dev>
 - 仓库：<https://github.com/egoist/mygo>
+- 来源：MyGo 官方文档与 `mygo init` 实际生成的脚手架（2026-10）
 - 核对日期：2026-10
 - 状态：**还没有正式版本**。
 
@@ -45,7 +46,3 @@ go run github.com/egoist/mygo/cmd/mygo@latest init <name>
 - 用 bun 管理依赖。
 - 默认模板是 Vite 8 + TypeScript。
 - `mygo-cli` / `mygo-runtime` 版本为 0.7.3。
-
-## 版本状态
-
-截至核对日期，MyGo 还没有正式版本。

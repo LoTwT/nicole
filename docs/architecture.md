@@ -61,12 +61,7 @@ Go
   createEditor({ mode, commands, resolveImage, onChange })
   ```
 
-  | 参数 | 含义 |
-  |---|---|
-  | `mode` | 初始编辑模式 |
-  | `commands` | 命令注册表（见 [Slash 命令](specs/slash-commands.md#命令注册表)） |
-  | `resolveImage` | 图片地址解析 |
-  | `onChange` | 内容变更回调 |
+  具体参数在实现时再定。
 
 - 命令注册表只有一份，各入口共用，见 [Slash 命令](specs/slash-commands.md#命令注册表)。
 - 编辑模式的设计和限制见[编辑模式](specs/editor-modes.md)。
@@ -96,7 +91,7 @@ Go
 
 | 风险 | 应对 |
 |---|---|
-| 中文输入法在 macOS WKWebView 里的表现 | 技术验证第一周就测；拼音输入过程中不能重建当前位置的渲染，见[中文输入法](specs/editor-modes.md#中文输入法)。 |
+| 中文输入法在 macOS WKWebView 里的表现 | 技术验证第一周就测；拼音输入过程中不能重建当前行的渲染，见[中文输入法](specs/editor-modes.md#中文输入法)。 |
 | MyGo 的 API 可能变化 | MyGo 还没有正式版本（见[参考](references/mygo.md)）；锁定版本，并把所有调用集中在 `services/` 和 `main.go`。 |
 | 沉浸模式的边界情况多 | 先把实时预览做好，再逐步补齐沉浸模式，见[编辑模式](specs/editor-modes.md)。 |
 | Linux 的 WebKitGTK 能力较弱 | 平台优先级排在最后，见[平台优先级](specs/product.md#平台优先级)。 |

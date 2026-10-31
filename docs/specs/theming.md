@@ -47,7 +47,7 @@ CodeMirror 6 的主题直接使用 `var(--text-primary)` 这类 CSS 变量。切
 
 主题包不支持在一个主题里局部套用另一个主题（见[参考](../references/ayingott-theme.md#限制)）。因此如果要“应用暗色但预览亮色导出效果”，导出预览必须做成独立页面。
 
-0.3.0 版本没有组件，界面组件要自己写，或者搭配 Reka UI 这类不带样式的组件库。
+界面组件自己写，或者搭配 Reka UI 这类不带样式的组件库（见[参考](../references/ayingott-theme.md#限制)）。
 
 ## 待办：补充主题包变量
 
