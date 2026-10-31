@@ -52,13 +52,17 @@
 
 演示实现是**整行展开**：光标在某一行时，这一行全部显示原文。正式版应细到**只展开光标所在的那个元素**，例如光标在加粗文本里时只露出这对 `**`，而不是让整行的语法标记都出现。
 
-## 演示实现要点
+## 当前实现
 
-交接附件中的 `main.ts`（2026-10 验证，不纳入仓库）实现了三种模式，关键做法如下：
+`src/editor/index.ts` 已从交接附件中的 `main.ts`（2026-10 验证，不纳入仓库）移植，接口见[架构](../architecture.md#依赖边界)。当前仍保持演示的**整行展开**，后续再细到元素。
 
 - `preview(reveal)` 生成一个 `ViewPlugin`；文档、视口或选区变化时，在可见范围内重建 decorations。
 - 遍历语法树：隐藏 `HeaderMark`、`EmphasisMark`、`CodeMark`、`StrikethroughMark`、`QuoteMark` 和链接的 URL；把列表符号、任务框、图片、分割线替换成 widget；标题和引用用行级 decoration。
 - 沉浸模式额外注册 `EditorView.atomicRanges`，让光标跳过隐藏的符号。
-- 用 ⌘B 切换加粗；URL 的 `#immersive` / `#source` 可以指定初始模式。
-- 三种模式的扩展通过同一个 Compartment 切换。
-- 已验证：`bun check` 没有类型错误；在无头 Chrome 里截图确认了实时预览和沉浸两种模式的渲染效果。
+- 用 ⌘B（CodeMirror 的 `Mod-b`）切换加粗；光标折叠时插入一对空标记，选中文本时在两侧加 `**`。
+- 三种模式的扩展通过同一个 Compartment 切换，`EditorView` 不重建。
+- 编辑器主题只读 CSS 变量，亮暗切换只改 class（见[主题与字体](theming.md#编辑器主题)）。
+
+Vitest 覆盖三种模式切换、亮暗切换后 `EditorView` 实例/选区/撤销历史不变，以及沉浸模式的 `Mod-b` 加粗。
+
+本 PR 不包含：展开粒度细化到元素、中文输入法专门处理、链接/图片弹出编辑、slash 命令、浮动工具栏和边界输入规则。

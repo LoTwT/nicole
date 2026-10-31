@@ -1,0 +1,27 @@
+@import "tailwindcss";
+@import "@ayingott/theme";
+
+@theme {
+  --font-sans: system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-display: var(--font-sans);
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-reading: var(--app-font-reading, Georgia, "Songti SC", serif);
+}
+
+:root {
+  /* The editor only reads these variables, so switching `.dark` never rebuilds it. */
+  --nicole-syntax-mark: var(--reading-syntax-mark, var(--text-muted));
+  --nicole-caret: var(--reading-caret, var(--accent-primary));
+  --nicole-selection: var(--reading-selection, var(--accent-soft));
+  --nicole-quote-border: var(--reading-quote-border, var(--border-default));
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  overflow: hidden;
+}
