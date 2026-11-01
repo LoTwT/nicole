@@ -1,4 +1,4 @@
-import { Workspace, type WorkspaceFolder } from "./mygo";
+import { Workspace, events, type WorkspaceFolder } from "./mygo";
 
 export type { WorkspaceFolder };
 
@@ -18,6 +18,22 @@ export function readFile(path: string): Promise<string> {
 }
 
 /** Replaces a file of the open folder atomically. */
-export function writeFile(path: string, content: string): Promise<void> {
-  return Workspace.writeFile(path, content);
+export function writeFile(
+  path: string,
+  content: string,
+  generation: number,
+): Promise<void> {
+  return Workspace.writeFile(path, content, generation);
+}
+
+/** Runs a handler when Go asks the page to save before the window closes. */
+export function onSaveBeforeClose(handler: () => Promise<void>): () => void {
+  return events.workspaceSaveBeforeClose.on(() => {
+    void handler();
+  });
+}
+
+/** Tells Go that the page finished its pre-close save. */
+export function finishClose(saved: boolean): Promise<void> {
+  return Workspace.finishClose(saved);
 }

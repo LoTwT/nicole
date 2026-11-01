@@ -2,28 +2,48 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
+	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/plugins/watch"
 )
 
-// workspaceWatchRoot is the name pages give the file watcher. The watch
-// plugin asks watchRoot for its path on every watch, so opening another
-// folder replaces the state without registering anything again.
-const workspaceWatchRoot = "workspace"
+const (
+	workspaceWatchRootPrefix = "workspace-"
+	tempFilePrefix           = ".nicole-"
+	tempFileSuffix           = ".tmp"
+
+	// closeSaveTimeout bounds how long closing the window waits for the page
+	// to save. A page that cannot answer must not leave the window stuck.
+	closeSaveTimeout = 5 * time.Second
+)
+
+// workspaceSaveBeforeClose asks the page to save pending edits before its
+// window closes. The page answers with Workspace.FinishClose.
+var workspaceSaveBeforeClose = mygo.NewEvent[bool]("workspace:save-before-close")
 
 var (
-	errNoWorkspace = errors.New("workspace: no folder is open")
-	errPathOutside = errors.New("workspace: path is outside the folder")
+	errNoWorkspace     = errors.New("workspace: no folder is open")
+	errPathOutside     = errors.New("workspace: path is outside the folder")
+	errWorkspaceChange = errors.New("workspace: folder changed")
+	errNotMarkdown     = errors.New("workspace: only .md files can be read or written")
+	errIgnoredFolder   = errors.New("workspace: path is in an ignored folder")
+	errReadOnlyFile    = errors.New("workspace: file is read-only")
+	errDanglingLink    = errors.New("workspace: dangling symbolic link")
 )
 
 // WorkspaceFolder is the result of choosing a folder. Canceled is true when
@@ -33,6 +53,12 @@ type WorkspaceFolder struct {
 	Root     string   `json:"root"`
 	Files    []string `json:"files"`
 	Canceled bool     `json:"canceled"`
+	// Generation identifies this folder. Writes must carry it so a save
+	// prepared for one folder cannot land in the next one.
+	Generation int `json:"generation"`
+	// WatchRoot is the name pages give the watch plugin for this folder.
+	// It embeds Generation so an old watcher cannot be granted again.
+	WatchRoot string `json:"watchRoot"`
 }
 
 // Workspace serves the folder the user opened: its Markdown files, and
@@ -40,6 +66,10 @@ type WorkspaceFolder struct {
 // functions in src/services/mygo.ts.
 type Workspace struct {
 	state *workspaceState
+
+	closeMu    sync.Mutex
+	closing    bool
+	closeToken uint64
 }
 
 // NewWorkspace returns a workspace with no folder open.
@@ -51,20 +81,27 @@ func NewWorkspace() *Workspace {
 // watch plugin and the protocol handler that follows read it; switching
 // folders replaces this state in place, not the registrations that read it.
 type workspaceState struct {
-	mu   sync.RWMutex
-	root string
+	mu         sync.RWMutex
+	root       string
+	generation int
 }
 
-func (s *workspaceState) get() string {
+func (s *workspaceState) snapshot() (root string, generation int) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.root
+	return s.root, s.generation
 }
 
-func (s *workspaceState) set(root string) {
+func (s *workspaceState) replace(root string) (generation int, watchRoot string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.root = root
+	s.generation++
+	return s.generation, watchRootName(s.generation)
+}
+
+func watchRootName(generation int) string {
+	return workspaceWatchRootPrefix + strconv.Itoa(generation)
 }
 
 // ChooseFolder shows the native folder picker and makes the chosen folder
@@ -94,12 +131,24 @@ func (w *Workspace) open(root string) (WorkspaceFolder, error) {
 	if err != nil {
 		return WorkspaceFolder{}, err
 	}
-	files, err := listMarkdownFiles(resolved)
+	rootFS, err := os.OpenRoot(resolved)
 	if err != nil {
 		return WorkspaceFolder{}, err
 	}
-	w.state.set(resolved)
-	return WorkspaceFolder{Root: resolved, Files: files}, nil
+	defer rootFS.Close()
+
+	files, err := listMarkdownFiles(rootFS)
+	if err != nil {
+		return WorkspaceFolder{}, err
+	}
+	removeTempFiles(rootFS)
+	generation, watchRoot := w.state.replace(resolved)
+	return WorkspaceFolder{
+		Root:       resolved,
+		Files:      files,
+		Generation: generation,
+		WatchRoot:  watchRoot,
+	}, nil
 }
 
 // resolveWorkspaceRoot turns the folder the picker returned into the path
@@ -127,20 +176,25 @@ func resolveWorkspaceRoot(root string) (string, error) {
 // it, separated by slashes. Hidden folders and node_modules are not entered,
 // and symlinks are neither followed nor listed.
 func (w *Workspace) ListFiles() ([]string, error) {
-	root := w.state.get()
+	root, _ := w.state.snapshot()
 	if root == "" {
 		return nil, errNoWorkspace
 	}
-	return listMarkdownFiles(root)
+	rootFS, err := os.OpenRoot(root)
+	if err != nil {
+		return nil, err
+	}
+	defer rootFS.Close()
+	return listMarkdownFiles(rootFS)
 }
 
-func listMarkdownFiles(root string) ([]string, error) {
+func listMarkdownFiles(root *os.Root) ([]string, error) {
 	files := make([]string, 0)
-	err := filepath.WalkDir(root, func(name string, entry fs.DirEntry, err error) error {
+	err := fs.WalkDir(root.FS(), ".", func(name string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if name == root {
+		if name == "." {
 			return nil
 		}
 		if entry.IsDir() {
@@ -154,14 +208,10 @@ func listMarkdownFiles(root string) ([]string, error) {
 		if !entry.Type().IsRegular() {
 			return nil
 		}
-		if !strings.EqualFold(filepath.Ext(entry.Name()), ".md") {
+		if !isMarkdownName(entry.Name()) {
 			return nil
 		}
-		rel, err := filepath.Rel(root, name)
-		if err != nil {
-			return err
-		}
-		files = append(files, filepath.ToSlash(rel))
+		files = append(files, name)
 		return nil
 	})
 	if err != nil {
@@ -171,91 +221,155 @@ func listMarkdownFiles(root string) ([]string, error) {
 	return files, nil
 }
 
-// ignoredFolder reports whether a folder is left out of listings and
-// watches: a name starting with a dot, or node_modules.
+// ignoredFolder reports whether a folder is left out of listings, watches,
+// and file access: a name starting with a dot, or node_modules.
 func ignoredFolder(name string) bool {
 	return strings.HasPrefix(name, ".") || name == "node_modules"
 }
 
-// ReadFile returns the exact bytes of a file in the open folder as a string,
-// without changing its line endings or adding a final newline.
+func isMarkdownName(name string) bool {
+	return strings.EqualFold(filepath.Ext(name), ".md")
+}
+
+func isWorkspaceTempName(name string) bool {
+	return strings.HasPrefix(name, tempFilePrefix) && strings.HasSuffix(name, tempFileSuffix)
+}
+
+// removeTempFiles removes temporary files this app left behind. It only
+// removes its own prefix and ignores failures: opening a folder must work
+// even when old temporary files cannot be deleted.
+func removeTempFiles(root *os.Root) {
+	_ = fs.WalkDir(root.FS(), ".", func(name string, entry fs.DirEntry, err error) error {
+		if err != nil || name == "." {
+			return nil
+		}
+		if entry.IsDir() {
+			if ignoredFolder(entry.Name()) {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if entry.Type().IsRegular() && isWorkspaceTempName(entry.Name()) {
+			_ = root.Remove(filepath.FromSlash(name))
+		}
+		return nil
+	})
+}
+
+// ReadFile returns the exact bytes of a Markdown file in the open folder as a
+// string, without changing its line endings or adding a final newline.
 func (w *Workspace) ReadFile(rel string) (string, error) {
-	target, err := w.readTarget(rel)
-	if err != nil {
-		return "", err
-	}
-	data, err := os.ReadFile(target)
-	if err != nil {
-		return "", err
-	}
-	return string(data), nil
-}
-
-// WriteFile replaces a file in the open folder with content. It writes a
-// temporary file next to the target and renames it into place, so a failure
-// leaves the original file as it was, and the bytes are written unchanged.
-func (w *Workspace) WriteFile(rel, content string) error {
-	target, err := w.writeTarget(rel)
-	if err != nil {
-		return err
-	}
-	return writeFileAtomic(target, []byte(content))
-}
-
-// readTarget resolves a path relative to the open folder to an existing
-// regular file in it.
-func (w *Workspace) readTarget(rel string) (string, error) {
-	root := w.state.get()
+	root, _ := w.state.snapshot()
 	if root == "" {
 		return "", errNoWorkspace
 	}
-	if err := validateRelativePath(rel); err != nil {
-		return "", err
-	}
-	candidate := filepath.Join(root, filepath.FromSlash(rel))
-	resolved, err := filepath.EvalSymlinks(candidate)
+	target, err := resolveExistingFile(root, rel)
 	if err != nil {
 		return "", err
 	}
-	if !withinRoot(root, resolved) {
-		return "", errPathOutside
+	rootFS, err := os.OpenRoot(root)
+	if err != nil {
+		return "", err
 	}
-	info, err := os.Stat(resolved)
+	defer rootFS.Close()
+	info, err := rootFS.Stat(filepath.FromSlash(target))
 	if err != nil {
 		return "", err
 	}
 	if !info.Mode().IsRegular() {
 		return "", fmt.Errorf("workspace: not a file: %q", rel)
 	}
-	return resolved, nil
+	data, err := rootFS.ReadFile(filepath.FromSlash(target))
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
 }
 
-// writeTarget resolves a path relative to the open folder to where its
-// replacement goes. A file that exists is resolved through its symlinks, so
-// a link that leaves the workspace is rejected. A new file is created in its
-// resolved folder, which must be in the workspace.
-func (w *Workspace) writeTarget(rel string) (string, error) {
-	root := w.state.get()
+// WriteFile replaces a Markdown file in the open folder with content.
+// generation is the value ChooseFolder returned for that folder; a write
+// prepared for an earlier folder is refused. It writes a temporary file next
+// to the target and renames it into place, so a failure leaves the original
+// file as it was, and the bytes are written unchanged.
+func (w *Workspace) WriteFile(rel, content string, generation int) error {
+	root, current := w.state.snapshot()
 	if root == "" {
-		return "", errNoWorkspace
+		return errNoWorkspace
 	}
-	if err := validateRelativePath(rel); err != nil {
+	if generation != current {
+		return fmt.Errorf("%w: got generation %d, want %d", errWorkspaceChange, generation, current)
+	}
+	target, err := resolveWritableFile(root, rel)
+	if err != nil {
+		return err
+	}
+	rootFS, err := os.OpenRoot(root)
+	if err != nil {
+		return err
+	}
+	defer rootFS.Close()
+
+	info, err := rootFS.Stat(filepath.FromSlash(target))
+	if err == nil {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("workspace: not a file: %q", rel)
+		}
+		if info.Mode().Perm()&0o222 == 0 {
+			return fmt.Errorf("%w: %q", errReadOnlyFile, rel)
+		}
+		return writeWorkspaceFile(rootFS, target, []byte(content), info.Mode().Perm())
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	// A dangling link has nothing to write through; replacing it would
+	// silently turn a link into a regular file.
+	if info, err := rootFS.Lstat(filepath.FromSlash(rel)); err == nil && info.Mode()&fs.ModeSymlink != 0 {
+		return fmt.Errorf("%w: %q", errDanglingLink, rel)
+	}
+	return writeWorkspaceFile(rootFS, target, []byte(content), 0)
+}
+
+// resolveExistingFile resolves a path relative to root to an existing regular
+// Markdown file below it, after following any symlinks inside the workspace.
+func resolveExistingFile(root, rel string) (string, error) {
+	if err := validateWorkspaceFile(rel); err != nil {
+		return "", err
+	}
+	candidate := filepath.Join(root, filepath.FromSlash(rel))
+	resolved, err := filepath.EvalSymlinks(candidate)
+	if err != nil {
+		return "", err
+	}
+	target := relativeToRoot(root, resolved)
+	if target == "" {
+		return "", errPathOutside
+	}
+	if err := validateWorkspaceFile(target); err != nil {
+		return "", err
+	}
+	return target, nil
+}
+
+// resolveWritableFile resolves a path relative to root to where its
+// replacement goes. An existing file is resolved through its symlinks, so a
+// link that leaves the workspace is rejected; a new file is created in its
+// resolved folder, which must also be a usable workspace folder.
+func resolveWritableFile(root, rel string) (string, error) {
+	if err := validateWorkspaceFile(rel); err != nil {
 		return "", err
 	}
 	candidate := filepath.Join(root, filepath.FromSlash(rel))
 	resolved, err := filepath.EvalSymlinks(candidate)
 	if err == nil {
-		if !withinRoot(root, resolved) {
+		target := relativeToRoot(root, resolved)
+		if target == "" {
 			return "", errPathOutside
 		}
-		info, err := os.Stat(resolved)
-		if err != nil {
+		if err := validateWorkspaceFile(target); err != nil {
 			return "", err
 		}
-		if !info.Mode().IsRegular() {
-			return "", fmt.Errorf("workspace: not a file: %q", rel)
-		}
-		return resolved, nil
+		return target, nil
 	}
 	if !errors.Is(err, fs.ErrNotExist) {
 		return "", err
@@ -267,37 +381,15 @@ func (w *Workspace) writeTarget(rel string) (string, error) {
 	if !withinRoot(root, dir) {
 		return "", errPathOutside
 	}
-	return filepath.Join(dir, filepath.Base(candidate)), nil
-}
-
-// validateRelativePath accepts only a path relative to the workspace that
-// names a file: no absolute paths, no parent traversal in either slash
-// style, and no drive prefix. Keeping the rules the same on every platform
-// means a path rejected on one is rejected everywhere.
-func validateRelativePath(rel string) error {
-	if rel == "" || rel == "." {
-		return fmt.Errorf("workspace: invalid path: %q", rel)
+	target := filepath.Join(dir, filepath.Base(candidate))
+	relative := relativeToRoot(root, target)
+	if relative == "" {
+		return "", errPathOutside
 	}
-	if strings.ContainsRune(rel, '\\') {
-		return fmt.Errorf("workspace: invalid path: %q", rel)
+	if err := validateWorkspaceFile(relative); err != nil {
+		return "", err
 	}
-	if path.IsAbs(rel) || filepath.IsAbs(rel) || looksLikeDrivePath(rel) {
-		return fmt.Errorf("workspace: invalid path: %q", rel)
-	}
-	if !fs.ValidPath(rel) {
-		return fmt.Errorf("workspace: invalid path: %q", rel)
-	}
-	return nil
-}
-
-// looksLikeDrivePath reports a Windows drive path on any platform, so the
-// same relative paths work and fail the same way everywhere.
-func looksLikeDrivePath(rel string) bool {
-	if len(rel) < 2 || rel[1] != ':' {
-		return false
-	}
-	c := rel[0]
-	return 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z'
+	return relative, nil
 }
 
 // withinRoot reports whether target is root or below it. Rel compares path
@@ -313,32 +405,100 @@ func withinRoot(root, target string) bool {
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-// writeFileAtomic replaces target with data in one rename. Until the rename
-// succeeds, target is untouched, and a failure removes the temporary file.
-func writeFileAtomic(target string, data []byte) error {
-	return writeFileAtomicWith(target, data, os.Rename)
+// relativeToRoot returns target relative to root in slash form, or "" when
+// target is outside root or root itself.
+func relativeToRoot(root, target string) string {
+	rel, err := filepath.Rel(root, target)
+	if err != nil || rel == "." || filepath.IsAbs(rel) {
+		return ""
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return ""
+	}
+	return filepath.ToSlash(rel)
 }
 
-// writeFileAtomicWith is writeFileAtomic with the rename step passed in, so
-// a test can observe a failure after the new content was written.
-func writeFileAtomicWith(target string, data []byte, rename func(string, string) error) (err error) {
-	mode := fs.FileMode(0o644)
-	if info, statErr := os.Stat(target); statErr == nil {
-		if info.Mode().IsRegular() {
-			mode = info.Mode().Perm()
-		}
-	} else if !errors.Is(statErr, fs.ErrNotExist) {
-		return statErr
+// validateWorkspaceFile accepts only a Markdown file that is not in an
+// ignored folder, with the same rules listing and watching use.
+func validateWorkspaceFile(rel string) error {
+	if err := validateRelativePath(rel); err != nil {
+		return err
 	}
+	if !isMarkdownName(rel) {
+		return fmt.Errorf("%w: %q", errNotMarkdown, rel)
+	}
+	dir := path.Dir(rel)
+	if dir == "." {
+		return nil
+	}
+	for _, part := range strings.Split(dir, "/") {
+		if ignoredFolder(part) {
+			return fmt.Errorf("%w: %q", errIgnoredFolder, rel)
+		}
+	}
+	return nil
+}
 
-	tmp, err := os.CreateTemp(filepath.Dir(target), ".nicole-*.tmp")
+// validateRelativePath accepts only a path relative to the workspace that
+// names a file: no absolute paths, no parent traversal in either slash
+// style, no drive or other colon paths, and no empty segments. Keeping the
+// rules the same on every platform means a path rejected on one is rejected
+// everywhere.
+func validateRelativePath(rel string) error {
+	if rel == "" || rel == "." {
+		return fmt.Errorf("workspace: invalid path: %q", rel)
+	}
+	if strings.ContainsRune(rel, '\\') || strings.ContainsRune(rel, ':') {
+		return fmt.Errorf("workspace: invalid path: %q", rel)
+	}
+	if path.IsAbs(rel) || filepath.IsAbs(rel) || looksLikeDrivePath(rel) {
+		return fmt.Errorf("workspace: invalid path: %q", rel)
+	}
+	if !fs.ValidPath(rel) || !filepath.IsLocal(filepath.FromSlash(rel)) {
+		return fmt.Errorf("workspace: invalid path: %q", rel)
+	}
+	return nil
+}
+
+// looksLikeDrivePath reports a Windows drive path on any platform, so the
+// same relative paths work and fail the same way everywhere.
+func looksLikeDrivePath(rel string) bool {
+	if len(rel) < 2 || rel[1] != ':' {
+		return false
+	}
+	c := rel[0]
+	return 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z'
+}
+
+// writeWorkspaceFile replaces target inside root with data in one rename.
+// Until the rename succeeds, target is untouched, and a failure removes the
+// temporary file. A new file gets the process umask; an existing file keeps
+// its permission bits.
+func writeWorkspaceFile(root *os.Root, target string, data []byte, mode fs.FileMode) error {
+	return writeWorkspaceFileWith(root, target, data, mode, func(root *os.Root, oldName, newName string) error {
+		return retryRename(func() error { return root.Rename(oldName, newName) })
+	})
+}
+
+// writeWorkspaceFileWith is writeWorkspaceFile with the rename step passed
+// in, so a test can observe a failure after the new content was written.
+func writeWorkspaceFileWith(root *os.Root, target string, data []byte, mode fs.FileMode, rename func(*os.Root, string, string) error) (err error) {
+	tempName, err := newTempFileName()
 	if err != nil {
 		return err
 	}
-	tmpName := tmp.Name()
+	dir := path.Dir(target)
+	temp := path.Join(dir, tempName)
+	tempPath := filepath.FromSlash(temp)
+	targetPath := filepath.FromSlash(target)
+
+	tmp, err := root.OpenFile(tempPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o666)
+	if err != nil {
+		return err
+	}
 	defer func() {
 		if err != nil {
-			_ = os.Remove(tmpName)
+			_ = root.Remove(tempPath)
 		}
 	}()
 
@@ -353,28 +513,123 @@ func writeFileAtomicWith(target string, data []byte, rename func(string, string)
 	if err = tmp.Close(); err != nil {
 		return err
 	}
-	if err = os.Chmod(tmpName, mode); err != nil {
+	if mode != 0 {
+		if err = root.Chmod(tempPath, mode.Perm()); err != nil {
+			return err
+		}
+	}
+	if err = rename(root, tempPath, targetPath); err != nil {
 		return err
 	}
-	return rename(tmpName, target)
+	return syncRootDirectory(root, dir)
 }
 
-// watchRoot grants the watch plugin a root only for the open folder. The
-// plugin asks on each watch, so it always watches the folder that is open
-// then; the ignore rules match the ones listing uses.
-func (w *Workspace) watchRoot(ctx context.Context, name string) (watch.Root, bool) {
-	if name != workspaceWatchRoot {
-		return watch.Root{}, false
+func newTempFileName() (string, error) {
+	var random [8]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", err
 	}
-	root := w.state.get()
-	if root == "" {
+	return tempFilePrefix + hex.EncodeToString(random[:]) + tempFileSuffix, nil
+}
+
+// syncRootDirectory makes the rename durable. Windows has no directory fsync;
+// opening a directory for this purpose is not supported there.
+func syncRootDirectory(root *os.Root, dir string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	f, err := root.Open(filepath.FromSlash(dir))
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return f.Sync()
+}
+
+// retryRename retries a rename while Windows reports the file in use, as
+// MyGo's own file replacement does.
+func retryRename(fn func() error) error {
+	for i := 1; ; i++ {
+		err := fn()
+		if err == nil || i == 10 || runtime.GOOS != "windows" ||
+			!errors.Is(err, syscall.Errno(32)) && !errors.Is(err, syscall.Errno(5)) {
+			return err
+		}
+		time.Sleep(time.Duration(i) * 100 * time.Millisecond)
+	}
+}
+
+// requestClose asks the page to save before its window closes. It reports
+// whether the close was delayed; a page that does not answer is closed when
+// closeSaveTimeout passes.
+func (w *Workspace) requestClose(win *mygo.Window) bool {
+	w.closeMu.Lock()
+	if w.closing {
+		// A save is already in progress; keep the window open until it
+		// answers or the timeout closes it.
+		w.closeMu.Unlock()
+		return true
+	}
+	w.closing = true
+	w.closeToken++
+	token := w.closeToken
+	w.closeMu.Unlock()
+
+	if err := workspaceSaveBeforeClose.Emit(win, true); err != nil {
+		w.closeMu.Lock()
+		if w.closeToken == token {
+			w.closing = false
+		}
+		w.closeMu.Unlock()
+		return false
+	}
+	time.AfterFunc(closeSaveTimeout, func() {
+		w.closeMu.Lock()
+		if !w.closing || w.closeToken != token {
+			w.closeMu.Unlock()
+			return
+		}
+		w.closing = false
+		w.closeToken++
+		w.closeMu.Unlock()
+		win.Destroy()
+	})
+	return true
+}
+
+// FinishClose closes the calling window when the page saved successfully.
+// When saved is false the window stays open, with the page's error visible.
+func (w *Workspace) FinishClose(ctx context.Context, saved bool) {
+	w.closeMu.Lock()
+	if !w.closing {
+		w.closeMu.Unlock()
+		return
+	}
+	w.closing = false
+	w.closeToken++
+	w.closeMu.Unlock()
+	if !saved {
+		return
+	}
+	if win := mygo.CallerWindow(ctx); win != nil {
+		win.Destroy()
+	}
+}
+
+// watchRoot grants the watch plugin a root only for the open folder and only
+// for its current generation. The plugin asks on each watch, so a watcher
+// from an earlier folder cannot be granted again.
+func (w *Workspace) watchRoot(_ context.Context, name string) (watch.Root, bool) {
+	root, generation := w.state.snapshot()
+	if root == "" || name != watchRootName(generation) {
 		return watch.Root{}, false
 	}
 	return watch.Root{
 		Path:      root,
 		Recursive: true,
 		Ignore: func(name string, isDir bool) bool {
-			return isDir && ignoredFolder(path.Base(name))
+			base := path.Base(name)
+			return isWorkspaceTempName(base) || isDir && ignoredFolder(base)
 		},
 	}, true
 }

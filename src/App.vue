@@ -8,7 +8,13 @@ import {
 } from "./editor";
 import { SAMPLE_DOCUMENT } from "./sample";
 import { getAppInfo, type AppInfo } from "./services/app";
-import { chooseFolder, readFile, writeFile } from "./services/workspace";
+import {
+  chooseFolder,
+  finishClose,
+  onSaveBeforeClose,
+  readFile,
+  writeFile,
+} from "./services/workspace";
 
 const editorHost = ref<HTMLElement | null>(null);
 const mode = ref<EditorMode>("live");
@@ -46,29 +52,84 @@ const themeAction = computed(() =>
 let editor: EditorHandle | null = null;
 
 const AUTOSAVE_DELAY_MS = 1000;
+const MIXED_LINE_ENDINGS_STATUS = "换行风格混合，未自动保存";
+type LineEnding = "\n" | "\r\n" | "\r";
+
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingText: string | null = null;
-let loadingFile = false;
+let saveQueue: Promise<boolean> = Promise.resolve(true);
 // CodeMirror normalizes line breaks to "\n". Remember the file's style so a
 // save does not rewrite every CRLF file as LF.
-let lineEnding = "\n";
+let lineEnding: LineEnding = "\n";
+let mixedLineEndings = false;
+let workspaceGeneration = 0;
+let offSaveBeforeClose: (() => void) | null = null;
 
-function replaceDocument(text: string) {
-  loadingFile = true;
-  if (editor) {
-    editor.view.dispatch({
-      changes: { from: 0, to: editor.view.state.doc.length, insert: text },
-    });
+function detectLineEndings(text: string): {
+  ending: LineEnding;
+  mixed: boolean;
+} {
+  const styles = new Set<LineEnding>();
+  for (let index = 0; index < text.length; index++) {
+    if (text[index] === "\r") {
+      if (text[index + 1] === "\n") {
+        styles.add("\r\n");
+        index++;
+      } else {
+        styles.add("\r");
+      }
+    } else if (text[index] === "\n") {
+      styles.add("\n");
+    }
   }
-  documentText.value = text;
-  loadingFile = false;
+  if (styles.size === 0) {
+    return { ending: "\n", mixed: false };
+  }
+  return { ending: [...styles][0]!, mixed: styles.size > 1 };
+}
+
+function createEditorFor(parent: HTMLElement, doc: string): EditorHandle {
+  return createEditor({
+    parent,
+    doc,
+    mode: mode.value,
+    resolveImage: (src) => src,
+    onChange: (next) => {
+      documentText.value = next;
+      scheduleSave(next);
+    },
+  });
+}
+
+// A new editor gives every file its own undo history and decorations. It
+// keeps the current mode; the theme lives on the document element.
+function mountEditor(doc: string) {
+  editor?.destroy();
+  editor = null;
+  const host = editorHost.value;
+  if (!host) {
+    documentText.value = doc;
+    return;
+  }
+  host.replaceChildren();
+  documentText.value = doc;
+  editor = createEditorFor(host, doc);
+  editor.focus();
 }
 
 function scheduleSave(text: string) {
-  if (loadingFile || currentFile.value === null) {
+  if (currentFile.value === null) {
     return;
   }
   pendingText = text;
+  if (mixedLineEndings) {
+    saveStatus.value = MIXED_LINE_ENDINGS_STATUS;
+    if (saveTimer !== null) {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+    }
+    return;
+  }
   saveStatus.value = "未保存";
   if (saveTimer !== null) {
     clearTimeout(saveTimer);
@@ -78,26 +139,52 @@ function scheduleSave(text: string) {
   }, AUTOSAVE_DELAY_MS);
 }
 
-async function savePending() {
+// Saves all pending edits before a switch. It returns false when the caller
+// must stay on the current file: a failed write keeps the text pending, and a
+// mixed-line-ending file is deliberately never auto-saved. Saves are queued
+// so a switch waits for a write already in flight.
+function savePending(): Promise<boolean> {
+  const next = saveQueue.then(() => savePendingNow());
+  saveQueue = next.then(
+    (saved) => saved,
+    () => false,
+  );
+  return next;
+}
+
+async function savePendingNow(): Promise<boolean> {
   if (saveTimer !== null) {
     clearTimeout(saveTimer);
     saveTimer = null;
   }
-  const path = currentFile.value;
-  const text = pendingText;
-  pendingText = null;
-  if (path === null || text === null) {
-    return;
-  }
-  saveStatus.value = "保存中…";
-  try {
-    await writeFile(path, withOriginalLineEnding(text));
+  for (;;) {
+    const path = currentFile.value;
+    const text = pendingText;
+    if (path === null || text === null) {
+      return true;
+    }
+    if (mixedLineEndings) {
+      saveStatus.value = MIXED_LINE_ENDINGS_STATUS;
+      return false;
+    }
+    pendingText = null;
+    saveStatus.value = "保存中…";
+    try {
+      await writeFile(
+        path,
+        withOriginalLineEnding(text),
+        workspaceGeneration,
+      );
+    } catch {
+      if (pendingText === null) {
+        pendingText = text;
+      }
+      saveStatus.value = "保存失败";
+      return false;
+    }
     if (pendingText === null) {
       saveStatus.value = "已保存";
-    }
-  } catch {
-    if (pendingText === null) {
-      saveStatus.value = "保存失败";
+      return true;
     }
   }
 }
@@ -110,6 +197,9 @@ function withOriginalLineEnding(text: string): string {
 }
 
 async function openFolder() {
+  if (!(await savePending())) {
+    return;
+  }
   let folder;
   try {
     folder = await chooseFolder();
@@ -120,9 +210,12 @@ async function openFolder() {
   if (folder.canceled) {
     return;
   }
-  await savePending();
+  workspaceGeneration = folder.generation;
   files.value = folder.files;
   currentFile.value = null;
+  pendingText = null;
+  mixedLineEndings = false;
+  lineEnding = "\n";
   saveStatus.value = "";
 }
 
@@ -132,18 +225,20 @@ async function selectFile(event: Event) {
   if (path === "") {
     return;
   }
-  await savePending();
+  if (!(await savePending())) {
+    select.value = currentFile.value ?? "";
+    return;
+  }
   try {
     const text = await readFile(path);
-    lineEnding = text.includes("\r\n")
-      ? "\r\n"
-      : text.includes("\r")
-        ? "\r"
-        : "\n";
-    currentFile.value = path;
+    const detected = detectLineEndings(text);
+    lineEnding = detected.ending;
+    mixedLineEndings = detected.mixed;
+    currentFile.value = null;
     pendingText = null;
-    replaceDocument(text);
-    saveStatus.value = "";
+    mountEditor(text);
+    currentFile.value = path;
+    saveStatus.value = detected.mixed ? MIXED_LINE_ENDINGS_STATUS : "";
   } catch {
     select.value = currentFile.value ?? "";
     saveStatus.value = "读取失败";
@@ -162,20 +257,29 @@ function toggleTheme() {
   localStorage.setItem("nicole-theme", theme.value);
 }
 
-onMounted(async () => {
-  if (editorHost.value) {
-    editor = createEditor({
-      parent: editorHost.value,
-      doc: SAMPLE_DOCUMENT,
-      mode: mode.value,
-      resolveImage: (src) => src,
-      onChange: (next) => {
-        documentText.value = next;
-        scheduleSave(next);
-      },
-    });
-    editor.focus();
+function saveBeforeExit() {
+  void savePending();
+}
+
+function saveWhenHidden() {
+  if (document.visibilityState === "hidden") {
+    void savePending();
   }
+}
+
+onMounted(async () => {
+  window.addEventListener("beforeunload", saveBeforeExit);
+  window.addEventListener("pagehide", saveBeforeExit);
+  document.addEventListener("visibilitychange", saveWhenHidden);
+  offSaveBeforeClose = onSaveBeforeClose(async () => {
+    const saved = await savePending();
+    try {
+      await finishClose(saved);
+    } catch {
+      // The window may already be gone; the save result was already shown.
+    }
+  });
+  mountEditor(SAMPLE_DOCUMENT);
 
   try {
     appInfo.value = await getAppInfo();
@@ -185,6 +289,11 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  window.removeEventListener("beforeunload", saveBeforeExit);
+  window.removeEventListener("pagehide", saveBeforeExit);
+  document.removeEventListener("visibilitychange", saveWhenHidden);
+  offSaveBeforeClose?.();
+  offSaveBeforeClose = null;
   if (saveTimer !== null) {
     clearTimeout(saveTimer);
     saveTimer = null;

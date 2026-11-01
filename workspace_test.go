@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 )
 
@@ -26,6 +27,11 @@ func openTestWorkspace(t *testing.T, root string) *Workspace {
 		t.Fatalf("open(%q): %v", root, err)
 	}
 	return workspace
+}
+
+func currentGeneration(workspace *Workspace) int {
+	_, generation := workspace.state.snapshot()
+	return generation
 }
 
 func TestListFiles(t *testing.T) {
@@ -103,7 +109,7 @@ func TestReadWritePreservesBytes(t *testing.T) {
 				t.Errorf("ReadFile() = %q, want %q", got, content)
 			}
 
-			if err := workspace.WriteFile("doc.md", content); err != nil {
+			if err := workspace.WriteFile("doc.md", content, currentGeneration(workspace)); err != nil {
 				t.Fatal(err)
 			}
 			data, err := os.ReadFile(name)
@@ -137,18 +143,22 @@ func contentName(content string) string {
 
 func TestWriteFailureLeavesOriginal(t *testing.T) {
 	root := t.TempDir()
-	target := filepath.Join(root, "doc.md")
-	mustWriteFile(t, target, []byte("original"))
+	mustWriteFile(t, filepath.Join(root, "doc.md"), []byte("original"))
+	rootFS, err := os.OpenRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rootFS.Close()
 
 	renameFailed := errors.New("rename failed")
-	err := writeFileAtomicWith(target, []byte("replacement"), func(string, string) error {
+	err = writeWorkspaceFileWith(rootFS, "doc.md", []byte("replacement"), 0o644, func(*os.Root, string, string) error {
 		return renameFailed
 	})
 	if !errors.Is(err, renameFailed) {
-		t.Fatalf("writeFileAtomicWith() = %v, want %v", err, renameFailed)
+		t.Fatalf("writeWorkspaceFileWith() = %v, want %v", err, renameFailed)
 	}
 
-	data, err := os.ReadFile(target)
+	data, err := os.ReadFile(filepath.Join(root, "doc.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,12 +183,14 @@ func TestReadFileRejectsPathsOutsideWorkspace(t *testing.T) {
 	mustWriteFile(t, outsideFile, []byte("secret"))
 
 	workspace := openTestWorkspace(t, root)
+	generation := currentGeneration(workspace)
 	for _, rel := range []string{
 		"../secret.md",
 		`..\secret.md`,
 		"/etc/passwd",
 		"C:/Windows/win.ini",
 		`C:\Windows\win.ini`,
+		"a:b.md",
 		"notes/../../secret.md",
 		"",
 		".",
@@ -190,7 +202,7 @@ func TestReadFileRejectsPathsOutsideWorkspace(t *testing.T) {
 		if _, err := workspace.ReadFile(rel); err == nil {
 			t.Errorf("ReadFile(%q) succeeded, want an error", rel)
 		}
-		if err := workspace.WriteFile(rel, "changed"); err == nil {
+		if err := workspace.WriteFile(rel, "changed", generation); err == nil {
 			t.Errorf("WriteFile(%q) succeeded, want an error", rel)
 		}
 	}
@@ -201,6 +213,71 @@ func TestReadFileRejectsPathsOutsideWorkspace(t *testing.T) {
 	}
 	if string(data) != "secret" {
 		t.Errorf("outside file = %q, want %q", data, "secret")
+	}
+}
+
+func TestReadWriteRequireVisibleMarkdownFiles(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{
+		".git/config.md",
+		"node_modules/package/readme.md",
+		".hidden/note.md",
+		"note.txt",
+		"ok.md",
+	} {
+		mustWriteFile(t, filepath.Join(root, filepath.FromSlash(name)), []byte("text"))
+	}
+	if err := os.Mkdir(filepath.Join(root, "folder.md"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	workspace := openTestWorkspace(t, root)
+	generation := currentGeneration(workspace)
+	for _, rel := range []string{".git/config.md", "node_modules/package/readme.md", ".hidden/note.md", "note.txt"} {
+		if _, err := workspace.ReadFile(rel); err == nil {
+			t.Errorf("ReadFile(%q) succeeded, want an error", rel)
+		}
+		if err := workspace.WriteFile(rel, "changed", generation); err == nil {
+			t.Errorf("WriteFile(%q) succeeded, want an error", rel)
+		}
+	}
+	for _, rel := range []string{"folder.md"} {
+		if _, err := workspace.ReadFile(rel); err == nil {
+			t.Errorf("ReadFile(%q) read a folder", rel)
+		}
+		if err := workspace.WriteFile(rel, "changed", generation); err == nil {
+			t.Errorf("WriteFile(%q) wrote a folder", rel)
+		}
+	}
+
+	if got, err := workspace.ReadFile("ok.md"); err != nil || got != "text" {
+		t.Errorf("ReadFile(ok.md) = %q, %v; want %q, nil", got, err, "text")
+	}
+	if err := workspace.WriteFile("new.md", "new", generation); err != nil {
+		t.Errorf("WriteFile(new.md) = %v, want nil", err)
+	}
+}
+
+func TestSymlinkIntoIgnoredFolderIsRejected(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, ".hidden", "note.md"), []byte("hidden"))
+	mustWriteFile(t, filepath.Join(root, "node_modules", "pkg", "readme.md"), []byte("dep"))
+	if err := os.Symlink(filepath.Join(root, ".hidden", "note.md"), filepath.Join(root, "hidden-link.md")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(root, "node_modules", "pkg", "readme.md"), filepath.Join(root, "dep-link.md")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	workspace := openTestWorkspace(t, root)
+	generation := currentGeneration(workspace)
+	for _, rel := range []string{"hidden-link.md", "dep-link.md"} {
+		if _, err := workspace.ReadFile(rel); err == nil {
+			t.Errorf("ReadFile(%q) succeeded, want an error", rel)
+		}
+		if err := workspace.WriteFile(rel, "changed", generation); err == nil {
+			t.Errorf("WriteFile(%q) succeeded, want an error", rel)
+		}
 	}
 }
 
@@ -218,13 +295,14 @@ func TestSymlinkEscapesAreRejected(t *testing.T) {
 	}
 
 	workspace := openTestWorkspace(t, root)
+	generation := currentGeneration(workspace)
 	for _, rel := range []string{"escape.md", "escape-dir/secret.md"} {
 		if _, err := workspace.ReadFile(rel); !errors.Is(err, errPathOutside) {
 			t.Errorf("ReadFile(%q) = %v, want %v", rel, err, errPathOutside)
 		}
 	}
 	for _, rel := range []string{"escape.md", "escape-dir/new.md"} {
-		if err := workspace.WriteFile(rel, "changed"); !errors.Is(err, errPathOutside) {
+		if err := workspace.WriteFile(rel, "changed", generation); !errors.Is(err, errPathOutside) {
 			t.Errorf("WriteFile(%q) = %v, want %v", rel, err, errPathOutside)
 		}
 	}
@@ -253,7 +331,7 @@ func TestSymlinkInsideWorkspaceIsFollowed(t *testing.T) {
 	if got, err := workspace.ReadFile("alias.md"); err != nil || got != "real" {
 		t.Fatalf("ReadFile(alias.md) = %q, %v; want %q, nil", got, err, "real")
 	}
-	if err := workspace.WriteFile("alias.md", "updated"); err != nil {
+	if err := workspace.WriteFile("alias.md", "updated", currentGeneration(workspace)); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := workspace.ReadFile("real.md"); err != nil || got != "updated" {
@@ -268,6 +346,122 @@ func TestSymlinkInsideWorkspaceIsFollowed(t *testing.T) {
 	}
 }
 
+func TestDanglingSymlinkIsNotReplaced(t *testing.T) {
+	root := t.TempDir()
+	alias := filepath.Join(root, "dangling.md")
+	if err := os.Symlink("missing.md", alias); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	workspace := openTestWorkspace(t, root)
+	err := workspace.WriteFile("dangling.md", "changed", currentGeneration(workspace))
+	if !errors.Is(err, errDanglingLink) {
+		t.Fatalf("WriteFile(dangling.md) = %v, want %v", err, errDanglingLink)
+	}
+	info, err := os.Lstat(alias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Error("a dangling symlink was replaced")
+	}
+}
+
+func TestWriteFilePreservesMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not report Unix permission bits")
+	}
+	root := t.TempDir()
+	name := filepath.Join(root, "private.md")
+	mustWriteFile(t, name, []byte("private"))
+	if err := os.Chmod(name, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	workspace := openTestWorkspace(t, root)
+	if err := workspace.WriteFile("private.md", "updated", currentGeneration(workspace)); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("mode = %o, want 600", got)
+	}
+}
+
+func TestWriteFileRejectsReadOnlyTarget(t *testing.T) {
+	root := t.TempDir()
+	name := filepath.Join(root, "readonly.md")
+	mustWriteFile(t, name, []byte("original"))
+	if err := os.Chmod(name, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(name, 0o644) })
+
+	workspace := openTestWorkspace(t, root)
+	err := workspace.WriteFile("readonly.md", "changed", currentGeneration(workspace))
+	if !errors.Is(err, errReadOnlyFile) {
+		t.Fatalf("WriteFile(readonly.md) = %v, want %v", err, errReadOnlyFile)
+	}
+	data, err := os.ReadFile(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "original" {
+		t.Errorf("read-only file = %q, want %q", data, "original")
+	}
+}
+
+func TestOpenRemovesOwnTempFiles(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{
+		".nicole-0123456789abcdef.tmp",
+		"notes/.nicole-abcdef0123456789.tmp",
+		".other.tmp",
+		".hidden/.nicole-keep.tmp",
+		"keep.md",
+	} {
+		mustWriteFile(t, filepath.Join(root, filepath.FromSlash(name)), []byte("temp"))
+	}
+
+	openTestWorkspace(t, root)
+	for _, name := range []string{
+		".nicole-0123456789abcdef.tmp",
+		"notes/.nicole-abcdef0123456789.tmp",
+	} {
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(name))); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%q was not removed: %v", name, err)
+		}
+	}
+	for _, name := range []string{".other.tmp", ".hidden/.nicole-keep.tmp", "keep.md"} {
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(name))); err != nil {
+			t.Errorf("%q was removed: %v", name, err)
+		}
+	}
+}
+
+func TestWriteFileRejectsStaleGeneration(t *testing.T) {
+	first := t.TempDir()
+	workspace := openTestWorkspace(t, first)
+	stale := currentGeneration(workspace)
+
+	second := t.TempDir()
+	if _, err := workspace.open(second); err != nil {
+		t.Fatal(err)
+	}
+	if err := workspace.WriteFile("new.md", "stale", stale); !errors.Is(err, errWorkspaceChange) {
+		t.Fatalf("WriteFile() with an old generation = %v, want %v", err, errWorkspaceChange)
+	}
+	if _, err := os.Stat(filepath.Join(second, "new.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("stale write created a file: %v", err)
+	}
+	if err := workspace.WriteFile("new.md", "current", currentGeneration(workspace)); err != nil {
+		t.Fatalf("WriteFile() with the current generation = %v, want nil", err)
+	}
+}
+
 func TestWithinRoot(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "Notes")
 	if !withinRoot(root, root) {
@@ -279,11 +473,27 @@ func TestWithinRoot(t *testing.T) {
 	if withinRoot(root, filepath.Join(filepath.Dir(root), "notes-backup", "a.md")) {
 		t.Error("withinRoot() accepted a sibling whose name starts like the root")
 	}
+	if withinRoot(root, filepath.Join(filepath.Dir(root), "Notes-backup", "a.md")) {
+		t.Error("withinRoot() accepted a Notes-backup sibling")
+	}
 	if withinRoot(root, filepath.Join(filepath.Dir(root), "NOTES-backup", "a.md")) {
 		t.Error("withinRoot() accepted a case-variant sibling of the root")
 	}
 	if withinRoot(root, filepath.Dir(root)) {
 		t.Error("withinRoot() accepted the parent")
+	}
+}
+
+func TestValidateRelativePath(t *testing.T) {
+	for _, rel := range []string{"a.md", "notes/a.MD", ".draft.md"} {
+		if err := validateRelativePath(rel); err != nil {
+			t.Errorf("validateRelativePath(%q) = %v, want nil", rel, err)
+		}
+	}
+	for _, rel := range []string{"", ".", "../a.md", `..\a.md`, "/a.md", `C:\a.md`, "C:/a.md", "a:b.md", "notes//a.md", "notes/"} {
+		if err := validateRelativePath(rel); err == nil {
+			t.Errorf("validateRelativePath(%q) succeeded, want an error", rel)
+		}
 	}
 }
 
@@ -320,23 +530,24 @@ func TestFailedOpenKeepsCurrentWorkspace(t *testing.T) {
 	}
 }
 
-func TestWatchRootFollowsWorkspace(t *testing.T) {
+func TestWatchRootFollowsWorkspaceGeneration(t *testing.T) {
 	ctx := context.Background()
 	workspace := NewWorkspace()
 
-	if _, ok := workspace.watchRoot(ctx, workspaceWatchRoot); ok {
+	if _, ok := workspace.watchRoot(ctx, "workspace-1"); ok {
 		t.Error("watchRoot() granted a root before a folder was open")
-	}
-	if _, ok := workspace.watchRoot(ctx, "other"); ok {
-		t.Error("watchRoot() granted an unknown name")
 	}
 
 	first := t.TempDir()
 	mustWriteFile(t, filepath.Join(first, "first.md"), []byte("first"))
-	if _, err := workspace.open(first); err != nil {
+	folder, err := workspace.open(first)
+	if err != nil {
 		t.Fatal(err)
 	}
-	root, ok := workspace.watchRoot(ctx, workspaceWatchRoot)
+	if folder.Generation != 1 || folder.WatchRoot != "workspace-1" {
+		t.Fatalf("first folder = %+v, want generation 1 and workspace-1", folder)
+	}
+	root, ok := workspace.watchRoot(ctx, folder.WatchRoot)
 	if !ok {
 		t.Fatal("watchRoot() refused the workspace")
 	}
@@ -358,15 +569,27 @@ func TestWatchRootFollowsWorkspace(t *testing.T) {
 			t.Errorf("Ignore(%q, dir) = false, want true", name)
 		}
 	}
+	for _, name := range []string{".nicole-0123456789abcdef.tmp", "docs/.nicole-abcdef0123456789.tmp"} {
+		if !root.Ignore(name, false) {
+			t.Errorf("Ignore(%q, file) = false, want true", name)
+		}
+	}
 	if root.Ignore("notes.md", false) || root.Ignore("node_modules", false) {
-		t.Error("Ignore() ignored a file")
+		t.Error("Ignore() ignored a regular file")
 	}
 
 	second := t.TempDir()
-	if _, err := workspace.open(second); err != nil {
+	folder, err = workspace.open(second)
+	if err != nil {
 		t.Fatal(err)
 	}
-	root, ok = workspace.watchRoot(ctx, workspaceWatchRoot)
+	if folder.Generation != 2 || folder.WatchRoot != "workspace-2" {
+		t.Fatalf("second folder = %+v, want generation 2 and workspace-2", folder)
+	}
+	if _, ok := workspace.watchRoot(ctx, "workspace-1"); ok {
+		t.Error("watchRoot() granted the previous generation")
+	}
+	root, ok = workspace.watchRoot(ctx, folder.WatchRoot)
 	if !ok {
 		t.Fatal("watchRoot() refused the new workspace")
 	}

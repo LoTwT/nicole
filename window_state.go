@@ -3,9 +3,11 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/egoist/mygo"
 )
@@ -68,13 +70,77 @@ func (s *windowStateStore) LoadWindowStates() (map[string]mygo.WindowState, erro
 	return states, nil
 }
 
-// SaveWindowStates writes the states in one rename, like the default store.
+// SaveWindowStates writes the states in one rename, like the default store,
+// retrying while Windows reports the file in use.
 func (s *windowStateStore) SaveWindowStates(states map[string]mygo.WindowState) error {
 	data, err := json.MarshalIndent(states, "", "  ")
 	if err != nil {
 		return err
 	}
-	return writeFileAtomic(s.filePath, data)
+	return writeFileAtomicAbs(s.filePath, data)
+}
+
+func writeFileAtomicAbs(target string, data []byte) (err error) {
+	mode := fs.FileMode(0o644)
+	preserveMode := false
+	if info, statErr := os.Stat(target); statErr == nil {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("window state: not a file: %q", target)
+		}
+		mode = info.Mode().Perm()
+		preserveMode = true
+	} else if !errors.Is(statErr, fs.ErrNotExist) {
+		return statErr
+	}
+
+	tempName, err := newTempFileName()
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(target)
+	tempPath := filepath.Join(dir, tempName)
+	tmp, err := os.OpenFile(tempPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o666)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = os.Remove(tempPath)
+		}
+	}()
+	if _, err = tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err = tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err = tmp.Close(); err != nil {
+		return err
+	}
+	if preserveMode {
+		if err = os.Chmod(tempPath, mode); err != nil {
+			return err
+		}
+	}
+	if err = retryRename(func() error { return os.Rename(tempPath, target) }); err != nil {
+		return err
+	}
+	return syncDirectoryPath(dir)
+}
+
+// syncDirectoryPath makes a rename durable. Windows has no directory fsync.
+func syncDirectoryPath(dir string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	f, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return f.Sync()
 }
 
 func readWindowStates(filePath string) (map[string]mygo.WindowState, error) {

@@ -88,7 +88,7 @@ func main() {
 	mygo.App.SetMenu(appMenu())
 
 	mygo.App.WhenReady(func() {
-		mygo.NewWindow(mygo.WindowOptions{
+		window := mygo.NewWindow(mygo.WindowOptions{
 			Title:           "Nicole",
 			Width:           defaultWindowSize.Width,
 			Height:          defaultWindowSize.Height,
@@ -97,6 +97,13 @@ func main() {
 			BackgroundColor: "light-dark(#faf8f4, #121019)", // the page's surface canvas
 			StateKey:        mainWindowStateKey,
 			URL:             "/",
+		})
+		// A close first asks the page to save its pending edits; the page
+		// calls Workspace.FinishClose when it is done.
+		window.OnClose(func(event *mygo.CloseEvent) {
+			if workspace.requestClose(window) {
+				event.PreventDefault()
+			}
 		})
 	})
 
