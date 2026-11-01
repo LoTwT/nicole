@@ -32,6 +32,7 @@
 - Slash 命令（见[Slash 命令](slash-commands.md)）
 - 快捷键
 - 粘贴图片（见[工作区与文件](workspace.md#图片)）
+- 拖入图片（见[工作区与文件](workspace.md#图片)）
 - 大纲
 - 自动保存（见[工作区与文件](workspace.md#保存)）
 - 选中文字后输入 `*`、`` ` ``、`~`、`[` 时包裹选区，条件见[界面与交互](ui.md#选中文字后的操作)
@@ -86,6 +87,8 @@
 - 任务框自绘：`appearance: none` 的 `<input type="checkbox">` 覆盖在容器上，负责点击和键盘操作；外框、背景和勾选标记都由容器上的 CSS 绘制，读取 `--nicole-checkbox-*` 变量，回退见 `src/editor/index.ts` 的 `editorTheme`，因此亮暗切换不需要重建编辑器。任务框 widget 的 `eq` 只比较勾选状态，`updateDOM` 原地更新勾选样式以保留焦点；点击时用 `view.posAtDOM` 和文档内容取当前位置与状态，避免在前面输入文字时重建任务框。
 - 沉浸模式额外注册 `EditorView.atomicRanges`，让光标跳过隐藏的符号。
 - 用 ⌘B（CodeMirror 的 `Mod-b`）切换加粗；光标折叠时插入一对空标记，选中文本时在两侧加 `**`。
+- 图片 widget 只在 `resolveImage` 返回地址时替换原文，否则保留 Markdown；应用层按当前文件和 generation 生成协议地址（见[工作区与文件](workspace.md#图片)）。
+- 编辑区拦截含图片的粘贴和含文件的拖放，只通过 `createEditor` 的 `onPasteImage` / `onDropFiles` 把位置交给应用层；`insertImages` 在一个事务里插入，因此是一个撤销步。组合输入期间排队，组合结束后再插入。
 - 三种模式的扩展通过同一个 Compartment 切换，`EditorView` 不重建。
 - 编辑器主题只读 CSS 变量，亮暗切换只改 class（见[主题与字体](theming.md#编辑器主题)）。
 

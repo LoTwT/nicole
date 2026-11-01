@@ -13,6 +13,16 @@ export interface AppInfo {
 }
 
 /**
+ * SavedImage is an image added to the workspace. Path is relative to the
+ * workspace root; Markdown is the image syntax relative to the document that
+ * asked for it.
+ */
+export interface SavedImage {
+  path: string;
+  markdown: string;
+}
+
+/**
  * WorkspaceFolder is the result of choosing a folder. Canceled is true when
  * the dialog was dismissed; the other fields are then empty.
  */
@@ -101,6 +111,32 @@ export const Workspace = {
    */
   writeFile(rel: string, content: string, generation: number): Promise<void> {
     return call("Workspace.WriteFile", rel, content, generation);
+  },
+} as const;
+
+/**
+ * Assets saves images next to the workspace root and reads the system
+ * clipboard and dropped files in Go, so image bytes never cross the IPC
+ * boundary. `mygo generate` turns its methods into typed functions in
+ * src/services/mygo.ts.
+ */
+export const Assets = {
+  /**
+   * ImportImages copies image files that were dropped on the editor into the
+   * workspace's assets folder and returns Markdown that refers to them from
+   * docPath. Files without an image extension are ignored.
+   */
+  importImages(docPath: string, generation: number, sources: string[]): Promise<SavedImage[]> {
+    return call("Assets.ImportImages", docPath, generation, sources);
+  },
+  /**
+   * PasteImage saves the image from the system clipboard as a new file in the
+   * workspace's assets folder and returns Markdown that refers to it from
+   * docPath. generation is the value ChooseFolder returned for that folder; an
+   * image prepared for an earlier folder is refused.
+   */
+  pasteImage(docPath: string, generation: number): Promise<SavedImage> {
+    return call("Assets.PasteImage", docPath, generation);
   },
 } as const;
 

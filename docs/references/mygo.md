@@ -55,6 +55,13 @@ const info = await Application.info();
 
 从自定义协议加载的页面被视为受信任的，可以直接调用 Go 方法。
 
+## 协议、剪贴板与文件拖放
+
+- `mygo.Protocol.Handle(scheme, handler)` 在创建窗口之前注册自定义协议。`<img>` 可以直接加载 `scheme://localhost/<path>`；处理器是在独立 goroutine 上运行的普通 `http.Handler`，支持流式响应。
+- 自定义协议与页面不同源。MyGo 给本应用自己的页面加 CORS 头；在 Windows 上，WebView2 用 `http://<scheme>.localhost/` 提供自定义协议，MyGo 再映射回 `scheme://localhost/`。
+- `mygo.Clipboard.ReadFormat(transfer.PNG)` 读取剪贴板里的图片。macOS 会把 TIFF、Windows 会把 DIB 等系统格式转换成 PNG；单个表示的上限是 64 MiB。
+- 页面里的 DOM 拖放事件拿不到本地路径。MyGo 在页面收到带文件的 `drop` 后把路径通过 `mygo:file-drop` 事件发给页面（`mygo-runtime` 的 `onFileDrop`），Go 的 `Window.OnFileDrop` 也能收到同一组路径。页面阻止默认拖放不会阻止该事件。
+
 ## Documents API
 
 Documents API 采用“一个文件一个窗口”的模式。

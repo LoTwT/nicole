@@ -1,4 +1,5 @@
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
+import { isolateHistory } from "@codemirror/commands";
 import {
   HighlightStyle,
   syntaxHighlighting,
@@ -25,18 +26,22 @@ import { basicSetup } from "codemirror";
 
 import type {
   CreateEditorOptions,
+  DropFilesHandler,
   EditorCommand,
   EditorHandle,
   EditorMode,
   ImageResolver,
+  PasteImageHandler,
 } from "./types";
 
 export type {
   CreateEditorOptions,
+  DropFilesHandler,
   EditorCommand,
   EditorHandle,
   EditorMode,
   ImageResolver,
+  PasteImageHandler,
 } from "./types";
 
 class BulletWidget extends WidgetType {
@@ -571,6 +576,49 @@ const editorTheme = EditorView.theme({
 
 const defaultResolveImage: ImageResolver = (src) => src;
 
+function clipboardHasImage(data: DataTransfer | null): boolean {
+  if (!data) return false;
+  for (let index = 0; index < data.items.length; index++) {
+    const item = data.items[index];
+    if (item?.kind === "file" && item.type.startsWith("image/")) return true;
+  }
+  return [...data.files].some((file) => file.type.startsWith("image/"));
+}
+
+function transferHasFiles(data: DataTransfer | null): boolean {
+  if (!data) return false;
+  return data.files.length > 0 || [...data.types].includes("Files");
+}
+
+function imageHandlers(
+  onPasteImage: PasteImageHandler | undefined,
+  onDropFiles: DropFilesHandler | undefined,
+): Extension {
+  return EditorView.domEventHandlers({
+    paste(event, view) {
+      if (!onPasteImage || !clipboardHasImage(event.clipboardData)) return false;
+      event.preventDefault();
+      onPasteImage(view.state.selection.main.head);
+      return true;
+    },
+    drop(event, view) {
+      if (!onDropFiles || !transferHasFiles(event.dataTransfer)) return false;
+      // The browser would otherwise navigate to the dropped file.
+      event.preventDefault();
+      const at =
+        view.posAtCoords({ x: event.clientX, y: event.clientY }) ??
+        view.state.selection.main.head;
+      onDropFiles(at);
+      return true;
+    },
+  });
+}
+
+interface PendingInsertion {
+  at: number;
+  text: string;
+}
+
 export function createEditor(options: CreateEditorOptions): EditorHandle {
   const {
     parent,
@@ -578,6 +626,8 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     mode: initialMode = "live",
     commands = [],
     resolveImage = defaultResolveImage,
+    onPasteImage,
+    onDropFiles,
     onChange,
   } = options;
 
@@ -589,7 +639,58 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     command.key ? [{ key: command.key, run: command.run }] : [],
   );
 
-  const view = new EditorView({
+  // An image insertion may arrive while an IME composition is still running.
+  // It waits, and its position follows edits until the composition ends, so
+  // the candidate window is never interrupted and the text lands where the
+  // user dropped or pasted it.
+  const pendingInsertions: PendingInsertion[] = [];
+  let insertionScheduled = false;
+  let view: EditorView;
+
+  const insertTextAt = (at: number, text: string) => {
+    const position = Math.max(0, Math.min(at, view.state.doc.length));
+    const line = view.state.doc.lineAt(position);
+    // Starting at the beginning of a non-empty line would glue the image to
+    // the existing text (and break a heading); give it its own line instead.
+    const insert = position === line.from && line.length > 0 ? `${text}\n` : text;
+    view.dispatch({
+      changes: { from: position, insert },
+      selection: { anchor: position + insert.length },
+      // Keep every image insertion its own undo step, even when it follows
+      // typing closely.
+      annotations: isolateHistory.of("full"),
+    });
+  };
+
+  const flushPendingInsertions = () => {
+    insertionScheduled = false;
+    if (pendingInsertions.length === 0) return;
+    if (view.compositionStarted || view.composing) return;
+    const pending = pendingInsertions.splice(0);
+    for (const insertion of pending) insertTextAt(insertion.at, insertion.text);
+  };
+
+  const scheduleInsertion = () => {
+    if (insertionScheduled) return;
+    insertionScheduled = true;
+    queueMicrotask(flushPendingInsertions);
+  };
+
+  const insertImages = (at: number, markdown: readonly string[]) => {
+    const text = markdown.filter((item) => item !== "").join("\n");
+    if (text === "") return;
+    if (view.compositionStarted || view.composing) {
+      pendingInsertions.push({ at, text });
+      return;
+    }
+    insertTextAt(at, text);
+  };
+
+  const onCompositionEnd = () => {
+    if (pendingInsertions.length > 0) scheduleInsertion();
+  };
+
+  view = new EditorView({
     parent,
     state: EditorState.create({
       doc,
@@ -601,13 +702,27 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
         editorTheme,
         // App commands must win over basicSetup's default keymap.
         Prec.high(keymap.of(bindings)),
+        imageHandlers(onPasteImage, onDropFiles),
         EditorView.updateListener.of((update) => {
-          if (update.docChanged) onChange?.(update.state.doc.toString());
+          if (update.docChanged) {
+            for (const insertion of pendingInsertions) {
+              insertion.at = update.changes.mapPos(insertion.at);
+            }
+            onChange?.(update.state.doc.toString());
+          }
+          if (
+            pendingInsertions.length > 0 &&
+            !update.view.compositionStarted &&
+            !update.view.composing
+          ) {
+            scheduleInsertion();
+          }
         }),
         modeCompartment.of(modeExtension(mode, resolveImage)),
       ],
     }),
   });
+  view.contentDOM.addEventListener("compositionend", onCompositionEnd);
 
   return {
     get view() {
@@ -625,10 +740,13 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
         ),
       });
     },
+    insertImages,
     focus() {
       view.focus();
     },
     destroy() {
+      pendingInsertions.length = 0;
+      view.contentDOM.removeEventListener("compositionend", onCompositionEnd);
       view.destroy();
     },
   };

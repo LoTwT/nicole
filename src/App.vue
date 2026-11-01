@@ -6,9 +6,15 @@ import {
   type EditorHandle,
   type EditorMode,
 } from "./editor";
+import { resolveImageUrl } from "./image-url";
 import { latestOperation } from "./latest-operation";
 import { SAMPLE_DOCUMENT } from "./sample";
 import { getAppInfo, type AppInfo } from "./services/app";
+import {
+  importImages,
+  onWindowFileDrop,
+  pasteImage,
+} from "./services/assets";
 import {
   chooseFolder,
   confirmDiscard,
@@ -81,6 +87,13 @@ let offSaveBeforeClose: (() => void) | null = null;
 // selection may apply its result; opening a folder invalidates all reads.
 const fileSelection = latestOperation();
 
+// A drop reports its position through the editor and its paths through the
+// MyGo window event. Keep the position briefly so a drop outside the editor
+// cannot pair with an older editor drop.
+const IMAGE_DROP_WINDOW_MS = 1500;
+let pendingDrop: { at: number; time: number } | null = null;
+let offFileDrop: (() => void) | null = null;
+
 function detectLineEndings(text: string): {
   ending: LineEnding;
   mixed: boolean;
@@ -113,12 +126,67 @@ function createEditorFor(parent: HTMLElement, doc: string): EditorHandle {
     parent,
     doc,
     mode: mode.value,
-    resolveImage: (src) => src,
+    resolveImage: (src) =>
+      resolveImageUrl(src, currentFile.value, workspaceGeneration),
+    onPasteImage: (at) => {
+      insertPastedImage(at);
+    },
+    onDropFiles: (at) => {
+      pendingDrop = { at, time: Date.now() };
+    },
     onChange: (next) => {
       documentText.value = next;
       scheduleSave(next);
     },
   });
+}
+
+// Image data stays in Go; the page receives only the saved file's Markdown.
+// An image that arrives after the file or folder changed is dropped instead
+// of being inserted into the new document.
+function insertPastedImage(at: number) {
+  const path = currentFile.value;
+  if (path === null) {
+    return;
+  }
+  const generation = workspaceGeneration;
+  const target = editor;
+  void pasteImage(path, generation).then(
+    (image) => {
+      if (target !== editor || target === null) return;
+      if (currentFile.value !== path || workspaceGeneration !== generation) return;
+      target.insertImages(at, [image.markdown]);
+    },
+    () => {
+      if (target === editor && currentFile.value === path) {
+        saveStatus.value = "图片插入失败";
+      }
+    },
+  );
+}
+
+function insertDroppedImages(at: number, paths: string[]) {
+  const path = currentFile.value;
+  if (path === null || paths.length === 0) {
+    return;
+  }
+  const generation = workspaceGeneration;
+  const target = editor;
+  void importImages(path, generation, paths).then(
+    (images) => {
+      if (target !== editor || target === null) return;
+      if (currentFile.value !== path || workspaceGeneration !== generation) return;
+      target.insertImages(
+        at,
+        images.map((image) => image.markdown),
+      );
+    },
+    () => {
+      if (target === editor && currentFile.value === path) {
+        saveStatus.value = "图片插入失败";
+      }
+    },
+  );
 }
 
 // A new editor gives every file its own undo history and decorations. It
@@ -414,6 +482,14 @@ onMounted(async () => {
   window.addEventListener("beforeunload", saveBeforeExit);
   window.addEventListener("pagehide", saveBeforeExit);
   document.addEventListener("visibilitychange", saveWhenHidden);
+  offFileDrop = onWindowFileDrop((paths) => {
+    const drop = pendingDrop;
+    pendingDrop = null;
+    if (drop === null || Date.now() - drop.time > IMAGE_DROP_WINDOW_MS) {
+      return;
+    }
+    insertDroppedImages(drop.at, paths);
+  });
   offSaveBeforeClose = onSaveBeforeClose(async (token) => {
     const saved = await savePending();
     try {
@@ -435,6 +511,8 @@ onBeforeUnmount(() => {
   window.removeEventListener("beforeunload", saveBeforeExit);
   window.removeEventListener("pagehide", saveBeforeExit);
   document.removeEventListener("visibilitychange", saveWhenHidden);
+  offFileDrop?.();
+  offFileDrop = null;
   offSaveBeforeClose?.();
   offSaveBeforeClose = null;
   if (saveTimer !== null) {
