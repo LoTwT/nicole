@@ -53,29 +53,60 @@ class BulletWidget extends WidgetType {
 }
 
 class CheckboxWidget extends WidgetType {
-  constructor(
-    readonly checked: boolean,
-    readonly pos: number,
-  ) {
+  constructor(readonly checked: boolean) {
     super();
   }
 
   override eq(other: CheckboxWidget) {
-    return other.checked === this.checked && other.pos === this.pos;
+    // Position is intentionally not part of the comparison: typing earlier in
+    // the document would otherwise recreate every task box after the edit.
+    return other.checked === this.checked;
+  }
+
+  // Updating the existing DOM instead of letting CodeMirror recreate it keeps
+  // focus on the checkbox when it is toggled from the keyboard.
+  override updateDOM(dom: HTMLElement) {
+    const input = dom.querySelector<HTMLInputElement>(
+      ".cm-nicole-checkbox-input",
+    );
+    if (!input) return false;
+    dom.classList.toggle("cm-nicole-checkbox-checked", this.checked);
+    input.checked = this.checked;
+    return true;
   }
 
   toDOM(view: EditorView) {
-    const box = document.createElement("input");
-    box.type = "checkbox";
-    box.checked = this.checked;
-    box.className = "cm-nicole-checkbox";
-    box.addEventListener("mousedown", (event) => {
-      event.preventDefault();
+    const box = document.createElement("span");
+    box.className = this.checked
+      ? "cm-nicole-checkbox cm-nicole-checkbox-checked"
+      : "cm-nicole-checkbox";
+
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = this.checked;
+    input.className = "cm-nicole-checkbox-input";
+    input.setAttribute("aria-label", "切换任务完成状态");
+
+    const mark = document.createElement("span");
+    mark.className = "cm-nicole-checkbox-mark";
+    mark.setAttribute("aria-hidden", "true");
+    box.append(input, mark);
+
+    // The box is drawn with CSS, so the native control only handles the click
+    // and keyboard activation. Preventing mousedown keeps the caret and the
+    // current selection in place while the task is toggled.
+    box.addEventListener("mousedown", (event) => event.preventDefault());
+    box.addEventListener("click", () => {
+      // Don't cancel the click: the browser then toggles `checked` itself and
+      // `updateDOM` keeps it in sync. Read the state from the document below,
+      // because a reused DOM still closes over the old widget instance.
+      const pos = view.posAtDOM(box);
+      const checked = /x/i.test(view.state.sliceDoc(pos + 1, pos + 2));
       view.dispatch({
         changes: {
-          from: this.pos + 1,
-          to: this.pos + 2,
-          insert: this.checked ? " " : "x",
+          from: pos + 1,
+          to: pos + 2,
+          insert: checked ? " " : "x",
         },
       });
     });
@@ -247,9 +278,7 @@ function buildDecorations(
             add(
               node.from,
               node.to,
-              Decoration.replace({
-                widget: new CheckboxWidget(checked, node.from),
-              }),
+              Decoration.replace({ widget: new CheckboxWidget(checked) }),
             );
             break;
           }
@@ -279,13 +308,35 @@ function preview(reveal: boolean, resolveImage: ImageResolver): Extension {
   const plugin = ViewPlugin.fromClass(
     class {
       decorations: DecorationSet;
+      // Set when an update during a composition skipped the rebuild, so the
+      // first later update refreshes the decorations even when it carries no
+      // document, viewport or selection change of its own.
+      private stale = false;
 
       constructor(view: EditorView) {
         this.decorations = buildDecorations(view, reveal, resolveImage);
       }
 
       update(update: ViewUpdate) {
-        if (update.docChanged || update.viewportChanged || update.selectionSet) {
+        const rebuild =
+          update.docChanged || update.viewportChanged || update.selectionSet;
+
+        if (update.view.compositionStarted) {
+          // Replacing the DOM under an active IME composition makes WKWebView
+          // drop the candidate window, so live preview and immersive mode keep
+          // the current decorations until the composition ends. The mapped set
+          // follows the edits without re-evaluating the syntax tree.
+          // `compositionStarted` also covers the interval before the first
+          // composition change, where `composing` is still false.
+          if (update.docChanged) {
+            this.decorations = this.decorations.map(update.changes);
+          }
+          this.stale ||= rebuild;
+          return;
+        }
+
+        if (this.stale || rebuild) {
+          this.stale = false;
           this.decorations = buildDecorations(
             update.view,
             reveal,
@@ -454,10 +505,56 @@ const editorTheme = EditorView.theme({
     color: "var(--nicole-syntax-mark)",
   },
   ".cm-nicole-checkbox": {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    boxSizing: "border-box",
+    position: "relative",
+    width: "1em",
+    height: "1em",
     margin: "0 0.4em 0 0",
-    verticalAlign: "-2px",
+    verticalAlign: "-0.15em",
+    border:
+      "1.5px solid var(--nicole-checkbox-border, var(--border-strong))",
+    borderRadius: "3px",
+    backgroundColor: "var(--nicole-checkbox-bg, var(--surface-panel))",
     cursor: "pointer",
-    accentColor: "var(--accent-primary)",
+  },
+  ".cm-nicole-checkbox-checked": {
+    borderColor: "var(--nicole-checkbox-checked-border, var(--accent-primary))",
+    backgroundColor: "var(--nicole-checkbox-checked-bg, var(--accent-primary))",
+  },
+  ".cm-nicole-checkbox-input": {
+    appearance: "none",
+    WebkitAppearance: "none",
+    position: "absolute",
+    inset: "0",
+    width: "100%",
+    height: "100%",
+    margin: "0",
+    padding: "0",
+    border: "0",
+    backgroundColor: "transparent",
+    cursor: "pointer",
+  },
+  ".cm-nicole-checkbox-input:focus-visible": {
+    outline: "2px solid var(--nicole-checkbox-focus, var(--reading-focus))",
+    outlineOffset: "2px",
+    borderRadius: "4px",
+  },
+  ".cm-nicole-checkbox-mark": {
+    display: "none",
+    boxSizing: "border-box",
+    width: "0.3em",
+    height: "0.55em",
+    borderRight:
+      "1.5px solid var(--nicole-checkbox-mark, var(--accent-contrast))",
+    borderBottom:
+      "1.5px solid var(--nicole-checkbox-mark, var(--accent-contrast))",
+    transform: "translateY(-0.08em) rotate(45deg)",
+  },
+  ".cm-nicole-checkbox-checked .cm-nicole-checkbox-mark": {
+    display: "block",
   },
   ".cm-nicole-image": {
     display: "inline-block",
