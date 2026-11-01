@@ -12,6 +12,17 @@ export interface AppInfo {
   goVersion: string;
 }
 
+/**
+ * WorkspaceFolder is the result of choosing a folder. Canceled is true when
+ * the dialog was dismissed; the other fields are then empty.
+ */
+export interface WorkspaceFolder {
+  /** Root is the absolute path of the folder, with symlinks resolved. */
+  root: string;
+  files: string[];
+  canceled: boolean;
+}
+
 // ---- Services ----
 
 /**
@@ -22,5 +33,44 @@ export const Application = {
   /** Info returns the app version and the runtime that serves the page. */
   info(): Promise<AppInfo> {
     return call("Application.Info");
+  },
+} as const;
+
+/**
+ * Workspace serves the folder the user opened: its Markdown files, and
+ * reading and replacing them. `mygo generate` turns the methods into typed
+ * functions in src/services/mygo.ts.
+ */
+export const Workspace = {
+  /**
+   * ChooseFolder shows the native folder picker and makes the chosen folder
+   * the workspace. A canceled dialog returns Canceled without changing the
+   * current folder.
+   */
+  chooseFolder(): Promise<WorkspaceFolder> {
+    return call("Workspace.ChooseFolder");
+  },
+  /**
+   * ListFiles lists the Markdown files of the open folder as paths relative to
+   * it, separated by slashes. Hidden folders and node_modules are not entered,
+   * and symlinks are neither followed nor listed.
+   */
+  listFiles(): Promise<string[]> {
+    return call("Workspace.ListFiles");
+  },
+  /**
+   * ReadFile returns the exact bytes of a file in the open folder as a string,
+   * without changing its line endings or adding a final newline.
+   */
+  readFile(rel: string): Promise<string> {
+    return call("Workspace.ReadFile", rel);
+  },
+  /**
+   * WriteFile replaces a file in the open folder with content. It writes a
+   * temporary file next to the target and renames it into place, so a failure
+   * leaves the original file as it was, and the bytes are written unchanged.
+   */
+  writeFile(rel: string, content: string): Promise<void> {
+    return call("Workspace.WriteFile", rel, content);
   },
 } as const;

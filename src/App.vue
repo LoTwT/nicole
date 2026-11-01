@@ -8,12 +8,16 @@ import {
 } from "./editor";
 import { SAMPLE_DOCUMENT } from "./sample";
 import { getAppInfo, type AppInfo } from "./services/app";
+import { chooseFolder, readFile, writeFile } from "./services/workspace";
 
 const editorHost = ref<HTMLElement | null>(null);
 const mode = ref<EditorMode>("live");
 const documentText = ref(SAMPLE_DOCUMENT);
 const appInfo = ref<AppInfo | null>(null);
 const appInfoError = ref(false);
+const files = ref<string[]>([]);
+const currentFile = ref<string | null>(null);
+const saveStatus = ref("");
 
 const modes: readonly { id: EditorMode; label: string; hint: string }[] = [
   { id: "live", label: "实时预览", hint: "光标所在行显示原文" },
@@ -41,6 +45,111 @@ const themeAction = computed(() =>
 
 let editor: EditorHandle | null = null;
 
+const AUTOSAVE_DELAY_MS = 1000;
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+let pendingText: string | null = null;
+let loadingFile = false;
+// CodeMirror normalizes line breaks to "\n". Remember the file's style so a
+// save does not rewrite every CRLF file as LF.
+let lineEnding = "\n";
+
+function replaceDocument(text: string) {
+  loadingFile = true;
+  if (editor) {
+    editor.view.dispatch({
+      changes: { from: 0, to: editor.view.state.doc.length, insert: text },
+    });
+  }
+  documentText.value = text;
+  loadingFile = false;
+}
+
+function scheduleSave(text: string) {
+  if (loadingFile || currentFile.value === null) {
+    return;
+  }
+  pendingText = text;
+  saveStatus.value = "未保存";
+  if (saveTimer !== null) {
+    clearTimeout(saveTimer);
+  }
+  saveTimer = setTimeout(() => {
+    void savePending();
+  }, AUTOSAVE_DELAY_MS);
+}
+
+async function savePending() {
+  if (saveTimer !== null) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  const path = currentFile.value;
+  const text = pendingText;
+  pendingText = null;
+  if (path === null || text === null) {
+    return;
+  }
+  saveStatus.value = "保存中…";
+  try {
+    await writeFile(path, withOriginalLineEnding(text));
+    if (pendingText === null) {
+      saveStatus.value = "已保存";
+    }
+  } catch {
+    if (pendingText === null) {
+      saveStatus.value = "保存失败";
+    }
+  }
+}
+
+function withOriginalLineEnding(text: string): string {
+  if (lineEnding === "\n") {
+    return text;
+  }
+  return text.replace(/\r\n?/g, "\n").replace(/\n/g, lineEnding);
+}
+
+async function openFolder() {
+  let folder;
+  try {
+    folder = await chooseFolder();
+  } catch {
+    saveStatus.value = "打开失败";
+    return;
+  }
+  if (folder.canceled) {
+    return;
+  }
+  await savePending();
+  files.value = folder.files;
+  currentFile.value = null;
+  saveStatus.value = "";
+}
+
+async function selectFile(event: Event) {
+  const select = event.target as HTMLSelectElement;
+  const path = select.value;
+  if (path === "") {
+    return;
+  }
+  await savePending();
+  try {
+    const text = await readFile(path);
+    lineEnding = text.includes("\r\n")
+      ? "\r\n"
+      : text.includes("\r")
+        ? "\r"
+        : "\n";
+    currentFile.value = path;
+    pendingText = null;
+    replaceDocument(text);
+    saveStatus.value = "";
+  } catch {
+    select.value = currentFile.value ?? "";
+    saveStatus.value = "读取失败";
+  }
+}
+
 function setMode(next: EditorMode) {
   mode.value = next;
   editor?.setMode(next);
@@ -62,6 +171,7 @@ onMounted(async () => {
       resolveImage: (src) => src,
       onChange: (next) => {
         documentText.value = next;
+        scheduleSave(next);
       },
     });
     editor.focus();
@@ -75,6 +185,11 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  if (saveTimer !== null) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  void savePending();
   editor?.destroy();
   editor = null;
 });
@@ -95,6 +210,27 @@ onBeforeUnmount(() => {
           {{ appInfo ? `v${appInfo.version}` : "" }}
         </span>
       </div>
+
+      <button
+        type="button"
+        class="rounded-full border border-[var(--border-subtle)] px-3 py-1.5 text-sm text-[var(--text-secondary)] transition-colors hover:border-[var(--border-default)] hover:text-[var(--text-primary)]"
+        @click="openFolder"
+      >
+        打开文件夹
+      </button>
+
+      <select
+        class="max-w-48 rounded-full border border-[var(--border-subtle)] bg-[var(--surface-panel)] px-3 py-1.5 text-sm text-[var(--text-secondary)] disabled:opacity-50"
+        :value="currentFile ?? ''"
+        :disabled="files.length === 0"
+        aria-label="Markdown 文件"
+        @change="selectFile"
+      >
+        <option value="" disabled>选择文件</option>
+        <option v-for="file in files" :key="file" :value="file">
+          {{ file }}
+        </option>
+      </select>
 
       <div
         class="mx-auto flex rounded-full border border-[var(--border-subtle)] bg-[var(--surface-panel)] p-1"
@@ -139,6 +275,7 @@ onBeforeUnmount(() => {
     >
       <span>{{ activeMode.label }} · {{ activeMode.hint }}</span>
       <span class="flex items-center gap-3">
+        <span v-if="saveStatus">{{ saveStatus }}</span>
         <span>{{ documentText.length }} 字符</span>
         <span v-if="appInfo">
           {{ appInfo.os }}/{{ appInfo.arch }} · {{ appInfo.goVersion }}

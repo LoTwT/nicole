@@ -31,7 +31,7 @@ MyGo 的接口与版本情况见 [MyGo 参考](references/mygo.md)。
 
 ```text
 src/
-  App.vue                 单窗口外壳：编辑区、模式切换、亮暗切换
+  App.vue                 单窗口外壳：打开文件夹、文件选择、自动保存、模式与主题切换
   main.ts                 挂载 Vue
   sample.ts               示例文本
   style.css               Tailwind、主题和字体变量
@@ -41,28 +41,31 @@ src/
   services/               MyGo 边界
     mygo.ts               生成的类型化客户端
     app.ts                薄封装（getAppInfo）
+    workspace.ts          薄封装（选择文件夹、列文件、读写）
         │
         │ MyGo 类型化 IPC（绑定方法 / Channel / Event）
         ▼
 Go（main.go）
   Application             版本、平台和 Go 版本（当前）
   updater.Plugin          Sparkle 风格更新窗口与“检查更新…”菜单（当前）
-  Workspace               文件树、原子写入、重命名并更新引用（后续）
+  watch 插件（watch.New） 按当前工作区动态授权监听根目录（当前）
+  Workspace               选择文件夹、列 Markdown、原子读写（当前）
+  Window state            启动时在光标屏幕居中，沿用上次尺寸（当前）
   Assets                  图片存到 assets/（后续）
   Search                  通过 Channel 流式返回结果（后续）
   Settings                全局配置 + 工作区配置（后续）
   Export / Recovery       导出与崩溃恢复（后续）
-  Protocol                只映射当前工作区（后续）
+  Protocol                只映射当前工作区（后续；启动时注册，运行时读工作区根）
 ```
 
-`index.html` 是 Vite 入口，`mygo.config.ts` 描述应用并指定前端构建、生成客户端的位置和输出目录。
+`main.go` 负责注册插件、绑定服务、设置菜单和创建窗口；`workspace.go` 实现工作区与路径守卫，`window_state.go` 实现窗口状态的居中策略。`index.html` 是 Vite 入口，`mygo.config.ts` 描述应用并指定前端构建、生成客户端的位置和输出目录。
 
 ## 依赖边界
 
 - `src/editor/` 是纯 TypeScript，不依赖 Vue，也不依赖 MyGo。运行时只导出 `createEditor`；其余导出是调用方需要的类型。
 - MyGo 调用只放在 `src/services/` 和 `main.go`，其他模块通过这两处间接使用后端能力。生成的客户端直接输出到 `src/services/mygo.ts`。
-- `main.go` 还注册 MyGo 的 `updater.Plugin` 并设置应用菜单；更新源、版本注入和发布流程见[发布与自动更新](release.md)。
-- `src/services/` 是生成的 `mygo.ts` 客户端上的薄封装，不承载业务逻辑。当前 `app.ts` 只把 `Application.Info` 包装成 `getAppInfo`。
+- `main.go` 还注册 MyGo 的 `updater.Plugin` 和 `watch` 插件并设置应用菜单；更新源、版本注入和发布流程见[发布与自动更新](release.md)。
+- `src/services/` 是生成的 `mygo.ts` 客户端上的薄封装，不承载业务逻辑。`app.ts` 只把 `Application.Info` 包装成 `getAppInfo`；`workspace.ts` 包装 `Workspace` 的四个方法，不拼接路径，也不缓存内容。
 - `createEditor` 的接口为：
 
   ```ts
@@ -97,6 +100,8 @@ Go（main.go）
 - 用 `mygo generate` 生成 TypeScript 客户端，输出路径由 `mygo.config.ts` 的 `bindings` 指定；本项目是 `src/services/mygo.ts`。
 - 前端只通过生成的客户端和 `services/` 调用 Go；Go 用 `mygo.Bind` 暴露服务，用 `*mygo.Channel[T]` 推送流，用 `mygo.NewEvent[T]` 发送事件。
 - 当前的最小服务是 `Application.Info()`，返回应用版本、操作系统、架构和 Go 版本，用来验证前端与 Go 的调用链。
+- `Workspace` 提供 `ChooseFolder`、`ListFiles`、`ReadFile` 和 `WriteFile`；文件操作只接受相对路径，具体规则见[工作区与文件](specs/workspace.md#路径守卫)和[写入保证](specs/workspace.md#写入保证)。
+- `watch` 插件在启动时注册，`Options.Resolve` 在每次 watch 时读取当前工作区根；变更通过插件的 Channel 交给页面。工作区状态本身是可替换的单例，后续协议 handler 在启动时注册、运行时读取同一个状态（见[工作区与文件](specs/workspace.md#工作区接口)）。
 - 搜索通过 Channel 流式返回结果（见[工作区与文件](specs/workspace.md#搜索)）。
 - 图片数据不经过 IPC，避免 base64 转换和额外拷贝（见[工作区与文件](specs/workspace.md#图片)）。
 
@@ -110,8 +115,8 @@ Go（main.go）
 
 - 渲染出来的 HTML 一律先经过 DOMPurify 清洗。
 - 沙箱 iframe 可能会额外起进程，尽量不用。
-- Go 的文件服务只允许访问工作区目录，拒绝 `../` 这种跳出目录的路径。
-- 自定义协议只映射当前工作区。
+- Go 的文件服务只允许访问工作区目录：拒绝绝对路径、`..`、`..\`，解析符号链接后再次检查，并避免用字符串前缀判断目录包含关系。规则见[工作区与文件](specs/workspace.md#路径守卫)。
+- 自定义协议只映射当前工作区；协议 handler 在启动时注册，运行时读取可替换的工作区状态。
 
 ## 主要风险
 
