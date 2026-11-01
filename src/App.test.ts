@@ -465,6 +465,115 @@ describe("App", () => {
     expect(writeFile).not.toHaveBeenCalled();
   });
 
+  it("invalidates a selection made while a folder is being opened", async () => {
+    vi.useFakeTimers();
+    vi.mocked(readFile).mockResolvedValueOnce("A\n");
+    const select = await openFolder(["a.md", "b.md"]);
+    await chooseFile(select, "a.md");
+
+    let finishWrite!: () => void;
+    vi.mocked(writeFile).mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finishWrite = resolve;
+        }),
+    );
+    const view = editorView();
+    view.dispatch({ changes: { from: view.state.doc.length, insert: "!" } });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(writeFile).toHaveBeenCalledOnce();
+
+    let finishChoose!: (value: WorkspaceFolder) => void;
+    vi.mocked(chooseFolder).mockImplementationOnce(
+      () =>
+        new Promise<WorkspaceFolder>((resolve) => {
+          finishChoose = resolve;
+        }),
+    );
+    button("打开文件夹").click();
+    await settle();
+    // openFolder is still waiting for the save, so chooseFolder has not run.
+    expect(chooseFolder).toHaveBeenCalledTimes(1);
+
+    let finishRead!: (value: string) => void;
+    vi.mocked(readFile).mockImplementationOnce(
+      () =>
+        new Promise<string>((resolve) => {
+          finishRead = resolve;
+        }),
+    );
+    select.value = "b.md";
+    select.dispatchEvent(new Event("change"));
+    await settle();
+
+    finishWrite();
+    await settle();
+    expect(chooseFolder).toHaveBeenCalledTimes(2);
+    expect(readFile).toHaveBeenLastCalledWith("b.md");
+    expect(finishRead).toBeTypeOf("function");
+
+    finishChoose(folder(["b.md"], 2));
+    await settle();
+    finishRead("OLD FOLDER b.md\n");
+    await settle();
+
+    // A regression would leave the old content in an editor bound to the new
+    // generation; edit it so the wrong write would also be observable.
+    const staleEditor = host.querySelector<HTMLElement>(".cm-editor");
+    if (staleEditor) {
+      const staleView = EditorView.findFromDOM(staleEditor);
+      staleView?.dispatch({
+        changes: { from: staleView.state.doc.length, insert: "X" },
+      });
+      await vi.advanceTimersByTimeAsync(1000);
+    }
+
+    const writes = vi.mocked(writeFile).mock.calls;
+    expect(writes.every((call) => call[0] === "a.md" && call[2] === 1)).toBe(
+      true,
+    );
+    expect(host.querySelector(".cm-editor")).toBeNull();
+    expect(select.value).toBe("");
+    expect([...select.options].map((option) => option.value)).toEqual([
+      "",
+      "b.md",
+    ]);
+  });
+
+  it("keeps an in-flight selection when opening a folder is cancelled", async () => {
+    vi.mocked(readFile).mockResolvedValueOnce("A\n");
+    const select = await openFolder(["a.md", "b.md"]);
+    await chooseFile(select, "a.md");
+
+    let finishRead!: (value: string) => void;
+    vi.mocked(readFile).mockImplementationOnce(
+      () =>
+        new Promise<string>((resolve) => {
+          finishRead = resolve;
+        }),
+    );
+    select.value = "b.md";
+    select.dispatchEvent(new Event("change"));
+    await settle();
+
+    vi.mocked(chooseFolder).mockResolvedValueOnce({
+      root: "",
+      files: [],
+      canceled: true,
+      generation: 0,
+      watchRoot: "",
+    });
+    button("打开文件夹").click();
+    await settle();
+    expect(chooseFolder).toHaveBeenCalledTimes(2);
+
+    finishRead("B\n");
+    await settle();
+
+    expect(select.value).toBe("b.md");
+    expect(editorView().state.doc.toString()).toBe("B\n");
+  });
+
   it("keeps the newest file when an earlier read finishes last", async () => {
     const select = await openFolder(["a.md", "b.md"]);
 

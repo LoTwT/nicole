@@ -306,7 +306,6 @@ async function prepareToLeave(): Promise<boolean> {
 }
 
 async function openFolder() {
-  fileSelection.stop();
   if (!(await prepareToLeave())) {
     return;
   }
@@ -320,6 +319,9 @@ async function openFolder() {
   if (folder.canceled) {
     return;
   }
+  // Only a folder that will actually replace the workspace invalidates a
+  // selection started while this dialog was open.
+  fileSelection.stop();
   workspaceGeneration = folder.generation;
   files.value = folder.files;
   currentFile.value = null;
