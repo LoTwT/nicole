@@ -23,6 +23,7 @@
 | 文件监听 | MyGo `watch` 插件，见[工作区与文件](specs/workspace.md#文件监听)。 |
 | 搜索 | MVP 阶段 Go 直接扫描文件；以后用 SQLite FTS5 trigram，见[工作区与文件](specs/workspace.md#搜索)。 |
 | 测试 | Vitest 测编辑器，`go test` 测后端，MyGo `automation` 插件做端到端测试。 |
+| 分发与更新 | GitHub Releases（`LoTwT/nicole`）+ MyGo 签名更新；应用侧用 `updater.Plugin`，见[发布与自动更新](release.md)。 |
 
 MyGo 的接口与版本情况见 [MyGo 参考](references/mygo.md)。
 
@@ -45,6 +46,7 @@ src/
         ▼
 Go（main.go）
   Application             版本、平台和 Go 版本（当前）
+  updater.Plugin          Sparkle 风格更新窗口与“检查更新…”菜单（当前）
   Workspace               文件树、原子写入、重命名并更新引用（后续）
   Assets                  图片存到 assets/（后续）
   Search                  通过 Channel 流式返回结果（后续）
@@ -59,6 +61,7 @@ Go（main.go）
 
 - `src/editor/` 是纯 TypeScript，不依赖 Vue，也不依赖 MyGo。运行时只导出 `createEditor`；其余导出是调用方需要的类型。
 - MyGo 调用只放在 `src/services/` 和 `main.go`，其他模块通过这两处间接使用后端能力。生成的客户端直接输出到 `src/services/mygo.ts`。
+- `main.go` 还注册 MyGo 的 `updater.Plugin` 并设置应用菜单；更新源、版本注入和发布流程见[发布与自动更新](release.md)。
 - `src/services/` 是生成的 `mygo.ts` 客户端上的薄封装，不承载业务逻辑。当前 `app.ts` 只把 `Application.Info` 包装成 `getAppInfo`。
 - `createEditor` 的接口为：
 

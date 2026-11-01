@@ -1,0 +1,230 @@
+# On-demand packaging of installable test builds for all three targets.
+# Manually dispatched only (Actions tab → Package → Run workflow): pull
+# requests never build installers — the lightweight CI (ci.yml) covers them,
+# and releases are built by release.yml from tags.
+#
+# These are test builds, so updates are off: NICOLE_DISABLE_UPDATES makes
+# mygo.config.ts leave the updates section out, so nothing of the update
+# source is embedded, no update files are produced and the app never checks
+# for updates. The verification steps also assert that the built executable
+# does not contain the update feed URL (the module path alone mentions the
+# repository, so the check looks for "<repo>/releases"). Versions stay at the
+# repository's development version; the workflow artifact name carries the
+# commit SHA instead of a release tag.
+#
+# Runners: darwin/universal needs macOS for ad-hoc signing, lipo and the disk
+# image. Nicole needs no cgo, so Ubuntu runners build the Windows app (NSIS
+# from apt makes the installer) and the Linux app.
+name: Package
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    name: Package (darwin/universal)
+    runs-on: macos-latest # Apple Silicon: signing, lipo and the disk image need macOS
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+      - name: Read the app version
+        run: |
+          version=$(bun -e 'console.log((await import("./mygo.config.ts")).default.version)')
+          echo "APP_VERSION=$version" >> "$GITHUB_ENV"
+      - name: Confirm updates are off in these test builds
+        # The build embeds the update feed and public key whenever the
+        # configuration carries updates; NICOLE_DISABLE_UPDATES removes the
+        # section before anything is embedded.
+        env:
+          NICOLE_DISABLE_UPDATES: "1"
+        run: |
+          bun -e 'const config = (await import("./mygo.config.ts")).default; if (config.updates) { console.error("ERROR: updates are on in a test build"); process.exit(1); }'
+      - name: Build the app bundle and DMG
+        env:
+          NICOLE_DISABLE_UPDATES: "1"
+        run: bun run build -- -platform darwin/universal
+      - name: Verify the bundle, the DMG and the update state
+        shell: bash
+        run: |
+          set -u
+          app="build/darwin-universal/Nicole.app"
+          dmg="build/darwin-universal/nicole-${APP_VERSION}.dmg"
+          fail=0
+          if [ ! -d "$app" ]; then
+            echo "ERROR: missing app bundle: $app"
+            fail=1
+          fi
+          if [ ! -f "$dmg" ]; then
+            echo "ERROR: missing DMG: $dmg (MyGo skips the disk image with a warning when hdiutil fails; a packaged build must have one)"
+            fail=1
+          fi
+          if [ "$fail" -ne 0 ]; then
+            exit 1
+          fi
+          got=$(plutil -extract CFBundleShortVersionString raw "$app/Contents/Info.plist")
+          if [ "$got" != "$APP_VERSION" ]; then
+            echo "ERROR: ${app} has version $got, want $APP_VERSION"
+            exit 1
+          fi
+          codesign --verify --deep --strict --verbose=2 "$app"
+          if grep -aqF 'LoTwT/nicole/releases' "$app/Contents/MacOS/Nicole"; then
+            echo "ERROR: the test build embeds the update source; updates must be off"
+            exit 1
+          fi
+      - name: Upload the DMG
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nicole-darwin-universal-${{ github.sha }}
+          if-no-files-found: error
+          path: build/darwin-universal/*.dmg
+
+  windows:
+    name: Package (windows/amd64)
+    runs-on: ubuntu-latest # no cgo needed; NSIS from apt makes the installer
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+      - name: Install NSIS and 7-Zip
+        # NSIS makes the installer; 7-Zip lists its contents in the
+        # verification step.
+        run: sudo apt-get update && sudo apt-get install -y nsis p7zip-full
+      - name: Read the app version
+        run: |
+          version=$(bun -e 'console.log((await import("./mygo.config.ts")).default.version)')
+          echo "APP_VERSION=$version" >> "$GITHUB_ENV"
+      - name: Confirm updates are off in these test builds
+        env:
+          NICOLE_DISABLE_UPDATES: "1"
+        run: |
+          bun -e 'const config = (await import("./mygo.config.ts")).default; if (config.updates) { console.error("ERROR: updates are on in a test build"); process.exit(1); }'
+      - name: Build the EXE and the NSIS installer
+        env:
+          NICOLE_DISABLE_UPDATES: "1"
+        run: bun run build -- -platform windows/amd64
+      - name: Verify the EXE, the installer and the update state
+        shell: bash
+        run: |
+          set -u
+          exe="build/windows-amd64/Nicole.exe"
+          setup="build/windows-amd64/nicole-setup-${APP_VERSION}-amd64.exe"
+          fail=0
+          if [ ! -f "$exe" ]; then
+            echo "ERROR: missing executable: $exe"
+            fail=1
+          fi
+          if [ ! -f "$setup" ]; then
+            echo "ERROR: missing NSIS installer: $setup — MyGo skips the installer with a warning when NSIS/makensis is unavailable; a packaged build must produce it"
+            fail=1
+          fi
+          if [ "$fail" -ne 0 ]; then
+            exit 1
+          fi
+          echo "--- installer contents (7z listing) ---"
+          7z l "$setup" | grep -q 'Nicole\.exe' || {
+            echo "ERROR: the installer does not hold Nicole.exe"
+            exit 1
+          }
+          if grep -aqF 'LoTwT/nicole/releases' "$exe"; then
+            echo "ERROR: the test build embeds the update source; updates must be off"
+            exit 1
+          fi
+      - name: Upload the installer
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nicole-windows-amd64-${{ github.sha }}
+          if-no-files-found: error
+          path: build/windows-amd64/*-setup-*.exe
+
+  linux:
+    name: Package (linux/amd64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+      - name: Read the app version
+        run: |
+          version=$(bun -e 'console.log((await import("./mygo.config.ts")).default.version)')
+          echo "APP_VERSION=$version" >> "$GITHUB_ENV"
+      - name: Confirm updates are off in these test builds
+        env:
+          NICOLE_DISABLE_UPDATES: "1"
+        run: |
+          bun -e 'const config = (await import("./mygo.config.ts")).default; if (config.updates) { console.error("ERROR: updates are on in a test build"); process.exit(1); }'
+      - name: Build the app, the Debian package and the archive
+        env:
+          NICOLE_DISABLE_UPDATES: "1"
+        run: bun run build -- -platform linux/amd64
+      - name: Verify the app, the Debian package and the update state
+        shell: bash
+        run: |
+          set -u
+          exe="build/linux-amd64/nicole"
+          deb="build/linux-amd64/nicole_${APP_VERSION}_amd64.deb"
+          archive="build/linux-amd64/nicole-${APP_VERSION}-linux-amd64.tar.gz"
+          fail=0
+          for f in "$exe" "$deb" "$archive" "build/linux-amd64/install.sh"; do
+            if [ ! -f "$f" ]; then
+              echo "ERROR: missing packaged file: $f"
+              fail=1
+            fi
+          done
+          if [ "$fail" -ne 0 ]; then
+            exit 1
+          fi
+          got=$(dpkg-deb -f "$deb" Version)
+          if [ "$got" != "$APP_VERSION" ]; then
+            echo "ERROR: $deb declares version $got, want $APP_VERSION"
+            exit 1
+          fi
+          if grep -aqF 'LoTwT/nicole/releases' "$exe"; then
+            echo "ERROR: the test build embeds the update source; updates must be off"
+            exit 1
+          fi
+      - name: Upload the Debian package, the archive and the install script
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nicole-linux-amd64-${{ github.sha }}
+          if-no-files-found: error
+          path: |
+            build/linux-amd64/*.deb
+            build/linux-amd64/*.tar.gz
+            build/linux-amd64/install.sh
