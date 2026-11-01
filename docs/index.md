@@ -10,8 +10,9 @@
 | [development.md](development.md) | 准备开发环境、安装依赖、启动热更新、构建 `.app`、打测试安装包，或查看测试与 CI 命令时。 |
 | [release.md](release.md) | 打标签、发布正式版或测试版、管理更新密钥、核对 Release 资产或执行发布后验证时。 |
 | [specs/product.md](specs/product.md) | 确认产品定位、命名、范围、功能分期、平台优先级和已定决策时。 |
+| [specs/ui.md](specs/ui.md) | 实现或调整窗口布局、侧栏与文件树、标签页、各类状态提示、浮层位置、右键菜单、快捷键或设置项时。 |
 | [specs/editor-modes.md](specs/editor-modes.md) | 实现或调整实时预览、沉浸、源码三种模式，或处理中文输入法和渲染粒度时。 |
-| [specs/slash-commands.md](specs/slash-commands.md) | 添加命令、用户模板，或调整 slash 菜单、快捷键、命令面板和浮动工具栏时。 |
+| [specs/slash-commands.md](specs/slash-commands.md) | 添加命令、用户模板，或调整 slash 菜单、快捷键、命令面板和格式工具栏的命令来源时。 |
 | [specs/workspace.md](specs/workspace.md) | 处理工作区、标签页、保存、崩溃恢复、图片和搜索时。 |
 | [specs/theming.md](specs/theming.md) | 接入主题、字体或自定义 CSS，或处理亮暗切换和导出预览时。 |
 | [specs/performance.md](specs/performance.md) | 评估内存占用、实现性能优化或复测基线时。 |
