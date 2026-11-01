@@ -6,6 +6,7 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/plugins/updater"
+	"github.com/egoist/mygo/plugins/watch"
 )
 
 // AppInfo describes the running app and the Go runtime behind it.
@@ -68,23 +69,41 @@ func appMenu() *mygo.Menu {
 }
 
 func main() {
+	workspace := NewWorkspace()
+
 	// The updater plugin adds the Sparkle-style update window and the menu
 	// item; `mygo build` enables it only together with signed updates and a
 	// writable install location. See docs/release.md.
-	mygo.Use(updater.Plugin)
-	mygo.Bind(NewApplication(mygo.App.Version()))
+	// The watch plugin is registered once, before the window exists; its
+	// Resolve callback grants whatever folder is open at watch time.
+	mygo.Use(updater.Plugin, watch.New(watch.Options{Resolve: workspace.watchRoot}))
+
+	stateStore, err := newWindowStateStore()
+	if err != nil {
+		log.Fatal(err)
+	}
+	mygo.App.SetWindowStateStore(stateStore)
+
+	mygo.Bind(NewApplication(mygo.App.Version()), workspace)
 	mygo.App.SetMenu(appMenu())
 
 	mygo.App.WhenReady(func() {
-		mygo.NewWindow(mygo.WindowOptions{
+		window := mygo.NewWindow(mygo.WindowOptions{
 			Title:           "Nicole",
-			Width:           1100,
-			Height:          780,
+			Width:           defaultWindowSize.Width,
+			Height:          defaultWindowSize.Height,
 			MinWidth:        640,
 			MinHeight:       480,
 			BackgroundColor: "light-dark(#faf8f4, #121019)", // the page's surface canvas
-			StateKey:        "main",
+			StateKey:        mainWindowStateKey,
 			URL:             "/",
+		})
+		// A close first asks the page to save its pending edits; the page
+		// calls Workspace.FinishClose when it is done.
+		window.OnClose(func(event *mygo.CloseEvent) {
+			if workspace.requestClose(window) {
+				event.PreventDefault()
+			}
 		})
 	})
 
