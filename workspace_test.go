@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"runtime"
 	"testing"
+	"time"
 )
 
 func mustWriteFile(t *testing.T, name string, content []byte) {
@@ -416,28 +417,66 @@ func TestWriteFileRejectsReadOnlyTarget(t *testing.T) {
 
 func TestOpenRemovesOwnTempFiles(t *testing.T) {
 	root := t.TempDir()
-	for _, name := range []string{
+	old := []string{
 		".nicole-0123456789abcdef.tmp",
 		"notes/.nicole-abcdef0123456789.tmp",
+	}
+	recent := ".nicole-aaaaaaaaaaaaaaaa.tmp"
+	kept := []string{
+		recent,
+		".nicole-abc.tmp",
+		".nicole-0123456789abcdeZ.tmp",
+		".nicole-0123456789abcdef0.tmp",
 		".other.tmp",
-		".hidden/.nicole-keep.tmp",
+		".hidden/.nicole-0123456789abcdef.tmp",
 		"keep.md",
-	} {
+	}
+	for _, name := range append(append([]string{}, old...), kept...) {
 		mustWriteFile(t, filepath.Join(root, filepath.FromSlash(name)), []byte("temp"))
+	}
+	stale := time.Now().Add(-tempFileCleanupAge - time.Minute)
+	for _, name := range old {
+		if err := os.Chtimes(filepath.Join(root, filepath.FromSlash(name)), stale, stale); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chtimes(filepath.Join(root, recent), time.Now(), time.Now()); err != nil {
+		t.Fatal(err)
 	}
 
 	openTestWorkspace(t, root)
-	for _, name := range []string{
-		".nicole-0123456789abcdef.tmp",
-		"notes/.nicole-abcdef0123456789.tmp",
-	} {
+	for _, name := range old {
 		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(name))); !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("%q was not removed: %v", name, err)
 		}
 	}
-	for _, name := range []string{".other.tmp", ".hidden/.nicole-keep.tmp", "keep.md"} {
+	for _, name := range kept {
 		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(name))); err != nil {
 			t.Errorf("%q was removed: %v", name, err)
+		}
+	}
+}
+
+func TestIsWorkspaceTempName(t *testing.T) {
+	for _, name := range []string{
+		".nicole-0123456789abcdef.tmp",
+		".nicole-ABCDEF0123456789.tmp",
+	} {
+		if !isWorkspaceTempName(name) {
+			t.Errorf("isWorkspaceTempName(%q) = false, want true", name)
+		}
+	}
+	for _, name := range []string{
+		".nicole-.tmp",
+		".nicole-abc.tmp",
+		".nicole-0123456789abcde.tmp",
+		".nicole-0123456789abcdef0.tmp",
+		".nicole-0123456789abcdeZ.tmp",
+		"nicole-0123456789abcdef.tmp",
+		".nicole-0123456789abcdef.tmp.bak",
+	} {
+		if isWorkspaceTempName(name) {
+			t.Errorf("isWorkspaceTempName(%q) = true, want false", name)
 		}
 	}
 }
@@ -572,6 +611,11 @@ func TestWatchRootFollowsWorkspaceGeneration(t *testing.T) {
 	for _, name := range []string{".nicole-0123456789abcdef.tmp", "docs/.nicole-abcdef0123456789.tmp"} {
 		if !root.Ignore(name, false) {
 			t.Errorf("Ignore(%q, file) = false, want true", name)
+		}
+	}
+	for _, name := range []string{".nicole-short.tmp", ".nicole-0123456789abcdeZ.tmp", ".other.tmp"} {
+		if root.Ignore(name, false) {
+			t.Errorf("Ignore(%q, file) = true, want false", name)
 		}
 	}
 	if root.Ignore("notes.md", false) || root.Ignore("node_modules", false) {

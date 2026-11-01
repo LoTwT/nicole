@@ -10,6 +10,7 @@ import { SAMPLE_DOCUMENT } from "./sample";
 import { getAppInfo, type AppInfo } from "./services/app";
 import {
   chooseFolder,
+  confirmDiscard,
   finishClose,
   onSaveBeforeClose,
   readFile,
@@ -23,6 +24,7 @@ const appInfo = ref<AppInfo | null>(null);
 const appInfoError = ref(false);
 const files = ref<string[]>([]);
 const currentFile = ref<string | null>(null);
+const hasWorkspace = ref(false);
 const saveStatus = ref("");
 
 const modes: readonly { id: EditorMode; label: string; hint: string }[] = [
@@ -52,16 +54,26 @@ const themeAction = computed(() =>
 let editor: EditorHandle | null = null;
 
 const AUTOSAVE_DELAY_MS = 1000;
-const MIXED_LINE_ENDINGS_STATUS = "换行风格混合，未自动保存";
+const MIXED_LINE_ENDINGS_STATUS =
+  "换行风格混合，未自动保存；切换或关闭时可放弃更改";
 type LineEnding = "\n" | "\r\n" | "\r";
 
+interface PendingEdit {
+  path: string;
+  generation: number;
+  text: string;
+}
+
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
-let pendingText: string | null = null;
+let pendingEdit: PendingEdit | null = null;
 let saveQueue: Promise<boolean> = Promise.resolve(true);
 // CodeMirror normalizes line breaks to "\n". Remember the file's style so a
 // save does not rewrite every CRLF file as LF.
 let lineEnding: LineEnding = "\n";
 let mixedLineEndings = false;
+// The text as it was read or last saved, with CodeMirror's normalized line
+// breaks. Returning to it means there is nothing left to save.
+let originalText = "";
 let workspaceGeneration = 0;
 let offSaveBeforeClose: (() => void) | null = null;
 
@@ -86,6 +98,10 @@ function detectLineEndings(text: string): {
     return { ending: "\n", mixed: false };
   }
   return { ending: [...styles][0]!, mixed: styles.size > 1 };
+}
+
+function normalizeLineEndings(text: string): string {
+  return text.replace(/\r\n?/g, "\n");
 }
 
 function createEditorFor(parent: HTMLElement, doc: string): EditorHandle {
@@ -117,11 +133,31 @@ function mountEditor(doc: string) {
   editor.focus();
 }
 
+// A folder switch has no file selected yet. Destroying the editor makes the
+// placeholder non-editable instead of leaving the previous file available
+// while edits are silently ignored.
+function clearEditor() {
+  editor?.destroy();
+  editor = null;
+  editorHost.value?.replaceChildren();
+  documentText.value = "";
+}
+
 function scheduleSave(text: string) {
-  if (currentFile.value === null) {
+  const path = currentFile.value;
+  if (path === null) {
     return;
   }
-  pendingText = text;
+  if (text === originalText) {
+    pendingEdit = null;
+    if (saveTimer !== null) {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+    }
+    saveStatus.value = "";
+    return;
+  }
+  pendingEdit = { path, generation: workspaceGeneration, text };
   if (mixedLineEndings) {
     saveStatus.value = MIXED_LINE_ENDINGS_STATUS;
     if (saveTimer !== null) {
@@ -158,32 +194,65 @@ async function savePendingNow(): Promise<boolean> {
     saveTimer = null;
   }
   for (;;) {
-    const path = currentFile.value;
-    const text = pendingText;
-    if (path === null || text === null) {
+    const edit = pendingEdit;
+    if (edit === null) {
       return true;
+    }
+    // The edit belongs to the file and workspace that were active when it was
+    // typed. Never write it under a newer file or generation; abandoning it
+    // requires an explicit confirmation instead.
+    if (
+      edit.path !== currentFile.value ||
+      edit.generation !== workspaceGeneration
+    ) {
+      return false;
     }
     if (mixedLineEndings) {
       saveStatus.value = MIXED_LINE_ENDINGS_STATUS;
       return false;
     }
-    pendingText = null;
+    pendingEdit = null;
     saveStatus.value = "保存中…";
     try {
       await writeFile(
-        path,
-        withOriginalLineEnding(text),
-        workspaceGeneration,
+        edit.path,
+        withOriginalLineEnding(edit.text),
+        edit.generation,
       );
     } catch {
-      if (pendingText === null) {
-        pendingText = text;
+      if (currentFile.value === edit.path) {
+        if (pendingEdit === null && documentText.value === edit.text) {
+          pendingEdit = edit;
+          saveStatus.value = "保存失败";
+          return false;
+        }
+        // An undo may have restored the loaded text while the failed write
+        // was in flight; there is nothing left to save in that case.
+        if (pendingEdit === null && documentText.value === originalText) {
+          saveStatus.value = "";
+          return true;
+        }
+        saveStatus.value = "保存失败";
       }
-      saveStatus.value = "保存失败";
       return false;
     }
-    if (pendingText === null) {
-      saveStatus.value = "已保存";
+    if (currentFile.value === edit.path) {
+      originalText = edit.text;
+      // The editor may have been changed while the write was in flight, even
+      // back to the old text. Treat the on-disk text as the new baseline and
+      // keep the current editor content pending.
+      if (pendingEdit === null && documentText.value !== originalText) {
+        pendingEdit = {
+          path: edit.path,
+          generation: edit.generation,
+          text: documentText.value,
+        };
+      }
+    }
+    if (pendingEdit === null) {
+      if (currentFile.value === edit.path) {
+        saveStatus.value = "已保存";
+      }
       return true;
     }
   }
@@ -196,8 +265,44 @@ function withOriginalLineEnding(text: string): string {
   return text.replace(/\r\n?/g, "\n").replace(/\n/g, lineEnding);
 }
 
+function discardPending() {
+  if (saveTimer !== null) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  pendingEdit = null;
+  if (currentFile.value !== null) {
+    mountEditor(originalText);
+    saveStatus.value = "已放弃更改";
+  } else {
+    saveStatus.value = "";
+  }
+}
+
+async function confirmDiscardChanges(): Promise<boolean> {
+  try {
+    return await confirmDiscard();
+  } catch {
+    return false;
+  }
+}
+
+// Returns true when it is safe to leave the current file. A failed save or a
+// mixed-ending file needs an explicit discard confirmation; cancelling keeps
+// the editor and its pending text untouched.
+async function prepareToLeave(): Promise<boolean> {
+  if (await savePending()) {
+    return true;
+  }
+  if (!(await confirmDiscardChanges())) {
+    return false;
+  }
+  discardPending();
+  return true;
+}
+
 async function openFolder() {
-  if (!(await savePending())) {
+  if (!(await prepareToLeave())) {
     return;
   }
   let folder;
@@ -213,10 +318,24 @@ async function openFolder() {
   workspaceGeneration = folder.generation;
   files.value = folder.files;
   currentFile.value = null;
-  pendingText = null;
+  pendingEdit = null;
   mixedLineEndings = false;
   lineEnding = "\n";
+  originalText = "";
+  hasWorkspace.value = true;
+  clearEditor();
   saveStatus.value = "";
+}
+
+function loadFile(path: string, text: string) {
+  const detected = detectLineEndings(text);
+  lineEnding = detected.ending;
+  mixedLineEndings = detected.mixed;
+  originalText = normalizeLineEndings(text);
+  currentFile.value = path;
+  pendingEdit = null;
+  mountEditor(originalText);
+  saveStatus.value = detected.mixed ? MIXED_LINE_ENDINGS_STATUS : "";
 }
 
 async function selectFile(event: Event) {
@@ -225,24 +344,27 @@ async function selectFile(event: Event) {
   if (path === "") {
     return;
   }
-  if (!(await savePending())) {
+  if (!(await prepareToLeave())) {
     select.value = currentFile.value ?? "";
     return;
   }
+  let text: string;
   try {
-    const text = await readFile(path);
-    const detected = detectLineEndings(text);
-    lineEnding = detected.ending;
-    mixedLineEndings = detected.mixed;
-    currentFile.value = null;
-    pendingText = null;
-    mountEditor(text);
-    currentFile.value = path;
-    saveStatus.value = detected.mixed ? MIXED_LINE_ENDINGS_STATUS : "";
+    text = await readFile(path);
   } catch {
     select.value = currentFile.value ?? "";
     saveStatus.value = "读取失败";
+    return;
   }
+  // The old editor stays editable while the read runs. Save any edit typed in
+  // that window before replacing the document; if it cannot be saved, ask
+  // before discarding it and never carry its text into the newly selected
+  // file.
+  if (!(await prepareToLeave())) {
+    select.value = currentFile.value ?? "";
+    return;
+  }
+  loadFile(path, text);
 }
 
 function setMode(next: EditorMode) {
@@ -271,10 +393,10 @@ onMounted(async () => {
   window.addEventListener("beforeunload", saveBeforeExit);
   window.addEventListener("pagehide", saveBeforeExit);
   document.addEventListener("visibilitychange", saveWhenHidden);
-  offSaveBeforeClose = onSaveBeforeClose(async () => {
+  offSaveBeforeClose = onSaveBeforeClose(async (token) => {
     const saved = await savePending();
     try {
-      await finishClose(saved);
+      await finishClose(token, saved);
     } catch {
       // The window may already be gone; the save result was already shown.
     }
@@ -376,7 +498,19 @@ onBeforeUnmount(() => {
     </header>
 
     <main class="min-h-0 flex-1 overflow-hidden">
-      <div ref="editorHost" class="h-full" aria-label="Markdown 编辑器"></div>
+      <div
+        v-show="hasWorkspace && currentFile === null"
+        data-placeholder="choose-file"
+        class="flex h-full items-center justify-center text-sm text-[var(--text-muted)]"
+      >
+        选择一个 Markdown 文件开始编辑
+      </div>
+      <div
+        v-show="!hasWorkspace || currentFile !== null"
+        ref="editorHost"
+        class="h-full"
+        aria-label="Markdown 编辑器"
+      ></div>
     </main>
 
     <footer

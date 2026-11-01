@@ -26,14 +26,21 @@ export function writeFile(
   return Workspace.writeFile(path, content, generation);
 }
 
-/** Runs a handler when Go asks the page to save before the window closes. */
-export function onSaveBeforeClose(handler: () => Promise<void>): () => void {
-  return events.workspaceSaveBeforeClose.on(() => {
-    void handler();
+/** Runs a handler with the close token when Go asks the page to save before closing. */
+export function onSaveBeforeClose(
+  handler: (token: number) => Promise<void>,
+): () => void {
+  return events.workspaceSaveBeforeClose.on((token) => {
+    void handler(token);
   });
 }
 
-/** Tells Go that the page finished its pre-close save. */
-export function finishClose(saved: boolean): Promise<void> {
-  return Workspace.finishClose(saved);
+/** Asks whether unsaved edits may be discarded before switching files. */
+export function confirmDiscard(): Promise<boolean> {
+  return Workspace.confirmDiscard();
+}
+
+/** Tells Go that the page finished its pre-close save for one close attempt. */
+export function finishClose(token: number, saved: boolean): Promise<void> {
+  return Workspace.finishClose(token, saved);
 }

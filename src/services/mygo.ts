@@ -61,11 +61,21 @@ export const Workspace = {
     return call("Workspace.ChooseFolder");
   },
   /**
-   * FinishClose closes the calling window when the page saved successfully.
-   * When saved is false the window stays open, with the page's error visible.
+   * ConfirmDiscard asks whether the page may throw away unsaved edits before
+   * switching files or folders. It is separate from the close confirmation so
+   * the user sees the action that will discard the edits.
    */
-  finishClose(saved: boolean): Promise<void> {
-    return call("Workspace.FinishClose", saved);
+  confirmDiscard(): Promise<boolean> {
+    return call("Workspace.ConfirmDiscard");
+  },
+  /**
+   * FinishClose answers the close request identified by token. A true saved
+   * value closes the window. A false value asks whether to discard the unsaved
+   * edits; only an explicit confirmation closes it. Answers for an expired
+   * attempt are ignored.
+   */
+  finishClose(token: number, saved: boolean): Promise<void> {
+    return call("Workspace.FinishClose", token, saved);
   },
   /**
    * ListFiles lists the Markdown files of the open folder as paths relative to
@@ -100,7 +110,8 @@ export const Workspace = {
 export const events = {
   /**
    * workspaceSaveBeforeClose asks the page to save pending edits before its
-   * window closes. The page answers with Workspace.FinishClose.
+   * window closes. The token identifies this close attempt, so a late answer
+   * cannot close a newer attempt. The page answers with Workspace.FinishClose.
    */
-  workspaceSaveBeforeClose: event<boolean>("workspace:save-before-close"),
+  workspaceSaveBeforeClose: event<number>("workspace:save-before-close"),
 } as const;

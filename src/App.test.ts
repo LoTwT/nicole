@@ -7,6 +7,7 @@ import App from "./App.vue";
 import { SAMPLE_DOCUMENT } from "./sample";
 import {
   chooseFolder,
+  confirmDiscard,
   finishClose,
   readFile,
   writeFile,
@@ -23,15 +24,16 @@ vi.mock("./services/app", () => ({
 }));
 
 const workspaceMock = vi.hoisted(() => ({
-  saveBeforeClose: null as null | (() => Promise<void>),
+  saveBeforeClose: null as null | ((token: number) => Promise<void>),
 }));
 
 vi.mock("./services/workspace", () => ({
   chooseFolder: vi.fn(),
+  confirmDiscard: vi.fn(),
   listFiles: vi.fn(),
   readFile: vi.fn(),
   writeFile: vi.fn(),
-  onSaveBeforeClose: (handler: () => Promise<void>) => {
+  onSaveBeforeClose: (handler: (token: number) => Promise<void>) => {
     workspaceMock.saveBeforeClose = handler;
     return () => {
       workspaceMock.saveBeforeClose = null;
@@ -44,12 +46,10 @@ let host: HTMLElement;
 let app: ReturnType<typeof createApp> | null = null;
 
 async function settle() {
-  await Promise.resolve();
-  await nextTick();
-  await Promise.resolve();
-  await nextTick();
-  await Promise.resolve();
-  await nextTick();
+  for (let index = 0; index < 10; index++) {
+    await Promise.resolve();
+    await nextTick();
+  }
 }
 
 function button(label: string): HTMLButtonElement {
@@ -112,6 +112,8 @@ beforeEach(() => {
   localStorage.clear();
 
   vi.mocked(chooseFolder).mockReset();
+  vi.mocked(confirmDiscard).mockReset();
+  vi.mocked(confirmDiscard).mockResolvedValue(false);
   vi.mocked(readFile).mockReset();
   vi.mocked(writeFile).mockReset();
   vi.mocked(writeFile).mockResolvedValue(undefined);
@@ -243,6 +245,36 @@ describe("App", () => {
     expect(writeFile).toHaveBeenCalledOnce();
   });
 
+  it("waits for an in-flight save before reading the next file", async () => {
+    vi.useFakeTimers();
+    vi.mocked(readFile).mockResolvedValueOnce("A\n");
+    const select = await openFolder(["a.md", "b.md"]);
+    await chooseFile(select, "a.md");
+
+    let finishWrite!: () => void;
+    vi.mocked(writeFile).mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finishWrite = resolve;
+        }),
+    );
+    const view = editorView();
+    view.dispatch({ changes: { from: view.state.doc.length, insert: "!" } });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(writeFile).toHaveBeenCalledOnce();
+
+    vi.mocked(readFile).mockResolvedValue("B\n");
+    select.value = "b.md";
+    select.dispatchEvent(new Event("change"));
+    await settle();
+    expect(readFile).toHaveBeenCalledTimes(1);
+
+    finishWrite();
+    await settle();
+    expect(readFile).toHaveBeenLastCalledWith("b.md");
+    expect(editorView().state.doc.toString()).toBe("B\n");
+  });
+
   it("starts a fresh undo history when switching files", async () => {
     vi.mocked(readFile)
       .mockResolvedValueOnce("# first\n")
@@ -272,6 +304,7 @@ describe("App", () => {
     await chooseFile(select, "b.md");
 
     expect(writeFile).toHaveBeenCalledWith("a.md", "start\n!", 1);
+    expect(confirmDiscard).toHaveBeenCalledOnce();
     expect(readFile).toHaveBeenCalledTimes(1);
     expect(select.value).toBe("a.md");
     expect(editorView().state.doc.toString()).toBe("start\n!");
@@ -344,10 +377,224 @@ describe("App", () => {
 
     await chooseFile(select, "other.md");
 
+    expect(confirmDiscard).toHaveBeenCalledOnce();
     expect(readFile).toHaveBeenCalledTimes(1);
     expect(select.value).toBe("mixed.md");
     expect(editorView().state.doc.toString()).toBe("a\nb\nc!");
     expect(host.textContent).toContain("换行风格混合，未自动保存");
+  });
+
+  it("clears the previous file and shows a placeholder after opening a folder", async () => {
+    vi.mocked(readFile).mockResolvedValue("first\n");
+    const select = await openFolder(["a.md"]);
+    await chooseFile(select, "a.md");
+    expect(host.querySelector(".cm-editor")).not.toBeNull();
+
+    vi.mocked(chooseFolder).mockResolvedValue(folder(["b.md"], 2));
+    button("打开文件夹").click();
+    await settle();
+
+    expect(chooseFolder).toHaveBeenCalledTimes(2);
+    expect(host.querySelector(".cm-editor")).toBeNull();
+    const placeholder = host.querySelector<HTMLElement>("[data-placeholder]");
+    expect(placeholder?.textContent).toContain("选择一个 Markdown 文件开始编辑");
+    expect(placeholder?.style.display).not.toBe("none");
+    expect([...select.options].map((option) => option.value)).toEqual([
+      "",
+      "b.md",
+    ]);
+
+    vi.mocked(readFile).mockResolvedValue("second\n");
+    await chooseFile(select, "b.md");
+    expect(editorView().state.doc.toString()).toBe("second\n");
+  });
+
+  it("saves edits typed while the next file is being read", async () => {
+    vi.mocked(readFile).mockResolvedValueOnce("A\n");
+    const select = await openFolder(["a.md", "b.md"]);
+    await chooseFile(select, "a.md");
+
+    let finishRead!: (value: string) => void;
+    vi.mocked(readFile).mockImplementationOnce(
+      () =>
+        new Promise<string>((resolve) => {
+          finishRead = resolve;
+        }),
+    );
+    select.value = "b.md";
+    select.dispatchEvent(new Event("change"));
+    await settle();
+
+    const view = editorView();
+    view.dispatch({ changes: { from: view.state.doc.length, insert: "typed" } });
+    finishRead("B\n");
+    await settle();
+
+    expect(writeFile).toHaveBeenCalledWith("a.md", "A\ntyped", 1);
+    expect(select.value).toBe("b.md");
+    expect(editorView().state.doc.toString()).toBe("B\n");
+  });
+
+  it("never writes a failed edit from the old file into the next file", async () => {
+    vi.useFakeTimers();
+    vi.mocked(readFile).mockResolvedValueOnce("A\n");
+    const select = await openFolder(["a.md", "b.md"]);
+    await chooseFile(select, "a.md");
+
+    let finishRead!: (value: string) => void;
+    vi.mocked(readFile).mockImplementationOnce(
+      () =>
+        new Promise<string>((resolve) => {
+          finishRead = resolve;
+        }),
+    );
+    select.value = "b.md";
+    select.dispatchEvent(new Event("change"));
+    await settle();
+
+    vi.mocked(writeFile).mockRejectedValue(new Error("disk full"));
+    const view = editorView();
+    view.dispatch({ changes: { from: view.state.doc.length, insert: "typed" } });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(writeFile).toHaveBeenCalledWith("a.md", "A\ntyped", 1);
+
+    vi.mocked(confirmDiscard).mockResolvedValue(true);
+    finishRead("B\n");
+    await settle();
+    await vi.advanceTimersByTimeAsync(0);
+    await settle();
+
+    const writes = vi.mocked(writeFile).mock.calls;
+    expect(writes.every((call) => call[0] === "a.md")).toBe(true);
+    expect(confirmDiscard).toHaveBeenCalledOnce();
+    expect(select.value).toBe("b.md");
+    expect(editorView().state.doc.toString()).toBe("B\n");
+  });
+
+  it("continues after the user discards a failed save when switching files", async () => {
+    vi.mocked(readFile)
+      .mockResolvedValueOnce("A\n")
+      .mockResolvedValueOnce("B\n");
+    const select = await openFolder(["a.md", "b.md"]);
+    await chooseFile(select, "a.md");
+
+    const view = editorView();
+    view.dispatch({ changes: { from: view.state.doc.length, insert: "!" } });
+    vi.mocked(writeFile).mockRejectedValueOnce(new Error("disk full"));
+    vi.mocked(confirmDiscard).mockResolvedValue(true);
+
+    await chooseFile(select, "b.md");
+
+    expect(confirmDiscard).toHaveBeenCalledOnce();
+    expect(writeFile).toHaveBeenCalledWith("a.md", "A\n!", 1);
+    expect(readFile).toHaveBeenLastCalledWith("b.md");
+    expect(select.value).toBe("b.md");
+    expect(editorView().state.doc.toString()).toBe("B\n");
+  });
+
+  it("continues after the user discards a failed save when switching folders", async () => {
+    vi.mocked(readFile).mockResolvedValue("A\n");
+    const select = await openFolder(["a.md"]);
+    await chooseFile(select, "a.md");
+
+    const view = editorView();
+    view.dispatch({ changes: { from: view.state.doc.length, insert: "!" } });
+    vi.mocked(writeFile).mockRejectedValueOnce(new Error("disk full"));
+    vi.mocked(confirmDiscard).mockResolvedValue(true);
+    vi.mocked(chooseFolder).mockResolvedValue(folder(["b.md"], 2));
+
+    button("打开文件夹").click();
+    await settle();
+
+    expect(confirmDiscard).toHaveBeenCalledOnce();
+    expect(chooseFolder).toHaveBeenCalledTimes(2);
+    expect([...select.options].map((option) => option.value)).toEqual([
+      "",
+      "b.md",
+    ]);
+    expect(host.querySelector(".cm-editor")).toBeNull();
+  });
+
+  it("clears pending text when the document returns to the loaded text", async () => {
+    vi.mocked(readFile).mockResolvedValue("a\r\nb\nc");
+    const select = await openFolder(["mixed.md", "other.md"]);
+    await chooseFile(select, "mixed.md");
+
+    const view = editorView();
+    view.dispatch({ changes: { from: view.state.doc.length, insert: "!" } });
+    undo(view);
+    expect(view.state.doc.toString()).toBe("a\nb\nc");
+    await nextTick();
+    expect(host.textContent).not.toContain("换行风格混合");
+
+    await workspaceMock.saveBeforeClose!(3);
+    expect(writeFile).not.toHaveBeenCalled();
+    expect(finishClose).toHaveBeenCalledWith(3, true);
+
+    vi.mocked(readFile).mockResolvedValue("B\n");
+    await chooseFile(select, "other.md");
+    expect(confirmDiscard).not.toHaveBeenCalled();
+    expect(editorView().state.doc.toString()).toBe("B\n");
+  });
+
+  it("does not resurrect a failed save after the edit is undone", async () => {
+    vi.useFakeTimers();
+    vi.mocked(readFile).mockResolvedValue("start\n");
+    const select = await openFolder(["a.md"]);
+    await chooseFile(select, "a.md");
+
+    let failWrite!: (error: Error) => void;
+    vi.mocked(writeFile).mockImplementationOnce(
+      () =>
+        new Promise<void>((_, reject) => {
+          failWrite = reject;
+        }),
+    );
+    const view = editorView();
+    view.dispatch({ changes: { from: view.state.doc.length, insert: "!" } });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(writeFile).toHaveBeenCalledWith("a.md", "start\n!", 1);
+
+    undo(view);
+    expect(view.state.doc.toString()).toBe("start\n");
+    failWrite(new Error("disk full"));
+    await settle();
+
+    await workspaceMock.saveBeforeClose!(10);
+
+    expect(writeFile).toHaveBeenCalledOnce();
+    expect(finishClose).toHaveBeenCalledWith(10, true);
+  });
+
+  it("answers a close request with false when saving fails", async () => {
+    vi.mocked(readFile).mockResolvedValue("A\n");
+    const select = await openFolder(["a.md"]);
+    await chooseFile(select, "a.md");
+
+    const view = editorView();
+    view.dispatch({ changes: { from: view.state.doc.length, insert: "!" } });
+    vi.mocked(writeFile).mockRejectedValueOnce(new Error("disk full"));
+
+    await workspaceMock.saveBeforeClose!(8);
+
+    expect(writeFile).toHaveBeenCalledWith("a.md", "A\n!", 1);
+    expect(finishClose).toHaveBeenCalledWith(8, false);
+    expect(host.textContent).toContain("保存失败");
+  });
+
+  it("answers a close request with false for a mixed-ending file", async () => {
+    vi.mocked(readFile).mockResolvedValue("a\r\nb\nc");
+    const select = await openFolder(["mixed.md"]);
+    await chooseFile(select, "mixed.md");
+
+    const view = editorView();
+    view.dispatch({ changes: { from: view.state.doc.length, insert: "!" } });
+
+    await workspaceMock.saveBeforeClose!(9);
+
+    expect(writeFile).not.toHaveBeenCalled();
+    expect(finishClose).toHaveBeenCalledWith(9, false);
+    expect(host.textContent).toContain("换行风格混合");
   });
 
   it("saves pending edits before the window closes", async () => {
@@ -358,9 +605,9 @@ describe("App", () => {
     const view = editorView();
     view.dispatch({ changes: { from: view.state.doc.length, insert: "!" } });
 
-    await workspaceMock.saveBeforeClose!();
+    await workspaceMock.saveBeforeClose!(7);
 
     expect(writeFile).toHaveBeenCalledWith("a.md", "start\n!", 1);
-    expect(finishClose).toHaveBeenCalledWith(true);
+    expect(finishClose).toHaveBeenCalledWith(7, true);
   });
 });
