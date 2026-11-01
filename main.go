@@ -70,6 +70,7 @@ func appMenu() *mygo.Menu {
 
 func main() {
 	workspace := NewWorkspace()
+	assets := NewAssets(workspace)
 
 	// The updater plugin adds the Sparkle-style update window and the menu
 	// item; `mygo build` enables it only together with signed updates and a
@@ -77,6 +78,11 @@ func main() {
 	// The watch plugin is registered once, before the window exists; its
 	// Resolve callback grants whatever folder is open at watch time.
 	mygo.Use(updater.Plugin, watch.New(watch.Options{Resolve: workspace.watchRoot}))
+	// Images are served from the folder that is open when the page asks; the
+	// handler reads the same replaceable workspace state as the watch plugin.
+	if err := registerImageProtocol(workspace); err != nil {
+		log.Fatal(err)
+	}
 
 	stateStore, err := newWindowStateStore()
 	if err != nil {
@@ -84,7 +90,7 @@ func main() {
 	}
 	mygo.App.SetWindowStateStore(stateStore)
 
-	mygo.Bind(NewApplication(mygo.App.Version()), workspace)
+	mygo.Bind(NewApplication(mygo.App.Version()), workspace, assets)
 	mygo.App.SetMenu(appMenu())
 
 	mygo.App.WhenReady(func() {
@@ -105,6 +111,12 @@ func main() {
 				event.PreventDefault()
 			}
 		})
+		// Native drops carry paths the page cannot see. Keep them in Go and
+		// send the page a one-time token plus the drop position.
+		window.OnFileDrop(newAssetDropHandler(assets, func(drop AssetDrop) error {
+			return assetFileDrop.Emit(window, drop)
+		}))
+		blockImageNavigation(window.Page())
 	})
 
 	if err := mygo.App.Run(); err != nil {

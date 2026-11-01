@@ -6,9 +6,12 @@ import {
   type EditorHandle,
   type EditorMode,
 } from "./editor";
+import { createImageInsertion } from "./image-insertion";
+import { resolveImageUrl } from "./image-url";
 import { latestOperation } from "./latest-operation";
 import { SAMPLE_DOCUMENT } from "./sample";
 import { getAppInfo, type AppInfo } from "./services/app";
+import { onWindowFileDrop } from "./services/assets";
 import {
   chooseFolder,
   confirmDiscard,
@@ -76,10 +79,19 @@ let mixedLineEndings = false;
 // breaks. Returning to it means there is nothing left to save.
 let originalText = "";
 let workspaceGeneration = 0;
+const imageInsertion = createImageInsertion({
+  getEditor: () => editor,
+  getFile: () => currentFile.value,
+  getGeneration: () => workspaceGeneration,
+  onError: () => {
+    saveStatus.value = "图片插入失败";
+  },
+});
 let offSaveBeforeClose: (() => void) | null = null;
 // Reads cannot be cancelled at the IPC layer. Instead, only the newest file
 // selection may apply its result; opening a folder invalidates all reads.
 const fileSelection = latestOperation();
+let offFileDrop: (() => void) | null = null;
 
 function detectLineEndings(text: string): {
   ending: LineEnding;
@@ -113,7 +125,11 @@ function createEditorFor(parent: HTMLElement, doc: string): EditorHandle {
     parent,
     doc,
     mode: mode.value,
-    resolveImage: (src) => src,
+    resolveImage: (src) =>
+      resolveImageUrl(src, currentFile.value, workspaceGeneration),
+    onPasteImage: (ticket) => {
+      imageInsertion.handlePaste(ticket);
+    },
     onChange: (next) => {
       documentText.value = next;
       scheduleSave(next);
@@ -414,6 +430,9 @@ onMounted(async () => {
   window.addEventListener("beforeunload", saveBeforeExit);
   window.addEventListener("pagehide", saveBeforeExit);
   document.addEventListener("visibilitychange", saveWhenHidden);
+  offFileDrop = onWindowFileDrop((drop) => {
+    imageInsertion.handleDrop(drop);
+  });
   offSaveBeforeClose = onSaveBeforeClose(async (token) => {
     const saved = await savePending();
     try {
@@ -435,6 +454,8 @@ onBeforeUnmount(() => {
   window.removeEventListener("beforeunload", saveBeforeExit);
   window.removeEventListener("pagehide", saveBeforeExit);
   document.removeEventListener("visibilitychange", saveWhenHidden);
+  offFileDrop?.();
+  offFileDrop = null;
   offSaveBeforeClose?.();
   offSaveBeforeClose = null;
   if (saveTimer !== null) {
