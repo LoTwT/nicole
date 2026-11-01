@@ -49,4 +49,4 @@ scripts/measure-memory.sh --budget 120
 
 ## 内存基线的更新约定
 
-可能影响内存的 PR 合并后，在最新的 `main` 上构建 `.app`，运行 `scripts/measure-memory.sh --budget 120` 测一次空载，把 `total_mb`、`attribution`、构建提交和度量环境写进 PR 描述；与[内存基线](../references/memory-baseline.md)的最新数字比较。`total_mb` 比最新基线高出超过 10MB 时，在 PR 描述中说明原因，并由用户确认；不要求在该 PR 中优化。内存优化在功能基本完成后统一进行，在此之前只记录。
+每个界面 PR，以及其他可能影响内存的 PR，合并后在最新的 `main` 上构建 `.app`，运行 `scripts/measure-memory.sh --budget 120` 测一次空载，把 `total_mb`、`attribution`、构建提交和度量环境写进 PR 描述；与[内存基线](../references/memory-baseline.md)的最新数字比较。`total_mb` 比最新基线高出 10MB 或更多时，在 PR 描述中说明原因，并由用户确认；不要求在该 PR 中优化。内存优化在功能基本完成后统一进行，在此之前只记录。
