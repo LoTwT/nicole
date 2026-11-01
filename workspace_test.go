@@ -279,6 +279,9 @@ func TestWithinRoot(t *testing.T) {
 	if withinRoot(root, filepath.Join(filepath.Dir(root), "notes-backup", "a.md")) {
 		t.Error("withinRoot() accepted a sibling whose name starts like the root")
 	}
+	if withinRoot(root, filepath.Join(filepath.Dir(root), "NOTES-backup", "a.md")) {
+		t.Error("withinRoot() accepted a case-variant sibling of the root")
+	}
 	if withinRoot(root, filepath.Dir(root)) {
 		t.Error("withinRoot() accepted the parent")
 	}
