@@ -63,6 +63,18 @@ class CheckboxWidget extends WidgetType {
     return other.checked === this.checked;
   }
 
+  // Updating the existing DOM instead of letting CodeMirror recreate it keeps
+  // focus on the checkbox when it is toggled from the keyboard.
+  override updateDOM(dom: HTMLElement) {
+    const input = dom.querySelector<HTMLInputElement>(
+      ".cm-nicole-checkbox-input",
+    );
+    if (!input) return false;
+    dom.classList.toggle("cm-nicole-checkbox-checked", this.checked);
+    input.checked = this.checked;
+    return true;
+  }
+
   toDOM(view: EditorView) {
     const box = document.createElement("span");
     box.className = this.checked
@@ -84,15 +96,17 @@ class CheckboxWidget extends WidgetType {
     // and keyboard activation. Preventing mousedown keeps the caret and the
     // current selection in place while the task is toggled.
     box.addEventListener("mousedown", (event) => event.preventDefault());
-    box.addEventListener("click", (event) => {
-      event.preventDefault();
-      // `eq` ignores the position, so read the current one from the DOM.
+    box.addEventListener("click", () => {
+      // Don't cancel the click: the browser then toggles `checked` itself and
+      // `updateDOM` keeps it in sync. Read the state from the document below,
+      // because a reused DOM still closes over the old widget instance.
       const pos = view.posAtDOM(box);
+      const checked = /x/i.test(view.state.sliceDoc(pos + 1, pos + 2));
       view.dispatch({
         changes: {
           from: pos + 1,
           to: pos + 2,
-          insert: this.checked ? " " : "x",
+          insert: checked ? " " : "x",
         },
       });
     });

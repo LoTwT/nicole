@@ -194,11 +194,16 @@ describe("IME composition", () => {
 });
 
 describe("task checkbox", () => {
-  it("reuses the widget DOM when text before it changes", async () => {
+  it("reuses the widget DOM and toggles the task at its current position", async () => {
     const instance = mount("live");
     const view = instance.view;
     await settle();
     const box = checkboxes(view)[0]!;
+    const click = () => {
+      box.querySelector("input")!.dispatchEvent(
+        new MouseEvent("click", { bubbles: true, cancelable: true }),
+      );
+    };
 
     view.dispatch({
       changes: { from: 0, insert: "前" },
@@ -206,34 +211,47 @@ describe("task checkbox", () => {
     });
     await settle();
 
+    // Typing earlier in the document must not recreate the widget.
     expect(checkboxes(view)[0]).toBe(box);
-  });
-
-  it("toggles the task marker on click", async () => {
-    const instance = mount("live");
-    const view = instance.view;
-    await settle();
-
-    const click = () => {
-      const box = checkboxes(view)[0]!;
-      box.querySelector("input")!.dispatchEvent(
-        new MouseEvent("click", { bubbles: true, cancelable: true }),
-      );
-      return box;
-    };
 
     click();
     await settle();
-    expect(view.state.doc.toString()).toContain("- [x] 待办");
+    expect(view.state.doc.toString()).toBe(
+      `前${doc}`.replace("- [ ] 待办", "- [x] 待办"),
+    );
+    expect(checkboxes(view)[0]).toBe(box);
     expect(
       checkboxes(view)[0]!.classList.contains("cm-nicole-checkbox-checked"),
     ).toBe(true);
 
+    // The DOM was reused, so this also proves the toggle reads the current
+    // document state instead of the state captured when `toDOM` ran.
     click();
     await settle();
-    expect(view.state.doc.toString()).toContain("- [ ] 待办");
+    expect(view.state.doc.toString()).toBe(`前${doc}`);
     expect(
       checkboxes(view)[0]!.classList.contains("cm-nicole-checkbox-checked"),
     ).toBe(false);
+  });
+
+  it("keeps focus on the checkbox when it is toggled", async () => {
+    const instance = mount("live");
+    const view = instance.view;
+    await settle();
+    const box = checkboxes(view)[0]!;
+    const input = box.querySelector("input")!;
+    input.focus();
+    expect(document.activeElement).toBe(input);
+
+    input.dispatchEvent(
+      new MouseEvent("click", { bubbles: true, cancelable: true }),
+    );
+    await settle();
+
+    expect(view.state.doc.toString()).toContain("- [x] 待办");
+    expect(checkboxes(view)[0]).toBe(box);
+    expect(box.querySelector("input")).toBe(input);
+    expect(input.checked).toBe(true);
+    expect(document.activeElement).toBe(input);
   });
 });

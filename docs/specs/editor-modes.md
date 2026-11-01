@@ -51,7 +51,7 @@
 实时预览和沉浸模式共用 `src/editor/index.ts` 中的 `preview()`，实现方式：
 
 - 组合输入期间（`view.compositionStarted` 为真）跳过 decorations 重建，只用 `DecorationSet.map` 把已有 decorations 随事务移到新位置，语法树不再重新遍历。
-- 选择 `compositionStarted` 而不是 `composing`：`composing` 要等组合产生第一次文本变化后才为真，而 WKWebView 在 `compositionstart` 之后就可能在候选框下方替换 DOM。
+- `composing` 要到第一次组合文本变化时才为真；`compositionStarted` 还覆盖了从 `compositionstart` 到第一次变化之间的更新，在这段时间里重建同样会让 WKWebView 丢掉候选框。
 - 跳过重建时记下“渲染已过期”，组合结束后的第一次更新重新构建 decorations。这样即使那次更新只有空事务（例如用 Backspace 撤销整个组合，文档回到原样）也会重新渲染。
 - 映射而不是直接保留原位置，是因为组合期间文档仍在变化；映射后 widget 和 decorations 的位置始终有效，但不会重新判断当前行、隐藏符号或任务框。
 
@@ -68,6 +68,8 @@
 | 沉浸模式隐藏符号的边界 | 光标停在隐藏的 `#`、`**` 或列表符号边界处输入拼音 | 符号保持隐藏，光标不跳进隐藏区域；组合结束后按新位置重新隐藏 |
 | 切换候选词 | 组合期间用数字键、方向键或翻页键切换候选 | 候选框不消失，行内容和光标位置不跳动 |
 | Backspace 撤销组合 | 组合期间连续按 Backspace 删除拼音 | 文字逐步还原，候选框不消失；组合结束、文档回到原样后当前行渲染正确 |
+| Esc 取消组合 | 组合期间按 Esc | 拼音消失，文档回到原样，当前行渲染正确；之后再输入或移动光标，渲染仍然正确 |
+| 组合期间切换窗口或失焦 | 组合期间点击其他窗口或让编辑器失焦 | 组合结束后当前行渲染能恢复，重新聚焦后继续输入正常 |
 | 组合结束后的渲染 | 候选词上屏 | 当前行按最新语法重新渲染：标题、加粗、列表、任务框和隐藏符号都正确 |
 
 ## 渲染粒度
@@ -80,7 +82,7 @@
 
 - `preview(reveal)` 生成一个 `ViewPlugin`；文档、视口或选区变化时，在可见范围内重建 decorations。组合输入期间跳过重建，只做位置映射，见[中文输入法](#中文输入法)。
 - 遍历语法树：隐藏 `HeaderMark`、`EmphasisMark`、`CodeMark`、`StrikethroughMark`、`QuoteMark`、任务项的列表符号和链接的 URL；把列表符号、任务框、图片、分割线替换成 widget；标题和引用用行级 decoration。
-- 任务框自绘：`appearance: none` 的 `<input type="checkbox">` 覆盖在容器上，负责点击和键盘操作；外框、背景和勾选标记都由容器上的 CSS 绘制，读取 `--nicole-checkbox-*` 变量，分别回退到 `--border-strong`、`--surface-panel`、`--accent-primary` 和 `--accent-contrast`，因此亮暗切换不需要重建编辑器。任务框 widget 的 `eq` 只比较勾选状态，点击时用 `view.posAtDOM` 取当前文档位置，避免在前面输入文字时重建任务框。
+- 任务框自绘：`appearance: none` 的 `<input type="checkbox">` 覆盖在容器上，负责点击和键盘操作；外框、背景和勾选标记都由容器上的 CSS 绘制，读取 `--nicole-checkbox-*` 变量，回退见 `src/editor/index.ts` 的 `editorTheme`，因此亮暗切换不需要重建编辑器。任务框 widget 的 `eq` 只比较勾选状态，`updateDOM` 原地更新勾选样式以保留焦点；点击时用 `view.posAtDOM` 和文档内容取当前位置与状态，避免在前面输入文字时重建任务框。
 - 沉浸模式额外注册 `EditorView.atomicRanges`，让光标跳过隐藏的符号。
 - 用 ⌘B（CodeMirror 的 `Mod-b`）切换加粗；光标折叠时插入一对空标记，选中文本时在两侧加 `**`。
 - 三种模式的扩展通过同一个 Compartment 切换，`EditorView` 不重建。
