@@ -69,12 +69,12 @@ MyGo 0.7.3 的文件名都不含空格（youkai 的 0.6.2 是 `Youkai 0.0.1 arm6
 
 | 平台 | 路线 | 实际影响 | 状态 |
 | --- | --- | --- | --- |
-| macOS | MyGo 默认的 ad-hoc 本地签名，不做公证 | 在构建它的 Mac 上可运行；从网络下载到其他 Mac 时可能被 Gatekeeper 阻止。用户可能需要右键“打开”或到“系统设置 → 隐私与安全性”中逐次允许。具体提示与可用操作取决于 macOS 版本和管理策略。 | 2026-11-01 实测（macOS Apple Silicon，`test-v0.0.1`/`test-v0.0.2`）：`test-v0.0.1` 首次打开被 Gatekeeper 拦截，经“系统设置 → 隐私与安全性 → 仍要打开”后可运行；更新到 `test-v0.0.2` 后未再拦截。其他 macOS 版本与受管设备待实测。详见[发布后验证](#发布后验证)。 |
+| macOS | MyGo 默认的 ad-hoc 本地签名，不做公证 | 在构建它的 Mac 上可运行；从网络下载到其他 Mac 时可能被 Gatekeeper 阻止。用户可能需要右键“打开”或到“系统设置 → 隐私与安全性”中逐次允许。具体提示与可用操作取决于 macOS 版本和管理策略。 | 部分实测（2026-11-01，Apple Silicon），详见[发布后验证](#发布后验证)。 |
 | Windows | 不签名 | 新制品可能出现 SmartScreen 提示；Smart App Control 或设备策略可能直接阻止运行。 | 待实测 |
 | Linux | 不签名 | 没有系统级签名检查；`.deb` 只提供手工安装，未配置 apt 软件源。 | — |
 
 - 相关限制来自 MyGo 0.7.3 的分发文档和 Apple/Microsoft 的说明：[MyGo 分发](https://mygo.egoist.dev/docs/distribution)、[Apple 打开应用](https://support.apple.com/en-us/102445)、[SmartScreen](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation)、[Smart App Control](https://support.microsoft.com/en-us/windows/security/threat-malware-protection/smart-app-control-frequently-asked-questions)。
-- 以上 macOS 结果只覆盖 2026-11-01 的 Apple Silicon 设备与 `test-v0.0.1`/`test-v0.0.2`；不能据此推断其他 macOS 版本或受管设备的表现，也不能把“关闭整机保护”写成安装步骤，或承诺无提示启动、所有拦截都有“仍要运行”按钮。
+- 不能把实测结果推断到其他 macOS 版本、受管设备或其他系统；不能把“关闭整机保护”写成安装步骤，也不能承诺无提示启动或所有拦截都有“仍要运行”按钮。
 - 需要改善分发信任体验时再评估 Developer ID、公证和 Authenticode；它们不在当前 PR 与首版范围内。这些签名只影响首次打开的信任提示，不改变 MyGo 更新链：更新始终由内置公钥验签。
 
 ## Linux 的更新边界
@@ -96,11 +96,11 @@ Nicole 同时发布 `.deb` 与 `.tar.gz`；发布说明必须写清两种安装�
 
 - **资产核对** — 实测（2026-11-01，`test-v0.0.1`/`test-v0.0.2`）：两个 Release 的全部资产已下载并逐个核对 `SHA256SUMS`，全部一致；三个平台的 `update-*.json` 版本与 URL 都指向对应标签。
 - **版本与渠道** — 部分实测（2026-11-01，macOS）：
-  1. 测试版应用只检测到 `test-v` 渠道的新版本，正式版只检测到最新正式版；安装测试版不会把 `latest` 改成测试版。实测只确认了测试版 0.0.1 检测到 `test-v0.0.2`；正式版渠道待正式版发布后验证。
+  1. 实测确认测试版 0.0.1 能检测到 `test-v0.0.2`；测试版不读取正式版、正式版只检测最新正式版、首个正式版发布后测试版不会成为 `latest`：待实测。
   2. 首个正式版发布后，`https://github.com/LoTwT/nicole/releases/latest` 指向该版本；测试渠道仍按 `test-v` 前缀查找：待实测。
   - 无正式版期间，`releases/latest` 依次返回 `test-v0.0.1` 和 `test-v0.0.2`，与[上文](#版本号与两条渠道)的首个正式版前回退说明一致。
-- **检测与说明** — 部分实测（2026-11-01，macOS）：0.0.1 的“检查更新…”窗口显示 0.0.2 与 CHANGELOG 中对应小节的说明；更新后的 0.0.2 在启动约 13 秒后自动检查了一次（`updater.json` 的 `lastCheck` 与进程启动时间的差值）。
-  - 测试提示：0.0.1 在 0.0.2 发布前已启动，启动检查已经完成，运行期间不会因新版本自动弹窗；验证升级要在新版本发布后重启旧版本并等待启动检查完成，或直接使用“检查更新…”。检查周期见 [MyGo 参考](references/mygo.md#自动更新)。
+- **检测与说明** — 部分实测（2026-11-01，macOS）：0.0.1 的“检查更新…”窗口显示 0.0.2 和 CHANGELOG 中的说明；更新后的 0.0.2 在启动约 13 秒后自动检查了一次（`updater.json` 的 `lastCheck` 与进程启动时间的差值）。启动后自动检查发现新版本并显示版本号和说明：待实测。
+  - 测试提示：0.0.1 在 0.0.2 发布前已启动，启动时的检查已经做过，所以本次没有自动弹窗；验证升级要在新版本发布后重启旧版本并等待启动检查完成，或直接使用“检查更新…”。检查周期见 [MyGo 参考](references/mygo.md#自动更新)。
   - 说明文字与 CHANGELOG 小节逐字一致：待实测。
 - **安装与重启** — 部分实测（2026-11-01，macOS）：
   1. 从 0.0.1 安装 0.0.2 后应用自动重启，界面显示 v0.0.2，与标签一致；`Info.plist` 版本核对待实测。Windows 的文件属性或“应用和功能”、Linux 的可执行文件与菜单显示待实测。
