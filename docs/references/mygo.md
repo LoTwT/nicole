@@ -112,7 +112,7 @@ bunx mygo-cli@0.7.3 init <name>
   - `publicKey`：`mygo keygen` 生成的 `mygo-update.pub` 内容；`github`（`owner/name`）或 `url`（HTTPS 目录）二选一。
   - `tagPrefix`：默认 `v`。为 `v` 时应用读仓库 latest Release 的清单；其他前缀（如 `test-v`）时通过 GitHub API 找该前缀下最新的非草稿、非预发布 Release。
   - `privateKey`：签名私钥路径；`MYGO_UPDATER_PRIVATE_KEY` 环境变量优先。
-  - `changelog`：默认 `CHANGELOG.md`；每个版本必须有对应小节，接受 `## <version>`、`## v<version>`、`## [<version>] - 日期` 等写法，否则构建失败，小节文字进入清单的 `notes`。
+  - `changelog`：默认 `CHANGELOG.md`；每个版本必须有对应小节，接受 `## <version>`、`## v<version>`、`## [<version>] - 日期` 等写法；缺失或正文为空时构建失败，小节文字进入清单的 `notes`。
   - `deltas`：默认 3，对之前已发布的版本生成 `.delta`；首版没有已发布版本时跳过并提示。
 - 带私钥构建时，每个平台额外产出 `<slug>-<version>-<target>.tar.gz`（签名归档）、`update-<target>.json`（版本、说明、日期、归档/差量的 URL、大小、签名）和可选的差量文件。无私钥时只告警并跳过这些文件，**Linux 例外**：仍输出未签名的 `.tar.gz`（供 `install.sh` 手工安装）。
 - `mygo build -upload` 需要私钥与 `updates.github`/`updates.s3`，缺私钥会在构建前失败；它上传安装包、归档、脚本和 `SHA256SUMS`，清单最后上传。上传目标是 `tagPrefix + version` 的 Release，不存在时自动创建草稿。

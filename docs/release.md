@@ -43,7 +43,7 @@ updates: {
    3. **Windows job**（`ubuntu-latest`，先安装 NSIS 与 7-Zip）：`mygo build -platform windows/amd64 -upload`；校验 EXE、NSIS 安装包、`install.ps1`、归档与清单。
    4. **Linux job**（`ubuntu-latest`）：`mygo build -platform linux/amd64 -upload`；校验可执行文件、`.deb`（版本字段等于标签）、`install.sh`、归档与清单。
    5. **发布 job**（三个平台都成功后）：校验 Release 资产齐全，下载三份清单核对版本与标签，按实际资产重新生成并复核 `SHA256SUMS`；测试渠道以 `--draft=false --prerelease=false --latest=false` 发布，标题“Nicole <版本>（测试版，勿用）”，说明前加警示；正式渠道以 `--draft=false --prerelease=false --latest=true` 发布，标题“Nicole <版本>”。
-4. 失败处理：单平台失败可用 “Re-run failed jobs” 重跑，重跑以 `--clobber` 覆盖同一草稿里的同名资产；草稿 job 幂等（Release 已存在则不重建）。发布 job 会在发布前按实际资产重新生成并复核 `SHA256SUMS`，以修复并行上传可能造成的缺行；复核报告缺行或哈希不一致时，先按提示重跑对应平台的 job，再重跑发布 job，不要手动发布草稿。标签或 CHANGELOG 问题需要删远端标签重打（由主会话执行）或补小节后重新推送标签触发；已推送的标签不要在原标签上强推覆盖。
+4. 失败处理：单平台失败可用 “Re-run failed jobs” 重跑，重跑以 `--clobber` 覆盖同一草稿里的同名资产；草稿 job 幂等（Release 已存在则不重建）。发布 job 会在发布前按实际资产重新生成并复核 `SHA256SUMS`：Release 上没有该文件时直接重建；复核发现缺行时补回，发现平台文件哈希与 MyGo 记录不一致时失败并指出应重跑的平台 job。GitHub Actions 的 “Re-run failed jobs” 会重跑失败的 job 及其下游依赖，单个 job 的 “Re-run job” 也会重跑该 job 及其 dependent jobs（见 [REST API 说明](https://docs.github.com/rest/actions/workflow-runs#re-run-a-job-from-a-workflow-run)），所以按提示重跑平台 job 即可，发布 job 会自动重跑，不需要再手动重跑；不要手动发布草稿。标签或 CHANGELOG 问题需要删远端标签重打（由主会话执行）或补小节后重新推送标签触发；已推送的标签不要在原标签上强推覆盖。
 5. **首次发布重点看**：`MYGO_UPDATER_PRIVATE_KEY` 是否就位（否则三个平台在构建/校验阶段失败）；Windows job 的 NSIS 是否安装成功；Linux job 的 `.deb` 是否生成；发布 job 的资产清单是否与下表一致；发布后 latest 是否指向正式版。
 
 Release 资产一览（`<版本>` 为标签版本，表列为 GitHub 上的存储名）：

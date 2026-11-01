@@ -87,14 +87,59 @@ jobs:
           echo "channel prefix: $prefix, version: $version"
           # The update manifests carry the version's CHANGELOG.md section
           # as the in-app release notes; `mygo build` fails the release
-          # without it, and this early check names the fix.
-          esc=$(printf '%s' "$version" | sed 's/\./\\./g')
-          # MyGo accepts "## 0.0.1", "## v0.0.1" and the bracketed
-          # "## [0.0.1] - date" / "## [0.0.1](link)" forms
-          # (internal/update/update.go: headingVersion). The bracketed and
-          # plain forms are separate so "## 0.0.1]" does not pass.
-          if ! grep -Eq "^## (v?${esc}( |$)|\[v?${esc}(\]| |$))" CHANGELOG.md; then
-            echo "ERROR: CHANGELOG.md has no \"## $version\" section — add one (its text becomes the release notes of both channels)"
+          # without a non-empty one, and this early check names the fix.
+          # This ports MyGo 0.7.3's ReleaseNotes/headingVersion
+          # (internal/update/update.go) instead of approximating them with a
+          # regex: drop CR, take lines starting with "## " as headings, split
+          # the first field on whitespace, strip [] and a leading v, keep the
+          # first matching section, and require its body to be non-empty.
+          if ! awk -v version="$version" '
+            BEGIN {
+              target = version
+              sub(/^v/, "", target)
+              in_section = 0
+              found = 0
+              notes = ""
+            }
+            {
+              line = $0
+              sub(/\r$/, "", line)
+              if (substr(line, 1, 3) == "## ") {
+                if (in_section) {
+                  exit
+                }
+                rest = substr(line, 4)
+                sub(/^[ \t]+/, "", rest)
+                n = split(rest, fields, /[ \t]+/)
+                if (n == 0) {
+                  next
+                }
+                ver = fields[1]
+                if (substr(ver, 1, 1) == "[") {
+                  ver = substr(ver, 2)
+                  pos = index(ver, "]")
+                  if (pos > 0) {
+                    ver = substr(ver, 1, pos - 1)
+                  }
+                }
+                sub(/^v/, "", ver)
+                if (ver == target) {
+                  in_section = 1
+                  found = 1
+                }
+                next
+              }
+              if (in_section) {
+                notes = notes "\n" line
+              }
+            }
+            END {
+              if (!found || notes !~ /[^ \t\r\n]/) {
+                exit 1
+              }
+            }
+          ' CHANGELOG.md; then
+            echo "ERROR: CHANGELOG.md has no non-empty \"## $version\" section — add one (its text becomes the release notes of both channels; MyGo also accepts \"## v$version\" and \"## [$version] - date\")"
             exit 1
           fi
           NICOLE_RELEASE_VERSION="$version" NICOLE_RELEASE_TAG_PREFIX="$prefix" bun -e '
@@ -377,6 +422,16 @@ jobs:
             *) echo "ERROR: unexpected tag $tag (the workflow triggers on test-v* and v*)"; exit 1 ;;
           esac
           repo="${GITHUB_REPOSITORY}"
+          platform_job() {
+            case "$1" in
+              *.dmg|*darwin*) echo "macOS" ;;
+              *-setup-*.exe|*windows*) echo "Windows" ;;
+              *.deb|*linux*) echo "Linux" ;;
+              install.ps1) echo "Windows" ;;
+              install.sh) echo "macOS or Linux" ;;
+              *) echo "platform" ;;
+            esac
+          }
           assets=$(gh release view "$tag" --repo "$repo" --json assets -q '.assets[].name')
           # MyGo 0.7.3 names these files without spaces, but GitHub stores
           # every space of an uploaded name as a dot (youkai's 0.6.2 assets
@@ -393,13 +448,12 @@ jobs:
             "update-linux-amd64.json"
             "install.sh"
             "install.ps1"
-            "SHA256SUMS"
           )
           fail=0
           for name in "${need[@]}"; do
             stored="${name// /.}"
             if ! printf '%s\n' "$assets" | grep -Fxq "$stored"; then
-              echo "ERROR: the release is missing the asset: $stored"
+              echo "ERROR: the release is missing the asset: $stored — re-run the $(platform_job "$name") job"
               fail=1
             fi
           done
@@ -431,6 +485,14 @@ jobs:
           # scripts, not the manifests) and upload it over the old file.
           sums_dir=$(mktemp -d)
           gh release download "$tag" --repo "$repo" --dir "$sums_dir" --clobber
+          old_sums="$sums_dir/SHA256SUMS.mygo"
+          if [ -f "$sums_dir/SHA256SUMS" ]; then
+            mv "$sums_dir/SHA256SUMS" "$old_sums"
+            echo "--- MyGo SHA256SUMS before regeneration ---"
+            cat "$old_sums"
+          else
+            echo "NOTE: the release has no SHA256SUMS; rebuilding it from the assets"
+          fi
           shopt -s nullglob
           sum_files=()
           for f in "$sums_dir"/*.dmg "$sums_dir"/*-setup-*.exe "$sums_dir"/*.deb "$sums_dir"/*.tar.gz "$sums_dir"/*.delta "$sums_dir"/install.sh "$sums_dir"/install.ps1; do
@@ -446,6 +508,71 @@ jobs:
           done | LC_ALL=C sort -k2 > "$sums_dir/SHA256SUMS"
           echo "--- regenerated SHA256SUMS ---"
           cat "$sums_dir/SHA256SUMS"
+          if [ -f "$old_sums" ]; then
+            fail=0
+            added=0
+            stale=0
+            awk -v old_file="$old_sums" '
+              function parse(line,   sum, name) {
+                sub(/\r$/, "", line)
+                if (length(line) < 67) return ""
+                sum = tolower(substr(line, 1, 64))
+                if (substr(line, 65, 2) != "  " || sum !~ /^[0-9a-f]+$/) return ""
+                name = substr(line, 67)
+                if (name == "") return ""
+                return sum "\t" name
+              }
+              FILENAME == old_file {
+                entry = parse($0)
+                if (entry != "") {
+                  split(entry, parts, "\t")
+                  old[parts[2]] = parts[1]
+                }
+                next
+              }
+              {
+                entry = parse($0)
+                if (entry != "") {
+                  split(entry, parts, "\t")
+                  new[parts[2]] = parts[1]
+                }
+              }
+              END {
+                for (name in new) {
+                  if (name in old) {
+                    if (old[name] != new[name]) print "MISMATCH\t" name
+                  } else {
+                    print "ADDED\t" name
+                  }
+                }
+                for (name in old) {
+                  if (!(name in new)) print "STALE\t" name
+                }
+              }
+            ' "$old_sums" "$sums_dir/SHA256SUMS" | LC_ALL=C sort > "$sums_dir/checksum-report"
+            while IFS=$'\t' read -r kind name; do
+              case "$kind" in
+                MISMATCH)
+                  echo "ERROR: MyGo's SHA256SUMS has a different hash for $name — re-run the $(platform_job "$name") job"
+                  fail=1
+                  ;;
+                ADDED)
+                  added=$((added + 1))
+                  echo "NOTE: MyGo's SHA256SUMS had no line for $name; restored the line lost in parallel merging"
+                  ;;
+                STALE)
+                  stale=$((stale + 1))
+                  echo "NOTE: MyGo's SHA256SUMS lists $name, which is not a release asset; ignoring it"
+                  ;;
+              esac
+            done < "$sums_dir/checksum-report"
+            if [ "$fail" -ne 0 ]; then
+              echo "--- checksum comparison ---"
+              cat "$sums_dir/checksum-report"
+              exit 1
+            fi
+            echo "SHA256SUMS comparison: restored $added lines, ignored $stale stale lines"
+          fi
           gh release upload "$tag" "$sums_dir/SHA256SUMS" --repo "$repo" --clobber
           # Verify the uploaded file against a fresh download of every asset:
           # the bytes must match the regenerated file, each line must match
@@ -453,11 +580,11 @@ jobs:
           verify_dir=$(mktemp -d)
           gh release download "$tag" --repo "$repo" --dir "$verify_dir" --clobber
           if ! cmp -s "$sums_dir/SHA256SUMS" "$verify_dir/SHA256SUMS"; then
-            echo "ERROR: the uploaded SHA256SUMS differs from the regenerated file"
+            echo "ERROR: the uploaded SHA256SUMS differs from the regenerated file — re-run this publish job"
             exit 1
           fi
           if ! ( cd "$verify_dir" && sha256sum -c --strict SHA256SUMS ); then
-            echo "ERROR: an asset does not match SHA256SUMS — re-run the platform job that produced the FAILED file above, then this job"
+            echo "ERROR: an asset does not match SHA256SUMS — re-run this publish job"
             exit 1
           fi
           has_sum() {
@@ -484,15 +611,7 @@ jobs:
             if has_sum "$stored"; then
               continue
             fi
-            case "$name" in
-              *.dmg|*darwin*) job="macOS" ;;
-              *-setup-*.exe|*windows*) job="Windows" ;;
-              *.deb|*linux*) job="Linux" ;;
-              install.ps1) job="Windows" ;;
-              install.sh) job="macOS or Linux" ;;
-              *) job="platform" ;;
-            esac
-            echo "ERROR: SHA256SUMS has no line for $stored — re-run the $job job, then this job"
+            echo "ERROR: SHA256SUMS has no line for $stored — re-run the $(platform_job "$name") job"
             fail=1
           done
           for f in "$verify_dir"/*.delta; do
@@ -501,7 +620,7 @@ jobs:
             fi
             stored=$(basename "$f")
             if ! has_sum "$stored"; then
-              echo "ERROR: SHA256SUMS has no line for $stored — re-run the platform job that produced it, then this job"
+              echo "ERROR: SHA256SUMS has no line for $stored — re-run the platform job that produced it"
               fail=1
             fi
           done
