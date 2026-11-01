@@ -24,7 +24,7 @@
 - 只渲染可见内容。
 - Widget 实现 `eq`，避免不必要的重建。
 - 懒加载：公式、图表、代码块高亮等按需加载。
-- 切到后台的标签页只保留文本，销毁编辑器视图。
+- 切到后台的标签页只保留文本和恢复所需的少量状态（选区、滚动位置、撤销历史），销毁编辑器视图（见[界面与交互](ui.md#后台标签页与恢复)）。
 - 使用单窗口加标签页，避免多余的 WebKit 页面进程（见[工作区模式](workspace.md#工作区模式)）。
 - Go 端设置 `GOMEMLIMIT`。
 - Go 端不缓存文件内容。
@@ -49,4 +49,4 @@ scripts/measure-memory.sh --budget 120
 
 ## 内存基线的更新约定
 
-可能影响内存的 PR 合并后，在最新的 `main` 上构建 `.app`，运行 `scripts/measure-memory.sh --budget 120` 测一次空载，把 `total_mb`、`attribution`、构建提交和度量环境写进 PR 描述；与[内存基线](../references/memory-baseline.md)的最新数字比较，差异明显时说明原因。
+每个界面 PR，以及其他可能影响内存的 PR，合并后在最新的 `main` 上构建 `.app`，运行 `scripts/measure-memory.sh --budget 120` 测一次空载，把 `total_mb`、`attribution`、构建提交和度量环境写进 PR 描述；与[内存基线](../references/memory-baseline.md)的最新数字比较。`total_mb` 比最新基线高出 10MB 或更多时，在 PR 描述中说明原因，并由用户确认；不要求在该 PR 中优化。内存优化在功能基本完成后统一进行，在此之前只记录。
