@@ -17,7 +17,7 @@ BUDGET_MB=
 APP_PATH=
 
 # How long to wait for the main process to appear, and for how long a single
-# candidate without a visible launch token must remain alone before it is
+# candidate whose environment is unreadable must remain alone before it is
 # accepted. Detection and stabilization are timed separately.
 DETECT_TIMEOUT_SECONDS=30
 FALLBACK_STABLE_SECONDS=10
@@ -181,6 +181,8 @@ pid_list_contains() {
 # `open -n` does not return a PID, and another instance of the same build can
 # start at the same time. Every launch gets a random token in its environment;
 # macOS exposes it through `ps -E`, so only the process carrying it is ours.
+# An instance whose environment is readable but lacks the token is another
+# instance, never a fallback candidate.
 if command -v uuidgen >/dev/null 2>&1; then
   LAUNCH_TOKEN=$(uuidgen | tr -d '-')
 else
@@ -188,12 +190,15 @@ else
 fi
 LAUNCH_TOKEN_VAR=NICOLE_MEASURE_TOKEN
 
-process_has_launch_token() {
-  output=$(ps -Eww -p "$1" 2>/dev/null) || return 1
+process_token_state() {
+  output=$(ps -Eww -p "$1" 2>/dev/null) || { printf 'no-env'; return 0; }
   case $output in
-    *"$LAUNCH_TOKEN_VAR=$LAUNCH_TOKEN"*) return 0 ;;
+    *"$LAUNCH_TOKEN_VAR=$LAUNCH_TOKEN"*) printf 'token'; return 0 ;;
   esac
-  return 1
+  case $output in
+    *"HOME="*|*"__CFBundleIdentifier="*) printf 'env-visible'; return 0 ;;
+  esac
+  printf 'no-env'
 }
 
 # WebKit helpers share the resource coalition of the app that started them, and
@@ -247,6 +252,7 @@ LAUNCHED_PID=
 LAUNCHED_START=
 MAIN_PID=
 TOKEN_VERIFIED=0
+LAUNCH_ATTEMPTED=0
 
 # PIDs whose executable is the given app executable and that did not exist
 # before the launch.
@@ -288,7 +294,7 @@ stop_launched_instance() {
       LAUNCHED_PID=
       return 1
     fi
-  elif ! process_has_launch_token "$LAUNCHED_PID"; then
+  elif [ "$(process_token_state "$LAUNCHED_PID")" != "token" ]; then
     warn "refusing to stop pid $LAUNCHED_PID: it does not carry the launch token"
     LAUNCHED_PID=
     return 1
@@ -319,7 +325,27 @@ stop_launched_instance() {
 }
 
 cleanup() {
-  stop_launched_instance
+  if [ -n "$LAUNCHED_PID" ]; then
+    stop_launched_instance
+    return 0
+  fi
+  [ "$LAUNCH_ATTEMPTED" -eq 1 ] || return 0
+  # The launch was attempted but no PID was claimed yet, for example because a
+  # signal arrived right after `open`. Poll for a token match for a few
+  # seconds and stop only that instance; never signal an unmarked process.
+  cleanup_deadline=$(( $(date +%s) + 5 ))
+  while :; do
+    for pid in $(new_main_pids); do
+      if [ "$(process_token_state "$pid")" = "token" ]; then
+        if select_launched_pid "$pid"; then
+          stop_launched_instance
+        fi
+        return 0
+      fi
+    done
+    [ "$(date +%s)" -ge "$cleanup_deadline" ] && return 0
+    sleep 0.2
+  done
 }
 trap cleanup EXIT
 trap 'exit 130' INT
@@ -328,12 +354,16 @@ trap 'exit 143' TERM
 printf 'App: %s\n' "$APP_PATH"
 printf 'Waiting %s seconds after the app process appears.\n' "$WAIT_SECONDS"
 
-open -n --env "$LAUNCH_TOKEN_VAR=$LAUNCH_TOKEN" "$APP_PATH" ||
+LAUNCH_ATTEMPTED=1
+if ! open -n --env "$LAUNCH_TOKEN_VAR=$LAUNCH_TOKEN" "$APP_PATH"; then
+  LAUNCH_ATTEMPTED=0
   fail "open -n failed for $APP_PATH"
+fi
 
-# Detect the instance. A token match always wins; a single candidate without a
-# visible token is accepted only after it has remained alone for a few seconds.
-# Several candidates without a token abort without signaling anything.
+# Detect the instance. A token match always wins. A process whose environment
+# is readable but lacks the token belongs to another instance and is excluded.
+# Only when the environment cannot be read at all is a single candidate
+# accepted after it has stayed alone for a few seconds.
 launch_started=$(date +%s)
 detect_deadline=$((launch_started + DETECT_TIMEOUT_SECONDS))
 fallback_since=
@@ -342,24 +372,27 @@ while :; do
   now=$(date +%s)
   new_pids=$(new_main_pids)
   token_pid=
+  noenv_pids=
   for pid in $new_pids; do
-    if process_has_launch_token "$pid"; then
-      token_pid=$pid
-      break
-    fi
+    case $(process_token_state "$pid") in
+      token) token_pid=$pid ;;
+      no-env) noenv_pids="${noenv_pids:+$noenv_pids }$pid" ;;
+      *) ;; # env-visible without the token: another instance
+    esac
   done
+
   if [ -n "$token_pid" ]; then
     if select_launched_pid "$token_pid"; then
       TOKEN_VERIFIED=1
       break
     fi
     # The process vanished between the checks; keep waiting.
-    new_pids=$(new_main_pids)
+    noenv_pids=
   fi
 
   candidate_count=0
   only_pid=
-  for pid in $new_pids; do
+  for pid in $noenv_pids; do
     candidate_count=$((candidate_count + 1))
     only_pid=$pid
   done
@@ -380,28 +413,20 @@ while :; do
   fi
 
   if [ "$now" -ge "$detect_deadline" ]; then
-    # Re-check before failing. Stop only an instance confirmed by the token; a
-    # lone candidate without the token is still the only possible match.
-    late_pids=$(new_main_pids)
-    late_pid=
-    late_count=0
-    for pid in $late_pids; do
-      late_count=$((late_count + 1))
-      if process_has_launch_token "$pid"; then
-        late_pid=$pid
+    # Only a token match may be stopped here. A lone unmarked instance is not
+    # proof that this script launched it, so it is left alone.
+    late_token=
+    for pid in $(new_main_pids); do
+      if [ "$(process_token_state "$pid")" = "token" ]; then
+        late_token=$pid
+        break
       fi
     done
-    if [ -n "$late_pid" ]; then
-      if select_launched_pid "$late_pid"; then
-        stop_launched_instance || true
-      fi
-      LAUNCHED_PID=
-      LAUNCHED_START=
-      fail "the app did not start within ${DETECT_TIMEOUT_SECONDS}s; the late instance was stopped"
-    fi
-    if [ "$late_count" -eq 1 ]; then
-      if select_launched_pid "$late_pids"; then
-        stop_launched_instance || true
+    if [ -n "$late_token" ]; then
+      if select_launched_pid "$late_token"; then
+        if stop_launched_instance; then
+          LAUNCH_ATTEMPTED=0
+        fi
       fi
       LAUNCHED_PID=
       LAUNCHED_START=
@@ -409,10 +434,7 @@ while :; do
     fi
     LAUNCHED_PID=
     LAUNCHED_START=
-    if [ "$late_count" -gt 1 ]; then
-      fail "multiple new instances of $APP_PATH appeared and the launch token is not visible; refusing to guess (no signal sent; instances remain running)"
-    fi
-    fail "the app did not start within ${DETECT_TIMEOUT_SECONDS}s"
+    fail "the app did not start within ${DETECT_TIMEOUT_SECONDS}s; no token instance was found"
   fi
   sleep 0.2
 done
@@ -427,12 +449,14 @@ kill -0 "$LAUNCHED_PID" 2>/dev/null ||
   fail "the launched app exited during the ${WAIT_SECONDS}s stabilization window"
 
 if [ "$TOKEN_VERIFIED" -eq 0 ]; then
-  # Fallback mode: without a visible token another instance would be
-  # indistinguishable, so abort rather than signal the wrong process.
+  # Fallback mode: another instance without a readable environment would be
+  # indistinguishable, so abort rather than signal the wrong process. An
+  # instance whose environment is readable but lacks the token is not a
+  # candidate and does not count here.
   other_count=0
   for pid in $(new_main_pids); do
     [ "$pid" = "$LAUNCHED_PID" ] && continue
-    other_count=$((other_count + 1))
+    [ "$(process_token_state "$pid")" = "no-env" ] && other_count=$((other_count + 1))
   done
   if [ "$other_count" -gt 0 ]; then
     LAUNCHED_PID=
@@ -518,10 +542,10 @@ if [ -n "$FOREIGN_PIDS" ]; then
 fi
 
 MAIN_PID=$LAUNCHED_PID
-stop_launched_instance || true
-if kill -0 "$MAIN_PID" 2>/dev/null; then
-  fail "the launched instance (pid $MAIN_PID) is still running; not reporting a total"
+if ! stop_launched_instance; then
+  fail "the launched instance (pid $MAIN_PID) could not be stopped"
 fi
+LAUNCH_ATTEMPTED=0
 
 # Give WebKit a moment to reap the helpers, then note any that are still alive.
 # With coalition attribution they are known to belong to the app, so a late

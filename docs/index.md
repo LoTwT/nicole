@@ -16,7 +16,7 @@
 | [specs/theming.md](specs/theming.md) | 接入主题、字体或自定义 CSS，或处理亮暗切换和导出预览时。 |
 | [specs/performance.md](specs/performance.md) | 评估内存占用、实现性能优化或复测基线时。 |
 | [references/mygo.md](references/mygo.md) | 使用 MyGo 的绑定、IPC、插件、分发或自动更新，或核对版本状态时。 |
-| [references/memory-baseline.md](references/memory-baseline.md) | 查看 2026-10-31 的 footprint 实测数据、打包体积和口径说明时。 |
+| [references/memory-baseline.md](references/memory-baseline.md) | 查看内存基线（2026-11-01 `main` 及 2026-10-31 演示）、打包体积和口径说明时。 |
 | [references/ayingott-theme.md](references/ayingott-theme.md) | 确认 `@ayingott/theme` 0.3.0 的能力、限制或字体文件问题时。 |
 
 ## 目录约定
