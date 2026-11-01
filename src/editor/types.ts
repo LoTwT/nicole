@@ -15,18 +15,25 @@ export interface EditorCommand {
 export type ImageResolver = (src: string) => string | null;
 
 /**
- * Called when an image is on the clipboard and the editor is about to paste
- * it. `at` is the document position to insert at; the caller saves the image
- * and calls insertImages. Returning nothing prevents the default paste.
+ * A position that the editor keeps mapped while the document changes. Obtain
+ * one from createInsertionTicket or onPasteImage and pass it to insertImages.
  */
-export type PasteImageHandler = (at: number) => void;
+export interface InsertionTicket {
+  readonly id: number;
+}
 
 /**
- * Called when files are dropped inside the editor. `at` is the drop position;
- * the caller saves the images and calls insertImages. The DOM gives no local
- * paths, so the app receives them from MyGo's window file-drop event.
+ * Called when an image is on the clipboard and the editor is about to paste
+ * it. The ticket tracks the insertion position until insertImages is called.
  */
-export type DropFilesHandler = (at: number) => void;
+export type PasteImageHandler = (ticket: InsertionTicket) => void;
+
+/**
+ * Called after the editor intercepted files dropped inside it. The paths and
+ * the one-time token arrive through the MyGo file-drop event; the event's
+ * coordinates create the insertion ticket through createInsertionTicket.
+ */
+export type DropFilesHandler = () => void;
 
 export interface CreateEditorOptions {
   parent: HTMLElement;
@@ -45,11 +52,16 @@ export interface EditorHandle {
   readonly mode: EditorMode;
   setMode(mode: EditorMode): void;
   /**
-   * Inserts Markdown snippets at `at` as one undo step. During an IME
-   * composition the insertion waits, so it cannot interrupt the candidate
-   * window.
+   * Creates a ticket at the document position under the given viewport
+   * coordinates. Returns null when the point is outside the editor.
    */
-  insertImages(at: number, markdown: readonly string[]): void;
+  createInsertionTicket(x: number, y: number): InsertionTicket | null;
+  /**
+   * Inserts Markdown snippets at the ticket's current position as one undo
+   * step. During an IME composition the insertion waits, so it cannot
+   * interrupt the candidate window. An empty list releases the ticket.
+   */
+  insertImages(ticket: InsertionTicket, markdown: readonly string[]): void;
   focus(): void;
   destroy(): void;
 }

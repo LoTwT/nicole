@@ -31,6 +31,7 @@ import type {
   EditorHandle,
   EditorMode,
   ImageResolver,
+  InsertionTicket,
   PasteImageHandler,
 } from "./types";
 
@@ -41,6 +42,7 @@ export type {
   EditorHandle,
   EditorMode,
   ImageResolver,
+  InsertionTicket,
   PasteImageHandler,
 } from "./types";
 
@@ -593,30 +595,35 @@ function transferHasFiles(data: DataTransfer | null): boolean {
 function imageHandlers(
   onPasteImage: PasteImageHandler | undefined,
   onDropFiles: DropFilesHandler | undefined,
+  createTicketAt: (at: number) => InsertionTicket,
 ): Extension {
   return EditorView.domEventHandlers({
     paste(event, view) {
       if (!onPasteImage || !clipboardHasImage(event.clipboardData)) return false;
       event.preventDefault();
-      onPasteImage(view.state.selection.main.head);
+      onPasteImage(createTicketAt(view.state.selection.main.head));
       return true;
     },
-    drop(event, view) {
-      if (!onDropFiles || !transferHasFiles(event.dataTransfer)) return false;
-      // The browser would otherwise navigate to the dropped file.
+    drop(event) {
+      if (!transferHasFiles(event.dataTransfer)) return false;
+      // The browser would otherwise navigate to the dropped file. The native
+      // MyGo drop event supplies the paths and the coordinates for the
+      // insertion ticket.
       event.preventDefault();
-      const at =
-        view.posAtCoords({ x: event.clientX, y: event.clientY }) ??
-        view.state.selection.main.head;
-      onDropFiles(at);
+      onDropFiles?.();
       return true;
     },
   });
 }
 
 interface PendingInsertion {
-  at: number;
+  ticketId: number;
   text: string;
+}
+
+interface TicketState {
+  id: number;
+  at: number;
 }
 
 export function createEditor(options: CreateEditorOptions): EditorHandle {
@@ -640,12 +647,20 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
   );
 
   // An image insertion may arrive while an IME composition is still running.
-  // It waits, and its position follows edits until the composition ends, so
-  // the candidate window is never interrupted and the text lands where the
-  // user dropped or pasted it.
+  // It waits, and its ticket follows edits until the composition ends, so the
+  // candidate window is never interrupted and the text lands where the user
+  // dropped or pasted it.
   const pendingInsertions: PendingInsertion[] = [];
+  const tickets = new Map<number, TicketState>();
+  let nextTicketID = 1;
   let insertionScheduled = false;
   let view: EditorView;
+
+  const createTicketAt = (at: number): InsertionTicket => {
+    const ticket: TicketState = { id: nextTicketID++, at };
+    tickets.set(ticket.id, ticket);
+    return ticket;
+  };
 
   const insertTextAt = (at: number, text: string) => {
     const position = Math.max(0, Math.min(at, view.state.doc.length));
@@ -664,10 +679,14 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
 
   const flushPendingInsertions = () => {
     insertionScheduled = false;
-    if (pendingInsertions.length === 0) return;
     if (view.compositionStarted || view.composing) return;
-    const pending = pendingInsertions.splice(0);
-    for (const insertion of pending) insertTextAt(insertion.at, insertion.text);
+    while (pendingInsertions.length > 0) {
+      const pending = pendingInsertions.shift()!;
+      const ticket = tickets.get(pending.ticketId);
+      if (!ticket) continue;
+      insertTextAt(ticket.at, pending.text);
+      tickets.delete(ticket.id);
+    }
   };
 
   const scheduleInsertion = () => {
@@ -676,14 +695,20 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     queueMicrotask(flushPendingInsertions);
   };
 
-  const insertImages = (at: number, markdown: readonly string[]) => {
+  const insertImages = (ticket: InsertionTicket, markdown: readonly string[]) => {
+    const current = tickets.get(ticket.id);
+    if (!current) return;
     const text = markdown.filter((item) => item !== "").join("\n");
-    if (text === "") return;
-    if (view.compositionStarted || view.composing) {
-      pendingInsertions.push({ at, text });
+    if (text === "") {
+      tickets.delete(ticket.id);
       return;
     }
-    insertTextAt(at, text);
+    if (view.compositionStarted || view.composing) {
+      pendingInsertions.push({ ticketId: ticket.id, text });
+      return;
+    }
+    insertTextAt(current.at, text);
+    tickets.delete(ticket.id);
   };
 
   const onCompositionEnd = () => {
@@ -702,11 +727,11 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
         editorTheme,
         // App commands must win over basicSetup's default keymap.
         Prec.high(keymap.of(bindings)),
-        imageHandlers(onPasteImage, onDropFiles),
+        imageHandlers(onPasteImage, onDropFiles, createTicketAt),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) {
-            for (const insertion of pendingInsertions) {
-              insertion.at = update.changes.mapPos(insertion.at);
+            for (const ticket of tickets.values()) {
+              ticket.at = update.changes.mapPos(ticket.at, 1);
             }
             onChange?.(update.state.doc.toString());
           }
@@ -740,12 +765,18 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
         ),
       });
     },
+    createInsertionTicket(x, y) {
+      const at = view.posAtCoords({ x, y });
+      if (at === null) return null;
+      return createTicketAt(at);
+    },
     insertImages,
     focus() {
       view.focus();
     },
     destroy() {
       pendingInsertions.length = 0;
+      tickets.clear();
       view.contentDOM.removeEventListener("compositionend", onCompositionEnd);
       view.destroy();
     },

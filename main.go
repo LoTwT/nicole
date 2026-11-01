@@ -111,6 +111,12 @@ func main() {
 				event.PreventDefault()
 			}
 		})
+		// Native drops carry paths the page cannot see. Keep them in Go and
+		// send the page a one-time token plus the drop position.
+		window.OnFileDrop(newAssetDropHandler(assets, func(drop AssetDrop) error {
+			return assetFileDrop.Emit(window, drop)
+		}))
+		blockImageNavigation(window.Page())
 	})
 
 	if err := mygo.App.Run(); err != nil {

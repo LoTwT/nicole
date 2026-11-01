@@ -18,15 +18,27 @@ async function settle() {
   await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 }
 
+function ticketAt(instance: EditorHandle, at: number) {
+  vi.spyOn(instance.view, "posAtCoords").mockReturnValue(at);
+  const ticket = instance.createInsertionTicket(0, 0);
+  if (!ticket) throw new Error("ticket was not created");
+  return ticket;
+}
+
 function pasteEvent(items: Array<{ kind: string; type: string }>) {
   const event = new Event("paste", { bubbles: true, cancelable: true });
   Object.defineProperty(event, "clipboardData", {
-    value: { items, files: [], types: items.map((item) => item.type), getData: () => "" },
+    value: {
+      items,
+      files: [],
+      types: items.map((item) => item.type),
+      getData: () => "",
+    },
   });
   return event;
 }
 
-function dropEvent(types: string[], clientX = 0, clientY = 0) {
+function dropEvent(types: string[]) {
   const event = new Event("drop", { bubbles: true, cancelable: true });
   Object.defineProperty(event, "dataTransfer", {
     value: {
@@ -34,8 +46,6 @@ function dropEvent(types: string[], clientX = 0, clientY = 0) {
       types,
     },
   });
-  Object.defineProperty(event, "clientX", { value: clientX });
-  Object.defineProperty(event, "clientY", { value: clientY });
   return event;
 }
 
@@ -58,7 +68,7 @@ afterEach(() => {
 });
 
 describe("image insertion", () => {
-  it("reports an image paste at the selection and blocks the default paste", () => {
+  it("reports an image paste ticket and blocks the default paste", () => {
     const onPasteImage = vi.fn();
     const instance = mount({ parent, doc, onPasteImage });
     const view = instance.view;
@@ -68,7 +78,10 @@ describe("image insertion", () => {
     view.contentDOM.dispatchEvent(event);
 
     expect(event.defaultPrevented).toBe(true);
-    expect(onPasteImage).toHaveBeenCalledWith(3);
+    expect(onPasteImage).toHaveBeenCalledTimes(1);
+    const ticket = onPasteImage.mock.calls[0]![0];
+    instance.insertImages(ticket, ["![](a.png)"]);
+    expect(view.state.doc.toString()).toBe("# 标![](a.png)题\n\n正文\n");
   });
 
   it("leaves text-only paste to the editor", () => {
@@ -81,49 +94,104 @@ describe("image insertion", () => {
     expect(onPasteImage).not.toHaveBeenCalled();
   });
 
-  it("reports file drops at the cursor", () => {
+  it("reports file drops after blocking the browser default", () => {
     const onDropFiles = vi.fn();
     const instance = mount({ parent, doc, onDropFiles });
-    const view = instance.view;
-    view.dispatch({ selection: { anchor: 4 } });
-    vi.spyOn(view, "posAtCoords").mockReturnValue(null);
 
     const event = dropEvent(["Files"]);
-    view.contentDOM.dispatchEvent(event);
+    instance.view.contentDOM.dispatchEvent(event);
 
     expect(event.defaultPrevented).toBe(true);
-    expect(onDropFiles).toHaveBeenCalledWith(4);
+    expect(onDropFiles).toHaveBeenCalledTimes(1);
+  });
+
+  it("creates a ticket only for points inside the editor", () => {
+    const instance = mount();
+    vi.spyOn(instance.view, "posAtCoords").mockReturnValue(null);
+
+    expect(instance.createInsertionTicket(1, 2)).toBeNull();
   });
 
   it("inserts Markdown as one undo step", () => {
     const instance = mount();
     const view = instance.view;
+    const ticket = ticketAt(instance, 0);
 
-    instance.insertImages(0, ["![](a.png)", "![](b.png)"]);
+    instance.insertImages(ticket, ["![](a.png)", "![](b.png)"]);
 
     expect(view.state.doc.toString()).toBe("![](a.png)\n![](b.png)\n" + doc);
     undo(view);
     expect(view.state.doc.toString()).toBe(doc);
   });
 
-  it("keeps image insertion separate from typing before it", async () => {
+  it("maps a ticket through edits before the image arrives", () => {
+    const instance = mount();
+    const view = instance.view;
+    const ticket = ticketAt(instance, 6);
+
+    view.dispatch({ changes: { from: 0, insert: "XY" } });
+    instance.insertImages(ticket, ["![](a.png)"]);
+
+    expect(view.state.doc.toString()).toBe(
+      "XY# 标题\n\n![](a.png)\n正文\n",
+    );
+  });
+
+  it("keeps image insertion separate from typing before it", () => {
     const instance = mount();
     const view = instance.view;
 
     view.dispatch({ changes: { from: 0, insert: "输入" }, selection: { anchor: 2 } });
-    instance.insertImages(2, ["![](a.png)"]);
+    const ticket = ticketAt(instance, 2);
+    view.dispatch({ changes: { from: 0, insert: "前缀" } });
+    instance.insertImages(ticket, ["![](a.png)"]);
 
     undo(view);
-    expect(view.state.doc.toString()).toBe("输入" + doc);
+    expect(view.state.doc.toString()).toBe("前缀输入" + doc);
+  });
+
+  it("maps a queued ticket through edits during an IME composition", async () => {
+    const instance = mount();
+    const view = instance.view;
+    composition(view, "compositionstart");
+    const ticket = ticketAt(instance, 6);
+
+    view.dispatch({ changes: { from: 0, insert: "XY" } });
+    instance.insertImages(ticket, ["![](a.png)"]);
+    expect(view.state.doc.toString()).toBe("XY" + doc);
+
+    composition(view, "compositionend");
     await settle();
+
+    expect(view.state.doc.toString()).toBe(
+      "XY# 标题\n\n![](a.png)\n正文\n",
+    );
+  });
+
+  it("maps the second of two queued insertions", async () => {
+    const instance = mount();
+    const view = instance.view;
+    composition(view, "compositionstart");
+    const first = ticketAt(instance, 6);
+    const second = ticketAt(instance, 6);
+
+    instance.insertImages(first, ["![](a.png)"]);
+    instance.insertImages(second, ["![](b.png)"]);
+    composition(view, "compositionend");
+    await settle();
+
+    expect(view.state.doc.toString()).toBe(
+      "# 标题\n\n![](a.png)\n![](b.png)\n正文\n",
+    );
   });
 
   it("waits for an IME composition before inserting", async () => {
     const instance = mount();
     const view = instance.view;
     composition(view, "compositionstart");
+    const ticket = ticketAt(instance, 0);
 
-    instance.insertImages(0, ["![](a.png)"]);
+    instance.insertImages(ticket, ["![](a.png)"]);
     expect(view.state.doc.toString()).toBe(doc);
 
     composition(view, "compositionend");
@@ -132,11 +200,14 @@ describe("image insertion", () => {
     expect(view.state.doc.toString()).toBe("![](a.png)\n" + doc);
   });
 
-  it("does nothing for an empty insertion", () => {
+  it("releases a ticket for an empty insertion", () => {
     const instance = mount();
     const view = instance.view;
+    const ticket = ticketAt(instance, 0);
 
-    instance.insertImages(0, []);
+    instance.insertImages(ticket, []);
+    instance.insertImages(ticket, ["![](a.png)"]);
+
     expect(view.state.doc.toString()).toBe(doc);
   });
 });

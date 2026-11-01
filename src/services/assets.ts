@@ -1,37 +1,34 @@
-import { onFileDrop } from "mygo-runtime";
+import { Assets, events, type AssetDrop, type SavedImage } from "./mygo";
 
-import { Assets, type SavedImage } from "./mygo";
+export type { AssetDrop, SavedImage };
 
-export type { SavedImage };
-
-/** Saves the system clipboard image below the workspace's assets folder. */
+/** Saves clipboard images below the workspace's assets folder. */
 export function pasteImage(
   docPath: string,
   generation: number,
-): Promise<SavedImage> {
+): Promise<SavedImage[]> {
   return Assets.pasteImage(docPath, generation);
 }
 
-/** Copies dropped image files into the workspace's assets folder. */
+/** Copies the images of a native drop selected by dropToken into assets/. */
 export function importImages(
   docPath: string,
   generation: number,
-  sources: string[],
+  dropToken: string,
 ): Promise<SavedImage[]> {
-  return Assets.importImages(docPath, generation, sources);
+  return Assets.importImages(docPath, generation, dropToken);
 }
 
 /**
- * Subscribes to files dropped on the window with their local paths. DOM drop
- * events carry no paths, so the editor only reports the position and this
- * event supplies the files. Returns a no-op outside a MyGo window, where
- * there is no drop bridge.
+ * Subscribes to native file drops. The event carries a one-time token and the
+ * drop position; the paths stay in Go. Returns a no-op outside a MyGo window,
+ * where there is no native drop bridge.
  */
 export function onWindowFileDrop(
-  handler: (paths: string[]) => void,
+  handler: (drop: AssetDrop) => void,
 ): () => void {
   try {
-    return onFileDrop((drop) => handler(drop.paths));
+    return events.assetsFileDrop.on(handler);
   } catch {
     return () => {};
   }

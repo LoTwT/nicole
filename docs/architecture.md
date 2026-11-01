@@ -36,6 +36,7 @@ src/
   sample.ts               示例文本
   style.css               Tailwind、主题和字体变量
   image-url.ts            把 Markdown 图片 URL 解析成自定义协议地址
+  image-insertion.ts      粘贴、拖入图片与编辑器插入凭据的接线
   editor/                 纯 TypeScript，不依赖 Vue 和 MyGo
     index.ts              createEditor、三种模式、widgets、核心命令、图片插入
     types.ts              对外类型
@@ -52,8 +53,8 @@ Go（main.go）
   updater.Plugin          Sparkle 风格更新窗口与“检查更新…”菜单（当前）
   watch 插件（watch.New） 按当前工作区动态授权监听根目录（当前）
   Workspace               选择文件夹、列 Markdown、代际绑定写入、关窗保存（当前）
-  Assets                  图片存到 assets/，读剪贴板和拖入文件（当前）
-  Image protocol          只映射当前工作区的图片（当前；启动时注册，运行时读工作区根）
+  Assets                  图片存到 assets/，读剪贴板和原生拖入路径（当前）
+  Image protocol          只映射当前工作区的图片，并阻止顶层导航（当前；启动时注册）
   Window state            启动时在光标屏幕居中，沿用上次尺寸（当前）
   Search                  通过 Channel 流式返回结果（后续）
   Settings                全局配置 + 工作区配置（后续）
@@ -86,13 +87,13 @@ Go（main.go）
     mode,          // 默认 "live"
     commands,      // 应用层命令；目前注册其中带 key 的绑定，核心 Mod-b 加粗始终可用
     resolveImage,  // 把图片 URL 解析成可显示地址；返回 null 时保留原文
-    onPasteImage,  // 剪贴板里有图片、即将粘贴时回调，参数是插入位置
-    onDropFiles,   // 编辑区内拖入文件时回调，参数是插入位置
+    onPasteImage,  // 剪贴板里有图片时回调，参数是插入凭据
+    onDropFiles,   // 编辑区内拖入文件时回调；路径和坐标由 MyGo 事件提供
     onChange,      // 文档变化时回调全文
   }): EditorHandle
   ```
 
-  `EditorHandle` 提供 `view`、`mode`、`setMode`、`insertImages`、`focus` 和 `destroy`。`insertImages(at, markdown)` 在一个事务里插入文本，因此是一个撤销步；中文输入法组合期间先排队，组合结束后再插入。`onPasteImage` 和 `onDropFiles` 只报告位置，保存图片和生成 Markdown 由应用层经 `src/services/assets.ts` 完成；编辑区不接触 MyGo。三种模式通过同一个 `Compartment` 重配置，`EditorView` 实例不变。
+  `EditorHandle` 提供 `view`、`mode`、`setMode`、`createInsertionTicket`、`insertImages`、`focus` 和 `destroy`。`createInsertionTicket(x, y)` 按视口坐标创建插入凭据，坐标不在编辑区内时返回 null；`insertImages(ticket, markdown)` 在一个事务里插入文本，因此是一个撤销步。编辑器持续对凭据做位置映射，中文输入法组合期间先排队，组合结束后再插入；多条排队插入逐条处理，前一条插入会映射后一条的位置。`onPasteImage` 和 `onDropFiles` 只把事件交给应用层，保存图片和生成 Markdown 由 `src/image-insertion.ts` 经 `src/services/assets.ts` 完成；编辑区不接触 MyGo。三种模式通过同一个 `Compartment` 重配置，`EditorView` 实例不变。
 
 - 编辑器主题直接读取 CSS 变量；界面切换亮暗时只改 `<html>` 上的 `.dark`，不重建编辑器（见[主题与字体](specs/theming.md#编辑器主题)）。
 - 命令注册表只有一份，各入口共用，见 [Slash 命令](specs/slash-commands.md#命令注册表)。
@@ -108,8 +109,8 @@ Go（main.go）
 - 关窗时 Go 发出携带 `token` 的 `workspace:save-before-close` 事件并阻止关闭；前端保存后调用 `FinishClose(token, saved)`。保存失败时由 Go 弹出确认框，只有用户明确选择放弃才关窗；页面无响应时最多等待 5 秒。
 - `watch` 插件在启动时注册，`Options.Resolve` 在每次 watch 时读取当前工作区根，根名带 `generation`；旧代的根名不再授权。变更通过插件的 Channel 交给页面。工作区状态本身是可替换的单例，图片协议 handler 在启动时注册、运行时读取同一个状态（见[工作区与文件](specs/workspace.md#工作区接口)）。
 - 搜索通过 Channel 流式返回结果（见[工作区与文件](specs/workspace.md#搜索)）。
-- `Assets` 提供 `PasteImage(docPath, generation)` 和 `ImportImages(docPath, generation, sources)`，返回保存后的工作区相对路径和 Markdown。参数只有文档路径、`generation` 和拖入文件的绝对路径；图片字节由 Go 读取，不经过 IPC（见[工作区与文件](specs/workspace.md#图片)）。
-- 文件拖放的绝对路径由 MyGo 的 `mygo:file-drop` 页面事件提供，DOM 拖放事件本身没有路径。`src/services/assets.ts` 只封装该事件，把路径交给 `Assets.ImportImages`。
+- `Assets` 提供 `PasteImage(docPath, generation)` 和 `ImportImages(docPath, generation, dropToken)`，返回保存后的工作区相对路径和 Markdown。粘贴时 Go 先读剪贴板里的本地图片文件，没有时再读 PNG 位图；拖入时 Go 从 `Window.OnFileDrop` 保存的路径中按一次性 token 取文件。页面不再传拖入路径，图片字节也不经过 IPC（见[工作区与文件](specs/workspace.md#图片)）。
+- 文件拖放的绝对路径由 Go 的 `Window.OnFileDrop` 接收并只保存在 Go，页面通过 `assets:file-drop` 事件拿到一次性 token 和落点坐标。DOM 拖放事件本身没有路径，`src/services/assets.ts` 只封装该事件。
 
 各接口的具体语义、错误传播和背压行为见 [MyGo 参考](references/mygo.md#绑定与-ipc)。
 
@@ -124,9 +125,11 @@ Go（main.go）
 - Go 的文件服务限制见[工作区与文件](specs/workspace.md#路径守卫)。
 - 图片协议只映射当前工作区，handler 在启动时注册，运行时读取可替换的工作区状态。
 - 图片协议的 URL 带 `generation`，切换文件夹后旧请求返回 404，不会读到新工作区里的同名文件。
+- 拖入路径只从 `Window.OnFileDrop` 进入 Go；页面只能提交约 10 秒有效、一次性的 token，不能指定任意路径。源文件是符号链接或非常规文件时拒绝读取。
 - 协议只接受 `.png`、`.jpg`、`.jpeg`、`.gif`、`.webp`、`.svg`，只接受 GET 和 HEAD；路径经过与文件读写相同的检查并用 `os.Root` 打开，越界、隐藏目录、`node_modules`、符号链接逃逸和目录都返回 404。
 - 响应显式设置 `Content-Type` 和 `X-Content-Type-Options: nosniff`，不会把伪装成图片的 HTML 当页面执行。
-- **SVG**：SVG 可能内嵌脚本。页面只用 `<img>` 加载图片，从不导航到协议 URL；协议响应同时设置 `Content-Security-Policy: default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; sandbox`，即使直接打开 SVG，脚本也不会执行，外部资源和内嵌对象也不会加载。因此允许显示工作区里的 SVG，但禁止它成为可执行页面。
+- **顶层导航**：MyGo 把已注册协议的页面当作受信任页面，因此窗口通过 `OnWillNavigate` 取消任何顶层导航到 `nicole-image:` 的请求。图片只在 `<img>` 中加载，不会被打开成可调用 Go 的文档。
+- **SVG**：SVG 可能内嵌脚本。页面只用 `<img>` 加载图片；导入时去掉 BOM、XML 声明、注释和 DOCTYPE 后要求第一个元素是 `<svg`。协议响应同时设置 `Content-Security-Policy: default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; sandbox`，即使直接访问 SVG，脚本也不会执行，外部资源和内嵌对象也不会加载。因此允许显示工作区里的 SVG，但禁止它成为可执行页面。
 
 ## 主要风险
 

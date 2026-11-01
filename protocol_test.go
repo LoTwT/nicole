@@ -148,3 +148,20 @@ func TestImageProtocolWithoutWorkspace(t *testing.T) {
 		t.Errorf("request without workspace = %d, want %d", response.Code, http.StatusNotFound)
 	}
 }
+
+func TestIsImageURL(t *testing.T) {
+	for _, test := range []struct {
+		url  string
+		want bool
+	}{
+		{"nicole-image://localhost/1/assets/a.png", true},
+		{"NICOLE-IMAGE://localhost/1/assets/a.svg", true},
+		{"mygo://localhost/", false},
+		{"https://example.com/a.png", false},
+		{"nicole-images://localhost/a.png", false},
+	} {
+		if got := isImageURL(test.url); got != test.want {
+			t.Errorf("isImageURL(%q) = %v, want %v", test.url, got, test.want)
+		}
+	}
+}

@@ -13,6 +13,16 @@ export interface AppInfo {
 }
 
 /**
+ * AssetDrop tells the page that native files were dropped and names the
+ * one-time token that lets it import them. The paths stay in Go.
+ */
+export interface AssetDrop {
+  token: string;
+  x: number;
+  y: number;
+}
+
+/**
  * SavedImage is an image added to the workspace. Path is relative to the
  * workspace root; Markdown is the image syntax relative to the document that
  * asked for it.
@@ -116,26 +126,27 @@ export const Workspace = {
 
 /**
  * Assets saves images next to the workspace root and reads the system
- * clipboard and dropped files in Go, so image bytes never cross the IPC
- * boundary. `mygo generate` turns its methods into typed functions in
- * src/services/mygo.ts.
+ * clipboard and native file drops in Go, so image bytes and page-untrusted
+ * paths never cross the IPC boundary. `mygo generate` turns its methods into
+ * typed functions in src/services/mygo.ts.
  */
 export const Assets = {
   /**
-   * ImportImages copies image files that were dropped on the editor into the
-   * workspace's assets folder and returns Markdown that refers to them from
-   * docPath. Files without an image extension are ignored.
+   * ImportImages copies the image files of a native drop into the workspace's
+   * assets folder. The page passes the one-time drop token instead of paths, so
+   * it cannot make Go read a file the user did not drop. Files without an image
+   * extension are ignored.
    */
-  importImages(docPath: string, generation: number, sources: string[]): Promise<SavedImage[]> {
-    return call("Assets.ImportImages", docPath, generation, sources);
+  importImages(docPath: string, generation: number, dropToken: string): Promise<SavedImage[]> {
+    return call("Assets.ImportImages", docPath, generation, dropToken);
   },
   /**
-   * PasteImage saves the image from the system clipboard as a new file in the
-   * workspace's assets folder and returns Markdown that refers to it from
-   * docPath. generation is the value ChooseFolder returned for that folder; an
-   * image prepared for an earlier folder is refused.
+   * PasteImage saves an image from the system clipboard. If the clipboard
+   * contains local image files, as after copying them in Finder or Explorer,
+   * those files are imported instead of a bitmap representation. generation is
+   * the value ChooseFolder returned for that folder.
    */
-  pasteImage(docPath: string, generation: number): Promise<SavedImage> {
+  pasteImage(docPath: string, generation: number): Promise<SavedImage[]> {
     return call("Assets.PasteImage", docPath, generation);
   },
 } as const;
@@ -144,6 +155,11 @@ export const Assets = {
 
 /** Events sent by the Go side. Subscribe with `events.name.on(listener)`. */
 export const events = {
+  /**
+   * assetFileDrop is emitted to the page after Window.OnFileDrop receives
+   * paths. The page uses the coordinates to place the insertion.
+   */
+  assetsFileDrop: event<AssetDrop>("assets:file-drop"),
   /**
    * workspaceSaveBeforeClose asks the page to save pending edits before its
    * window closes. The token identifies this close attempt, so a late answer

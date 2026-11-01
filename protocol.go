@@ -118,3 +118,21 @@ func serveImage(w http.ResponseWriter, r *http.Request, root, rel string) {
 	w.Header().Set("Cache-Control", "private, no-cache")
 	http.ServeContent(w, r, path.Base(target), info.ModTime(), file)
 }
+
+// blockImageNavigation keeps an image URL from becoming a trusted page by
+// top-level navigation. Images are loaded through <img>; clicking or
+// redirecting to nicole-image:// is cancelled.
+func blockImageNavigation(page *mygo.Page) {
+	if page == nil {
+		return
+	}
+	page.OnWillNavigate(func(event *mygo.NavigateEvent) {
+		if isImageURL(event.URL) {
+			event.PreventDefault()
+		}
+	})
+}
+
+func isImageURL(rawURL string) bool {
+	return strings.HasPrefix(strings.ToLower(rawURL), imageScheme+":")
+}

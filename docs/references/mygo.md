@@ -60,7 +60,8 @@ const info = await Application.info();
 - `mygo.Protocol.Handle(scheme, handler)` 在创建窗口之前注册自定义协议。`<img>` 可以直接加载 `scheme://localhost/<path>`；处理器是在独立 goroutine 上运行的普通 `http.Handler`，支持流式响应。
 - 自定义协议与页面不同源。MyGo 给本应用自己的页面加 CORS 头；在 Windows 上，WebView2 用 `http://<scheme>.localhost/` 提供自定义协议，MyGo 再映射回 `scheme://localhost/`。
 - `mygo.Clipboard.ReadFormat(transfer.PNG)` 读取剪贴板里的图片。macOS 会把 TIFF、Windows 会把 DIB 等系统格式转换成 PNG；单个表示的上限是 64 MiB。
-- 页面里的 DOM 拖放事件拿不到本地路径。MyGo 在页面收到带文件的 `drop` 后把路径通过 `mygo:file-drop` 事件发给页面（`mygo-runtime` 的 `onFileDrop`），Go 的 `Window.OnFileDrop` 也能收到同一组路径。页面阻止默认拖放不会阻止该事件。
+- 页面里的 DOM 拖放事件拿不到本地路径。MyGo 在页面收到带文件的 `drop` 后把路径通过 `mygo:file-drop` 事件发给页面（`mygo-runtime` 的 `onFileDrop`），Go 的 `Window.OnFileDrop` 也能收到同一组路径和坐标。页面阻止默认拖放不会阻止该事件。
+- 自定义协议的页面被当作应用自己的受信任页面。`Page.OnWillNavigate` 在页面导航前触发，可以取消导航；`<img>` 等子资源加载不经过它。
 
 ## Documents API
 
