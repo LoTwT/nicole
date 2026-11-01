@@ -2,25 +2,11 @@
 #
 # Measure Nicole's idle memory footprint on macOS.
 #
-# This script is the single definition of the procedure that
-# docs/specs/performance.md links to: snapshot the existing WebKit processes,
-# launch the given .app with `open -n`, wait for it to settle, then sum the
-# phys_footprint of the new main process and the WebKit processes that appeared.
-#
-# It only terminates the instance it launched: the main process is identified by
-# its executable path and start time, so an already running Nicole (installed or
-# built elsewhere) is left alone. WebKit helpers are matched to that process by
-# resource coalition; helpers of another app, and any that survive the launched
-# instance, are excluded from the total. It creates no temporary files.
-#
-# The default 10s wait matches the budget procedure. Pass a larger --wait to
-# leave room for WebKit's prewarmed processes and the first render; recorded
-# baselines also cross-check with a longer wait (see
-# docs/references/memory-baseline.md).
+# The procedure, process attribution and cleanup rules are implemented here.
+# The call contract and the baseline requirements are in
+# docs/specs/performance.md.
 #
 # Requires the macOS system bash 3.2 (`/bin/bash`); do not use bash 4+ features.
-#
-# Exit status: 0 success, 1 precondition or measurement failure, 2 over budget.
 
 set -u
 set -o pipefail
@@ -30,12 +16,18 @@ WAIT_SECONDS=10
 BUDGET_MB=
 APP_PATH=
 
+# How long to wait for the main process to appear, and for how long a single
+# candidate without a visible launch token must remain alone before it is
+# accepted. Detection and stabilization are timed separately.
+DETECT_TIMEOUT_SECONDS=30
+FALLBACK_STABLE_SECONDS=10
+
 usage() {
   cat <<EOF
 Usage: $PROGRAM [--app PATH] [--wait SECONDS] [--budget MB]
 
   --app PATH      .app bundle to launch (default: build/<os>-<arch>/Nicole.app)
-  --wait SECONDS  stabilization delay after launch (default: 10)
+  --wait SECONDS  stabilization delay after the app process appears (default: 10)
   --budget MB     exit with status 2 when the total exceeds this threshold
   -h, --help      print this help
 
@@ -44,6 +36,8 @@ WebKit processes, followed by one machine-readable \`SUMMARY key=value ...\`
 line. Footprints use the value that \`footprint\` prints in MB, the same
 rounded-per-process convention as the recorded baselines. WebKit helpers are
 matched to the app by resource coalition (using python3 when available).
+
+Exit status: 0 success, 1 precondition or measurement failure, 2 over budget.
 EOF
 }
 
@@ -184,6 +178,24 @@ pid_list_contains() {
   return 1
 }
 
+# `open -n` does not return a PID, and another instance of the same build can
+# start at the same time. Every launch gets a random token in its environment;
+# macOS exposes it through `ps -E`, so only the process carrying it is ours.
+if command -v uuidgen >/dev/null 2>&1; then
+  LAUNCH_TOKEN=$(uuidgen | tr -d '-')
+else
+  LAUNCH_TOKEN="$$-$(date +%s)-$RANDOM"
+fi
+LAUNCH_TOKEN_VAR=NICOLE_MEASURE_TOKEN
+
+process_has_launch_token() {
+  output=$(ps -Eww -p "$1" 2>/dev/null) || return 1
+  case $output in
+    *"$LAUNCH_TOKEN_VAR=$LAUNCH_TOKEN"*) return 0 ;;
+  esac
+  return 1
+}
+
 # WebKit helpers share the resource coalition of the app that started them, and
 # another app's helpers do not. macOS exposes it through proc_pidinfo; python3 is
 # already a documented tool in this repository (see docs/development.md). Without
@@ -211,9 +223,9 @@ PY
 }
 
 # Another Nicole-family app (the installed release, or a `mygo dev` instance)
-# can spawn WebKit processes while this measurement runs. They are identified
-# and excluded after the launched instance stops, but name them up front so the
-# operator knows why a run may be noisy.
+# can spawn WebKit processes while this measurement runs. They are ignored by
+# the token/coalition checks, but name them up front so the operator knows why
+# a run may be noisy.
 for pid in $(ps -axo pid=,comm= | awk '
     {
       pid = $1
@@ -223,7 +235,7 @@ for pid in $(ps -axo pid=,comm= | awk '
       if (name == "Nicole" || name == "Nicole Dev") print pid
     }'); do
   warn "another Nicole-family app is running (pid $pid: $(ps -o comm= -p "$pid" 2>/dev/null))"
-  warn "its WebKit activity can appear during the measurement; unrelated processes are excluded at the end"
+  warn "its WebKit activity is ignored by the launch token and coalition checks"
 done
 
 # Snapshot state before launching. Existing main and WebKit processes are never
@@ -234,6 +246,29 @@ BEFORE_WEBKIT=" $(list_webkit_processes | awk '{print $1}' | tr '\n' ' ') "
 LAUNCHED_PID=
 LAUNCHED_START=
 MAIN_PID=
+TOKEN_VERIFIED=0
+
+# PIDs whose executable is the given app executable and that did not exist
+# before the launch.
+new_main_pids() {
+  found=
+  for pid in $(list_main_pids); do
+    pid_list_contains "$BEFORE_MAIN" "$pid" && continue
+    found="${found:+$found }$pid"
+  done
+  printf '%s' "$found"
+}
+
+# Record the start time first, then the PID: an interrupt between the two
+# assignments leaves no PID behind. stop_launched_instance also accepts the
+# launch token when a start time is missing.
+select_launched_pid() {
+  candidate_start=$(ps -o lstart= -p "$1" 2>/dev/null)
+  [ -n "$candidate_start" ] || return 1
+  LAUNCHED_START=$candidate_start
+  LAUNCHED_PID=$1
+  return 0
+}
 
 stop_launched_instance() {
   [ -n "$LAUNCHED_PID" ] || return 0
@@ -243,12 +278,18 @@ stop_launched_instance() {
     return 0
   fi
 
-  # Refuse to signal a reused PID: both the executable and the start time must
-  # still match the process observed right after launch.
-  current_exe=$(ps -o comm= -p "$LAUNCHED_PID" 2>/dev/null)
-  current_start=$(ps -o lstart= -p "$LAUNCHED_PID" 2>/dev/null)
-  if [ "$current_exe" != "$APP_EXE" ] || [ "$current_start" != "$LAUNCHED_START" ]; then
-    warn "refusing to stop pid $LAUNCHED_PID: it is no longer the instance this script launched"
+  # Refuse to signal a reused PID. If the start time was not read yet, fall
+  # back to the launch token, which only this instance's environment carries.
+  if [ -n "$LAUNCHED_START" ]; then
+    current_exe=$(ps -o comm= -p "$LAUNCHED_PID" 2>/dev/null)
+    current_start=$(ps -o lstart= -p "$LAUNCHED_PID" 2>/dev/null)
+    if [ "$current_exe" != "$APP_EXE" ] || [ "$current_start" != "$LAUNCHED_START" ]; then
+      warn "refusing to stop pid $LAUNCHED_PID: it is no longer the instance this script launched"
+      LAUNCHED_PID=
+      return 1
+    fi
+  elif ! process_has_launch_token "$LAUNCHED_PID"; then
+    warn "refusing to stop pid $LAUNCHED_PID: it does not carry the launch token"
     LAUNCHED_PID=
     return 1
   fi
@@ -285,43 +326,125 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 printf 'App: %s\n' "$APP_PATH"
-printf 'Waiting %s seconds after launch before measuring.\n' "$WAIT_SECONDS"
+printf 'Waiting %s seconds after the app process appears.\n' "$WAIT_SECONDS"
 
-open -n "$APP_PATH" || fail "open -n failed for $APP_PATH"
+open -n --env "$LAUNCH_TOKEN_VAR=$LAUNCH_TOKEN" "$APP_PATH" ||
+  fail "open -n failed for $APP_PATH"
 
+# Detect the instance. A token match always wins; a single candidate without a
+# visible token is accepted only after it has remained alone for a few seconds.
+# Several candidates without a token abort without signaling anything.
 launch_started=$(date +%s)
-deadline=$((launch_started + WAIT_SECONDS))
+detect_deadline=$((launch_started + DETECT_TIMEOUT_SECONDS))
+fallback_since=
+fallback_pid=
 while :; do
-  for pid in $(list_main_pids); do
-    pid_list_contains "$BEFORE_MAIN" "$pid" && continue
-    [ -n "$LAUNCHED_PID" ] || LAUNCHED_PID=$pid
+  now=$(date +%s)
+  new_pids=$(new_main_pids)
+  token_pid=
+  for pid in $new_pids; do
+    if process_has_launch_token "$pid"; then
+      token_pid=$pid
+      break
+    fi
   done
-  [ -n "$LAUNCHED_PID" ] && break
-  if [ "$(date +%s)" -ge "$deadline" ]; then
-    fail "the app did not start within ${WAIT_SECONDS}s (try a larger --wait)"
+  if [ -n "$token_pid" ]; then
+    if select_launched_pid "$token_pid"; then
+      TOKEN_VERIFIED=1
+      break
+    fi
+    # The process vanished between the checks; keep waiting.
+    new_pids=$(new_main_pids)
+  fi
+
+  candidate_count=0
+  only_pid=
+  for pid in $new_pids; do
+    candidate_count=$((candidate_count + 1))
+    only_pid=$pid
+  done
+  if [ "$candidate_count" -eq 1 ]; then
+    if [ "$only_pid" != "$fallback_pid" ]; then
+      fallback_pid=$only_pid
+      fallback_since=$now
+    fi
+    if [ $((now - fallback_since)) -ge "$FALLBACK_STABLE_SECONDS" ]; then
+      if select_launched_pid "$only_pid"; then
+        TOKEN_VERIFIED=0
+        break
+      fi
+    fi
+  else
+    fallback_pid=
+    fallback_since=
+  fi
+
+  if [ "$now" -ge "$detect_deadline" ]; then
+    # Re-check before failing. Stop only an instance confirmed by the token; a
+    # lone candidate without the token is still the only possible match.
+    late_pids=$(new_main_pids)
+    late_pid=
+    late_count=0
+    for pid in $late_pids; do
+      late_count=$((late_count + 1))
+      if process_has_launch_token "$pid"; then
+        late_pid=$pid
+      fi
+    done
+    if [ -n "$late_pid" ]; then
+      if select_launched_pid "$late_pid"; then
+        stop_launched_instance || true
+      fi
+      LAUNCHED_PID=
+      LAUNCHED_START=
+      fail "the app did not start within ${DETECT_TIMEOUT_SECONDS}s; the late instance was stopped"
+    fi
+    if [ "$late_count" -eq 1 ]; then
+      if select_launched_pid "$late_pids"; then
+        stop_launched_instance || true
+      fi
+      LAUNCHED_PID=
+      LAUNCHED_START=
+      fail "the app did not start within ${DETECT_TIMEOUT_SECONDS}s; the late instance was stopped"
+    fi
+    LAUNCHED_PID=
+    LAUNCHED_START=
+    if [ "$late_count" -gt 1 ]; then
+      fail "multiple new instances of $APP_PATH appeared and the launch token is not visible; refusing to guess (no signal sent; instances remain running)"
+    fi
+    fail "the app did not start within ${DETECT_TIMEOUT_SECONDS}s"
   fi
   sleep 0.2
 done
 
-LAUNCHED_START=$(ps -o lstart= -p "$LAUNCHED_PID" 2>/dev/null)
-[ -n "$LAUNCHED_START" ] || fail "the launched app exited before it could be inspected"
-
-# Let startup work settle. The wait counts from launch, so process detection
-# time does not extend the documented stabilization window.
-while [ "$(date +%s)" -lt "$deadline" ]; do
+# Stabilization is timed from process detection, separately from the detection
+# timeout. The instance must still be alive when it ends.
+settle_deadline=$(( $(date +%s) + WAIT_SECONDS ))
+while [ "$(date +%s)" -lt "$settle_deadline" ]; do
   sleep 0.5
 done
-
 kill -0 "$LAUNCHED_PID" 2>/dev/null ||
   fail "the launched app exited during the ${WAIT_SECONDS}s stabilization window"
 
-# Other instances of this same app path started by the user in the meantime are
-# not ours; report them instead of attributing or stopping them.
-for pid in $(list_main_pids); do
-  pid_list_contains "$BEFORE_MAIN" "$pid" && continue
-  [ "$pid" = "$LAUNCHED_PID" ] && continue
-  warn "another instance of $APP_PATH appeared during the measurement (pid $pid); ignoring it"
-done
+if [ "$TOKEN_VERIFIED" -eq 0 ]; then
+  # Fallback mode: without a visible token another instance would be
+  # indistinguishable, so abort rather than signal the wrong process.
+  other_count=0
+  for pid in $(new_main_pids); do
+    [ "$pid" = "$LAUNCHED_PID" ] && continue
+    other_count=$((other_count + 1))
+  done
+  if [ "$other_count" -gt 0 ]; then
+    LAUNCHED_PID=
+    LAUNCHED_START=
+    fail "another instance of $APP_PATH appeared and the launch token is not visible; refusing to guess (no signal sent; instances may remain running)"
+  fi
+else
+  for pid in $(new_main_pids); do
+    [ "$pid" = "$LAUNCHED_PID" ] && continue
+    warn "another instance of $APP_PATH appeared during the measurement (pid $pid); ignoring it"
+  done
+fi
 
 MAIN_COALITION=
 if [ "$COALITION_LOOKUP" -eq 1 ]; then
@@ -351,12 +474,10 @@ main_mb=$(measure_pid "$LAUNCHED_PID") ||
   fail "footprint failed for the main process (pid $LAUNCHED_PID)"
 
 # Processes that appeared after the launch snapshot, recorded as
-# "pid:role:mb". Another application can spawn WebKit helpers in the same
-# window; those with a different coalition are skipped here, and the ones that
-# outlive the launched instance are excluded below.
+# "pid:role:mb". In coalition mode, helpers of another app are skipped here; in
+# fallback mode every new helper is a candidate and the survivor check decides.
 CANDIDATES=
-EXCLUDED_MB=0
-EXCLUDED_COUNT=0
+FOREIGN_COUNT=0
 FOREIGN_PIDS=
 AFTER_WEBKIT=$(list_webkit_processes)
 for pid in $(printf '%s\n' "$AFTER_WEBKIT" | awk 'NF {print $1}'); do
@@ -370,11 +491,11 @@ for pid in $(printf '%s\n' "$AFTER_WEBKIT" | awk 'NF {print $1}'); do
     candidate_coalition=$(coalition_id "$pid") || candidate_coalition=
     if [ -z "$candidate_coalition" ]; then
       warn "could not read the resource coalition of $name (pid $pid); skipped"
-      EXCLUDED_COUNT=$((EXCLUDED_COUNT + 1))
+      FOREIGN_COUNT=$((FOREIGN_COUNT + 1))
       continue
     fi
     if [ "$candidate_coalition" != "$MAIN_COALITION" ]; then
-      EXCLUDED_COUNT=$((EXCLUDED_COUNT + 1))
+      FOREIGN_COUNT=$((FOREIGN_COUNT + 1))
       FOREIGN_PIDS="${FOREIGN_PIDS:+$FOREIGN_PIDS, }$pid"
       continue
     fi
@@ -402,8 +523,10 @@ if kill -0 "$MAIN_PID" 2>/dev/null; then
   fail "the launched instance (pid $MAIN_PID) is still running; not reporting a total"
 fi
 
-# WebKit helpers of the launched instance exit with it. Wait briefly for that;
-# anything still alive belongs to another application and is not counted.
+# Give WebKit a moment to reap the helpers, then note any that are still alive.
+# With coalition attribution they are known to belong to the app, so a late
+# exit must not remove them from the total; the PID-diff fallback has no such
+# proof and excludes them.
 waited=0
 survivors=
 while [ "$waited" -lt 15 ]; do
@@ -419,6 +542,19 @@ while [ "$waited" -lt 15 ]; do
   waited=$((waited + 1))
 done
 
+SURVIVOR_COUNT=0
+for record in $CANDIDATES; do
+  pid=${record%%:*}
+  pid_list_contains " $survivors " "$pid" && SURVIVOR_COUNT=$((SURVIVOR_COUNT + 1))
+done
+if [ -n "$survivors" ]; then
+  if [ -n "$MAIN_COALITION" ]; then
+    warn "$SURVIVOR_COUNT WebKit process(es) were still running shortly after the stop; kept in the total"
+  else
+    warn "$SURVIVOR_COUNT WebKit process(es) were still running after the stop; excluded from the total"
+  fi
+fi
+
 GPU_MB=0
 WEB_MB=0
 NET_MB=0
@@ -428,15 +564,15 @@ WEB_PIDS=
 NET_PIDS=
 OTHER_PIDS=
 WEBKIT_COUNT=0
+SURVIVOR_EXCLUDED_MB=0
 
 for record in $CANDIDATES; do
   pid=${record%%:*}
   rest=${record#*:}
   role=${rest%%:*}
   mb=${rest##*:}
-  if pid_list_contains " $survivors " "$pid"; then
-    EXCLUDED_MB=$((EXCLUDED_MB + mb))
-    EXCLUDED_COUNT=$((EXCLUDED_COUNT + 1))
+  if [ -z "$MAIN_COALITION" ] && pid_list_contains " $survivors " "$pid"; then
+    SURVIVOR_EXCLUDED_MB=$((SURVIVOR_EXCLUDED_MB + mb))
     continue
   fi
   WEBKIT_COUNT=$((WEBKIT_COUNT + 1))
@@ -460,9 +596,10 @@ for record in $CANDIDATES; do
   esac
 done
 
-if [ -n "$survivors" ]; then
-  warn "WebKit processes still running after the instance stopped: $survivors"
-  warn "they belong to another application; excluded $EXCLUDED_MB MB from the total"
+if [ -n "$MAIN_COALITION" ]; then
+  attribution=coalition
+else
+  attribution=pid-diff
 fi
 
 TOTAL_MB=$((main_mb + GPU_MB + WEB_MB + NET_MB + OTHER_MB))
@@ -498,7 +635,7 @@ if [ -n "$BUDGET_MB" ]; then
 fi
 [ -n "$budget_display" ] || budget_display=none
 
-printf '\nSUMMARY total_mb=%s main_mb=%s gpu_mb=%s webcontent_mb=%s networking_mb=%s other_mb=%s webkit_processes=%s excluded_webkit_processes=%s excluded_mb=%s budget_mb=%s within_budget=%s\n' \
-  "$TOTAL_MB" "$main_mb" "$GPU_MB" "$WEB_MB" "$NET_MB" "$OTHER_MB" "$WEBKIT_COUNT" "$EXCLUDED_COUNT" "$EXCLUDED_MB" "$budget_display" "$within_budget"
+printf '\nSUMMARY total_mb=%s main_mb=%s gpu_mb=%s webcontent_mb=%s networking_mb=%s other_mb=%s webkit_processes=%s foreign_webkit_processes=%s survivor_webkit_processes=%s survivor_excluded_mb=%s attribution=%s budget_mb=%s within_budget=%s\n' \
+  "$TOTAL_MB" "$main_mb" "$GPU_MB" "$WEB_MB" "$NET_MB" "$OTHER_MB" "$WEBKIT_COUNT" "$FOREIGN_COUNT" "$SURVIVOR_COUNT" "$SURVIVOR_EXCLUDED_MB" "$attribution" "$budget_display" "$within_budget"
 
 exit "$status"

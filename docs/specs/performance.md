@@ -31,27 +31,22 @@
 
 ## 测量方法
 
-测量由 [`scripts/measure-memory.sh`](../../scripts/measure-memory.sh) 完成。启动、进程归属、取值和清理的步骤只在该脚本的注释与实现中定义；本节给出调用方式和输出契约。
+测量由 [`scripts/measure-memory.sh`](../../scripts/measure-memory.sh) 完成；启动、进程归属、取值和清理的步骤在该脚本中定义，参数和退出码见 `scripts/measure-memory.sh --help`。
 
 ```sh
 scripts/measure-memory.sh --budget 120
 ```
 
-- 默认启动 `build/<os>-<arch>/Nicole.app`；`--app PATH` 指定其他 `.app`，`--wait SECONDS` 改启动后的等待时间（默认 10）。
-- 输出一张按主进程、GPU、WebContent、Networking、Other 分行的表，最后一行是 `SUMMARY key=value ...`；`total_mb` 是与其他基线比较的数字。
-- 脚本只结束它自己启动的实例。其他应用的 WebKit 子进程按 resource coalition 排除；缺少 `python3` 时退回 PID 差分并告警。
-- `--budget MB` 在合计超过阈值时以状态 2 退出；前置条件或测量失败以状态 1 退出。
+输出一张按主进程、GPU、WebContent、Networking、Other 分行的表，最后一行是 `SUMMARY key=value ...`：
 
-默认等待 10 秒；机器较慢或数字明显波动时可以用 `--wait` 加长：
+- `total_mb` 是与其他基线比较的数字。
+- `attribution=coalition` 表示 WebKit 进程按 resource coalition 归属；只有这种结果能记为基线。`pid-diff` 是缺少 `python3` 时的退路，可能混入其他应用的进程。
+- `survivor_excluded_mb` 是存活检查中被排除的进程占用；只有 `pid-diff` 模式可能非零，`coalition` 模式始终为 0。
 
-```sh
-scripts/measure-memory.sh --wait 90 --budget 120
-```
-
-本次 10 秒与 90 秒的合计一致（见[内存基线](../references/memory-baseline.md#口径说明)）。同时运行的安装版或 `mygo dev` 实例会干扰测量（实测合计约 121–140MB）；记录基线前先退出这些实例。
+记录基线前退出其他 Nicole 实例。窗口尺寸和屏幕缩放会影响 WebContent 和 GPU 的占用，每次基线都要在[内存基线](../references/memory-baseline.md)中写明；脚本启动的实例与安装版共用用户数据目录（退出时会写窗口状态），这一点目前无法避免。
 
 脚本依赖 `footprint`，只在 macOS 上可用，**不接入 CI**：runner 的环境数据不代表真实机器。
 
 ## 内存基线的更新约定
 
-可能影响内存的 PR 合并后，在最新的 `main` 上构建 `.app`，运行 `scripts/measure-memory.sh --budget 120` 测一次空载，把 `total_mb`、构建提交和度量环境写进 PR 描述；与[内存基线](../references/memory-baseline.md)的最新数字比较，差异明显时说明原因。
+可能影响内存的 PR 合并后，在最新的 `main` 上构建 `.app`，运行 `scripts/measure-memory.sh --budget 120` 测一次空载，把 `total_mb`、`attribution`、构建提交和度量环境写进 PR 描述；与[内存基线](../references/memory-baseline.md)的最新数字比较，差异明显时说明原因。

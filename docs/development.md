@@ -159,14 +159,12 @@ Vitest 覆盖三种模式的切换；挂载 `App.vue` 后切换亮暗主题，�
 
 ### 内存测量
 
-macOS 上先构建 `.app`，再测量空载内存：
-
 ```sh
 GOTOOLCHAIN=auto bun run build -- -skip-dmg
 scripts/measure-memory.sh --budget 120
 ```
 
-脚本只结束自己启动的实例，输出分行表格和 `SUMMARY` 行；调用方式、输出格式和基线约定见[性能预算与测量](specs/performance.md#测量方法)。脚本依赖 `footprint`，不接入 CI。
+测量约定见[性能预算与测量](specs/performance.md#测量方法)。
 
 ## CI
 
