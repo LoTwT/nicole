@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -568,82 +567,5 @@ func TestFailedOpenKeepsCurrentWorkspace(t *testing.T) {
 	}
 	if want := []string{"first.md"}; !reflect.DeepEqual(files, want) {
 		t.Errorf("ListFiles() = %q, want %q", files, want)
-	}
-}
-
-func TestWatchRootFollowsWorkspaceGeneration(t *testing.T) {
-	ctx := context.Background()
-	workspace := NewWorkspace()
-
-	if _, ok := workspace.watchRoot(ctx, "workspace-1"); ok {
-		t.Error("watchRoot() granted a root before a folder was open")
-	}
-
-	first := t.TempDir()
-	mustWriteFile(t, filepath.Join(first, "first.md"), []byte("first"))
-	folder, err := workspace.open(first)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if folder.Generation != 1 || folder.WatchRoot != "workspace-1" {
-		t.Fatalf("first folder = %+v, want generation 1 and workspace-1", folder)
-	}
-	root, ok := workspace.watchRoot(ctx, folder.WatchRoot)
-	if !ok {
-		t.Fatal("watchRoot() refused the workspace")
-	}
-	resolvedFirst, err := filepath.EvalSymlinks(first)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if root.Path != filepath.Clean(resolvedFirst) {
-		t.Errorf("watchRoot().Path = %q, want %q", root.Path, resolvedFirst)
-	}
-	if !root.Recursive {
-		t.Error("watchRoot().Recursive = false, want true")
-	}
-	if root.Ignore == nil {
-		t.Fatal("watchRoot().Ignore is nil")
-	}
-	for _, name := range []string{"node_modules", ".git", "docs/node_modules"} {
-		if !root.Ignore(name, true) {
-			t.Errorf("Ignore(%q, dir) = false, want true", name)
-		}
-	}
-	for _, name := range []string{".nicole-0123456789abcdef.tmp", "docs/.nicole-abcdef0123456789.tmp"} {
-		if !root.Ignore(name, false) {
-			t.Errorf("Ignore(%q, file) = false, want true", name)
-		}
-	}
-	for _, name := range []string{".nicole-short.tmp", ".nicole-0123456789abcdeZ.tmp", ".other.tmp"} {
-		if root.Ignore(name, false) {
-			t.Errorf("Ignore(%q, file) = true, want false", name)
-		}
-	}
-	if root.Ignore("notes.md", false) || root.Ignore("node_modules", false) {
-		t.Error("Ignore() ignored a regular file")
-	}
-
-	second := t.TempDir()
-	folder, err = workspace.open(second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if folder.Generation != 2 || folder.WatchRoot != "workspace-2" {
-		t.Fatalf("second folder = %+v, want generation 2 and workspace-2", folder)
-	}
-	if _, ok := workspace.watchRoot(ctx, "workspace-1"); ok {
-		t.Error("watchRoot() granted the previous generation")
-	}
-	root, ok = workspace.watchRoot(ctx, folder.WatchRoot)
-	if !ok {
-		t.Fatal("watchRoot() refused the new workspace")
-	}
-	resolvedSecond, err := filepath.EvalSymlinks(second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if root.Path != filepath.Clean(resolvedSecond) {
-		t.Errorf("watchRoot().Path after switching = %q, want %q", root.Path, resolvedSecond)
 	}
 }
