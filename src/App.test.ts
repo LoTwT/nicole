@@ -435,6 +435,173 @@ describe("App", () => {
     expect(editorView().state.doc.toString()).toBe("B\n");
   });
 
+  it("discards a file read that finishes after a folder switch", async () => {
+    const select = await openFolder(["a.md"]);
+
+    let finishRead!: (value: string) => void;
+    vi.mocked(readFile).mockImplementationOnce(
+      () =>
+        new Promise<string>((resolve) => {
+          finishRead = resolve;
+        }),
+    );
+    select.value = "a.md";
+    select.dispatchEvent(new Event("change"));
+    await settle();
+
+    vi.mocked(chooseFolder).mockResolvedValue(folder(["z.md"], 2));
+    button("打开文件夹").click();
+    await settle();
+    expect([...select.options].map((option) => option.value)).toEqual([
+      "",
+      "z.md",
+    ]);
+
+    finishRead("OLD FOLDER a.md\n");
+    await settle();
+
+    expect(host.querySelector(".cm-editor")).toBeNull();
+    expect(select.value).toBe("");
+    expect(writeFile).not.toHaveBeenCalled();
+  });
+
+  it("keeps the newest file when an earlier read finishes last", async () => {
+    const select = await openFolder(["a.md", "b.md"]);
+
+    let finishA!: (value: string) => void;
+    let finishB!: (value: string) => void;
+    vi.mocked(readFile)
+      .mockImplementationOnce(
+        () =>
+          new Promise<string>((resolve) => {
+            finishA = resolve;
+          }),
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise<string>((resolve) => {
+            finishB = resolve;
+          }),
+      );
+
+    select.value = "a.md";
+    select.dispatchEvent(new Event("change"));
+    await settle();
+    select.value = "b.md";
+    select.dispatchEvent(new Event("change"));
+    await settle();
+    expect(readFile).toHaveBeenCalledTimes(2);
+
+    finishB("B\n");
+    await settle();
+    expect(editorView().state.doc.toString()).toBe("B\n");
+    expect(select.value).toBe("b.md");
+
+    finishA("A\n");
+    await settle();
+    expect(editorView().state.doc.toString()).toBe("B\n");
+    expect(select.value).toBe("b.md");
+    expect(writeFile).not.toHaveBeenCalled();
+  });
+
+  it("does not show a read error from a stale selection", async () => {
+    const select = await openFolder(["a.md"]);
+
+    let failRead!: (error: Error) => void;
+    vi.mocked(readFile).mockImplementationOnce(
+      () =>
+        new Promise<string>((_, reject) => {
+          failRead = reject;
+        }),
+    );
+    select.value = "a.md";
+    select.dispatchEvent(new Event("change"));
+    await settle();
+
+    vi.mocked(chooseFolder).mockResolvedValue(folder(["z.md"], 2));
+    button("打开文件夹").click();
+    await settle();
+
+    failRead(new Error("gone"));
+    await settle();
+
+    expect(host.textContent).not.toContain("读取失败");
+    expect(host.querySelector(".cm-editor")).toBeNull();
+    expect(select.value).toBe("");
+  });
+
+  it("does not save the new file for a stale read", async () => {
+    const select = await openFolder(["a.md"]);
+    let finishOldRead!: (value: string) => void;
+    vi.mocked(readFile).mockImplementationOnce(
+      () =>
+        new Promise<string>((resolve) => {
+          finishOldRead = resolve;
+        }),
+    );
+    select.value = "a.md";
+    select.dispatchEvent(new Event("change"));
+    await settle();
+
+    vi.mocked(chooseFolder).mockResolvedValue(folder(["z.md"], 2));
+    button("打开文件夹").click();
+    await settle();
+    vi.mocked(readFile).mockResolvedValue("Z\n");
+    await chooseFile(select, "z.md");
+
+    const view = editorView();
+    view.dispatch({ changes: { from: view.state.doc.length, insert: "!" } });
+    finishOldRead("OLD FOLDER a.md\n");
+    await settle();
+
+    expect(writeFile).not.toHaveBeenCalled();
+    expect(editorView().state.doc.toString()).toBe("Z\n!");
+    expect(select.value).toBe("z.md");
+  });
+
+  it("does not load a file when a newer selection starts during its save", async () => {
+    vi.mocked(readFile).mockResolvedValueOnce("A\n");
+    const select = await openFolder(["a.md", "b.md", "c.md"]);
+    await chooseFile(select, "a.md");
+
+    let finishB!: (value: string) => void;
+    vi.mocked(readFile).mockImplementationOnce(
+      () =>
+        new Promise<string>((resolve) => {
+          finishB = resolve;
+        }),
+    );
+    select.value = "b.md";
+    select.dispatchEvent(new Event("change"));
+    await settle();
+
+    const view = editorView();
+    view.dispatch({ changes: { from: view.state.doc.length, insert: "!" } });
+    let finishWrite!: () => void;
+    vi.mocked(writeFile).mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finishWrite = resolve;
+        }),
+    );
+    finishB("B\n");
+    await settle();
+    expect(writeFile).toHaveBeenCalledWith("a.md", "A\n!", 1);
+
+    vi.mocked(readFile).mockImplementationOnce(
+      () => new Promise<string>(() => {}),
+    );
+    select.value = "c.md";
+    select.dispatchEvent(new Event("change"));
+    await settle();
+
+    finishWrite();
+    await settle();
+
+    expect(editorView().state.doc.toString()).toBe("A\n!");
+    expect(select.value).toBe("a.md");
+  });
+
   it("never writes a failed edit from the old file into the next file", async () => {
     vi.useFakeTimers();
     vi.mocked(readFile).mockResolvedValueOnce("A\n");

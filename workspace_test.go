@@ -471,6 +471,8 @@ func TestIsWorkspaceTempName(t *testing.T) {
 		".nicole-abc.tmp",
 		".nicole-0123456789abcde.tmp",
 		".nicole-0123456789abcdef0.tmp",
+		".nicole-0123456789ab.tmp",
+		".nicole-0123456789abcdef01.tmp",
 		".nicole-0123456789abcdeZ.tmp",
 		"nicole-0123456789abcdef.tmp",
 		".nicole-0123456789abcdef.tmp.bak",

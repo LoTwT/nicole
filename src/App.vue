@@ -6,6 +6,7 @@ import {
   type EditorHandle,
   type EditorMode,
 } from "./editor";
+import { latestOperation } from "./latest-operation";
 import { SAMPLE_DOCUMENT } from "./sample";
 import { getAppInfo, type AppInfo } from "./services/app";
 import {
@@ -76,6 +77,9 @@ let mixedLineEndings = false;
 let originalText = "";
 let workspaceGeneration = 0;
 let offSaveBeforeClose: (() => void) | null = null;
+// Reads cannot be cancelled at the IPC layer. Instead, only the newest file
+// selection may apply its result; opening a folder invalidates all reads.
+const fileSelection = latestOperation();
 
 function detectLineEndings(text: string): {
   ending: LineEnding;
@@ -302,6 +306,7 @@ async function prepareToLeave(): Promise<boolean> {
 }
 
 async function openFolder() {
+  fileSelection.stop();
   if (!(await prepareToLeave())) {
     return;
   }
@@ -344,6 +349,7 @@ async function selectFile(event: Event) {
   if (path === "") {
     return;
   }
+  const operation = fileSelection.start();
   if (!(await prepareToLeave())) {
     select.value = currentFile.value ?? "";
     return;
@@ -352,8 +358,16 @@ async function selectFile(event: Event) {
   try {
     text = await readFile(path);
   } catch {
+    if (!fileSelection.isCurrent(operation)) {
+      select.value = currentFile.value ?? "";
+      return;
+    }
     select.value = currentFile.value ?? "";
     saveStatus.value = "读取失败";
+    return;
+  }
+  if (!fileSelection.isCurrent(operation)) {
+    select.value = currentFile.value ?? "";
     return;
   }
   // The old editor stays editable while the read runs. Save any edit typed in
@@ -364,7 +378,12 @@ async function selectFile(event: Event) {
     select.value = currentFile.value ?? "";
     return;
   }
+  if (!fileSelection.isCurrent(operation)) {
+    select.value = currentFile.value ?? "";
+    return;
+  }
   loadFile(path, text);
+  select.value = path;
 }
 
 function setMode(next: EditorMode) {
