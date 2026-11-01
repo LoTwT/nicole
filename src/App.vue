@@ -130,9 +130,6 @@ function createEditorFor(parent: HTMLElement, doc: string): EditorHandle {
     onPasteImage: (ticket) => {
       imageInsertion.handlePaste(ticket);
     },
-    onDropFiles: () => {
-      imageInsertion.handleDropFiles();
-    },
     onChange: (next) => {
       documentText.value = next;
       scheduleSave(next);

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { EditorHandle, InsertionTicket } from "./editor";
+import { createEditor } from "./editor";
 import { createImageInsertion } from "./image-insertion";
 import { importImages, pasteImage } from "./services/assets";
 
@@ -13,6 +14,7 @@ const ticket: InsertionTicket = { id: 7 };
 
 function fakeEditor() {
   const editor = {
+    containsPoint: vi.fn(() => true),
     createInsertionTicket: vi.fn(() => ticket),
     insertImages: vi.fn(),
   } as unknown as EditorHandle;
@@ -60,7 +62,6 @@ describe("createImageInsertion", () => {
       getGeneration: () => 3,
     });
 
-    insertion.handleDropFiles();
     insertion.handleDrop({ token: "token-1", x: 120, y: 240 });
     await settle();
 
@@ -71,19 +72,61 @@ describe("createImageInsertion", () => {
     ]);
   });
 
-  it("does not import a native drop the editor did not see", async () => {
+  it("does not import a native drop outside the editor", async () => {
     const editor = fakeEditor();
+    vi.mocked(editor.containsPoint).mockReturnValue(false);
+    vi.mocked(importImages).mockResolvedValue([]);
     const insertion = createImageInsertion({
       getEditor: () => editor,
       getFile: () => "note.md",
       getGeneration: () => 3,
     });
 
-    insertion.handleDrop({ token: "token-1", x: 120, y: 240 });
+    insertion.handleDrop({ token: "token-1", x: 900, y: 320 });
     await settle();
 
+    expect(editor.containsPoint).toHaveBeenCalledWith(900, 320);
     expect(importImages).not.toHaveBeenCalled();
+    expect(editor.createInsertionTicket).not.toHaveBeenCalled();
     expect(editor.insertImages).not.toHaveBeenCalled();
+  });
+
+  it("does not import a native drop outside the editor after a no-path DOM drop", async () => {
+    document.body.innerHTML = '<div id="host"></div>';
+    const parent = document.querySelector<HTMLElement>("#host")!;
+    const editor = createEditor({ parent, doc: "hello" });
+    vi.mocked(importImages).mockResolvedValue([]);
+    const insertion = createImageInsertion({
+      getEditor: () => editor,
+      getFile: () => "note.md",
+      getGeneration: () => 3,
+    });
+    const outside = document.createElement("div");
+    document.body.appendChild(outside);
+    const elementFromPoint = vi
+      .spyOn(document, "elementFromPoint")
+      .mockReturnValue(outside);
+
+    try {
+      const event = new Event("drop", { bubbles: true, cancelable: true });
+      Object.defineProperty(event, "dataTransfer", {
+        value: {
+          files: [new File(["image"], "photo.png", { type: "image/png" })],
+          types: ["Files"],
+        },
+      });
+      editor.view.contentDOM.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(true);
+
+      insertion.handleDrop({ token: "token-1", x: 900, y: 320 });
+      await settle();
+
+      expect(importImages).not.toHaveBeenCalled();
+      expect(editor.view.state.doc.toString()).toBe("hello");
+    } finally {
+      elementFromPoint.mockRestore();
+      editor.destroy();
+    }
   });
 
   it("does not insert when the editor rejected the drop position", async () => {
@@ -95,7 +138,6 @@ describe("createImageInsertion", () => {
       getGeneration: () => 3,
     });
 
-    insertion.handleDropFiles();
     insertion.handleDrop({ token: "token-1", x: 1, y: 2 });
     await settle();
 
@@ -132,7 +174,6 @@ describe("createImageInsertion", () => {
       onError,
     });
 
-    insertion.handleDropFiles();
     insertion.handleDrop({ token: "bad", x: 1, y: 2 });
     await settle();
 

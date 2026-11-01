@@ -94,15 +94,31 @@ describe("image insertion", () => {
     expect(onPasteImage).not.toHaveBeenCalled();
   });
 
-  it("reports file drops after blocking the browser default", () => {
-    const onDropFiles = vi.fn();
-    const instance = mount({ parent, doc, onDropFiles });
+  it("blocks the browser default for file drops", () => {
+    const instance = mount();
 
     const event = dropEvent(["Files"]);
     instance.view.contentDOM.dispatchEvent(event);
 
     expect(event.defaultPrevented).toBe(true);
-    expect(onDropFiles).toHaveBeenCalledTimes(1);
+  });
+
+  it("detects whether a point is inside the editor", () => {
+    const instance = mount();
+    const inside = document.createElement("span");
+    instance.view.dom.appendChild(inside);
+    const elementFromPoint = vi
+      .spyOn(document, "elementFromPoint")
+      .mockReturnValue(inside);
+
+    expect(instance.containsPoint(10, 20)).toBe(true);
+
+    const outside = document.createElement("div");
+    document.body.appendChild(outside);
+    elementFromPoint.mockReturnValue(outside);
+
+    expect(instance.containsPoint(10, 20)).toBe(false);
+    elementFromPoint.mockRestore();
   });
 
   it("creates a ticket only for points inside the editor", () => {

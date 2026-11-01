@@ -209,6 +209,64 @@ func TestPasteImageFailureLeavesNoFile(t *testing.T) {
 	}
 }
 
+func TestWriteNewFileKeepsTargetWhenTempCleanupFails(t *testing.T) {
+	rootDir := t.TempDir()
+	root, err := os.OpenRoot(rootDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	if err := root.Mkdir("assets", 0o777); err != nil {
+		t.Fatal(err)
+	}
+
+	removeFailed := errors.New("remove failed")
+	err = writeNewWorkspaceFileWithHooks(root, "assets/one.png", testPNG(), 0, newFileHooks{
+		link:   func(root *os.Root, oldName, newName string) error { return root.Link(oldName, newName) },
+		remove: func(*os.Root, string) error { return removeFailed },
+		sync:   syncRootDirectory,
+	})
+	if err != nil {
+		t.Fatalf("writeNewWorkspaceFileWithHooks() = %v, want success", err)
+	}
+	data, err := os.ReadFile(filepath.Join(rootDir, "assets", "one.png"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(data, testPNG()) {
+		t.Errorf("published file = %q, want %q", data, testPNG())
+	}
+}
+
+func TestWriteNewFileKeepsTargetWhenDirectorySyncFails(t *testing.T) {
+	rootDir := t.TempDir()
+	root, err := os.OpenRoot(rootDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	if err := root.Mkdir("assets", 0o777); err != nil {
+		t.Fatal(err)
+	}
+
+	syncFailed := errors.New("sync failed")
+	err = writeNewWorkspaceFileWithHooks(root, "assets/one.png", testPNG(), 0, newFileHooks{
+		link:   func(root *os.Root, oldName, newName string) error { return root.Link(oldName, newName) },
+		remove: (*os.Root).Remove,
+		sync:   func(*os.Root, string) error { return syncFailed },
+	})
+	if err != nil {
+		t.Fatalf("writeNewWorkspaceFileWithHooks() = %v, want success", err)
+	}
+	entries, err := os.ReadDir(filepath.Join(rootDir, "assets"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "one.png" {
+		t.Errorf("assets after sync failure = %v, want only one.png", entries)
+	}
+}
+
 func TestPasteImageUsesClipboardFilesBeforeBitmap(t *testing.T) {
 	root := t.TempDir()
 	mustWriteFile(t, filepath.Join(root, "chapter.md"), []byte("# Chapter"))
@@ -236,7 +294,7 @@ func TestPasteImageUsesClipboardFilesBeforeBitmap(t *testing.T) {
 	}
 }
 
-func TestPasteImageFallsBackToBitmapForNonImageFiles(t *testing.T) {
+func TestPasteImageDoesNotFallBackToBitmapForNonImageFiles(t *testing.T) {
 	root := t.TempDir()
 	mustWriteFile(t, filepath.Join(root, "chapter.md"), []byte("# Chapter"))
 	workspace := openTestWorkspace(t, root)
@@ -247,12 +305,11 @@ func TestPasteImageFallsBackToBitmapForNonImageFiles(t *testing.T) {
 		image: testPNG(),
 		files: []string{text},
 	})
-	images, err := assets.PasteImage("chapter.md", currentGeneration(workspace))
-	if err != nil {
-		t.Fatal(err)
+	if _, err := assets.PasteImage("chapter.md", currentGeneration(workspace)); !errors.Is(err, errNoClipboardImage) {
+		t.Fatalf("PasteImage() = %v, want %v", err, errNoClipboardImage)
 	}
-	if len(images) != 1 || images[0].Path != "assets/image-20261101-120000.png" {
-		t.Errorf("PasteImage() = %+v, want the bitmap fallback", images)
+	if _, err := os.Stat(filepath.Join(root, "assets")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("non-image file list created assets: %v", err)
 	}
 }
 
@@ -365,6 +422,53 @@ func TestImportImagesReadsEveryFileBeforeWriting(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "assets")); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("failed batch created assets: %v", err)
+	}
+}
+
+func TestImportImagesRollsBackBatchOnWriteFailure(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "chapter.md"), []byte("# Chapter"))
+	workspace := openTestWorkspace(t, root)
+	existing := []byte("existing image")
+	mustWriteFile(t, filepath.Join(root, "assets", "two.png"), existing)
+
+	first := filepath.Join(t.TempDir(), "one.png")
+	mustWriteFile(t, first, testPNG())
+	second := filepath.Join(t.TempDir(), "two.png")
+	mustWriteFile(t, second, testPNG())
+
+	writeFailed := errors.New("disk full")
+	assets := testAssets(workspace, fakeClipboard{})
+	assets.write = func(root *os.Root, target string, data []byte, mode fs.FileMode) error {
+		// Let the existing two.png collision go through the normal name
+		// retry, then fail the second image after one.png has been written.
+		if target == "assets/two-2.png" {
+			return writeFailed
+		}
+		return writeNewWorkspaceFile(root, target, data, mode)
+	}
+
+	token, ok := assets.acceptDrop([]string{first, second})
+	if !ok {
+		t.Fatal("acceptDrop() failed")
+	}
+	if _, err := assets.ImportImages("chapter.md", currentGeneration(workspace), token); !errors.Is(err, writeFailed) {
+		t.Fatalf("ImportImages() = %v, want %v", err, writeFailed)
+	}
+
+	entries, err := os.ReadDir(filepath.Join(root, "assets"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "two.png" {
+		t.Fatalf("assets after failed batch = %v, want only two.png", entries)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "assets", "two.png"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(data, existing) {
+		t.Errorf("existing two.png = %q, want %q", data, existing)
 	}
 }
 

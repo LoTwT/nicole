@@ -26,7 +26,6 @@ import { basicSetup } from "codemirror";
 
 import type {
   CreateEditorOptions,
-  DropFilesHandler,
   EditorCommand,
   EditorHandle,
   EditorMode,
@@ -37,7 +36,6 @@ import type {
 
 export type {
   CreateEditorOptions,
-  DropFilesHandler,
   EditorCommand,
   EditorHandle,
   EditorMode,
@@ -594,7 +592,6 @@ function transferHasFiles(data: DataTransfer | null): boolean {
 
 function imageHandlers(
   onPasteImage: PasteImageHandler | undefined,
-  onDropFiles: DropFilesHandler | undefined,
   createTicketAt: (at: number) => InsertionTicket,
 ): Extension {
   return EditorView.domEventHandlers({
@@ -607,10 +604,8 @@ function imageHandlers(
     drop(event) {
       if (!transferHasFiles(event.dataTransfer)) return false;
       // The browser would otherwise navigate to the dropped file. The native
-      // MyGo drop event supplies the paths and the coordinates for the
-      // insertion ticket.
+      // MyGo drop event supplies the paths, token, and coordinates.
       event.preventDefault();
-      onDropFiles?.();
       return true;
     },
   });
@@ -634,7 +629,6 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     commands = [],
     resolveImage = defaultResolveImage,
     onPasteImage,
-    onDropFiles,
     onChange,
   } = options;
 
@@ -727,7 +721,7 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
         editorTheme,
         // App commands must win over basicSetup's default keymap.
         Prec.high(keymap.of(bindings)),
-        imageHandlers(onPasteImage, onDropFiles, createTicketAt),
+        imageHandlers(onPasteImage, createTicketAt),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) {
             for (const ticket of tickets.values()) {
@@ -764,6 +758,10 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
           modeExtension(next, resolveImage),
         ),
       });
+    },
+    containsPoint(x, y) {
+      const element = document.elementFromPoint(x, y);
+      return element !== null && view.dom.contains(element);
     },
     createInsertionTicket(x, y) {
       const at = view.posAtCoords({ x, y });

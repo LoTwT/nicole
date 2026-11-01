@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -188,10 +189,15 @@ func (a *Assets) PasteImage(docPath string, generation int) ([]SavedImage, error
 	if err != nil {
 		return nil, err
 	}
-	if files, err := a.clipboard.Files(); err == nil {
+	if files, err := a.clipboard.Files(); err == nil && len(files) > 0 {
+		// A non-empty file list means the clipboard represents files. Do not
+		// fall back to the bitmap in that case: it may render a file icon as
+		// if it were the copied image.
 		if pending, err := readImages(files); err != nil {
 			return nil, err
-		} else if len(pending) > 0 {
+		} else if len(pending) == 0 {
+			return nil, errNoClipboardImage
+		} else {
 			return a.saveImages(root, docPath, pending)
 		}
 	}
@@ -521,14 +527,32 @@ func validateImagePath(rel string) error {
 // writeNewWorkspaceFile writes data to a new file without replacing an
 // existing one. The temporary file gets its final bytes first; Link then
 // publishes it only when the name is still free. A taken name is reported as
-// errAssetNameTaken so the caller can try the next suffix.
+// errAssetNameTaken so the caller can try the next suffix. Filesystems without
+// hard links fall back to an exclusive create, which still never replaces a
+// file.
 func writeNewWorkspaceFile(root *os.Root, target string, data []byte, mode fs.FileMode) error {
 	return writeNewWorkspaceFileWith(root, target, data, mode, func(root *os.Root, oldName, newName string) error {
 		return root.Link(oldName, newName)
 	})
 }
 
-func writeNewWorkspaceFileWith(root *os.Root, target string, data []byte, mode fs.FileMode, link func(*os.Root, string, string) error) (err error) {
+// newFileHooks lets tests inject failures at each step after the temporary
+// file is complete without making the production path rely on globals.
+type newFileHooks struct {
+	link   func(*os.Root, string, string) error
+	remove func(*os.Root, string) error
+	sync   func(*os.Root, string) error
+}
+
+func writeNewWorkspaceFileWith(root *os.Root, target string, data []byte, mode fs.FileMode, link func(*os.Root, string, string) error) error {
+	return writeNewWorkspaceFileWithHooks(root, target, data, mode, newFileHooks{
+		link:   link,
+		remove: (*os.Root).Remove,
+		sync:   syncRootDirectory,
+	})
+}
+
+func writeNewWorkspaceFileWithHooks(root *os.Root, target string, data []byte, mode fs.FileMode, hooks newFileHooks) (err error) {
 	tempName, err := newTempFileName()
 	if err != nil {
 		return err
@@ -544,7 +568,7 @@ func writeNewWorkspaceFileWith(root *os.Root, target string, data []byte, mode f
 	}
 	defer func() {
 		if err != nil {
-			_ = root.Remove(tempPath)
+			_ = hooks.remove(root, tempPath)
 		}
 	}()
 
@@ -564,14 +588,69 @@ func writeNewWorkspaceFileWith(root *os.Root, target string, data []byte, mode f
 			return err
 		}
 	}
-	if err = link(root, tempPath, targetPath); err != nil {
+	if err = hooks.link(root, tempPath, targetPath); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return fmt.Errorf("%w: %v", errAssetNameTaken, err)
+		}
+		if !hardLinkUnsupported(err) {
+			return err
+		}
+		if removeErr := hooks.remove(root, tempPath); removeErr != nil {
+			log.Printf("assets: remove temporary file %q before fallback: %v", tempPath, removeErr)
+		}
+		if err = writeNewFileExclusive(root, targetPath, data, mode); err != nil {
+			return err
+		}
+		if syncErr := hooks.sync(root, dir); syncErr != nil {
+			log.Printf("assets: sync %q after fallback publish of %q: %v", dir, target, syncErr)
+		}
+		return nil
+	}
+	// The image is already published. Removing the temporary name or syncing
+	// the directory cannot undo that, and returning an error here would make
+	// the caller roll back earlier images while leaving this target behind.
+	// Keep the successful save and leave a diagnostic instead.
+	if removeErr := hooks.remove(root, tempPath); removeErr != nil {
+		log.Printf("assets: remove temporary file %q after publishing %q: %v", tempPath, target, removeErr)
+	}
+	if syncErr := hooks.sync(root, dir); syncErr != nil {
+		log.Printf("assets: sync %q after publishing %q: %v", dir, target, syncErr)
+	}
+	return nil
+}
+
+// writeNewFileExclusive is the fallback for filesystems that cannot create
+// hard links, such as exFAT, FAT, and some SMB/NFS mounts. O_EXCL keeps the
+// no-overwrite contract, but the final name exists while data is still being
+// written, so a reader can observe a partial image; a failed write removes it.
+func writeNewFileExclusive(root *os.Root, target string, data []byte, mode fs.FileMode) (err error) {
+	file, err := root.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o666)
+	if err != nil {
 		if errors.Is(err, fs.ErrExist) {
 			return fmt.Errorf("%w: %v", errAssetNameTaken, err)
 		}
 		return err
 	}
-	if err = root.Remove(tempPath); err != nil {
+	defer func() {
+		if err != nil {
+			_ = file.Close()
+			_ = root.Remove(target)
+		}
+	}()
+
+	if _, err = file.Write(data); err != nil {
 		return err
 	}
-	return syncRootDirectory(root, dir)
+	if err = file.Sync(); err != nil {
+		return err
+	}
+	if err = file.Close(); err != nil {
+		return err
+	}
+	if mode != 0 {
+		if err = root.Chmod(target, mode.Perm()); err != nil {
+			return err
+		}
+	}
+	return nil
 }

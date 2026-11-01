@@ -28,13 +28,6 @@ export interface InsertionTicket {
  */
 export type PasteImageHandler = (ticket: InsertionTicket) => void;
 
-/**
- * Called after the editor intercepted files dropped inside it. The paths and
- * the one-time token arrive through the MyGo file-drop event; the event's
- * coordinates create the insertion ticket through createInsertionTicket.
- */
-export type DropFilesHandler = () => void;
-
 export interface CreateEditorOptions {
   parent: HTMLElement;
   doc: string;
@@ -43,7 +36,6 @@ export interface CreateEditorOptions {
   commands?: readonly EditorCommand[];
   resolveImage?: ImageResolver;
   onPasteImage?: PasteImageHandler;
-  onDropFiles?: DropFilesHandler;
   onChange?: (doc: string) => void;
 }
 
@@ -51,6 +43,12 @@ export interface EditorHandle {
   readonly view: EditorView;
   readonly mode: EditorMode;
   setMode(mode: EditorMode): void;
+  /**
+   * Reports whether the viewport point is inside the editor. Native drops
+   * carry coordinates; this keeps a drop outside the editor from becoming an
+   * insertion at a clamped document position.
+   */
+  containsPoint(x: number, y: number): boolean;
   /**
    * Creates a ticket at the document position under the given viewport
    * coordinates. Returns null when the point is outside the editor.

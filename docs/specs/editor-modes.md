@@ -88,7 +88,7 @@
 - 沉浸模式额外注册 `EditorView.atomicRanges`，让光标跳过隐藏的符号。
 - 用 ⌘B（CodeMirror 的 `Mod-b`）切换加粗；光标折叠时插入一对空标记，选中文本时在两侧加 `**`。
 - 图片 widget 只在 `resolveImage` 返回地址时替换原文，否则保留 Markdown；应用层按当前文件和 generation 生成协议地址（见[工作区与文件](workspace.md#图片)）。
-- 编辑区拦截含图片的粘贴和含文件的拖放。粘贴时通过 `onPasteImage` 交出插入凭据；拖放的路径和坐标来自 MyGo 事件，应用层用坐标调用 `createInsertionTicket`。`insertImages(ticket, markdown)` 在一个事务里插入，因此是一个撤销步；编辑器持续映射凭据位置，组合输入期间排队，组合结束后逐条插入。
+- 编辑区拦截含图片的粘贴和含文件的拖放。粘贴时通过 `onPasteImage` 交出插入凭据；拖放路径和坐标来自 MyGo 事件，应用层先用 `containsPoint(x, y)` 确认落点在编辑区内，再用同一坐标调用 `createInsertionTicket`。`insertImages(ticket, markdown)` 在一个事务里插入，因此是一个撤销步；编辑器持续映射凭据位置，组合输入期间排队，组合结束后逐条插入。
 - 三种模式的扩展通过同一个 Compartment 切换，`EditorView` 不重建。
 - 编辑器主题只读 CSS 变量，亮暗切换只改 class（见[主题与字体](theming.md#编辑器主题)）。
 

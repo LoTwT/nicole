@@ -17,8 +17,6 @@ export interface ImageInsertionOptions {
 export interface ImageInsertion {
   /** Handles an image paste ticket created by the editor. */
   handlePaste(ticket: InsertionTicket): void;
-  /** Records that the editor intercepted a file drop. */
-  handleDropFiles(): void;
   /** Imports a native drop after Go supplied its one-time token. */
   handleDrop(drop: ImageDrop): void;
 }
@@ -33,7 +31,6 @@ export function createImageInsertion(
   options: ImageInsertionOptions,
 ): ImageInsertion {
   const { getEditor, getFile, getGeneration, onError } = options;
-  let editorDrops = 0;
 
   const release = (editor: EditorHandle, ticket: InsertionTicket) => {
     editor.insertImages(ticket, []);
@@ -72,20 +69,9 @@ export function createImageInsertion(
       );
     },
 
-    handleDropFiles() {
-      // The native MyGo event follows the DOM drop and supplies its own
-      // coordinates and token; this only confirms the drop was in the editor.
-      editorDrops++;
-    },
-
     handleDrop(drop) {
-      const fromEditor = editorDrops > 0;
-      editorDrops = 0;
-      if (!fromEditor) {
-        return;
-      }
       const editor = getEditor();
-      if (!editor) {
+      if (!editor || !editor.containsPoint(drop.x, drop.y)) {
         return;
       }
       const ticket = editor.createInsertionTicket(drop.x, drop.y);
