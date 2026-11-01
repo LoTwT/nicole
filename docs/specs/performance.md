@@ -31,10 +31,22 @@
 
 ## 测量方法
 
-1. 先记录当前已经存在的 WebKit 进程。
-2. 用 `open -n` 启动应用。
-3. 等待 10 秒，让进程稳定下来。
-4. 找出新出现的 `com.apple.WebKit.*` 进程。
-5. 对这些进程和主进程分别运行 `footprint -p <pid>`，求和。
+测量由 [`scripts/measure-memory.sh`](../../scripts/measure-memory.sh) 完成；启动、进程归属、取值和清理的步骤在该脚本中定义，参数和退出码见 `scripts/measure-memory.sh --help`。
 
-基线数据、打包体积和口径说明见[内存基线](../references/memory-baseline.md)。
+```sh
+scripts/measure-memory.sh --budget 120
+```
+
+输出一张按主进程、GPU、WebContent、Networking、Other 分行的表，最后一行是 `SUMMARY key=value ...`：
+
+- `total_mb` 是与其他基线比较的数字。
+- `attribution=coalition` 表示 WebKit 进程按 resource coalition 归属；只有这种结果能记为基线。`pid-diff` 是缺少 `python3` 时的退路，可能混入其他应用的进程。
+- `survivor_excluded_mb` 是存活检查中被排除的进程占用；只有 `pid-diff` 模式可能非零，`coalition` 模式始终为 0。
+
+记录基线前退出其他 Nicole 实例。窗口尺寸和屏幕缩放会影响 WebContent 和 GPU 的占用，每次基线都要在[内存基线](../references/memory-baseline.md)中写明；脚本启动的实例与安装版共用用户数据目录（退出时会写窗口状态），这一点目前无法避免。
+
+脚本依赖 `footprint`，只在 macOS 上可用，**不接入 CI**：runner 的环境数据不代表真实机器。
+
+## 内存基线的更新约定
+
+可能影响内存的 PR 合并后，在最新的 `main` 上构建 `.app`，运行 `scripts/measure-memory.sh --budget 120` 测一次空载，把 `total_mb`、`attribution`、构建提交和度量环境写进 PR 描述；与[内存基线](../references/memory-baseline.md)的最新数字比较，差异明显时说明原因。

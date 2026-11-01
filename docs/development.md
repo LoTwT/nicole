@@ -157,6 +157,15 @@ GOTOOLCHAIN=auto go test ./...
 
 Vitest 覆盖三种模式的切换；挂载 `App.vue` 后切换亮暗主题，编辑器 DOM、选区和撤销历史保持不变；沉浸模式的 `Mod-b` 加粗；应用命令（如 `Mod-i`）优先于 `basicSetup` 默认键位。Go 测试覆盖绑定服务。
 
+### 内存测量
+
+```sh
+GOTOOLCHAIN=auto bun run build -- -skip-dmg
+scripts/measure-memory.sh --budget 120
+```
+
+测量约定见[性能预算与测量](specs/performance.md#测量方法)。
+
 ## CI
 
 [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) 在 PR 和 push 到 `main` 时运行，使用 `macos-latest`、`windows-latest`、`ubuntu-latest` 三个平台，依次执行：
