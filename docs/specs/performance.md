@@ -31,10 +31,27 @@
 
 ## 测量方法
 
-1. 先记录当前已经存在的 WebKit 进程。
-2. 用 `open -n` 启动应用。
-3. 等待 10 秒，让进程稳定下来。
-4. 找出新出现的 `com.apple.WebKit.*` 进程。
-5. 对这些进程和主进程分别运行 `footprint -p <pid>`，求和。
+测量由 [`scripts/measure-memory.sh`](../../scripts/measure-memory.sh) 完成。启动、进程归属、取值和清理的步骤只在该脚本的注释与实现中定义；本节给出调用方式和输出契约。
 
-基线数据、打包体积和口径说明见[内存基线](../references/memory-baseline.md)。
+```sh
+scripts/measure-memory.sh --budget 120
+```
+
+- 默认启动 `build/<os>-<arch>/Nicole.app`；`--app PATH` 指定其他 `.app`，`--wait SECONDS` 改启动后的等待时间（默认 10）。
+- 输出一张按主进程、GPU、WebContent、Networking、Other 分行的表，最后一行是 `SUMMARY key=value ...`；`total_mb` 是与其他基线比较的数字。
+- 脚本只结束它自己启动的实例。其他应用的 WebKit 子进程按 resource coalition 排除；缺少 `python3` 时退回 PID 差分并告警。
+- `--budget MB` 在合计超过阈值时以状态 2 退出；前置条件或测量失败以状态 1 退出。
+
+默认等待 10 秒；机器较慢或数字明显波动时可以用 `--wait` 加长：
+
+```sh
+scripts/measure-memory.sh --wait 90 --budget 120
+```
+
+本次 10 秒与 90 秒的合计一致（见[内存基线](../references/memory-baseline.md#口径说明)）。同时运行的安装版或 `mygo dev` 实例会干扰测量（实测合计约 121–140MB）；记录基线前先退出这些实例。
+
+脚本依赖 `footprint`，只在 macOS 上可用，**不接入 CI**：runner 的环境数据不代表真实机器。
+
+## 内存基线的更新约定
+
+可能影响内存的 PR 合并后，在最新的 `main` 上构建 `.app`，运行 `scripts/measure-memory.sh --budget 120` 测一次空载，把 `total_mb`、构建提交和度量环境写进 PR 描述；与[内存基线](../references/memory-baseline.md)的最新数字比较，差异明显时说明原因。
