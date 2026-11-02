@@ -31,12 +31,32 @@ MyGo 的接口与版本情况见 [MyGo 参考](references/mygo.md)。
 
 ```text
 src/
-  App.vue                 单窗口外壳：打开文件夹、文件选择、自动保存、模式与主题切换
+  App.vue                 单窗口外壳：装订册布局、单个文档、自动保存、外部变化与主题
   main.ts                 挂载 Vue
   sample.ts               示例文本
   style.css               Tailwind、主题和字体变量
   image-url.ts            把 Markdown 图片 URL 解析成自定义协议地址
   image-insertion.ts      粘贴、拖入图片与编辑器插入凭据的接线
+  app/                    界面状态与纯逻辑辅助
+    file-tree.ts          文件树节点、排序、展开与增量合并
+    line-endings.ts       换行风格检测与写回
+    paths.ts              工作区相对路径、主目录缩写
+    platform.ts           平台判断、快捷键文字/键帽拆分与右键菜单项
+    status.ts             保存状态、横幅优先级和标签页圆点
+    watch-events.ts       监听事件与当前文档、文件树刷新范围的对应
+  components/             界面组件
+    AppSidebar.vue        侧栏外壳、宽度拖动、底部切换文件夹/主题/设置入口
+    FileTree.vue          按需读取的文件树、右键菜单、行内新建与重命名
+    FileTreeNode.vue      递归树节点与键盘可见结构
+    TopBar.vue            单文档标签、模式切换、侧栏与大纲入口
+    StatusBar.vue         保存状态与临时提示
+    AppBanner.vue         外部修改、删除和保存失败横幅
+    AppDialog.vue         模态对话框、焦点陷阱与焦点恢复
+    EmptyState.vue        开始写作、无文件和最近文件夹
+    NonMarkdownPlaceholder.vue  非 Markdown 文件的占位页
+    InlineNameInput.vue   行内文件名输入框
+    AppIcon.vue           内联 Lucide 1.66.0 图标
+    KeyHint.vue           按平台拆分的快捷键键帽
   editor/                 纯 TypeScript，不依赖 Vue 和 MyGo
     index.ts              createEditor、三种模式、widgets、核心命令、图片插入
     types.ts              对外类型
@@ -44,7 +64,8 @@ src/
     mygo.ts               生成的类型化客户端
     app.ts                薄封装（getAppInfo）
     assets.ts             薄封装（粘贴、拖入图片、窗口文件拖放事件）
-    workspace.ts          薄封装（选择文件夹、列文件、读写、关窗保存）
+    clipboard.ts          复制路径时的剪贴板回退
+    workspace.ts          薄封装（选择/打开文件夹、列文件、读写、关窗保存）
     files.ts              文件树与文件操作
     settings.ts           全局设置和主题迁移
     single-file.ts        单文件标签页的授权与读写
@@ -78,7 +99,8 @@ Go（main.go）
 - `src/editor/` 是纯 TypeScript，不依赖 Vue，也不依赖 MyGo。运行时只导出 `createEditor`；其余导出是调用方需要的类型。
 - MyGo 调用只放在 `src/services/` 和 Go 入口（`main.go` 及同一包内直接使用 MyGo 的服务实现），其他前端模块通过 `src/services/` 间接使用后端能力。生成的客户端直接输出到 `src/services/mygo.ts`。
 - `main.go` 还注册 MyGo 的 `updater.Plugin`，绑定工作区、图片、设置、单文件、打开方式和原生菜单服务，注册图片协议并设置应用菜单；文件监听由 `Workspace.Watch` 在页面调用时开始。更新源、版本注入和发布流程见[发布与自动更新](release.md)。
-- `src/services/` 是生成的 `mygo.ts` 客户端上的薄封装，不承载业务逻辑。`app.ts` 只把 `Application.Info` 包装成 `getAppInfo`；`workspace.ts` 包装 `Workspace` 的 Markdown 方法与关窗保存事件；`files.ts`、`settings.ts`、`single-file.ts`、`menu.ts`、`open-file.ts` 和 `watch.ts` 分别包装对应服务。封装不拼接路径，也不缓存文件内容。
+- `src/services/` 是生成的 `mygo.ts` 客户端上的薄封装，不承载业务逻辑。`app.ts` 只把 `Application.Info` 包装成 `getAppInfo`；`workspace.ts` 包装 `Workspace` 的 Markdown 方法、`PickFolder`/`OpenFolder` 和关窗保存事件；`files.ts`、`settings.ts`、`single-file.ts`、`menu.ts`、`open-file.ts` 和 `watch.ts` 分别包装对应服务；`clipboard.ts` 只负责复制界面文字。封装不拼接路径，也不缓存文件内容。
+- `src/app/` 只放不依赖 Vue 组件实例的界面逻辑，`src/components/` 只负责渲染和交互事件；`App.vue` 负责把这些模块与 `services/` 接起来，不直接调用 MyGo。
 - `createEditor` 的接口为：
 
   ```ts
@@ -102,7 +124,7 @@ Go（main.go）
   }): EditorHandle
   ```
 
-  `EditorHandle` 提供 `view`、`mode`、`setMode`、`undo`、`redo`、`containsPoint`、`createInsertionTicket`、`insertImages`、`focus` 和 `destroy`。`undo()` / `redo()` 在输入法组合期间返回 `false`，不执行历史；`containsPoint(x, y)` 按视口坐标判断落点是否在编辑器内；`createInsertionTicket(x, y)` 按视口坐标创建插入凭据，坐标不在编辑区内时返回 null；`insertImages(ticket, markdown)` 在一个事务里插入文本，因此是一个撤销步。编辑器持续对凭据做位置映射，中文输入法组合期间先排队，组合结束后再插入；多条排队插入逐条处理，前一条插入会映射后一条的位置。`onPasteImage` 只把粘贴事件交给应用层，保存图片和生成 Markdown 由 `src/image-insertion.ts` 经 `src/services/assets.ts` 完成；编辑区不接触 MyGo。三种模式通过同一个 `Compartment` 重配置，`EditorView` 实例不变。
+  `EditorHandle` 提供 `view`、`mode`、`setMode`、`replaceDocument`、`undo`、`redo`、`containsPoint`、`createInsertionTicket`、`insertImages`、`focus` 和 `destroy`。`replaceDocument` 把磁盘上的新文本作为一次差异修改应用，映射选区并把可见区域顶部保持在原行。`undo()` / `redo()` 在输入法组合期间返回 `false`，不执行历史；`containsPoint(x, y)` 按视口坐标判断落点是否在编辑器内；`createInsertionTicket(x, y)` 按视口坐标创建插入凭据，坐标不在编辑区内时返回 null；`insertImages(ticket, markdown)` 在一个事务里插入文本，因此是一个撤销步。编辑器持续对凭据做位置映射，中文输入法组合期间先排队，组合结束后再插入；多条排队插入逐条处理，前一条插入会映射后一条的位置。`onPasteImage` 只把粘贴事件交给应用层，保存图片和生成 Markdown 由 `src/image-insertion.ts` 经 `src/services/assets.ts` 完成；编辑区不接触 MyGo。三种模式通过同一个 `Compartment` 重配置，`EditorView` 实例不变。
 
 - 编辑器主题直接读取 CSS 变量；界面切换亮暗时只改 `<html>` 上的 `.dark`，不重建编辑器（见[主题与字体](specs/theming.md#编辑器主题)）。
 - 命令注册表只有一份，各入口共用，见 [Slash 命令](specs/slash-commands.md#命令注册表)。
@@ -113,12 +135,12 @@ Go（main.go）
 - MyGo 提供类型化 IPC：绑定方法、`Channel` 和 `Event`。
 - 用 `mygo generate` 生成 TypeScript 客户端，输出路径由 `mygo.config.ts` 的 `bindings` 指定；本项目是 `src/services/mygo.ts`。
 - 前端只通过生成的客户端和 `services/` 调用 Go；Go 用 `mygo.Bind` 暴露服务，用 `*mygo.Channel[T]` 推送流，用 `mygo.NewEvent[T]` 发送事件。
-- 当前的最小服务是 `Application.Info()`，返回应用版本、操作系统、架构和 Go 版本，用来验证前端与 Go 的调用链。
-- `Workspace` 提供 `ChooseFolder`、`ListFiles`、`ReadFile`、`WriteFile`、`ConfirmDiscard` 和 `FinishClose`，以及文件树的 `ListDirectory`、`CreateFile`、`CreateFolder`、`RenameEntry`、`TrashEntry`、`OpenWithDefaultApp`、`RevealEntry` 和 `Watch`。写操作携带打开时返回的 `generation`，路径和文件类型的规则见[工作区与文件](specs/workspace.md#路径守卫)和[写入保证](specs/workspace.md#写入保证)。
+- 当前的最小服务是 `Application.Info()`，返回应用版本、操作系统、架构、Go 版本和主目录，用来验证前端与 Go 的调用链，并让界面把主目录写成 `~`。
+- `Workspace` 提供 `ChooseFolder`、`PickFolder`、`OpenFolder`、`ListFiles`、`ReadFile`、`WriteFile`、`ConfirmDiscard` 和 `FinishClose`，以及文件树的 `ListDirectory`、`CreateFile`、`CreateFolder`、`RenameEntry`、`TrashEntry`、`OpenWithDefaultApp`、`RevealEntry` 和 `Watch`。`PickFolder` 只返回用户在原生对话框中选择的路径；`OpenFolder` 只接受该路径、Go 记录的最近文件夹或系统提供的文件的所在文件夹，页面不能凭任意字符串切换根目录。只有“系统提供文件的父目录”这一来源会拒绝根目录、盘符根目录和主目录；用户主动选择、当前根目录和最近列表不受限制。成功的 `open` 由 Go 写入最近列表。写操作携带打开时返回的 `generation`，路径和文件类型的规则见[工作区与文件](specs/workspace.md#路径守卫)和[写入保证](specs/workspace.md#写入保证)。
 - 关窗时 Go 发出携带 `token` 的 `workspace:save-before-close` 事件并阻止关闭；前端保存后调用 `FinishClose(token, saved)`。保存失败时由 Go 弹出确认框，只有用户明确选择放弃才关窗；页面无响应时最多等待 5 秒。
 - `Workspace.Watch(generation)` 用 `*mygo.Channel[FileWatchPart]` 流式返回 `ready` 和事件批次；底层是 `mygo.WatchFiles`，在 Go 端过滤 Nicole 自己的写入（见[工作区与文件](specs/workspace.md#忽略-nicole-自己的写入)）。工作区状态本身是可替换的单例，后续协议 handler 在启动时注册、运行时读取同一个状态。
-- `SingleFileService` 提供 `ChooseSingleFile`、`AcceptSingleFile`、`ReadSingleFile`、`WriteSingleFile` 和 `ReleaseSingleFile`；授权按解析后的绝对路径保存，只有对话框选择或 `App.OnOpenFile` 提供的文件才能被接受。`OpenedFiles` 暂存系统传入的路径；`app:open-file` 只通知“有新文件”，页面收到信号后调用 `TakePendingOpenedFiles` 一次取走队列，既覆盖启动时到达的文件，也不会重复交付同一个文件。
-- `Settings` 提供 `Get`、`MigrateLegacyTheme`、`SetTheme`、`SetSidebarWidth`、`SetExpandedFolders`、`AddRecentFolder` 和 `RemoveRecentFolder`；`SetTheme` 同时调用 `mygo.Theme.SetSource` 同步原生外观。
+- `SingleFileService` 提供 `ChooseSingleFile`、`AcceptSingleFile`、`DismissOfferedFile`、`ReadSingleFile`、`WriteSingleFile` 和 `ReleaseSingleFile`；授权按解析后的绝对路径保存，只有对话框选择或 `App.OnOpenFile` 提供的文件才能被接受。打开系统文件的父目录是一次性授权：`OpenFolder` 成功后 Go 消耗对应提供项，取消时页面调用 `DismissOfferedFile`。`OpenedFiles` 暂存系统传入的路径；`app:open-file` 只通知“有新文件”，页面收到信号后调用 `TakePendingOpenedFiles` 一次取走队列，既覆盖启动时到达的文件，也不会重复交付同一个文件。
+- `Settings` 提供 `Get`、`MigrateLegacyTheme`、`SetTheme`、`SetSidebarWidth`、`SetExpandedFolders`、`AddRecentFolder` 和 `RemoveRecentFolder`；`AddRecentFolder` 只接受当前已打开的根目录，最近列表由 `Workspace.open` 写入；`SetTheme` 同时调用 `mygo.Theme.SetSource` 同步原生外观。
 - `NativeMenu.PopupNativeMenu` 在调用窗口的页面坐标显示原生菜单，返回选中项 ID 或空字符串；页面最多传 64 项，ID 唯一。正文的 WebView 右键菜单由 `Page.OnContextMenu` 裁剪，见[安全](#安全)。
 - 搜索通过 Channel 流式返回结果（见[工作区与文件](specs/workspace.md#搜索)）。
 - `Assets` 提供 `PasteImage(docPath, generation)` 和 `ImportImages(docPath, generation, dropToken)`，返回保存后的工作区相对路径和 Markdown。粘贴时 Go 先读剪贴板里的本地文件列表；列表非空时只导入其中的图片，没有图片就返回“剪贴板没有图片”，只有列表为空时才读 PNG 位图；拖入时 Go 从 `Window.OnFileDrop` 保存的路径中按一次性 token 取文件。页面不再传拖入路径，图片字节也不经过 IPC（见[工作区与文件](specs/workspace.md#图片)）。
@@ -137,7 +159,7 @@ Go（main.go）
 - Go 的文件服务限制见[工作区与文件](specs/workspace.md#路径守卫)。工作区内的读取、写入和文件操作都以 `os.OpenRoot` 的根为边界，并在操作前用 `filepath.EvalSymlinks` 确认目标仍在工作区内；文件树操作不能借 `..`、绝对路径、盘符路径或符号链接越出根目录。
 - 工作区外的文件采用按文件授权：`SingleFileService` 只保存用户通过原生对话框选择、或通过 `App.OnOpenFile` 提供并在页面确认后的解析绝对路径。读写只接受完全相同的路径，列出目录、访问同目录其他文件、相对路径和目录本身都拒绝；授权不跨重启保存，关闭标签页时释放。见[单文件标签页](specs/workspace.md#单文件标签页)。
 - 文件树的“用默认应用打开”在 Go 端按白名单分类：图片、PDF、纯文本和常见办公文档可直接打开；已知启动器类型（PATHEXT、macOS 脚本/快捷方式、Linux `.desktop` 等）直接拒绝；其他类型和 Unix 可执行文件必须先经过 Go 弹出的原生确认框，页面无法绕过。详见[文件操作](specs/workspace.md#打开方式的安全规则)。
-- 系统“打开方式”传入的路径先记为“已提供”，不会自动授权；`AcceptSingleFile` 只接受已经提供的路径，页面不能凭任意字符串自行授权。`app:open-file` 只是“有新文件”的信号，页面收到后调用 `TakePendingOpenedFiles` 清空队列，避免事件与启动时读取重复交付。
+- 系统“打开方式”传入的路径先记为“已提供”，不会自动授权；`AcceptSingleFile` 只接受已经提供的路径，页面不能凭任意字符串自行授权。打开父目录是一次性授权，成功打开后由 Go 消耗，取消或失败后由页面调用 `DismissOfferedFile` 消耗；当授权来源只是系统文件时，根目录、盘符根目录和主目录在前后端都拒绝。`app:open-file` 只是“有新文件”的信号，页面收到后调用 `TakePendingOpenedFiles` 清空队列，避免事件与启动时读取重复交付。
 - 原生右键菜单只接收菜单项 ID、文字、快捷键、禁用状态和页面坐标，不接收命令或文件内容；菜单项由 Go 组装，选择结果只把 ID 返回页面。正文的 WebView 右键菜单删除“重新载入”“后退”“前进”，非开发构建还删除“检查元素”。
 - 文件关联只让系统把 `.md` 路径交给 `App.OnOpenFile`；在用户于页面确认“只打开这个文件”之前，Go 不读写该文件。
 - 设置存储和单文件授权都只使用 Go 的文件接口；测试和开发构建通过 `NICOLE_USER_DATA_DIR` 指向临时目录，避免修改用户正在使用的数据（见[开发](development.md#数据隔离)）。应用启动时请求单实例锁；不同的 `NICOLE_USER_DATA_DIR` 使用独立的锁命名空间，因此隔离的测试/开发实例不会被误转交给安装版。

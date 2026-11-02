@@ -19,6 +19,8 @@ Go 的 `Workspace` 服务通过 `mygo.Bind` 暴露，前端经 `src/services/wor
 | 方法 | 行为 |
 |---|---|
 | `ChooseFolder()` | 打开原生文件夹对话框。取消时返回 `canceled: true`，当前工作区不变；成功时切换工作区并返回根目录、Markdown 文件列表和 `generation`。 |
+| `PickFolder()` | 只打开原生文件夹对话框并返回 `path` 和 `canceled`，不切换工作区。页面确认后再调用 `OpenFolder`。 |
+| `OpenFolder(path)` | 切换到用户刚选择的文件夹、Go 记录的最近文件夹或系统提供的文件的所在文件夹。其他路径返回错误，页面不能用它打开任意目录；只有系统提供文件的父目录这一授权来源会拒绝根目录、盘符根目录和主目录。 |
 | `ListFiles()` | 返回当前工作区的 Markdown 文件，规则见[列文件规则](#列文件规则)。没有打开工作区时返回错误。 |
 | `ReadFile(path)` | 返回 Markdown 文件原始内容的字符串，不做换行或编码转换。 |
 | `WriteFile(path, content, generation)` | 原子替换文件；`generation` 与当前工作区不一致时拒绝。保证见[写入保证](#写入保证)。 |
@@ -35,7 +37,7 @@ Go 的 `Workspace` 服务通过 `mygo.Bind` 暴露，前端经 `src/services/wor
 | 单文件的 `SingleFileService` | 只访问用户通过对话框或系统“打开方式”明确选择的 `.md` 文件，见[单文件标签页](#单文件标签页)。 |
 | 设置的 `Settings` | 读写用户数据目录中的全局设置，见[设置存储](#设置存储)。 |
 
-工作区根保存在进程内的一个状态对象中，`ChooseFolder()` 只替换这个状态并递增 `generation`。后续要加的自定义协议在启动时注册，运行时读取当前根，换工作区不重新注册任何东西（见[文件监听](#文件监听)与[架构](../architecture.md#进程和模块结构)）。
+工作区根保存在进程内的一个状态对象中，`ChooseFolder()` 和 `OpenFolder()` 只替换这个状态并递增 `generation`。界面使用 `PickFolder()` → 页面对话框 → `OpenFolder()` 的顺序，所以取消确认时 Go 端根目录还没有变化。后续要加的自定义协议在启动时注册，运行时读取当前根，换工作区不重新注册任何东西（见[文件监听](#文件监听)与[架构](../architecture.md#进程和模块结构)）。
 
 ## 列文件规则
 
@@ -117,10 +119,12 @@ Go 的 `Workspace` 服务通过 `mygo.Bind` 暴露，前端经 `src/services/wor
 
 - `ChooseSingleFile()` 打开只显示 `.md` 的原生文件对话框；用户选中的文件直接授权。
 - 系统“打开方式”或双击把文件交给 `App.OnOpenFile`；Go 把它记为“已提供”，但**不自动授权**。页面显示确认后调用 `AcceptSingleFile(path)`，只有与已提供路径一致的请求才会授权。
+- “打开所在文件夹”是一次性授权：`OpenFolder` 成功后 Go 删除该文件对应的已提供项；用户取消、对话框被关闭或打开失败时，页面调用 `DismissOfferedFile(path)` 删除它。位于主目录、文件系统根目录或盘符根目录的文件不显示这个选项；当授权来源只是该文件时，Go 的 `OpenFolder` 也拒绝这些根目录。用户主动选择、当前根目录和最近列表不受这条限制。
 - 授权保存解析符号链接后的绝对路径；`ReadSingleFile(path)` 和 `WriteSingleFile(path, content)` 只接受完全相同的路径。同一目录下的其他文件、相对路径、目录和非 `.md` 文件都拒绝。
 - 授权只存在内存中；关闭标签页时调用 `ReleaseSingleFile(path)`，重启应用后需要重新选择或确认。
 - 写入复用[写入保证](#写入保证)的原子替换：先写同目录临时文件，再改名；保留权限位，只读文件拒绝写入，失败时旧内容不变。文件已被外部删除时，再次保存会在原路径重新创建，与工作区文件的行为一致。换行风格的检测和“换行风格混合”保护仍由前端负责。
 - 单文件不属于工作区文件树，不在 `Watch` 范围内；界面按[界面与交互](ui.md#打开工作区之外的文件)显示相对路径和横幅。
+- UI-2a-2 只有单文档，打开单文件会替换当前文档；切换文件夹时保留单文件文档，但重启后不恢复。UI-2b 改为新标签页。
 
 安全模型见[架构](../architecture.md#安全)。
 
@@ -135,7 +139,7 @@ Go 的 `Workspace` 服务通过 `mygo.Bind` 暴露，前端经 `src/services/wor
 | `SetTheme(theme)` | 保存 `system`、`light` 或 `dark`，并调用 `mygo.Theme.SetSource`，让原生菜单和对话框跟随。 |
 | `SetSidebarWidth(width)` | 保存侧栏宽度，限制在 200–400px。 |
 | `SetExpandedFolders(root, folders)` | 按根目录保存文件树展开状态；`folders` 是相对路径，只存显示状态，不用于访问文件。 |
-| `AddRecentFolder(folder)` / `RemoveRecentFolder(folder)` | 维护最近打开的文件夹，最新在前，最多 10 个。 |
+| `AddRecentFolder(folder)` / `RemoveRecentFolder(folder)` | `AddRecentFolder` 只接受当前已打开的根目录，页面不能用它授权另一个目录；`Workspace.open` 成功后由 Go 写入最近列表，页面只更新本地显示。`RemoveRecentFolder` 只移除记录。 |
 
 `settings.json` 的字段为 `theme`、`sidebarWidth`、`recentFolders` 和 `expandedFolders`（根目录绝对路径 → 展开的相对路径数组）。默认主题是 `system`，默认宽度 252px，最近文件夹和展开状态为空。写入在目标目录创建临时文件后改名替换，一次只写一个完整文件；损坏的设置文件不会被部分覆盖。
 
@@ -157,7 +161,7 @@ Go 的 `Workspace` 服务通过 `mygo.Bind` 暴露，前端经 `src/services/wor
 
 **不用** MyGo 的 Documents API（见 [MyGo 参考](../references/mygo.md#documents-api)）：每多一个窗口就多一个 WebKit 页面进程，约多 40–50MB。内存预算见[性能](performance.md#预算)。
 
-使用 MyGo 的文件关联接收系统打开的 `.md` 文件；最近文件夹由[设置存储](#设置存储)维护。打开一个 `.md` 文件时，按它是否位于已打开或最近用过的文件夹中分别处理，规则见[界面与交互](ui.md#打开工作区之外的文件)。
+使用 MyGo 的文件关联接收系统打开的 `.md` 文件；最近文件夹由 Go 在 `Workspace.open` 成功后写入[设置存储](#设置存储)，页面只维护当前会话的本地显示。打开一个 `.md` 文件时，按它是否位于已打开或最近用过的文件夹中分别处理，规则见[界面与交互](ui.md#打开工作区之外的文件)。
 
 界面按“单窗口多根目录”设计：P0 只有一个根目录，打开另一个文件夹时替换当前根目录；P1 允许同时添加多个根目录，仍在同一个窗口里，不增加 WebKit 进程（见[界面与交互](ui.md#根目录)）。
 
@@ -169,6 +173,7 @@ Go 的 `Workspace` 服务通过 `mygo.Bind` 暴露，前端经 `src/services/wor
 - 自动保存在三种编辑模式下都生效（见[编辑模式](editor-modes.md#所有模式共用的能力)）。
 - 选择文件前先保存当前文件；保存失败或换行风格混合时，前端调用 `ConfirmDiscard()` 让用户选择“放弃更改并继续”或“取消”。取消会恢复选择并保留编辑，放弃则把编辑器恢复到读入内容后继续。打开文件夹前也先保存：`ChooseFolder()` 会切换 Go 端的根，所以保存必须发生在它之前。打开文件夹成功后不保留旧文件的编辑器，只显示选择文件的占位。以上是当前单编辑器界面的行为；多标签页界面中，切换文件只是切换标签页，切换文件夹前的确认、按根目录恢复标签页和占位状态见[界面与交互](ui.md#切换文件夹)。
 - 待保存内容绑定键入时的 `path`、`generation` 和文本；写入与失败恢复都使用这组值，路径已变化时不恢复，避免旧文件的内容写进新文件。读取下一个文件期间编辑器仍可输入；读取完成后先保存这段时间产生的编辑，失败或用户取消则中止切换。
+- 切换文件夹时先调用 `PickFolder`，用户选择后再保存当前编辑并显示页面确认；因此文件夹对话框期间的编辑会被保存，取消原生对话框不会丢弃内容。`OpenFolder` 失败时当前工作区保持不变。
 - 文件读取以最新一次选择为准：新的选择会作废未完成的读取；打开文件夹只在用户选中并切换到新工作区后作废进行中的读取，取消对话框不会。旧结果返回后丢弃，不加载、不改变当前状态，旧读取的错误也不显示。
 - 保存请求带工作区的 `generation`。切换期间的旧写入会被 Go 拒绝，不会落到新工作区。
 - 关窗时 Go 先阻止关闭，通过携带 `token` 的 `workspace:save-before-close` 事件让前端保存。保存成功后前端调用 `FinishClose(token, true)` 关闭窗口；保存失败或混合换行时调用 `FinishClose(token, false)`，由 Go 弹出“仍然关闭 / 取消”确认框，只有用户明确选择仍然关闭才销毁窗口。重复关窗沿用第一次请求；页面无响应时最多等待 5 秒后关窗，超时之后到达的回答因 token 过期而无效。前端还在 `beforeunload`、`pagehide` 和页面隐藏时尝试立即保存，这段时间内的极端情况仍需崩溃恢复兜底。

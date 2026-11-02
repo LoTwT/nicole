@@ -10,6 +10,11 @@ export interface AppInfo {
   os: string;
   arch: string;
   goVersion: string;
+  /**
+   * HomeDir is the user's home folder, used to shorten paths in the
+   * interface. It is empty when the platform cannot report it.
+   */
+  homeDir: string;
 }
 
 /**
@@ -71,6 +76,15 @@ export interface FileEntry {
 export interface FileWatchPart {
   type: string;
   events?: WorkspaceFileEvent[];
+}
+
+/**
+ * FolderPick is the result of choosing a folder without switching to it. The
+ * page confirms the switch, then calls OpenFolder.
+ */
+export interface FolderPick {
+  path: string;
+  canceled: boolean;
 }
 
 /**
@@ -230,6 +244,14 @@ export const Workspace = {
     return call("Workspace.ListFiles");
   },
   /**
+   * OpenFolder switches to a folder the user chose in the picker, a recent
+   * folder, or the folder of a file the system asked to open. Arbitrary paths
+   * are refused so a compromised page cannot browse the disk by opening a root.
+   */
+  openFolder(path: string): Promise<WorkspaceFolder> {
+    return call("Workspace.OpenFolder", path);
+  },
+  /**
    * OpenWithDefaultApp opens a file with the application the desktop uses for
    * it. Folders are refused here; RevealEntry shows them instead. Known launcher
    * types are refused. Other types, and any Unix file with an executable bit,
@@ -237,6 +259,14 @@ export const Workspace = {
    */
   openWithDefaultApp(rel: string, generation: number): Promise<void> {
     return call("Workspace.OpenWithDefaultApp", rel, generation);
+  },
+  /**
+   * PickFolder shows the native folder picker and returns the chosen folder
+   * without changing the workspace. Only the returned path may be passed to
+   * OpenFolder, so confirming the switch cannot lose the current workspace.
+   */
+  pickFolder(): Promise<FolderPick> {
+    return call("Workspace.PickFolder");
   },
   /**
    * ReadFile returns the exact bytes of a Markdown file in the open folder as a
@@ -326,8 +356,10 @@ export const Assets = {
  */
 export const Settings = {
   /**
-   * AddRecentFolder puts folder first in the recent folders, dropping the
-   * oldest entries past the list's limit.
+   * AddRecentFolder puts folder first in the recent folders, but only accepts
+   * the workspace that is already open. Opening a folder records it in Go; the
+   * page only updates its local display. This keeps the recent list from
+   * becoming an authorization bypass for OpenFolder.
    */
   addRecentFolder(folder: string): Promise<void> {
     return call("Settings.AddRecentFolder", folder);
@@ -392,6 +424,13 @@ export const SingleFileService = {
    */
   chooseSingleFile(): Promise<SingleFileSelection> {
     return call("SingleFileService.ChooseSingleFile");
+  },
+  /**
+   * DismissOfferedFile forgets a file the system offered but the user chose not
+   * to open. It only removes an offer; it never grants access.
+   */
+  dismissOfferedFile(path: string): Promise<void> {
+    return call("SingleFileService.DismissOfferedFile", path);
   },
   /** ReadSingleFile returns the exact bytes of a granted file. */
   readSingleFile(path: string): Promise<string> {

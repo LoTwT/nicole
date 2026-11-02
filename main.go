@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"os"
 	"runtime"
 
 	"github.com/egoist/mygo"
@@ -14,6 +15,9 @@ type AppInfo struct {
 	OS        string `json:"os"`
 	Arch      string `json:"arch"`
 	GoVersion string `json:"goVersion"`
+	// HomeDir is the user's home folder, used to shorten paths in the
+	// interface. It is empty when the platform cannot report it.
+	HomeDir string `json:"homeDir"`
 }
 
 // Application is bound to the frontend: `mygo generate` turns its methods into
@@ -29,11 +33,13 @@ func NewApplication(version string) Application {
 
 // Info returns the app version and the runtime that serves the page.
 func (app Application) Info() AppInfo {
+	home, _ := os.UserHomeDir()
 	return AppInfo{
 		Version:   app.version,
 		OS:        runtime.GOOS,
 		Arch:      runtime.GOARCH,
 		GoVersion: runtime.Version(),
+		HomeDir:   home,
 	}
 }
 
@@ -50,12 +56,16 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	workspace.useSettings(settingsStore)
 	if !generatingClient() {
 		applySavedTheme(settingsStore)
 	}
 	assets := NewAssets(workspace)
 
 	singleFiles := NewSingleFileService()
+	workspace.useOfferedFiles(singleFiles.offeredPaths, singleFiles.takeOfferedFolder)
+	settings := NewSettings(settingsStore)
+	settings.useCurrentRoot(workspace.openRoot)
 	openedFiles := NewOpenedFiles()
 	// The updater plugin adds the Sparkle-style update window and the menu
 	// item; `mygo build` enables it only together with signed updates and a
@@ -84,7 +94,7 @@ func main() {
 		NewApplication(mygo.App.Version()),
 		workspace,
 		assets,
-		NewSettings(settingsStore),
+		settings,
 		singleFiles,
 		openedFiles,
 		NativeMenu{},

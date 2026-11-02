@@ -48,6 +48,7 @@ CodeMirror 6 的主题直接使用 `var(--text-primary)` 这类 CSS 变量。切
 - 主题保存在用户数据目录的 `settings.json` 中，取值为 `system`、`light` 或 `dark`，默认 `system`。旧版存在 `localStorage` 的 `nicole-theme` 在启动时迁移到设置，成功后删除旧值，见[设置存储](workspace.md#设置存储)。
 - `src/App.vue` 切换 `<html>` 上的 `.dark`。`system` 时监听 `prefers-color-scheme` 的变化并实时切换；明确的 `light`/`dark` 不随系统变化。切换时同时调用 `Settings.SetTheme`，由 Go 调用 `mygo.Theme.SetSource`，让原生菜单、右键菜单和对话框跟随；`system` 用 `ThemeSystem`。
 - `src/style.css` 在 `@theme` 中覆盖字体变量，并定义 `--nicole-syntax-mark`、`--nicole-caret`、`--nicole-selection`、`--nicole-quote-border`，缺失的阅读层变量回退到主题包现有变量。
+- 任务框变量同样在 `src/style.css` 定义：`--nicole-checkbox-border`、`--nicole-checkbox-bg`、`--nicole-checkbox-checked-border`、`--nicole-checkbox-checked-bg`、`--nicole-checkbox-mark` 和 `--nicole-checkbox-focus`。每个变量写成 `var(--reading-checkbox-*, …)`，主题包 0.3.0 没有 `reading-checkbox-*` 时分别回退到 `--text-muted`、`transparent`、`--text-accent`、`--text-accent`、`--surface-canvas` 和 `--reading-focus`，满足[任务框](ui.md#任务框)的对比度要求。
 - `src/editor/index.ts` 的 `EditorView.theme` 和 `HighlightStyle` 只引用这些变量，不读主题状态，因此切换主题不会触发 `EditorView` 重建。
 - 没有引入 `@ayingott/theme/fonts.css`，构建产物里没有字体文件。
 

@@ -35,7 +35,10 @@ export function setExpandedFolders(
   return Settings.setExpandedFolders(root, folders);
 }
 
-/** Puts a folder first in the recent folders, keeping at most ten. */
+/**
+ * Re-adds the current workspace root to the recent list. Go rejects any
+ * other folder, so the page cannot use this call to authorize a new root.
+ */
 export function addRecentFolder(folder: string): Promise<void> {
   return Settings.addRecentFolder(folder);
 }

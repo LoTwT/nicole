@@ -43,6 +43,11 @@ export interface EditorHandle {
   readonly view: EditorView;
   readonly mode: EditorMode;
   setMode(mode: EditorMode): void;
+  /**
+   * Applies text loaded from disk as one change. The selection maps through
+   * the change, and the visible top line stays at the top when it survives.
+   */
+  replaceDocument(text: string): void;
   /** Applies the editor's history unless an IME composition is active. */
   undo(): boolean;
   /** Applies the editor's history unless an IME composition is active. */

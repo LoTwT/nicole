@@ -14,6 +14,15 @@
   --nicole-caret: var(--reading-caret, var(--accent-primary));
   --nicole-selection: var(--reading-selection, var(--accent-soft));
   --nicole-quote-border: var(--reading-quote-border, var(--border-default));
+  /* Task boxes need 3:1 against the canvas in both Paper and Ink. The theme
+     package has no reading-checkbox layer yet, so each value keeps its
+     --reading-checkbox-* hook and falls back to a semantic variable. */
+  --nicole-checkbox-border: var(--reading-checkbox-border, var(--text-muted));
+  --nicole-checkbox-bg: var(--reading-checkbox-bg, transparent);
+  --nicole-checkbox-checked-border: var(--reading-checkbox-checked-border, var(--text-accent));
+  --nicole-checkbox-checked-bg: var(--reading-checkbox-checked-bg, var(--text-accent));
+  --nicole-checkbox-mark: var(--reading-checkbox-mark, var(--surface-canvas));
+  --nicole-checkbox-focus: var(--reading-checkbox-focus, var(--reading-focus));
 }
 
 html,
@@ -30,10 +39,62 @@ body {
    tall in full screen, where MyGo's inset variables are 0px. */
 .app-drag {
   --app-region: drag;
-  padding-left: calc(1.5rem + var(--mygo-titlebar-inset-left, 0px));
-  padding-right: calc(1.5rem + var(--mygo-titlebar-inset-right, 0px));
 }
 
 .app-no-drag {
   --app-region: no-drag;
+}
+
+/* The shell draws its own 40px title bar. The sidebar's top row leaves the
+   macOS traffic lights alone; full screen sets the inset to 0px. */
+.sidebar-top {
+  padding-left: calc(0.5rem + var(--mygo-titlebar-inset-left, 0px));
+}
+
+.topbar {
+  padding-right: calc(0.5rem + var(--mygo-titlebar-inset-right, 0px));
+}
+
+.topbar--inset-left {
+  padding-left: calc(0.5rem + var(--mygo-titlebar-inset-left, 0px));
+}
+
+.sidebar--overlay {
+  position: absolute;
+  inset: 0 auto 0 0;
+  z-index: var(--z-popover);
+  box-shadow: var(--shadow-lg);
+}
+
+.app-modal-scrim::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--surface-canvas);
+  opacity: 0.55;
+}
+
+.app-modal-scrim > * {
+  position: relative;
+}
+
+/* A 6px hit area around the sidebar's right edge; the divider itself is 1px. */
+.sidebar-resizer {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.sidebar-resizer:focus-visible {
+  outline: 2px solid var(--focus-ring-color);
+  outline-offset: -1px;
+  box-shadow: var(--focus-ring-shadow);
+}
+
+.sidebar {
+  position: relative;
 }

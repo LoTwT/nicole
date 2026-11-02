@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  pickFolder: vi.fn(),
+  openFolder: vi.fn(),
   listDirectory: vi.fn(),
   createFile: vi.fn(),
   createFolder: vi.fn(),
@@ -17,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   removeRecentFolder: vi.fn(),
   chooseSingleFile: vi.fn(),
   acceptSingleFile: vi.fn(),
+  dismissOfferedFile: vi.fn(),
   readSingleFile: vi.fn(),
   writeSingleFile: vi.fn(),
   releaseSingleFile: vi.fn(),
@@ -27,6 +30,8 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("./mygo", () => ({
   Workspace: {
+    pickFolder: mocks.pickFolder,
+    openFolder: mocks.openFolder,
     listDirectory: mocks.listDirectory,
     createFile: mocks.createFile,
     createFolder: mocks.createFolder,
@@ -47,6 +52,7 @@ vi.mock("./mygo", () => ({
   SingleFileService: {
     chooseSingleFile: mocks.chooseSingleFile,
     acceptSingleFile: mocks.acceptSingleFile,
+    dismissOfferedFile: mocks.dismissOfferedFile,
     readSingleFile: mocks.readSingleFile,
     writeSingleFile: mocks.writeSingleFile,
     releaseSingleFile: mocks.releaseSingleFile,
@@ -73,11 +79,13 @@ import {
   revealEntry,
   trashEntry,
 } from "./files";
+import { openFolder, pickFolder } from "./workspace";
 import { popupNativeMenu } from "./menu";
 import { onOpenFile, takePendingOpenedFiles } from "./open-file";
 import {
   acceptSingleFile,
   chooseSingleFile,
+  dismissOfferedFile,
   readSingleFile,
   releaseSingleFile,
   writeSingleFile,
@@ -94,6 +102,13 @@ import {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.pickFolder.mockResolvedValue({ path: "/notes", canceled: false });
+  mocks.openFolder.mockResolvedValue({
+    root: "/notes",
+    files: [],
+    canceled: false,
+    generation: 1,
+  });
   mocks.listDirectory.mockResolvedValue({ path: ".", entries: [] });
   mocks.createFile.mockResolvedValue("note.md");
   mocks.createFolder.mockResolvedValue("notes");
@@ -127,6 +142,7 @@ beforeEach(() => {
     path: "/tmp/note.md",
     name: "note.md",
   });
+  mocks.dismissOfferedFile.mockResolvedValue(undefined);
   mocks.readSingleFile.mockResolvedValue("text");
   mocks.writeSingleFile.mockResolvedValue(undefined);
   mocks.releaseSingleFile.mockResolvedValue(undefined);
@@ -163,6 +179,21 @@ describe("service wrappers", () => {
     expect(mocks.revealEntry).toHaveBeenCalledWith("notes", 3);
   });
 
+  it("picks and opens folders without bypassing the backend guard", async () => {
+    await expect(pickFolder()).resolves.toEqual({
+      path: "/notes",
+      canceled: false,
+    });
+    await expect(openFolder("/notes")).resolves.toEqual({
+      root: "/notes",
+      files: [],
+      canceled: false,
+      generation: 1,
+    });
+    expect(mocks.pickFolder).toHaveBeenCalledOnce();
+    expect(mocks.openFolder).toHaveBeenCalledWith("/notes");
+  });
+
   it("forwards settings calls", async () => {
     await getSettings();
     await migrateLegacyTheme("dark");
@@ -184,12 +215,14 @@ describe("service wrappers", () => {
   it("forwards single-file calls", async () => {
     await chooseSingleFile();
     await acceptSingleFile("/tmp/note.md");
+    await dismissOfferedFile("/tmp/note.md");
     await expect(readSingleFile("/tmp/note.md")).resolves.toBe("text");
     await writeSingleFile("/tmp/note.md", "new");
     await releaseSingleFile("/tmp/note.md");
 
     expect(mocks.chooseSingleFile).toHaveBeenCalledOnce();
     expect(mocks.acceptSingleFile).toHaveBeenCalledWith("/tmp/note.md");
+    expect(mocks.dismissOfferedFile).toHaveBeenCalledWith("/tmp/note.md");
     expect(mocks.readSingleFile).toHaveBeenCalledWith("/tmp/note.md");
     expect(mocks.writeSingleFile).toHaveBeenCalledWith("/tmp/note.md", "new");
     expect(mocks.releaseSingleFile).toHaveBeenCalledWith("/tmp/note.md");

@@ -29,7 +29,10 @@ const (
 	themeDark   = "dark"
 )
 
-var errInvalidTheme = errors.New("settings: theme must be system, light or dark")
+var (
+	errInvalidTheme           = errors.New("settings: theme must be system, light or dark")
+	errRecentFolderNotCurrent = errors.New("settings: recent folder must be the open workspace")
+)
 
 // AppSettings is the user's global settings. It is stored in
 // PathUserData/settings.json and is independent of any workspace.
@@ -50,11 +53,21 @@ type AppSettings struct {
 // methods into functions in src/services/mygo.ts.
 type Settings struct {
 	store *settingsStore
+	// currentRoot reports the open workspace root. AddRecentFolder is kept
+	// for the generated client, but the page may only reorder the current
+	// root; RecentFolders must not become a way to authorize a new folder.
+	currentRoot func() string
 }
 
 // NewSettings returns the settings service backed by store.
 func NewSettings(store *settingsStore) *Settings {
 	return &Settings{store: store}
+}
+
+// useCurrentRoot lets AddRecentFolder verify that the page is not adding an
+// arbitrary folder to the recent list. It is set once during startup.
+func (s *Settings) useCurrentRoot(root func() string) {
+	s.currentRoot = root
 }
 
 // Get returns the saved settings, or the defaults when nothing was saved.
@@ -99,16 +112,23 @@ func (s *Settings) SetExpandedFolders(root string, folders []string) error {
 	})
 }
 
-// AddRecentFolder puts folder first in the recent folders, dropping the
-// oldest entries past the list's limit.
+// AddRecentFolder puts folder first in the recent folders, but only accepts
+// the workspace that is already open. Opening a folder records it in Go; the
+// page only updates its local display. This keeps the recent list from
+// becoming an authorization bypass for OpenFolder.
 func (s *Settings) AddRecentFolder(folder string) error {
 	folder = filepath.Clean(folder)
 	if !filepath.IsAbs(folder) {
 		return fmt.Errorf("settings: recent folder must be absolute: %q", folder)
 	}
-	return s.store.update(func(settings *AppSettings) {
-		settings.RecentFolders = prependRecentFolder(settings.RecentFolders, folder)
-	})
+	if s.currentRoot == nil {
+		return errRecentFolderNotCurrent
+	}
+	root := filepath.Clean(s.currentRoot())
+	if root == "" || root != folder {
+		return fmt.Errorf("%w: %q", errRecentFolderNotCurrent, folder)
+	}
+	return s.store.recordRecentFolder(folder)
 }
 
 // RemoveRecentFolder drops folder from the recent folders.
@@ -221,6 +241,14 @@ func (s *settingsStore) migrateLegacyTheme(legacy string) (AppSettings, error) {
 	}
 	applyThemeSource(settings.Theme)
 	return settings, nil
+}
+
+// recordRecentFolder is used by Workspace after a folder opens. Keeping the
+// write here means the page never decides which paths enter the recent list.
+func (s *settingsStore) recordRecentFolder(folder string) error {
+	return s.update(func(settings *AppSettings) {
+		settings.RecentFolders = prependRecentFolder(settings.RecentFolders, folder)
+	})
 }
 
 // update reads, changes and writes the settings in one critical section.

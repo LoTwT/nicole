@@ -208,6 +208,33 @@ func TestSingleFileWriteRejectsAReplacedSymlink(t *testing.T) {
 	}
 }
 
+func TestSingleFileOfferCanBeDismissedOrConsumedByFolder(t *testing.T) {
+	root := t.TempDir()
+	first := filepath.Join(root, "first.md")
+	second := filepath.Join(root, "second.md")
+	mustWriteFile(t, first, []byte("first"))
+	mustWriteFile(t, second, []byte("second"))
+
+	service := NewSingleFileService()
+	service.offer(first)
+	service.DismissOfferedFile(first)
+	if _, err := service.AcceptSingleFile(first); !errors.Is(err, errSingleFileNotGranted) {
+		t.Errorf("Accept after Dismiss = %v, want %v", err, errSingleFileNotGranted)
+	}
+
+	service.offer(first)
+	service.offer(second)
+	if !service.takeOfferedFolder(root) {
+		t.Fatal("takeOfferedFolder did not find the offered files")
+	}
+	if paths := service.offeredPaths(); len(paths) != 0 {
+		t.Errorf("offered paths after takeOfferedFolder = %q, want none", paths)
+	}
+	if service.takeOfferedFolder(root) {
+		t.Error("takeOfferedFolder matched the same offers twice")
+	}
+}
+
 func TestSingleFileOfferResolvesSymlinks(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("creating symlinks needs a developer mode or administrator rights")

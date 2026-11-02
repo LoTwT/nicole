@@ -16,6 +16,11 @@ export function acceptSingleFile(path: string): Promise<SingleFile> {
   return SingleFileService.acceptSingleFile(path);
 }
 
+/** Forgets a system-opened file the user chose not to open. */
+export function dismissOfferedFile(path: string): Promise<void> {
+  return SingleFileService.dismissOfferedFile(path);
+}
+
 /** Reads a granted single file byte for byte. */
 export function readSingleFile(path: string): Promise<string> {
   return SingleFileService.readSingleFile(path);

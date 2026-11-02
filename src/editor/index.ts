@@ -6,6 +6,7 @@ import {
   syntaxTree,
 } from "@codemirror/language";
 import {
+  ChangeSet,
   Compartment,
   EditorState,
   Prec,
@@ -710,6 +711,39 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     if (pendingInsertions.length > 0) scheduleInsertion();
   };
 
+  // External edits are one change over the common prefix and suffix. That is
+  // enough for CodeMirror to map the selection and scroll position through an
+  // insertion or deletion elsewhere in the document.
+  const replaceDocument = (text: string) => {
+    const current = view.state.doc.toString();
+    if (current === text) return;
+    let prefix = 0;
+    const limit = Math.min(current.length, text.length);
+    while (prefix < limit && current[prefix] === text[prefix]) prefix++;
+    let suffix = 0;
+    while (
+      suffix < limit - prefix &&
+      current[current.length - 1 - suffix] === text[text.length - 1 - suffix]
+    ) {
+      suffix++;
+    }
+    const changes = ChangeSet.of(
+      {
+        from: prefix,
+        to: current.length - suffix,
+        insert: text.slice(prefix, text.length - suffix),
+      },
+      current.length,
+    );
+    const ranges = view.visibleRanges;
+    const top = ranges.length > 0 ? ranges[0]!.from : 0;
+    const mappedTop = changes.mapPos(top, 1);
+    view.dispatch({
+      changes,
+      effects: EditorView.scrollIntoView(mappedTop, { y: "start" }),
+    });
+  };
+
   view = new EditorView({
     parent,
     state: EditorState.create({
@@ -760,6 +794,7 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
         ),
       });
     },
+    replaceDocument,
     undo() {
       return !view.compositionStarted && historyUndo(view);
     },

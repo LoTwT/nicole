@@ -45,4 +45,8 @@ func TestApplicationInfo(t *testing.T) {
 	if info.GoVersion != runtime.Version() {
 		t.Errorf("GoVersion = %q, want %q", info.GoVersion, runtime.Version())
 	}
+	home, _ := os.UserHomeDir()
+	if info.HomeDir != home {
+		t.Errorf("HomeDir = %q, want %q", info.HomeDir, home)
+	}
 }
