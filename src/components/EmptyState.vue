@@ -116,6 +116,7 @@ function folderName(path: string): string {
         </button>
         <span class="inline-flex items-center gap-1">
           快速打开 <KeyHint :shortcut="quickOpenKey" />
+          <span class="sr-only">{{ quickOpenKey }}</span>
         </span>
       </p>
     </div>
