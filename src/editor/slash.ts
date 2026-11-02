@@ -133,24 +133,40 @@ function frontmatterEnd(state: EditorState): number | null {
   return null;
 }
 
-function inExcludedContext(state: EditorState, position: number): boolean {
-  const frontmatter = frontmatterEnd(state);
-  if (frontmatter !== null && position < frontmatter) return true;
-
-  let node = syntaxTree(state).resolveInner(position, 1);
+function inExcludedBlock(
+  state: EditorState,
+  position: number,
+  bias: -1 | 1,
+): boolean {
+  let node = syntaxTree(state).resolveInner(position, bias);
   for (;;) {
     if (node.name === "InlineCode") {
       if (node.from < position && position < node.to) return true;
     } else if (
       EXCLUDED_BLOCK_NODES.has(node.name) &&
       node.from <= position &&
-      position < node.to
+      (position < node.to ||
+        (position === state.doc.length && node.to === position))
     ) {
       return true;
     }
     if (!node.parent) return false;
     node = node.parent;
   }
+}
+
+function inExcludedContext(state: EditorState, position: number): boolean {
+  const frontmatter = frontmatterEnd(state);
+  if (frontmatter !== null && position < frontmatter) return true;
+
+  if (inExcludedBlock(state, position, 1)) return true;
+  // At the very end there is no character on the right to resolve against.
+  // Looking left finds an unclosed fenced/indented/HTML block whose node ends
+  // exactly at the document end. A closed fenced block ends before a trailing
+  // newline, so its closing fence is not mistaken for content.
+  return position === state.doc.length
+    ? inExcludedBlock(state, position, -1)
+    : false;
 }
 
 export function createSlashMenu(options: SlashMenuOptions): SlashMenuController {

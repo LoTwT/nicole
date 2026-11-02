@@ -184,6 +184,10 @@ describe("slash trigger", () => {
         name: "frontmatter",
       },
       { doc: "<div>\nhello\n</div>\n\nbody", position: 6, name: "HTML block" },
+      { doc: "```\n", position: 4, name: "unclosed fenced code" },
+      { doc: "```js\nfoo\n", position: 10, name: "unclosed fenced code with info" },
+      { doc: "<div> ", position: 6, name: "HTML block at document end" },
+      { doc: "    foo ", position: 8, name: "indented code at document end" },
     ];
     for (const item of cases) {
       const view = mount(item.doc);
@@ -196,10 +200,16 @@ describe("slash trigger", () => {
       controller = null;
     }
 
-    const after = mount("```\ncode\n```\n");
-    after.dispatch({ selection: { anchor: after.state.doc.length } });
-    type(after, "/");
-    expect(state?.trigger).toBe("/");
+    for (const doc of ["```\ncode\n```\n", "```\na\n```\n"]) {
+      const after = mount(doc);
+      after.dispatch({ selection: { anchor: after.state.doc.length } });
+      type(after, "/");
+      expect(state?.trigger).toBe("/");
+      controller?.close();
+      editor?.destroy();
+      editor = null;
+      controller = null;
+    }
   });
 
   it("closes when the query contains whitespace", () => {
