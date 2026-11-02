@@ -82,11 +82,13 @@ jobs:
             exit 1
           fi
           codesign --verify --deep --strict --verbose=2 "$app"
-          notice="$app/Contents/Resources/THIRD-PARTY-NOTICES.md"
-          if [ ! -f "$notice" ] || ! cmp -s "$notice" THIRD-PARTY-NOTICES.md; then
-            echo "ERROR: the app must ship THIRD-PARTY-NOTICES.md unchanged in Contents/Resources"
-            exit 1
-          fi
+          for name in THIRD-PARTY-NOTICES.md THIRD-PARTY-LICENSES.md; do
+            notice="$app/Contents/Resources/$name"
+            if [ ! -f "$notice" ] || ! cmp -s "$notice" "$name"; then
+              echo "ERROR: the app must ship $name unchanged in Contents/Resources"
+              exit 1
+            fi
+          done
           if grep -aqF 'LoTwT/nicole/releases' "$app/Contents/MacOS/Nicole"; then
             echo "ERROR: the test build embeds the update source; updates must be off"
             exit 1
@@ -151,20 +153,24 @@ jobs:
           if [ "$fail" -ne 0 ]; then
             exit 1
           fi
-          notice="build/windows-amd64/THIRD-PARTY-NOTICES.md"
-          if [ ! -f "$notice" ] || ! cmp -s "$notice" THIRD-PARTY-NOTICES.md; then
-            echo "ERROR: the Windows build must ship THIRD-PARTY-NOTICES.md unchanged next to Nicole.exe"
+          for name in THIRD-PARTY-NOTICES.md THIRD-PARTY-LICENSES.md; do
+            notice="build/windows-amd64/$name"
+            if [ ! -f "$notice" ] || ! cmp -s "$notice" "$name"; then
+              echo "ERROR: the Windows build must ship $name unchanged next to Nicole.exe"
+              exit 1
+            fi
+          done
+          echo "--- installer contents (7z listing) ---"
+          if ! listing=$(7z l "$setup"); then
+            echo "ERROR: cannot list the installer with 7z"
             exit 1
           fi
-          echo "--- installer contents (7z listing) ---"
-          7z l "$setup" | grep -q 'Nicole\.exe' || {
-            echo "ERROR: the installer does not hold Nicole.exe"
-            exit 1
-          }
-          7z l "$setup" | grep -q 'THIRD-PARTY-NOTICES\.md' || {
-            echo "ERROR: the installer does not hold THIRD-PARTY-NOTICES.md"
-            exit 1
-          }
+          for name in Nicole.exe THIRD-PARTY-NOTICES.md THIRD-PARTY-LICENSES.md; do
+            if ! printf '%s\n' "$listing" | grep -F "$name" > /dev/null; then
+              echo "ERROR: the installer does not hold $name"
+              exit 1
+            fi
+          done
           if grep -aqF 'LoTwT/nicole/releases' "$exe"; then
             echo "ERROR: the test build embeds the update source; updates must be off"
             exit 1
@@ -229,15 +235,27 @@ jobs:
             echo "ERROR: $deb declares version $got, want $APP_VERSION"
             exit 1
           fi
-          notice="build/linux-amd64/THIRD-PARTY-NOTICES.md"
-          if [ ! -f "$notice" ] || ! cmp -s "$notice" THIRD-PARTY-NOTICES.md; then
-            echo "ERROR: the Linux build must ship THIRD-PARTY-NOTICES.md unchanged next to the executable"
+          for name in THIRD-PARTY-NOTICES.md THIRD-PARTY-LICENSES.md; do
+            notice="build/linux-amd64/$name"
+            if [ ! -f "$notice" ] || ! cmp -s "$notice" "$name"; then
+              echo "ERROR: the Linux build must ship $name unchanged next to the executable"
+              exit 1
+            fi
+            if ! tar -tzf "$archive" | grep -F "$name" > /dev/null; then
+              echo "ERROR: $archive does not hold $name"
+              exit 1
+            fi
+          done
+          if ! listing=$(dpkg-deb -c "$deb"); then
+            echo "ERROR: cannot list the Debian package with dpkg-deb"
             exit 1
           fi
-          if ! dpkg-deb -c "$deb" | grep -q 'opt/nicole/THIRD-PARTY-NOTICES.md'; then
-            echo "ERROR: $deb does not install THIRD-PARTY-NOTICES.md under /opt/nicole"
-            exit 1
-          fi
+          for name in THIRD-PARTY-NOTICES.md THIRD-PARTY-LICENSES.md; do
+            if ! printf '%s\n' "$listing" | grep -F "opt/nicole/$name" > /dev/null; then
+              echo "ERROR: $deb does not install $name under /opt/nicole"
+              exit 1
+            fi
+          done
           if grep -aqF 'LoTwT/nicole/releases' "$exe"; then
             echo "ERROR: the test build embeds the update source; updates must be off"
             exit 1

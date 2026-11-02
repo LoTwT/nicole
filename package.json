@@ -8,6 +8,7 @@
     "generate": "mygo generate",
     "dev:web": "vite",
     "build:web": "vue-tsc --noEmit && vite build",
+    "licenses": "bun scripts/generate-third-party-licenses.mjs",
     "typecheck": "vue-tsc --noEmit",
     "test": "vitest run"
   },

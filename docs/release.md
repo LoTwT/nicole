@@ -45,9 +45,9 @@ updates: {
    - 测试版：`git tag test-v0.0.2 && git push origin test-v0.0.2`
 3. `Release` workflow（[release.yml](../.github/workflows/release.yml)）由标签触发：
    1. **草稿 job**：校验标签（`test-v`/`v` + `major.minor.patch`）、CHANGELOG 小节，并用与构建相同的环境变量求值 `mygo.config.ts`，确认版本、`updates.github`（必须是本仓库）与 `tagPrefix` 正确；然后创建该标签的草稿 Release，三个平台 job 上传到同一草稿。
-   2. **macOS job**（`macos-latest`）：`mygo build -platform darwin/universal -upload`，私钥经 `MYGO_UPDATER_PRIVATE_KEY`，`GH_TOKEN` 供上传；校验 `.app`、DMG、通用架构、Info.plist 版本、ad-hoc 签名、第三方声明、归档与清单（清单版本等于标签，归档 URL 指向本标签）。
-   3. **Windows job**（`ubuntu-latest`，先安装 NSIS 与 7-Zip）：`mygo build -platform windows/amd64 -upload`；校验 EXE、NSIS 安装包（含第三方声明）、`install.ps1`、归档与清单。
-   4. **Linux job**（`ubuntu-latest`）：`mygo build -platform linux/amd64 -upload`；校验可执行文件、`.deb`（版本字段等于标签，声明安装到 `/opt/nicole/`）、`install.sh`、归档与清单。
+   2. **macOS job**（`macos-latest`）：`mygo build -platform darwin/universal -upload`，私钥经 `MYGO_UPDATER_PRIVATE_KEY`，`GH_TOKEN` 供上传；校验 `.app`、DMG、通用架构、Info.plist 版本、ad-hoc 签名、两个第三方声明、归档与清单（清单版本等于标签，归档 URL 指向本标签）。
+   3. **Windows job**（`ubuntu-latest`，先安装 NSIS 与 7-Zip）：`mygo build -platform windows/amd64 -upload`；校验 EXE、NSIS 安装包（含两个第三方声明）、`install.ps1`、归档与清单。
+   4. **Linux job**（`ubuntu-latest`）：`mygo build -platform linux/amd64 -upload`；校验可执行文件、`.deb`（版本字段等于标签，两个声明安装到 `/opt/nicole/`）、`install.sh`、归档与清单。
    5. **发布 job**（三个平台都成功后）：校验 Release 资产齐全，下载三份清单核对版本与标签，按实际资产重新生成并复核 `SHA256SUMS`；测试渠道以 `--draft=false --prerelease=false --latest=false` 发布，标题“Nicole <版本>（测试版，勿用）”，说明前加警示；正式渠道以 `--draft=false --prerelease=false --latest=true` 发布，标题“Nicole <版本>”。
 4. 失败处理：单平台失败可用 “Re-run failed jobs” 重跑，重跑以 `--clobber` 覆盖同一草稿里的同名资产；草稿 job 幂等（Release 已存在则不重建）。发布 job 会在发布前按实际资产重新生成并复核 `SHA256SUMS`：Release 上没有该文件时直接重建；复核发现缺行时补回，发现平台文件哈希与 MyGo 记录不一致时失败并指出应重跑的平台 job。GitHub Actions 的 “Re-run failed jobs” 会重跑失败的 job 及其下游依赖，单个 job 的 “Re-run job” 也会重跑该 job 及其 dependent jobs（见 [REST API 说明](https://docs.github.com/rest/actions/workflow-runs#re-run-a-job-from-a-workflow-run)），所以按提示重跑平台 job 即可，发布 job 会自动重跑，不需要再手动重跑；不要手动发布草稿。标签或 CHANGELOG 问题需要删远端标签重打（由主会话执行）或补小节后重新推送标签触发；已推送的标签不要在原标签上强推覆盖。
 5. **首次发布重点看**：`MYGO_UPDATER_PRIVATE_KEY` 是否就位（否则三个平台在构建/校验阶段失败）；Windows job 的 NSIS 是否安装成功；Linux job 的 `.deb` 是否生成；发布 job 的资产清单是否与下表一致；发布后 latest 是否指向正式版。
@@ -67,7 +67,7 @@ Release 资产一览（`<版本>` 为标签版本，表列为 GitHub 上的存�
 | `SHA256SUMS` | 安装包、归档与脚本的 SHA-256 清单 |
 | `nicole-<旧>-to-<版本>-<target>.delta` | 差量更新（可选；首版没有） |
 
-第三方声明不单独上传为 Release 资产：声明已内置于三个平台的安装包、`.deb` 和更新归档，安装或解压后即可获得；单独资产不会随安装或更新落到用户机器上，只会增加资产校验与 `SHA256SUMS` 的维护面。`release.yml` 的资产清单因此没有新增项，各平台 job 仍会核对产物内的声明。
+两个第三方声明（`THIRD-PARTY-NOTICES.md` 与生成的 `THIRD-PARTY-LICENSES.md`）不单独上传为 Release 资产：它们已内置于三个平台的安装包、`.deb` 和更新归档，安装或解压后即可获得；单独资产不会随安装或更新落到用户机器上，只会增加资产校验与 `SHA256SUMS` 的维护面。`release.yml` 的资产清单因此没有新增项，各平台 job 仍会核对产物内的两个声明。
 
 MyGo 0.7.3 的文件名都不含空格（youkai 的 0.6.2 是 `Youkai 0.0.1 arm64.dmg`、`Youkai Setup 0.0.1 amd64.exe`）。GitHub 上传时仍会把文件名中的空格存成 `.`，发布 job 的资产校验因此按“空格转 `.`”后的存储名比对；当前这些名字转换后不变。
 
@@ -103,7 +103,7 @@ Nicole 同时发布 `.deb` 与 `.tar.gz`；发布说明必须写清两种安装�
 实测环境：macOS（Apple Silicon），使用 `darwin/universal` 的 DMG。
 
 - **资产核对** — 实测（2026-11-01，`test-v0.0.1`/`test-v0.0.2`）：两个 Release 的全部资产已下载并逐个核对 `SHA256SUMS`，全部一致；三个平台的 `update-*.json` 版本与 URL 都指向对应标签。
-- **第三方声明** — 待实测（下次发布）：macOS 检查 `Nicole.app/Contents/Resources/THIRD-PARTY-NOTICES.md`；Windows 检查 `%LOCALAPPDATA%\Programs\Nicole\THIRD-PARTY-NOTICES.md`；Linux 检查 `/opt/nicole/THIRD-PARTY-NOTICES.md` 和 `.tar.gz` 顶层。内容应与仓库根目录的 `THIRD-PARTY-NOTICES.md` 一致；平台 job 已自动核对产物，这里确认安装后的实际路径。
+- **第三方声明** — 待实测（下次发布）：macOS 检查 `Nicole.app/Contents/Resources/` 下的 `THIRD-PARTY-NOTICES.md` 与 `THIRD-PARTY-LICENSES.md`；Windows 检查 `%LOCALAPPDATA%\Programs\Nicole\`（或用户选择的安装目录）下的两个文件；Linux 检查 `/opt/nicole/` 下的两个文件和 `.tar.gz` 顶层。内容应与仓库根目录的同名文件一致；平台 job 已自动核对产物，这里确认安装后的实际路径。
 - **版本与渠道** — 部分实测（2026-11-01，macOS）：
   1. 实测确认测试版 0.0.1 能检测到 `test-v0.0.2`；测试版不读取正式版、正式版只检测最新正式版、首个正式版发布后测试版不会成为 `latest`：待实测。
   2. 首个正式版发布后，`https://github.com/LoTwT/nicole/releases/latest` 指向该版本；测试渠道仍按 `test-v` 前缀查找：待实测。

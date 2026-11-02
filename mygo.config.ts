@@ -48,11 +48,12 @@ export default defineConfig({
   buildCommand: "bun run build:web",
   frontendDist: "dist",
   bindings: "src/services/mygo.ts",
-  // The Lucide and Feather license notices must travel with every distributed
-  // copy. MyGo installs resources in Contents/Resources on macOS and next to
-  // the executable elsewhere, which the Windows installer, the Debian package
-  // and the update archive all carry. See THIRD-PARTY-NOTICES.md.
-  resources: ["THIRD-PARTY-NOTICES.md"],
+  // The Lucide and Feather attribution plus the generated runtime license
+  // texts must travel with every distributed copy. MyGo installs resources in
+  // Contents/Resources on macOS and next to the executable elsewhere, which
+  // the Windows installer, the Debian package and the update archive all
+  // carry. See docs/development.md.
+  resources: ["THIRD-PARTY-NOTICES.md", "THIRD-PARTY-LICENSES.md"],
   // The system lists Nicole for Markdown files and opens them with it; the
   // path reaches App.OnOpenFile and then the page as app:open-file. See
   // docs/specs/ui.md and docs/release.md.
