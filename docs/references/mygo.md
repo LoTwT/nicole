@@ -111,6 +111,7 @@ bunx mygo-cli@0.7.3 init <name>
   - macOS：`<slug>-<version>-<arch>.dmg`，`darwin/universal` 为 `<slug>-<version>.dmg`，以及签名后的 `.app`。
   - Windows：`<slug>-setup-<version>-<arch>.exe`（每用户安装到 `%LOCALAPPDATA%\Programs\<name>`），以及 `<name>.exe`。
   - Linux：`<slug>`、桌面入口与图标、`<slug>_<version>_<arch>.deb`（安装到 `/opt/<slug>`）和 `<slug>-<version>-linux-<arch>.tar.gz`；任何 Linux 构建都带 `install.sh`。
+- `resources` 配置列出的文件与目录按基名复制进每个平台的资源目录：macOS 是 `Contents/Resources`，其他平台是可执行文件旁；Linux 的 `.deb` 把可执行文件旁的整套文件装到 `/opt/<slug>/`。项目 `resources/` 目录的 `resources/<goos>` 与 `resources/<goos>-<goarch>` 只进入对应平台。
 - macOS 默认 ad-hoc 签名；没有 Developer ID 时，在其他 Mac 上首次打开可能被 Gatekeeper 阻止。Windows 不配置 `windows.certificate` 时 EXE 与安装包都不签名，可能出现 SmartScreen 提示。详见[发布](../release.md#不依赖付费证书的分发路线)。
 - 配置了 updates 时，macOS 构建还输出 `install.sh`；Windows 在生成安装包时输出 `install.ps1`。Linux 的 `install.sh` 始终输出。
 

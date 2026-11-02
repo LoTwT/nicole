@@ -44,6 +44,13 @@ jobs:
         run: bun run typecheck
       - name: Test frontend
         run: bun run test
+      - name: Check generated third-party licenses
+        # Runs once: the generated file covers all release targets, and the
+        # same commit must produce the same bytes on every runner.
+        if: runner.os == 'Linux'
+        run: |
+          bun run licenses
+          git diff --exit-code
       - name: Check formatting
         shell: bash
         run: |

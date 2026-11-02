@@ -205,4 +205,18 @@ scripts/measure-memory.sh --budget 120
 
 ## 第三方声明
 
-界面图标内联自 Lucide 1.66.0，运行时没有新增图标依赖。Lucide 的 ISC 许可、Feather 来源图标的 MIT 许可以及本项目使用的图标清单见根目录的 [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md)。修改图标或升级 Lucide 时同步更新该声明和 `src/components/AppIcon.vue` 的版本注释。`pinyin-pro` 使用 MIT 许可，声明同样在该文件中；升级它时同步更新版本号和许可文本。
+界面图标内联自 Lucide 1.66.0，运行时没有新增图标依赖。Lucide 的 ISC 许可、Feather 来源图标的 MIT 许可以及本项目使用的图标清单见根目录的 [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md)。修改图标或升级 Lucide 时同步更新该声明和 `src/components/AppIcon.vue` 的版本注释。
+
+手写的 Lucide/Feather 声明和生成的运行时许可文本都登记在 `mygo.config.ts` 的 `resources` 中，由 MyGo 0.7.3 复制进每个平台的产物：
+
+| 平台 | 产物中的位置 |
+|---|---|
+| macOS | `Nicole.app/Contents/Resources/THIRD-PARTY-NOTICES.md`、`THIRD-PARTY-LICENSES.md`，DMG 内相同 |
+| Windows | `Nicole.exe` 同级的两个声明文件，NSIS 安装包携带整个安装目录 |
+| Linux | `/opt/nicole/` 下的两个声明文件（`.deb`），`.tar.gz` 解压目录顶层 |
+
+运行时依赖的许可文本由 `bun run licenses` 生成到根目录的 `THIRD-PARTY-LICENSES.md`，不要手改。脚本先运行 `bun run build:web`，用 Vite 的 `build.license` 读取实际进入 bundle 的模块及其许可；再遍历 `darwin/arm64`、`darwin/amd64`、`windows/amd64`、`linux/amd64` 的 `go list -deps` 结果，从模块缓存拼接每个模块根目录的 `LICENSE`、`NOTICE` 或 `PATENTS`，并加入 `$(go env GOROOT)` 下的 Go 标准库许可。`@ayingott/theme` 与 `tailwindcss` 只贡献 CSS，Vite 注入的 modulepreload helper 也不在模块扫描结果里，脚本会额外读取 `@ayingott/theme`、`tailwindcss` 和 `vite` 的许可文件。
+
+新增、删除或升级前端生产依赖、Go 模块或 Go 工具链后，运行 `GOTOOLCHAIN=auto bun run licenses` 并提交生成的 `THIRD-PARTY-LICENSES.md`。CI 在 `ubuntu-latest` 上重新生成后执行 `git diff --exit-code`，生成结果过期会使检查失败；生成脚本覆盖三个发布平台的 Go 模块并集，结果不依赖运行平台。当前生成文件覆盖前端 bundle 中的 Vue、CodeMirror/Lezer、`mygo-runtime`、`pinyin-pro`、`style-mod`、`w3c-keyname`、`crelt`、`@marijn/find-cluster-break`、`@ayingott/theme`、Tailwind CSS 与 Vite（含其自带依赖声明），以及 Go 二进制中的 MyGo、`purego`、`golang.org/x/text`、Windows 上的 `golang.org/x/net` 和 Go 标准库；具体版本以生成文件为准。
+
+`package.yml` 和 `release.yml` 在各自平台校验两个声明文件存在且与仓库内容一致；`release.yml` 还核对三个平台的更新归档，Linux 的 `.deb` 和 Windows 的 NSIS 安装包也会检查文件是否装入。不要把声明移出仓库根目录，或只在打包时临时生成而不提交；CI 校验的是仓库内的文件，缺失或过期都会失败。引入 `@ayingott/theme/fonts.css` 时，字体文件带有 OFL-1.1；当前 `dist/` 不含字体，若改为引入，需要把 OFL-1.1 文本加入声明或扩展生成脚本。
