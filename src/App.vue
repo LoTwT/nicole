@@ -1348,7 +1348,11 @@ function applyExternalText(tab: TabModel, text: string) {
   if (active) {
     applyingExternal = true;
   } else {
-    const mapped = mapExternalSnapshot(tab.snapshot, tab.text, normalized);
+    const mapped = mapSnapshotForReplacement(
+      tab.snapshot,
+      tab.text,
+      normalized,
+    );
     tab.snapshot = mapped === null ? null : markRaw(mapped);
   }
   tab.lineEnding = detected.ending;
@@ -1366,19 +1370,6 @@ function applyExternalText(tab: TabModel, text: string) {
   if (active) {
     showNotice("已载入磁盘上的新内容", "success", NOTICE_DURATION_MS);
   }
-}
-
-function mapExternalSnapshot(
-  snapshot: EditorRestoreState | null,
-  oldText: string,
-  newText: string,
-): EditorRestoreState | null {
-  if (snapshot === null) {
-    return null;
-  }
-  // The helper is imported lazily here to keep the edit path separate from
-  // the tab setup code; it maps selection and drops incompatible history.
-  return mapSnapshotForReplacement(snapshot, oldText, newText);
 }
 
 async function loadDiskVersion() {
