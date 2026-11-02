@@ -60,6 +60,7 @@ describe("SlashMenu", () => {
     ];
     expect(options).toHaveLength(2);
     expect(options[0]?.getAttribute("aria-selected")).toBe("true");
+    expect(options[0]?.getAttribute("aria-label")).toBe("标题 1 ⌘1");
     expect(options[0]?.tabIndex).toBe(-1);
 
     options[1]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));

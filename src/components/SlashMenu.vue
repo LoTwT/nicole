@@ -23,13 +23,15 @@ const emit = defineEmits<{
 }>();
 
 const menu = ref<HTMLElement | null>(null);
-const position = ref<SlashMenuPlacement>({
-  left: 0,
-  top: 0,
-  placement: "below",
-});
-
-const estimatedHeight = computed(() => 32 + props.state.items.length * 32);
+const estimatedHeight = computed(() => 40 + props.state.items.length * 32);
+// Start at the estimated position so the first frame does not flash at (0, 0).
+const position = ref<SlashMenuPlacement>(
+  placeSlashMenu(
+    props.state.anchor,
+    { width: SLASH_MENU_WIDTH, height: estimatedHeight.value },
+    { width: window.innerWidth, height: window.innerHeight },
+  ),
+);
 
 function updatePosition() {
   const rect = menu.value?.getBoundingClientRect();
@@ -105,6 +107,9 @@ watch(
               : 'hover:bg-[var(--surface-subtle)]'
           "
           :aria-selected="index === state.selectedIndex"
+          :aria-label="
+            item.shortcut ? `${item.label} ${item.shortcut}` : item.label
+          "
           @pointerenter="emit('highlight', index)"
           @click="emit('select', index)"
         >
