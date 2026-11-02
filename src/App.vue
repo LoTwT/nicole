@@ -21,6 +21,7 @@ import {
   type AppPlatform,
 } from "./app/platform";
 import {
+  saveFailureMessage,
   saveStatusPresentation,
   selectBanner,
   tabProblem,
@@ -153,6 +154,7 @@ const lineEnding = ref<LineEnding>("\n");
 const mixedLineEndings = ref(false);
 const savePhase = ref<SavePhase>("idle");
 const saveError = ref<string | null>(null);
+const saveErrorDetail = ref<string | null>(null);
 const externalState = ref<"none" | "modified" | "deleted">("none");
 const notice = ref<Notice | null>(null);
 const mode = ref<EditorMode>("live");
@@ -278,6 +280,7 @@ const banner = computed(() => {
     deleted: externalState.value === "deleted",
     externallyModified: externalState.value === "modified",
     saveError: saveError.value,
+    saveErrorDetail: saveErrorDetail.value,
     mixedLineEndings: mixedLineEndings.value,
     singleFile: currentMarkdown.value.kind === "single",
   });
@@ -327,6 +330,11 @@ const dialogActions = computed(() => dialog.value?.actions ?? []);
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function clearSaveError() {
+  saveError.value = null;
+  saveErrorDetail.value = null;
 }
 
 function showNotice(
@@ -572,6 +580,7 @@ async function savePendingNow(force: boolean): Promise<boolean> {
   ) {
     return false;
   }
+  const forceExternalRevision = externalRevision;
   for (;;) {
     let edit = pendingEdit;
     if (edit === null && force) {
@@ -590,6 +599,18 @@ async function savePendingNow(force: boolean): Promise<boolean> {
     }
     if (mixedLineEndings.value && !force) {
       savePhase.value = "mixed";
+      return false;
+    }
+    // The first guard handles a save that starts while an external change is
+    // known. Check again after taking the next edit: an edit can be queued
+    // while a previous write is still in flight, and a force save must also
+    // stop when a newer external event arrived since it started.
+    if (!force && externalState.value !== "none") {
+      savePhase.value = saveError.value === null ? "editing" : "failed";
+      return false;
+    }
+    if (force && externalRevision !== forceExternalRevision) {
+      savePhase.value = saveError.value === null ? "editing" : "failed";
       return false;
     }
     pendingEdit = null;
@@ -622,7 +643,9 @@ async function savePendingNow(force: boolean): Promise<boolean> {
         if (pendingEdit === null) {
           pendingEdit = edit;
         }
-        saveError.value = errorText(error);
+        const raw = errorText(error);
+        saveError.value = saveFailureMessage(raw);
+        saveErrorDetail.value = raw;
         savePhase.value = "failed";
       }
       return false;
@@ -633,7 +656,11 @@ async function savePendingNow(force: boolean): Promise<boolean> {
       return true;
     }
     originalText.value = edit.text;
-    saveError.value = null;
+    clearSaveError();
+    if (force && externalRevision !== externalRevisionAtWrite) {
+      savePhase.value = "editing";
+      return false;
+    }
     // A non-force save must never hide an external change that arrived while
     // the write was in flight. A forced save ("keep mine"/"resave") may clear
     // the state it started with, but not a newer external event.
@@ -665,7 +692,7 @@ function discardCurrentEdits() {
   clearSaveTimer();
   clearSavingDisplay();
   pendingEdit = null;
-  saveError.value = null;
+  clearSaveError();
   mixedLineEndings.value = false;
   externalState.value = "none";
   savePhase.value = "idle";
@@ -765,7 +792,7 @@ function resetDocumentState() {
   mixedLineEndings.value = false;
   lineEnding.value = "\n";
   savePhase.value = "idle";
-  saveError.value = null;
+  clearSaveError();
   externalState.value = "none";
   clearSaveTimer();
   clearSavingDisplay();
@@ -815,7 +842,7 @@ function loadMarkdownDocument(
   originalText.value = normalized;
   documentText.value = normalized;
   pendingEdit = null;
-  saveError.value = null;
+  clearSaveError();
   externalState.value = "none";
   savePhase.value = detected.mixed ? "mixed" : "saved";
   mountDocument(normalized, options.focus ?? true);
@@ -880,7 +907,7 @@ async function openPreviewEntry(entry: {
   originalText.value = "";
   pendingEdit = null;
   savePhase.value = "idle";
-  saveError.value = null;
+  clearSaveError();
   externalState.value = "none";
   mixedLineEndings.value = false;
   clearSaveTimer();
@@ -1144,7 +1171,7 @@ function applyExternalText(text: string) {
   originalText.value = normalized;
   documentText.value = normalized;
   pendingEdit = null;
-  saveError.value = null;
+  clearSaveError();
   externalState.value = "none";
   savePhase.value = detected.mixed ? "mixed" : "saved";
   editor?.replaceDocument(normalized);
@@ -1173,7 +1200,7 @@ function keepMyVersion() {
 async function resaveDeleted() {
   const saved = await savePending(true);
   if (saved) {
-    saveError.value = null;
+    clearSaveError();
     savePhase.value = "saved";
   }
 }
@@ -1801,8 +1828,10 @@ defineExpose({
       :generation="workspace.generation"
       :selected-path="selectedTreePath"
       :initial-expanded="expandedForRoot"
+      :is-dark="isDark"
       @hide-sidebar="toggleSidebar"
       @open-folder="chooseFolder"
+      @toggle-theme="toggleTheme"
       @width-change="updateSidebarWidth"
       @width-commit="commitSidebarWidth"
       @reset-width="resetSidebarWidth"
@@ -1892,8 +1921,6 @@ defineExpose({
         :save-status="saveStatus"
         :notice="notice?.text ?? null"
         :notice-tone="notice?.tone"
-        :is-dark="isDark"
-        @toggle-theme="toggleTheme"
       />
     </div>
 

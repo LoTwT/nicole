@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  saveFailureMessage,
   saveStatusPresentation,
   selectBanner,
   tabProblem,
@@ -32,6 +33,37 @@ describe("banner priority", () => {
     expect(
       selectBanner({ ...base, externallyModified: true, saveError: "denied" })?.kind,
     ).toBe("external-modified");
+  });
+
+  it("keeps the backend error only as banner detail", () => {
+    const banner = selectBanner({
+      ...base,
+      saveError: "没有权限保存这个文件",
+      saveErrorDetail: 'workspace: permission denied: "a.md"',
+    });
+    expect(banner?.message).toBe("没有权限保存这个文件");
+    expect(banner?.detail).toBe('workspace: permission denied: "a.md"');
+  });
+
+  it("maps common save failures to short Chinese messages", () => {
+    expect(saveFailureMessage('workspace: file is read-only: "a.md"')).toBe(
+      "文件是只读的，无法保存",
+    );
+    expect(saveFailureMessage("permission denied")).toBe(
+      "没有权限保存这个文件",
+    );
+    expect(saveFailureMessage("no space left on device")).toBe(
+      "磁盘空间不足，无法保存",
+    );
+    expect(saveFailureMessage("no such file or directory")).toBe(
+      "文件已被删除或移走，无法保存",
+    );
+    expect(saveFailureMessage("workspace: path is outside the folder")).toBe(
+      "文件路径超出工作区，无法保存",
+    );
+    expect(saveFailureMessage("something unexpected")).toBe(
+      "保存失败，请稍后重试",
+    );
   });
 
   it("keeps the single-file notice last", () => {

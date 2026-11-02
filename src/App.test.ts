@@ -496,7 +496,11 @@ describe("saving and status", () => {
     await vi.advanceTimersByTimeAsync(1000);
     await settle();
 
-    expect(host.textContent).toContain("无法保存：permission denied");
+    expect(host.textContent).toContain("没有权限保存这个文件");
+    expect(host.textContent).not.toContain("permission denied");
+    expect(
+      host.querySelector('[role="status"] span[title]')?.getAttribute("title"),
+    ).toContain("permission denied");
     expect(host.textContent).toContain("重试");
     const tab = host.querySelector('[role="tab"]');
     expect(tab?.querySelector('[role="img"]')).not.toBeNull();
@@ -504,7 +508,7 @@ describe("saving and status", () => {
     mocks.writeFile.mockResolvedValue(undefined);
     button("重试").click();
     await settle();
-    expect(host.textContent).not.toContain("无法保存");
+    expect(host.textContent).not.toContain("没有权限保存这个文件");
     expect(host.querySelector("footer")?.textContent).toContain("已保存");
   });
 
@@ -621,6 +625,75 @@ describe("external changes", () => {
     expect(mocks.writeFile).not.toHaveBeenCalled();
   });
 
+  it("does not write queued edits after a write-time external change", async () => {
+    vi.useFakeTimers();
+    await openFile();
+    const write = deferred<void>();
+    mocks.writeFile.mockImplementation(() => write.promise);
+
+    replaceEditorText("# First\n");
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(mocks.writeFile).toHaveBeenCalledTimes(1);
+
+    watchEvents?.([{ op: "write", path: "a.md", isDir: false }]);
+    await settle();
+    replaceEditorText("# Second\n");
+    await settle();
+    write.resolve();
+    await settle();
+
+    expect(mocks.writeFile).toHaveBeenCalledTimes(1);
+    expect(host.textContent).toContain("此文件已在 Nicole 之外被修改");
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(mocks.writeFile).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not recreate a file removed during a write", async () => {
+    vi.useFakeTimers();
+    await openFile();
+    const write = deferred<void>();
+    mocks.writeFile.mockImplementation(() => write.promise);
+
+    replaceEditorText("# First\n");
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(mocks.writeFile).toHaveBeenCalledTimes(1);
+
+    watchEvents?.([{ op: "remove", path: "a.md", isDir: false }]);
+    await settle();
+    replaceEditorText("# Second\n");
+    await settle();
+    write.resolve();
+    await settle();
+
+    expect(mocks.writeFile).toHaveBeenCalledTimes(1);
+    expect(host.textContent).toContain("此文件已在磁盘上被删除或移走");
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(mocks.writeFile).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops a forced save after a newer external event", async () => {
+    vi.useFakeTimers();
+    await openFile();
+    watchEvents?.([{ op: "remove", path: "a.md", isDir: false }]);
+    await settle();
+    expect(host.textContent).toContain("此文件已在磁盘上被删除或移走");
+
+    const write = deferred<void>();
+    mocks.writeFile.mockImplementation(() => write.promise);
+    button("重新保存").click();
+    await settle();
+    expect(mocks.writeFile).toHaveBeenCalledTimes(1);
+
+    replaceEditorText("# Typed during forced save\n");
+    watchEvents?.([{ op: "write", path: "a.md", isDir: false }]);
+    await settle();
+    write.resolve();
+    await settle();
+
+    expect(mocks.writeFile).toHaveBeenCalledTimes(1);
+    expect(host.textContent).toContain("此文件已在 Nicole 之外被修改");
+  });
+
   it("maps the selection through an external insertion", async () => {
     await openFile("a.md", "one\ntwo\nthree\n");
     const view = editorView();
@@ -720,6 +793,53 @@ describe("renames", () => {
     expect(host.querySelector('[role="tab"]')?.getAttribute("title")).toBe(
       "notes/notes2/a.md",
     );
+  });
+  it("clears the expected rename when RenameEntry fails", async () => {
+    tree = [
+      entry("notes", "notes", { isDir: true }),
+      entry("root.md", "root.md"),
+    ];
+    openFileText = "# A\n";
+    mocks.listDirectory.mockImplementation(async (path: string) => {
+      if (path === ".") return { path: ".", entries: tree };
+      if (path === "notes") {
+        return { path: "notes", entries: [entry("a.md", "notes/a.md")] };
+      }
+      return { path, entries: [] };
+    });
+    await openFolder();
+    host.querySelector<HTMLElement>('[data-tree-path="notes"]')!.click();
+    await settle();
+    host.querySelector<HTMLElement>('[data-tree-path="notes/a.md"]')!.click();
+    await settle();
+
+    mocks.renameEntry.mockRejectedValue(new Error("exists"));
+    mocks.popupNativeMenu.mockResolvedValue("rename");
+    host
+      .querySelector<HTMLElement>('[data-tree-path="notes"]')!
+      .dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: 20,
+          clientY: 30,
+        }),
+      );
+    await settle();
+    const input = host.querySelector<HTMLInputElement>('input[aria-label="重命名"]');
+    if (!input) throw new Error("rename input not found");
+    input.value = "notes2";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+    );
+    await settle();
+
+    watchEvents?.([
+      { op: "rename", oldPath: "notes", path: "notes2", isDir: true },
+    ]);
+    await settle();
+    expect(host.textContent).toContain("此文件已在磁盘上被删除或移走");
   });
 });
 
@@ -848,15 +968,36 @@ describe("single files and dialogs", () => {
 });
 
 describe("theme and accessibility", () => {
-  it("toggles an explicit theme from the status bar", async () => {
+  it("toggles an explicit theme from the sidebar footer", async () => {
     await settle();
+    expect(
+      host.querySelector('button[aria-label="切换到暗色主题"]'),
+    ).toBeNull();
+    await openFile();
     const themeButton = host.querySelector<HTMLButtonElement>(
-      'button[aria-label="切换到暗色主题"]',
+      'aside button[aria-label="切换到暗色主题"]',
     );
+    expect(themeButton).not.toBeNull();
+    expect(
+      host.querySelector('footer button[aria-label^="切换到"]'),
+    ).toBeNull();
     themeButton!.click();
     await settle();
     expect(document.documentElement.classList.contains("dark")).toBe(true);
     expect(mocks.setTheme).toHaveBeenCalledWith("dark");
+  });
+
+  it("keeps the sidebar theme toggle on a non-Markdown placeholder", async () => {
+    tree = [
+      entry("cover.png", "cover.png", { isMarkdown: false, size: 2048 }),
+    ];
+    await openFolder();
+    host.querySelector<HTMLElement>('[data-tree-path="cover.png"]')!.click();
+    await settle();
+    expect(host.textContent).toContain("无法预览此类型的文件");
+    expect(
+      host.querySelector('aside button[aria-label="切换到暗色主题"]'),
+    ).not.toBeNull();
   });
 
   it("follows the system appearance while the theme stays system", async () => {

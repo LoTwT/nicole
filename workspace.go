@@ -154,11 +154,16 @@ func (w *Workspace) OpenFolder(path string) (WorkspaceFolder, error) {
 	if !filepath.IsAbs(clean) {
 		return WorkspaceFolder{}, fmt.Errorf("workspace: folder is not absolute: %q", path)
 	}
-	if forbiddenWorkspaceRoot(clean) {
-		return WorkspaceFolder{}, fmt.Errorf("%w: %q", errFolderForbidden, path)
-	}
-	if !w.folderAllowed(clean) {
+	source := w.folderSource(clean)
+	if source == folderSourceNone {
 		return WorkspaceFolder{}, fmt.Errorf("%w: %q", errFolderNotChosen, path)
+	}
+	// An authorization that comes only from a system-provided file must not
+	// expand to the whole disk or home directory. A folder the user picked,
+	// the current root, or a recent folder is an explicit workspace choice
+	// and keeps its existing behavior.
+	if source == folderSourceOffered && forbiddenWorkspaceRoot(clean) {
+		return WorkspaceFolder{}, fmt.Errorf("%w: %q", errFolderForbidden, path)
 	}
 	w.pickMu.Lock()
 	if w.lastPicked == clean {
@@ -175,11 +180,22 @@ func (w *Workspace) OpenFolder(path string) (WorkspaceFolder, error) {
 	return folder, nil
 }
 
+type folderSource int
+
+const (
+	folderSourceNone folderSource = iota
+	folderSourcePicked
+	folderSourceCurrent
+	folderSourceRecent
+	folderSourceOffered
+)
+
 // forbiddenWorkspaceRoot rejects the filesystem root, a Windows drive root,
-// and the user's home folder. The page already disables opening a system
-// file's parent in these cases; this keeps a direct service call from
-// expanding a one-file grant into the whole disk or home directory.
+// and the user's home folder. It is applied only to folderSourceOffered.
 func forbiddenWorkspaceRoot(root string) bool {
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = filepath.Clean(resolved)
+	}
 	if root == "" || filepath.Dir(root) == root {
 		return true
 	}
@@ -195,23 +211,23 @@ func forbiddenWorkspaceRoot(root string) bool {
 	return err == nil && root == filepath.Clean(resolved)
 }
 
-func (w *Workspace) folderAllowed(clean string) bool {
+func (w *Workspace) folderSource(clean string) folderSource {
 	w.pickMu.Lock()
 	picked := w.lastPicked
 	w.pickMu.Unlock()
 	if picked != "" && filepath.Clean(picked) == clean {
-		return true
+		return folderSourcePicked
 	}
 	root, _ := w.state.snapshot()
 	if root != "" && filepath.Clean(root) == clean {
-		return true
+		return folderSourceCurrent
 	}
 	if w.settings != nil {
 		settings, err := w.settings.get()
 		if err == nil {
 			for _, folder := range settings.RecentFolders {
 				if filepath.Clean(folder) == clean {
-					return true
+					return folderSourceRecent
 				}
 			}
 		}
@@ -219,11 +235,11 @@ func (w *Workspace) folderAllowed(clean string) bool {
 	if w.offeredFiles != nil {
 		for _, file := range w.offeredFiles() {
 			if filepath.Dir(filepath.Clean(file)) == clean {
-				return true
+				return folderSourceOffered
 			}
 		}
 	}
-	return false
+	return folderSourceNone
 }
 
 // discardReason selects the wording of the confirmation dialog.

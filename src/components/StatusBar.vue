@@ -2,20 +2,12 @@
 import { computed } from "vue";
 
 import type { SaveStatusPresentation } from "../app/status";
-import AppIcon from "./AppIcon.vue";
 
 const props = defineProps<{
   saveStatus: SaveStatusPresentation | null;
   notice: string | null;
   noticeTone?: "success" | "danger" | "muted";
-  isDark: boolean;
 }>();
-
-const emit = defineEmits<{ "toggle-theme": [] }>();
-
-const themeAction = computed(() =>
-  props.isDark ? "切换到亮色主题" : "切换到暗色主题",
-);
 
 const dotClass = computed(() => {
   if (props.notice) {
@@ -73,15 +65,5 @@ const dotClass = computed(() => {
         </span>
       </template>
     </span>
-
-    <button
-      type="button"
-      class="focus-ring grid size-5 shrink-0 place-items-center rounded-[var(--radius-control)] hover:bg-[var(--surface-subtle)] hover:text-[var(--text-primary)]"
-      :aria-label="themeAction"
-      :title="themeAction"
-      @click="emit('toggle-theme')"
-    >
-      <AppIcon :name="isDark ? 'sun' : 'moon'" :size="14" />
-    </button>
   </footer>
 </template>

@@ -45,11 +45,11 @@ src/
     status.ts             保存状态、横幅优先级和标签页圆点
     watch-events.ts       监听事件与当前文档、文件树刷新范围的对应
   components/             界面组件
-    AppSidebar.vue        侧栏外壳、宽度拖动、底部入口
+    AppSidebar.vue        侧栏外壳、宽度拖动、底部文件夹/主题/设置入口
     FileTree.vue          按需读取的文件树、右键菜单、行内新建与重命名
     FileTreeNode.vue      递归树节点与键盘可见结构
     TopBar.vue            单文档标签、模式切换、侧栏与大纲入口
-    StatusBar.vue         保存状态、临时提示与主题切换
+    StatusBar.vue         保存状态与临时提示
     AppBanner.vue         外部修改、删除和保存失败横幅
     AppDialog.vue         模态对话框、焦点陷阱与焦点恢复
     EmptyState.vue        开始写作、无文件和最近文件夹
@@ -135,7 +135,7 @@ Go（main.go）
 - 用 `mygo generate` 生成 TypeScript 客户端，输出路径由 `mygo.config.ts` 的 `bindings` 指定；本项目是 `src/services/mygo.ts`。
 - 前端只通过生成的客户端和 `services/` 调用 Go；Go 用 `mygo.Bind` 暴露服务，用 `*mygo.Channel[T]` 推送流，用 `mygo.NewEvent[T]` 发送事件。
 - 当前的最小服务是 `Application.Info()`，返回应用版本、操作系统、架构、Go 版本和主目录，用来验证前端与 Go 的调用链，并让界面把主目录写成 `~`。
-- `Workspace` 提供 `ChooseFolder`、`PickFolder`、`OpenFolder`、`ListFiles`、`ReadFile`、`WriteFile`、`ConfirmDiscard` 和 `FinishClose`，以及文件树的 `ListDirectory`、`CreateFile`、`CreateFolder`、`RenameEntry`、`TrashEntry`、`OpenWithDefaultApp`、`RevealEntry` 和 `Watch`。`PickFolder` 只返回用户在原生对话框中选择的路径；`OpenFolder` 只接受该路径、Go 记录的最近文件夹或系统提供的文件的所在文件夹，拒绝根目录、盘符根目录和主目录，页面不能凭任意字符串切换根目录；成功的 `open` 由 Go 写入最近列表。写操作携带打开时返回的 `generation`，路径和文件类型的规则见[工作区与文件](specs/workspace.md#路径守卫)和[写入保证](specs/workspace.md#写入保证)。
+- `Workspace` 提供 `ChooseFolder`、`PickFolder`、`OpenFolder`、`ListFiles`、`ReadFile`、`WriteFile`、`ConfirmDiscard` 和 `FinishClose`，以及文件树的 `ListDirectory`、`CreateFile`、`CreateFolder`、`RenameEntry`、`TrashEntry`、`OpenWithDefaultApp`、`RevealEntry` 和 `Watch`。`PickFolder` 只返回用户在原生对话框中选择的路径；`OpenFolder` 只接受该路径、Go 记录的最近文件夹或系统提供的文件的所在文件夹，页面不能凭任意字符串切换根目录。只有“系统提供文件的父目录”这一来源会拒绝根目录、盘符根目录和主目录；用户主动选择、当前根目录和最近列表不受限制。成功的 `open` 由 Go 写入最近列表。写操作携带打开时返回的 `generation`，路径和文件类型的规则见[工作区与文件](specs/workspace.md#路径守卫)和[写入保证](specs/workspace.md#写入保证)。
 - 关窗时 Go 发出携带 `token` 的 `workspace:save-before-close` 事件并阻止关闭；前端保存后调用 `FinishClose(token, saved)`。保存失败时由 Go 弹出确认框，只有用户明确选择放弃才关窗；页面无响应时最多等待 5 秒。
 - `Workspace.Watch(generation)` 用 `*mygo.Channel[FileWatchPart]` 流式返回 `ready` 和事件批次；底层是 `mygo.WatchFiles`，在 Go 端过滤 Nicole 自己的写入（见[工作区与文件](specs/workspace.md#忽略-nicole-自己的写入)）。工作区状态本身是可替换的单例，后续协议 handler 在启动时注册、运行时读取同一个状态。
 - `SingleFileService` 提供 `ChooseSingleFile`、`AcceptSingleFile`、`DismissOfferedFile`、`ReadSingleFile`、`WriteSingleFile` 和 `ReleaseSingleFile`；授权按解析后的绝对路径保存，只有对话框选择或 `App.OnOpenFile` 提供的文件才能被接受。打开系统文件的父目录是一次性授权：`OpenFolder` 成功后 Go 消耗对应提供项，取消时页面调用 `DismissOfferedFile`。`OpenedFiles` 暂存系统传入的路径；`app:open-file` 只通知“有新文件”，页面收到信号后调用 `TakePendingOpenedFiles` 一次取走队列，既覆盖启动时到达的文件，也不会重复交付同一个文件。
@@ -158,7 +158,7 @@ Go（main.go）
 - Go 的文件服务限制见[工作区与文件](specs/workspace.md#路径守卫)。工作区内的读取、写入和文件操作都以 `os.OpenRoot` 的根为边界，并在操作前用 `filepath.EvalSymlinks` 确认目标仍在工作区内；文件树操作不能借 `..`、绝对路径、盘符路径或符号链接越出根目录。
 - 工作区外的文件采用按文件授权：`SingleFileService` 只保存用户通过原生对话框选择、或通过 `App.OnOpenFile` 提供并在页面确认后的解析绝对路径。读写只接受完全相同的路径，列出目录、访问同目录其他文件、相对路径和目录本身都拒绝；授权不跨重启保存，关闭标签页时释放。见[单文件标签页](specs/workspace.md#单文件标签页)。
 - 文件树的“用默认应用打开”在 Go 端按白名单分类：图片、PDF、纯文本和常见办公文档可直接打开；已知启动器类型（PATHEXT、macOS 脚本/快捷方式、Linux `.desktop` 等）直接拒绝；其他类型和 Unix 可执行文件必须先经过 Go 弹出的原生确认框，页面无法绕过。详见[文件操作](specs/workspace.md#打开方式的安全规则)。
-- 系统“打开方式”传入的路径先记为“已提供”，不会自动授权；`AcceptSingleFile` 只接受已经提供的路径，页面不能凭任意字符串自行授权。打开父目录是一次性授权，成功打开后由 Go 消耗，取消或失败后由页面调用 `DismissOfferedFile` 消耗；根目录、盘符根目录和主目录在前后端都拒绝。`app:open-file` 只是“有新文件”的信号，页面收到后调用 `TakePendingOpenedFiles` 清空队列，避免事件与启动时读取重复交付。
+- 系统“打开方式”传入的路径先记为“已提供”，不会自动授权；`AcceptSingleFile` 只接受已经提供的路径，页面不能凭任意字符串自行授权。打开父目录是一次性授权，成功打开后由 Go 消耗，取消或失败后由页面调用 `DismissOfferedFile` 消耗；当授权来源只是系统文件时，根目录、盘符根目录和主目录在前后端都拒绝。`app:open-file` 只是“有新文件”的信号，页面收到后调用 `TakePendingOpenedFiles` 清空队列，避免事件与启动时读取重复交付。
 - 原生右键菜单只接收菜单项 ID、文字、快捷键、禁用状态和页面坐标，不接收命令或文件内容；菜单项由 Go 组装，选择结果只把 ID 返回页面。正文的 WebView 右键菜单删除“重新载入”“后退”“前进”，非开发构建还删除“检查元素”。
 - 文件关联只让系统把 `.md` 路径交给 `App.OnOpenFile`；在用户于页面确认“只打开这个文件”之前，Go 不读写该文件。
 - 设置存储和单文件授权都只使用 Go 的文件接口；测试和开发构建通过 `NICOLE_USER_DATA_DIR` 指向临时目录，避免修改用户正在使用的数据（见[开发](development.md#数据隔离)）。应用启动时请求单实例锁；不同的 `NICOLE_USER_DATA_DIR` 使用独立的锁命名空间，因此隔离的测试/开发实例不会被误转交给安装版。

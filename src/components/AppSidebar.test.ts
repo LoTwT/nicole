@@ -37,6 +37,7 @@ function mount(width = 252) {
   const changes: number[] = [];
   const commits: number[] = [];
   let resets = 0;
+  let themes = 0;
   const Component = defineComponent({
     setup() {
       return () =>
@@ -50,17 +51,21 @@ function mount(width = 252) {
           generation: 1,
           selectedPath: null,
           initialExpanded: [],
+          isDark: false,
           onWidthChange: (value: number) => changes.push(value),
           onWidthCommit: (value: number) => commits.push(value),
           onResetWidth: () => {
             resets += 1;
+          },
+          onToggleTheme: () => {
+            themes += 1;
           },
         });
     },
   });
   app = createApp(Component);
   app.mount(host);
-  return { changes, commits, resets: () => resets };
+  return { changes, commits, resets: () => resets, themes: () => themes };
 }
 
 describe("AppSidebar", () => {
@@ -112,5 +117,17 @@ describe("AppSidebar", () => {
     expect(
       host.querySelector('button[aria-label^="搜索全部文件夹"]'),
     ).not.toBeNull();
+    expect(
+      host.querySelector('button[aria-label="切换到暗色主题"]'),
+    ).not.toBeNull();
+  });
+
+  it("toggles the theme from the sidebar footer", async () => {
+    const log = mount();
+    await settle();
+    host
+      .querySelector<HTMLButtonElement>('button[aria-label="切换到暗色主题"]')!
+      .click();
+    expect(log.themes()).toBe(1);
   });
 });

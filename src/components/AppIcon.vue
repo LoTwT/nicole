@@ -49,8 +49,8 @@ withDefaults(
       <path d="M8 3v10M3 8h10" />
     </template>
     <template v-else-if="name === 'gear'">
-      <circle cx="8" cy="8" r="2" />
-      <path d="M8 1.8v1.6M8 12.6v1.6M1.8 8h1.6M12.6 8h1.6M3.6 3.6l1.1 1.1M11.3 11.3l1.1 1.1M3.6 12.4l1.1-1.1M11.3 4.7l1.1-1.1" />
+      <path d="M8 1.5l1.1 1.4 1.7-.5.6 1.7 1.7.6-.5 1.7L14.5 8l-1.4 1.1.5 1.7-1.7.6-.6 1.7-1.7-.5L8 14.5l-1.1-1.4-1.7.5-.6-1.7-1.7-.6.5-1.7L1.5 8l1.4-1.1-.5-1.7 1.7-.6.6-1.7 1.7.5Z" />
+      <circle cx="8" cy="8" r="2.2" />
     </template>
     <template v-else-if="name === 'chevron-right'">
       <path d="m6 4 4 4-4 4" />

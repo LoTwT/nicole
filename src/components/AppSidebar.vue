@@ -22,12 +22,14 @@ const props = defineProps<{
   generation: number;
   selectedPath: string | null;
   initialExpanded: readonly string[];
+  isDark: boolean;
 }>();
 
 const emit = defineEmits<{
   "hide-sidebar": [];
   "open-folder": [];
   "open-settings": [];
+  "toggle-theme": [];
   "search-all": [];
   "width-change": [width: number];
   "width-commit": [width: number];
@@ -54,6 +56,9 @@ const asideStyle = computed(() => ({
 
 const sidebarShortcut = computed(() =>
   shortcutText("sidebar", props.platform),
+);
+const themeAction = computed(() =>
+  props.isDark ? "切换到亮色主题" : "切换到暗色主题",
 );
 
 function startResize(event: PointerEvent) {
@@ -195,16 +200,27 @@ defineExpose({
         <AppIcon name="plus" :size="13" />
         打开文件夹
       </button>
-      <button
-        type="button"
-        class="focus-ring grid size-6 place-items-center rounded-[var(--radius-control)] text-[var(--text-muted)] disabled:cursor-default disabled:opacity-50"
-        disabled
-        aria-label="设置，将在后续版本提供"
-        title="设置将在后续版本提供"
-        @click="emit('open-settings')"
-      >
-        <AppIcon name="gear" :size="14" />
-      </button>
+      <div class="flex items-center gap-1">
+        <button
+          type="button"
+          class="focus-ring grid size-6 place-items-center rounded-[var(--radius-control)] text-[var(--text-muted)] hover:bg-[var(--surface-subtle)] hover:text-[var(--text-primary)]"
+          :aria-label="themeAction"
+          :title="themeAction"
+          @click="emit('toggle-theme')"
+        >
+          <AppIcon :name="isDark ? 'sun' : 'moon'" :size="14" />
+        </button>
+        <button
+          type="button"
+          class="focus-ring grid size-6 place-items-center rounded-[var(--radius-control)] text-[var(--text-muted)] disabled:cursor-default disabled:opacity-50"
+          disabled
+          aria-label="设置，将在后续版本提供"
+          title="设置将在后续版本提供"
+          @click="emit('open-settings')"
+        >
+          <AppIcon name="gear" :size="14" />
+        </button>
+      </div>
     </div>
 
     <div

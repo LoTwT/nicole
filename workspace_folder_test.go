@@ -82,17 +82,73 @@ func TestOpenFolderAcceptsTheParentOfAnOfferedFile(t *testing.T) {
 	}
 }
 
-func TestOpenFolderRejectsForbiddenRoots(t *testing.T) {
+func TestForbiddenWorkspaceRoot(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Skipf("no home folder: %v", err)
 	}
-	for _, root := range []string{string(filepath.Separator), filepath.Clean(home)} {
-		workspace := NewWorkspace()
-		workspace.lastPicked = root
-		if _, err := workspace.OpenFolder(root); !errors.Is(err, errFolderForbidden) {
-			t.Errorf("OpenFolder(%q) = %v, want %v", root, err, errFolderForbidden)
-		}
+	if !forbiddenWorkspaceRoot(string(filepath.Separator)) {
+		t.Error("filesystem root is not forbidden")
+	}
+	if !forbiddenWorkspaceRoot(filepath.Clean(home)) {
+		t.Errorf("home folder %q is not forbidden", home)
+	}
+	if forbiddenWorkspaceRoot(t.TempDir()) {
+		t.Error("a temporary folder was treated as forbidden")
+	}
+}
+
+func TestOpenFolderAllowsPickedAndCurrentHome(t *testing.T) {
+	home := resolveTestPath(t, t.TempDir())
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	workspace := NewWorkspace()
+	workspace.lastPicked = home
+
+	if _, err := workspace.OpenFolder(home); err != nil {
+		t.Fatalf("OpenFolder(picked home) = %v, want success", err)
+	}
+	if _, err := workspace.OpenFolder(home); err != nil {
+		t.Fatalf("OpenFolder(current home) = %v, want success", err)
+	}
+}
+
+func TestOpenFolderAllowsRecentHome(t *testing.T) {
+	home := resolveTestPath(t, t.TempDir())
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	store := newSettingsStoreIn(filepath.Join(t.TempDir(), settingsFileName))
+	if err := store.update(func(settings *AppSettings) {
+		settings.RecentFolders = []string{home}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	workspace := NewWorkspace()
+	workspace.useSettings(store)
+
+	if _, err := workspace.OpenFolder(home); err != nil {
+		t.Fatalf("OpenFolder(recent home) = %v, want success", err)
+	}
+}
+
+func TestOpenFolderRejectsOfferedParentInHome(t *testing.T) {
+	home := resolveTestPath(t, t.TempDir())
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	file := filepath.Join(home, "note.md")
+	if err := os.WriteFile(file, []byte("text"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	service := NewSingleFileService()
+	service.offer(file)
+	workspace := NewWorkspace()
+	workspace.useOfferedFiles(service.offeredPaths, service.takeOfferedFolder)
+
+	if _, err := workspace.OpenFolder(home); !errors.Is(err, errFolderForbidden) {
+		t.Fatalf("OpenFolder(offered home) = %v, want %v", err, errFolderForbidden)
+	}
+	if root, _ := workspace.state.snapshot(); root != "" {
+		t.Errorf("offered home was opened as %q, want no workspace", root)
 	}
 }
 

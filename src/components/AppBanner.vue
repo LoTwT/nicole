@@ -37,7 +37,7 @@ const labels: Record<Banner["actions"][number], string> = {
     :class="toneClass"
     role="status"
   >
-    <span class="min-w-0 flex-1">{{ banner.message }}</span>
+    <span class="min-w-0 flex-1" :title="banner.detail">{{ banner.message }}</span>
     <button
       v-for="action in banner.actions"
       :key="action"
