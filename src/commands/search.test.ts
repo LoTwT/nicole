@@ -49,6 +49,20 @@ describe("command search", () => {
       (command) => command.id,
     );
     expect(chinese).toContain("insert.table");
+
+    const withoutAliases = {
+      id: "test.heading",
+      label: "标题",
+      group: "paragraph" as const,
+      scope: "editor" as const,
+      inSlashMenu: true,
+      run: () => true,
+    };
+    expect(
+      filterCommands([withoutAliases], "bt", { matcher }).map(
+        (command) => command.id,
+      ),
+    ).toEqual(["test.heading"]);
   });
 
   it("keeps recently used commands in front while filtering", () => {
