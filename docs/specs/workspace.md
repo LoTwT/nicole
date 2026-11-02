@@ -78,8 +78,8 @@ Go 的 `Workspace` 服务通过 `mygo.Bind` 暴露，前端经 `src/services/wor
 文件树里的文件可能来自 clone 下来的仓库，不能因为用户点了一下就执行其中的程序。`OpenWithDefaultApp` 在调用系统默认应用之前先在 Go 端分类：
 
 - 图片（PNG、JPEG、GIF、WebP、HEIC 等）、PDF、纯文本和常见办公文档（`.txt`、`.md`、`.csv`、`.json`、`.docx`、`.xlsx`、`.pptx`、`.odt` 等）直接打开。带执行位的文件仍要确认。SVG 因可能包含活动内容，不在直接打开列表。
-- Windows 的 PATHEXT 类型（`.exe`、`.com`、`.cmd`、`.bat`、`.js` 等）及其快捷方式、注册表/安装/脚本类型（`.lnk`、`.url`、`.hta`、`.scf`、`.reg`、`.msi`、`.ps1`），macOS 的 `.command`、`.tool`、`.terminal`、`.jar`、`.pkg`、`.scpt` 等，以及 Linux 的 `.desktop` 直接拒绝，不弹确认框。
-- 其他类型，或 Unix 上带执行权限（`0o111`）的文件，由 Go 弹出原生确认框，写明文件名并说明“打开后可能会运行程序”。只有用户选择“打开”才调用默认应用；页面不能伪造这个确认框。拒绝时返回明确错误。
+- Windows 的 PATHEXT 类型（`.exe`、`.com`、`.cmd`、`.bat`、`.js` 等）及其快捷方式、注册表/安装/脚本类型（`.lnk`、`.url`、`.hta`、`.scf`、`.reg`、`.msi`、`.ps1`、`.application`、`.appref-ms`、`.settingcontent-ms`、`.msp`、`.chm`、`.jnlp`、`.ws`），macOS 的 `.command`、`.tool`、`.terminal`、`.jar`、`.pkg`、`.scpt` 等，以及 Linux 的 `.desktop` 直接拒绝，不弹确认框。
+- 其他类型，或 Unix 上带执行权限（`0o111`）的文件，由 Go 弹出原生确认框，写明文件名并说明“打开后可能会运行程序”。只有用户选择“打开”才调用默认应用；页面不能伪造这个确认框。用户取消时不打开，也不返回错误；启动器类型被拒绝时返回错误。
 - “在 Finder/资源管理器中显示”不经过这条限制，仍然只受文件树路径守卫约束。
 
 ## 路径守卫

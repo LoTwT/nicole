@@ -23,6 +23,7 @@ var (
 	errNotRegular   = errors.New("workspace: not a regular file")
 	errInvalidName  = errors.New("workspace: invalid name")
 	errLauncherType = errors.New("workspace: executable file types cannot be opened")
+	errOpenChanged  = errors.New("workspace: file changed while confirming")
 )
 
 // directOpenExtensions are file types Nicole lets the desktop open without a
@@ -51,7 +52,9 @@ var launcherExtensions = map[string]bool{
 	".vbe": true, ".js": true, ".jse": true, ".wsf": true, ".wsh": true,
 	".msc": true, ".cpl": true, ".scr": true, ".pif": true, ".msi": true,
 	".ps1": true, ".lnk": true, ".url": true, ".hta": true, ".scf": true,
-	".reg":     true,
+	".reg":         true,
+	".application": true, ".appref-ms": true, ".settingcontent-ms": true,
+	".msp": true, ".chm": true, ".jnlp": true, ".ws": true,
 	".command": true, ".tool": true, ".terminal": true, ".fileloc": true,
 	".inetloc": true, ".webloc": true, ".jar": true, ".pkg": true, ".scpt": true,
 	".desktop": true,
@@ -345,6 +348,19 @@ func (w *Workspace) OpenWithDefaultApp(ctx context.Context, rel string, generati
 		}
 		if !ok {
 			return nil
+		}
+		// The confirmation may stay open while the file is replaced. Do not
+		// open a different path, a symlink, a launcher, or a file whose
+		// executable bit changed after the user agreed.
+		confirmedTarget, confirmedInfo, err := resolveTreeEntry(root, rel)
+		if err != nil {
+			return fmt.Errorf("%w: %q: %v", errOpenChanged, rel, err)
+		}
+		if !confirmedInfo.Mode().IsRegular() ||
+			confirmedTarget != target ||
+			classifyOpenAction(filepath.Base(confirmedTarget), confirmedInfo) != action ||
+			isExecutableFile(confirmedInfo) != isExecutableFile(info) {
+			return fmt.Errorf("%w: %q", errOpenChanged, rel)
 		}
 	}
 	return openWorkspaceItem(filepath.Join(root, filepath.FromSlash(target)))

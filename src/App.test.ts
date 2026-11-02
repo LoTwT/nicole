@@ -296,6 +296,47 @@ describe("App", () => {
     expect(view.state.doc.toString()).toBe(SAMPLE_DOCUMENT);
   });
 
+  it("falls back to document.execCommand when the editor is not focused", async () => {
+    await nextTick();
+    const view = editorView();
+    view.dispatch({
+      changes: { from: view.state.doc.length, insert: "!" },
+    });
+    const input = document.createElement("input");
+    document.body.append(input);
+    input.focus();
+    expect(document.activeElement).toBe(input);
+
+    const execCommand = vi.fn().mockReturnValue(true);
+    const hadOwnExecCommand = Object.prototype.hasOwnProperty.call(
+      document,
+      "execCommand",
+    );
+    const previousExecCommand = document.execCommand;
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: execCommand,
+    });
+    try {
+      window.dispatchEvent(
+        new CustomEvent("nicole:edit-command", { detail: "undo" }),
+      );
+      await nextTick();
+      expect(view.state.doc.toString()).toBe(`${SAMPLE_DOCUMENT}!`);
+      expect(execCommand).toHaveBeenCalledWith("undo");
+    } finally {
+      if (hadOwnExecCommand) {
+        Object.defineProperty(document, "execCommand", {
+          configurable: true,
+          value: previousExecCommand,
+        });
+      } else {
+        Reflect.deleteProperty(document, "execCommand");
+      }
+      input.remove();
+    }
+  });
+
   it("migrates the old localStorage theme and removes it", async () => {
     app?.unmount();
     vi.mocked(getSettings).mockClear();

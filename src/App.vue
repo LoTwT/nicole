@@ -487,7 +487,14 @@ function handleEditCommand(event: Event) {
     return;
   }
   const target = editor;
-  if (!target || target.view.compositionStarted) {
+  if (target?.view.compositionStarted) {
+    return;
+  }
+  const editorFocused =
+    target !== null &&
+    (target.view.hasFocus || target.view.dom.contains(document.activeElement));
+  if (!editorFocused) {
+    document.execCommand(command);
     return;
   }
   if (command === "undo") {

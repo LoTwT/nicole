@@ -23,6 +23,7 @@ type openConfirmationLog struct {
 	executable bool
 	allow      bool
 	err        error
+	during     func()
 }
 
 func stubOpenConfirmation(t *testing.T, log *openConfirmationLog) {
@@ -32,6 +33,9 @@ func stubOpenConfirmation(t *testing.T, log *openConfirmationLog) {
 		log.calls++
 		log.name = name
 		log.executable = executable
+		if log.during != nil {
+			log.during()
+		}
 		return log.allow, log.err
 	}
 	t.Cleanup(func() { confirmRiskyOpen = original })
@@ -326,7 +330,10 @@ func TestOpenWithDefaultAppAllowsKnownDocumentAndImageTypes(t *testing.T) {
 }
 
 func TestOpenWithDefaultAppRejectsLaunchers(t *testing.T) {
-	for _, name := range []string{"run.bat", "run.exe", "run.ps1", "run.command", "run.desktop", "run.jar", "run.lnk"} {
+	for _, name := range []string{
+		"run.bat", "run.exe", "run.ps1", "run.command", "run.desktop", "run.jar", "run.lnk",
+		"run.application", "run.appref-ms", "run.settingcontent-ms", "run.msp", "run.chm", "run.jnlp", "run.ws",
+	} {
 		t.Run(name, func(t *testing.T) {
 			log := stubSystemActions(t)
 			confirmation := &openConfirmationLog{allow: true}
@@ -364,10 +371,48 @@ func TestLauncherExtensionsCoverTheRequiredTypes(t *testing.T) {
 		".command", ".tool", ".terminal", ".fileloc", ".inetloc", ".webloc",
 		".jar", ".pkg", ".scpt",
 		".desktop",
+		".application", ".appref-ms", ".settingcontent-ms", ".msp", ".chm", ".jnlp", ".ws",
 	} {
 		if got := classifyOpenAction("file"+extension, info); got != openRejected {
 			t.Errorf("classifyOpenAction(%q) = %v, want openRejected", extension, got)
 		}
+	}
+}
+
+func TestOpenWithDefaultAppRechecksAfterConfirmation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks needs a developer mode or administrator rights")
+	}
+	log := stubSystemActions(t)
+	root := t.TempDir()
+	outside := t.TempDir()
+	path := filepath.Join(root, "archive.xyz")
+	outsideFile := filepath.Join(outside, "outside.txt")
+	mustWriteFile(t, path, []byte("x"))
+	mustWriteFile(t, outsideFile, []byte("outside"))
+	workspace := openTestWorkspace(t, root)
+	confirmation := &openConfirmationLog{
+		allow: true,
+		during: func() {
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(outsideFile, path); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	stubOpenConfirmation(t, confirmation)
+
+	err := workspace.OpenWithDefaultApp(context.Background(), "archive.xyz", currentGeneration(workspace))
+	if !errors.Is(err, errOpenChanged) {
+		t.Fatalf("OpenWithDefaultApp(replaced during confirmation) = %v, want %v", err, errOpenChanged)
+	}
+	if confirmation.calls != 1 {
+		t.Errorf("confirmation calls = %d, want 1", confirmation.calls)
+	}
+	if len(log.opened) != 0 {
+		t.Errorf("replaced target reached the desktop: %q", log.opened)
 	}
 }
 

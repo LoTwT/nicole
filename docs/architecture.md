@@ -98,7 +98,7 @@ Go（main.go）
   }): EditorHandle
   ```
 
-  `EditorHandle` 提供 `view`、`mode`、`setMode`、`focus` 和 `destroy`。三种模式通过同一个 `Compartment` 重配置，`EditorView` 实例不变。
+  `EditorHandle` 提供 `view`、`mode`、`setMode`、`undo`、`redo`、`focus` 和 `destroy`。`undo()` / `redo()` 在输入法组合期间返回 `false`，不执行历史；三种模式通过同一个 `Compartment` 重配置，`EditorView` 实例不变。
 
 - 编辑器主题直接读取 CSS 变量；界面切换亮暗时只改 `<html>` 上的 `.dark`，不重建编辑器（见[主题与字体](specs/theming.md#编辑器主题)）。
 - 命令注册表只有一份，各入口共用，见 [Slash 命令](specs/slash-commands.md#命令注册表)。
