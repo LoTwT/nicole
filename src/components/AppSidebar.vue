@@ -34,6 +34,8 @@ const emit = defineEmits<{
   "reset-width": [];
   "open-entry": [entry: TreeNode];
   "entry-created": [path: string, isDir: boolean];
+  "entry-renaming": [oldPath: string, newPath: string, isDir: boolean];
+  "entry-rename-failed": [oldPath: string];
   "entry-renamed": [oldPath: string, newPath: string, isDir: boolean];
   "trash-request": [entry: TreeNode];
   "expanded-change": [folders: string[]];
@@ -168,6 +170,11 @@ defineExpose({
       :initial-expanded="initialExpanded"
       @open-entry="emit('open-entry', $event)"
       @entry-created="(path, isDir) => emit('entry-created', path, isDir)"
+      @entry-renaming="
+        (oldPath, newPath, isDir) =>
+          emit('entry-renaming', oldPath, newPath, isDir)
+      "
+      @entry-rename-failed="(oldPath) => emit('entry-rename-failed', oldPath)"
       @entry-renamed="
         (oldPath, newPath, isDir) =>
           emit('entry-renamed', oldPath, newPath, isDir)

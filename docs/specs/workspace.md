@@ -20,7 +20,7 @@ Go 的 `Workspace` 服务通过 `mygo.Bind` 暴露，前端经 `src/services/wor
 |---|---|
 | `ChooseFolder()` | 打开原生文件夹对话框。取消时返回 `canceled: true`，当前工作区不变；成功时切换工作区并返回根目录、Markdown 文件列表和 `generation`。 |
 | `PickFolder()` | 只打开原生文件夹对话框并返回 `path` 和 `canceled`，不切换工作区。页面确认后再调用 `OpenFolder`。 |
-| `OpenFolder(path)` | 切换到用户刚选择的文件夹、最近文件夹或系统提供的文件的所在文件夹。其他路径返回错误，页面不能用它打开任意目录。 |
+| `OpenFolder(path)` | 切换到用户刚选择的文件夹、Go 记录的最近文件夹或系统提供的文件的所在文件夹。其他路径返回错误，页面不能用它打开任意目录；根目录、盘符根目录和主目录也被拒绝。 |
 | `ListFiles()` | 返回当前工作区的 Markdown 文件，规则见[列文件规则](#列文件规则)。没有打开工作区时返回错误。 |
 | `ReadFile(path)` | 返回 Markdown 文件原始内容的字符串，不做换行或编码转换。 |
 | `WriteFile(path, content, generation)` | 原子替换文件；`generation` 与当前工作区不一致时拒绝。保证见[写入保证](#写入保证)。 |
@@ -119,6 +119,7 @@ Go 的 `Workspace` 服务通过 `mygo.Bind` 暴露，前端经 `src/services/wor
 
 - `ChooseSingleFile()` 打开只显示 `.md` 的原生文件对话框；用户选中的文件直接授权。
 - 系统“打开方式”或双击把文件交给 `App.OnOpenFile`；Go 把它记为“已提供”，但**不自动授权**。页面显示确认后调用 `AcceptSingleFile(path)`，只有与已提供路径一致的请求才会授权。
+- “打开所在文件夹”是一次性授权：`OpenFolder` 成功后 Go 删除该文件对应的已提供项；用户取消、对话框被关闭或打开失败时，页面调用 `DismissOfferedFile(path)` 删除它。位于主目录、文件系统根目录或盘符根目录的文件不显示这个选项，Go 的 `OpenFolder` 也拒绝这些根目录。
 - 授权保存解析符号链接后的绝对路径；`ReadSingleFile(path)` 和 `WriteSingleFile(path, content)` 只接受完全相同的路径。同一目录下的其他文件、相对路径、目录和非 `.md` 文件都拒绝。
 - 授权只存在内存中；关闭标签页时调用 `ReleaseSingleFile(path)`，重启应用后需要重新选择或确认。
 - 写入复用[写入保证](#写入保证)的原子替换：先写同目录临时文件，再改名；保留权限位，只读文件拒绝写入，失败时旧内容不变。文件已被外部删除时，再次保存会在原路径重新创建，与工作区文件的行为一致。换行风格的检测和“换行风格混合”保护仍由前端负责。
@@ -138,7 +139,7 @@ Go 的 `Workspace` 服务通过 `mygo.Bind` 暴露，前端经 `src/services/wor
 | `SetTheme(theme)` | 保存 `system`、`light` 或 `dark`，并调用 `mygo.Theme.SetSource`，让原生菜单和对话框跟随。 |
 | `SetSidebarWidth(width)` | 保存侧栏宽度，限制在 200–400px。 |
 | `SetExpandedFolders(root, folders)` | 按根目录保存文件树展开状态；`folders` 是相对路径，只存显示状态，不用于访问文件。 |
-| `AddRecentFolder(folder)` / `RemoveRecentFolder(folder)` | 维护最近打开的文件夹，最新在前，最多 10 个。 |
+| `AddRecentFolder(folder)` / `RemoveRecentFolder(folder)` | `AddRecentFolder` 只接受当前已打开的根目录，页面不能用它授权另一个目录；`Workspace.open` 成功后由 Go 写入最近列表，页面只更新本地显示。`RemoveRecentFolder` 只移除记录。 |
 
 `settings.json` 的字段为 `theme`、`sidebarWidth`、`recentFolders` 和 `expandedFolders`（根目录绝对路径 → 展开的相对路径数组）。默认主题是 `system`，默认宽度 252px，最近文件夹和展开状态为空。写入在目标目录创建临时文件后改名替换，一次只写一个完整文件；损坏的设置文件不会被部分覆盖。
 
@@ -160,7 +161,7 @@ Go 的 `Workspace` 服务通过 `mygo.Bind` 暴露，前端经 `src/services/wor
 
 **不用** MyGo 的 Documents API（见 [MyGo 参考](../references/mygo.md#documents-api)）：每多一个窗口就多一个 WebKit 页面进程，约多 40–50MB。内存预算见[性能](performance.md#预算)。
 
-使用 MyGo 的文件关联接收系统打开的 `.md` 文件；最近文件夹由[设置存储](#设置存储)维护。打开一个 `.md` 文件时，按它是否位于已打开或最近用过的文件夹中分别处理，规则见[界面与交互](ui.md#打开工作区之外的文件)。
+使用 MyGo 的文件关联接收系统打开的 `.md` 文件；最近文件夹由 Go 在 `Workspace.open` 成功后写入[设置存储](#设置存储)，页面只维护当前会话的本地显示。打开一个 `.md` 文件时，按它是否位于已打开或最近用过的文件夹中分别处理，规则见[界面与交互](ui.md#打开工作区之外的文件)。
 
 界面按“单窗口多根目录”设计：P0 只有一个根目录，打开另一个文件夹时替换当前根目录；P1 允许同时添加多个根目录，仍在同一个窗口里，不增加 WebKit 进程（见[界面与交互](ui.md#根目录)）。
 

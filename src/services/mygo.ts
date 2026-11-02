@@ -356,8 +356,10 @@ export const Assets = {
  */
 export const Settings = {
   /**
-   * AddRecentFolder puts folder first in the recent folders, dropping the
-   * oldest entries past the list's limit.
+   * AddRecentFolder puts folder first in the recent folders, but only accepts
+   * the workspace that is already open. Opening a folder records it in Go; the
+   * page only updates its local display. This keeps the recent list from
+   * becoming an authorization bypass for OpenFolder.
    */
   addRecentFolder(folder: string): Promise<void> {
     return call("Settings.AddRecentFolder", folder);
@@ -422,6 +424,13 @@ export const SingleFileService = {
    */
   chooseSingleFile(): Promise<SingleFileSelection> {
     return call("SingleFileService.ChooseSingleFile");
+  },
+  /**
+   * DismissOfferedFile forgets a file the system offered but the user chose not
+   * to open. It only removes an offer; it never grants access.
+   */
+  dismissOfferedFile(path: string): Promise<void> {
+    return call("SingleFileService.DismissOfferedFile", path);
   },
   /** ReadSingleFile returns the exact bytes of a granted file. */
   readSingleFile(path: string): Promise<string> {

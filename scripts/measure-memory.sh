@@ -18,6 +18,16 @@ APP_PATH=
 USER_DATA_DIR=
 CREATED_USER_DATA=0
 
+# Register cleanup before the temporary directory is created. Early failures
+# between mktemp and the full launch cleanup must not leave user data behind.
+cleanup_user_data() {
+  if [ "$CREATED_USER_DATA" -eq 1 ] && [ -n "$USER_DATA_DIR" ]; then
+    rm -rf "$USER_DATA_DIR"
+    CREATED_USER_DATA=0
+  fi
+}
+trap cleanup_user_data EXIT
+
 # How long to wait for the main process to appear, and for how long a single
 # candidate whose environment is unreadable must remain alone before it is
 # accepted. Detection and stabilization are timed separately.
@@ -385,12 +395,6 @@ cleanup() {
     sleep 0.2
   done
   cleanup_user_data
-}
-cleanup_user_data() {
-  if [ "$CREATED_USER_DATA" -eq 1 ] && [ -n "$USER_DATA_DIR" ]; then
-    rm -rf "$USER_DATA_DIR"
-    CREATED_USER_DATA=0
-  fi
 }
 
 trap cleanup EXIT

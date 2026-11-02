@@ -62,6 +62,8 @@ let app: ReturnType<typeof createApp> | null = null;
 let events: {
   open: ReturnType<typeof vi.fn>;
   created: ReturnType<typeof vi.fn>;
+  renaming: ReturnType<typeof vi.fn>;
+  renameFailed: ReturnType<typeof vi.fn>;
   renamed: ReturnType<typeof vi.fn>;
   trash: ReturnType<typeof vi.fn>;
   expanded: ReturnType<typeof vi.fn>;
@@ -87,6 +89,8 @@ function mountTree(initialExpanded: string[] = []) {
   events = {
     open: vi.fn(),
     created: vi.fn(),
+    renaming: vi.fn(),
+    renameFailed: vi.fn(),
     renamed: vi.fn(),
     trash: vi.fn(),
     expanded: vi.fn(),
@@ -99,6 +103,8 @@ function mountTree(initialExpanded: string[] = []) {
           ...props,
           onOpenEntry: events.open,
           onEntryCreated: events.created,
+          onEntryRenaming: events.renaming,
+          onEntryRenameFailed: events.renameFailed,
           onEntryRenamed: events.renamed,
           onTrashRequest: events.trash,
           onExpandedChange: events.expanded,
@@ -212,6 +218,57 @@ describe("FileTree", () => {
     await settle();
     expect(mocks.renameEntry).toHaveBeenCalledWith("a.md", "renamed.md", 3);
     expect(events.renamed).toHaveBeenCalledWith("a.md", "renamed.md", false);
+  });
+
+  it("announces an expected rename before the backend resolves", async () => {
+    mocks.popupNativeMenu.mockResolvedValue("rename");
+    let finish!: (value: string) => void;
+    mocks.renameEntry.mockReturnValue(
+      new Promise<string>((resolve) => {
+        finish = resolve;
+      }),
+    );
+    mountTree();
+    await settle();
+    row("a.md").dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, cancelable: true }),
+    );
+    await settle();
+    const input = host.querySelector<HTMLInputElement>('input[aria-label="重命名"]')!;
+    input.value = "renamed.md";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+    );
+    await settle();
+
+    expect(events.renaming).toHaveBeenCalledWith("a.md", "renamed.md", false);
+    expect(events.renamed).not.toHaveBeenCalled();
+    finish("renamed.md");
+    await settle();
+    expect(events.renamed).toHaveBeenCalledWith("a.md", "renamed.md", false);
+  });
+
+  it("reports a failed rename so the expected path is discarded", async () => {
+    mocks.popupNativeMenu.mockResolvedValue("rename");
+    mocks.renameEntry.mockRejectedValue(new Error("exists"));
+    mountTree();
+    await settle();
+    row("a.md").dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, cancelable: true }),
+    );
+    await settle();
+    const input = host.querySelector<HTMLInputElement>('input[aria-label="重命名"]')!;
+    input.value = "renamed.md";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+    );
+    await settle();
+
+    expect(events.renaming).toHaveBeenCalledWith("a.md", "renamed.md", false);
+    expect(events.renameFailed).toHaveBeenCalledWith("a.md");
+    expect(events.renamed).not.toHaveBeenCalled();
   });
 
   it("creates a file from the blank-area menu", async () => {

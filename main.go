@@ -63,7 +63,9 @@ func main() {
 	assets := NewAssets(workspace)
 
 	singleFiles := NewSingleFileService()
-	workspace.useOfferedFiles(singleFiles.offeredPaths)
+	workspace.useOfferedFiles(singleFiles.offeredPaths, singleFiles.takeOfferedFolder)
+	settings := NewSettings(settingsStore)
+	settings.useCurrentRoot(workspace.openRoot)
 	openedFiles := NewOpenedFiles()
 	// The updater plugin adds the Sparkle-style update window and the menu
 	// item; `mygo build` enables it only together with signed updates and a
@@ -92,7 +94,7 @@ func main() {
 		NewApplication(mygo.App.Version()),
 		workspace,
 		assets,
-		NewSettings(settingsStore),
+		settings,
 		singleFiles,
 		openedFiles,
 		NativeMenu{},

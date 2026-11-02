@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   removeRecentFolder: vi.fn(),
   chooseSingleFile: vi.fn(),
   acceptSingleFile: vi.fn(),
+  dismissOfferedFile: vi.fn(),
   readSingleFile: vi.fn(),
   writeSingleFile: vi.fn(),
   releaseSingleFile: vi.fn(),
@@ -51,6 +52,7 @@ vi.mock("./mygo", () => ({
   SingleFileService: {
     chooseSingleFile: mocks.chooseSingleFile,
     acceptSingleFile: mocks.acceptSingleFile,
+    dismissOfferedFile: mocks.dismissOfferedFile,
     readSingleFile: mocks.readSingleFile,
     writeSingleFile: mocks.writeSingleFile,
     releaseSingleFile: mocks.releaseSingleFile,
@@ -83,6 +85,7 @@ import { onOpenFile, takePendingOpenedFiles } from "./open-file";
 import {
   acceptSingleFile,
   chooseSingleFile,
+  dismissOfferedFile,
   readSingleFile,
   releaseSingleFile,
   writeSingleFile,
@@ -139,6 +142,7 @@ beforeEach(() => {
     path: "/tmp/note.md",
     name: "note.md",
   });
+  mocks.dismissOfferedFile.mockResolvedValue(undefined);
   mocks.readSingleFile.mockResolvedValue("text");
   mocks.writeSingleFile.mockResolvedValue(undefined);
   mocks.releaseSingleFile.mockResolvedValue(undefined);
@@ -211,12 +215,14 @@ describe("service wrappers", () => {
   it("forwards single-file calls", async () => {
     await chooseSingleFile();
     await acceptSingleFile("/tmp/note.md");
+    await dismissOfferedFile("/tmp/note.md");
     await expect(readSingleFile("/tmp/note.md")).resolves.toBe("text");
     await writeSingleFile("/tmp/note.md", "new");
     await releaseSingleFile("/tmp/note.md");
 
     expect(mocks.chooseSingleFile).toHaveBeenCalledOnce();
     expect(mocks.acceptSingleFile).toHaveBeenCalledWith("/tmp/note.md");
+    expect(mocks.dismissOfferedFile).toHaveBeenCalledWith("/tmp/note.md");
     expect(mocks.readSingleFile).toHaveBeenCalledWith("/tmp/note.md");
     expect(mocks.writeSingleFile).toHaveBeenCalledWith("/tmp/note.md", "new");
     expect(mocks.releaseSingleFile).toHaveBeenCalledWith("/tmp/note.md");

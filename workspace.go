@@ -47,6 +47,7 @@ var (
 	errReadOnlyFile    = errors.New("workspace: file is read-only")
 	errDanglingLink    = errors.New("workspace: dangling symbolic link")
 	errFolderNotChosen = errors.New("workspace: folder was not chosen by the user")
+	errFolderForbidden = errors.New("workspace: folder cannot be opened as a workspace")
 )
 
 // WorkspaceFolder is the result of choosing a folder. Canceled is true when
@@ -77,8 +78,9 @@ type Workspace struct {
 	lastPicked string
 	// settings and offeredFiles are optional so tests can build a workspace
 	// without the app's settings store or single-file service.
-	settings     *settingsStore
-	offeredFiles func() []string
+	settings          *settingsStore
+	offeredFiles      func() []string
+	takeOfferedFolder func(string) bool
 }
 
 // NewWorkspace returns a workspace with no folder open.
@@ -97,9 +99,17 @@ func (w *Workspace) useSettings(store *settingsStore) {
 }
 
 // useOfferedFiles lets OpenFolder accept the folder of a file the system
-// passed to the app. The callback returns the absolute offered paths.
-func (w *Workspace) useOfferedFiles(paths func() []string) {
+// passed to the app. takeOfferedFolder removes the one-time offer after the
+// folder opens, so the same file cannot keep authorizing that directory.
+func (w *Workspace) useOfferedFiles(paths func() []string, takeFolder func(string) bool) {
 	w.offeredFiles = paths
+	w.takeOfferedFolder = takeFolder
+}
+
+// openRoot reports the open workspace root for Settings.AddRecentFolder.
+func (w *Workspace) openRoot() string {
+	root, _ := w.state.snapshot()
+	return root
 }
 
 // FolderPick is the result of choosing a folder without switching to it. The
@@ -144,6 +154,9 @@ func (w *Workspace) OpenFolder(path string) (WorkspaceFolder, error) {
 	if !filepath.IsAbs(clean) {
 		return WorkspaceFolder{}, fmt.Errorf("workspace: folder is not absolute: %q", path)
 	}
+	if forbiddenWorkspaceRoot(clean) {
+		return WorkspaceFolder{}, fmt.Errorf("%w: %q", errFolderForbidden, path)
+	}
 	if !w.folderAllowed(clean) {
 		return WorkspaceFolder{}, fmt.Errorf("%w: %q", errFolderNotChosen, path)
 	}
@@ -152,7 +165,34 @@ func (w *Workspace) OpenFolder(path string) (WorkspaceFolder, error) {
 		w.lastPicked = ""
 	}
 	w.pickMu.Unlock()
-	return w.open(clean)
+	folder, err := w.open(clean)
+	if err != nil {
+		return WorkspaceFolder{}, err
+	}
+	if w.takeOfferedFolder != nil {
+		w.takeOfferedFolder(folder.Root)
+	}
+	return folder, nil
+}
+
+// forbiddenWorkspaceRoot rejects the filesystem root, a Windows drive root,
+// and the user's home folder. The page already disables opening a system
+// file's parent in these cases; this keeps a direct service call from
+// expanding a one-file grant into the whole disk or home directory.
+func forbiddenWorkspaceRoot(root string) bool {
+	if root == "" || filepath.Dir(root) == root {
+		return true
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	home = filepath.Clean(home)
+	if root == home {
+		return true
+	}
+	resolved, err := filepath.EvalSymlinks(home)
+	return err == nil && root == filepath.Clean(resolved)
 }
 
 func (w *Workspace) folderAllowed(clean string) bool {
@@ -311,6 +351,11 @@ func (w *Workspace) open(root string) (WorkspaceFolder, error) {
 	}
 	removeTempFiles(rootFS)
 	generation := w.state.replace(resolved)
+	if w.settings != nil {
+		// Failing to remember a folder must not prevent the user from
+		// working in it; the recent list is best effort.
+		_ = w.settings.recordRecentFolder(resolved)
+	}
 	return WorkspaceFolder{
 		Root:       resolved,
 		Files:      files,

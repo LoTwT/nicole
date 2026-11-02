@@ -184,6 +184,43 @@ func (s *SingleFileService) offer(path string) {
 	}
 }
 
+// DismissOfferedFile forgets a file the system offered but the user chose not
+// to open. It only removes an offer; it never grants access.
+func (s *SingleFileService) DismissOfferedFile(path string) {
+	clean := filepath.Clean(path)
+	if !filepath.IsAbs(clean) {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.offered, clean)
+	if resolved, err := filepath.EvalSymlinks(clean); err == nil {
+		delete(s.offered, resolved)
+	}
+}
+
+// takeOfferedFolder removes every offer whose file is directly inside folder.
+// OpenFolder calls it after a successful switch, so opening the parent once
+// consumes the grant instead of leaving a permanent directory authorization.
+func (s *SingleFileService) takeOfferedFolder(folder string) bool {
+	clean := filepath.Clean(folder)
+	resolvedFolder := clean
+	if resolved, err := filepath.EvalSymlinks(clean); err == nil {
+		resolvedFolder = filepath.Clean(resolved)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	matched := false
+	for path := range s.offered {
+		parent := filepath.Dir(path)
+		if parent == clean || parent == resolvedFolder {
+			delete(s.offered, path)
+			matched = true
+		}
+	}
+	return matched
+}
+
 // offeredPaths returns the absolute files the system handed to the app. The
 // workspace uses their parent folders to allow opening a recent file's folder
 // without granting the page arbitrary paths.

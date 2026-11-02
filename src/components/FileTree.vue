@@ -43,6 +43,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   "open-entry": [entry: TreeNode];
   "entry-created": [path: string, isDir: boolean];
+  "entry-renaming": [oldPath: string, newPath: string, isDir: boolean];
+  "entry-rename-failed": [oldPath: string];
   "entry-renamed": [oldPath: string, newPath: string, isDir: boolean];
   "trash-request": [entry: TreeNode];
   "expanded-change": [folders: string[]];
@@ -309,8 +311,17 @@ async function commitEdit() {
         return;
       }
       const oldPath = node.path;
-      const newPath = await renameEntry(oldPath, value, props.generation);
       const oldDir = node.isDir;
+      const parent = parentPath(oldPath);
+      const expectedPath = parent === "." ? value : `${parent}/${value}`;
+      emit("entry-renaming", oldPath, expectedPath, oldDir);
+      let newPath: string;
+      try {
+        newPath = await renameEntry(oldPath, value, props.generation);
+      } catch (error) {
+        emit("entry-rename-failed", oldPath);
+        throw error;
+      }
       if (oldDir) {
         for (const item of [...expandedSet.value]) {
           if (item === oldPath) {

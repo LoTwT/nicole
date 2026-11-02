@@ -59,13 +59,13 @@ import {
   setExpandedFolders,
   setSidebarWidth,
   setTheme,
-  addRecentFolder,
   removeRecentFolder,
   type AppSettings,
   type ThemeSetting,
 } from "./services/settings";
 import {
   acceptSingleFile,
+  dismissOfferedFile,
   readSingleFile,
   releaseSingleFile,
   writeSingleFile,
@@ -197,6 +197,7 @@ let openedFilesQueue: Promise<void> = Promise.resolve();
 let appReady = false;
 let pendingOpenSignal = false;
 let externalReadSequence = 0;
+let externalRevision = 0;
 
 const imageInsertion = createImageInsertion({
   getEditor: () => editor,
@@ -406,7 +407,6 @@ function rememberRecent(folder: string) {
     .slice(0, 10);
   recentFolders.value = next;
   missingRecent.value = missingRecent.value.filter((item) => item !== folder);
-  void addRecentFolder(folder).catch(() => {});
 }
 
 async function removeRecent(folder: string) {
@@ -501,6 +501,11 @@ function clearSavingDisplay() {
     clearTimeout(savingDisplayTimer);
     savingDisplayTimer = null;
   }
+}
+
+function markExternalState(next: "none" | "modified" | "deleted") {
+  externalState.value = next;
+  externalRevision += 1;
 }
 
 function currentEditForDocument(doc: MarkdownDocument): PendingEdit {
@@ -599,6 +604,7 @@ async function savePendingNow(force: boolean): Promise<boolean> {
     pendingEdit = null;
     clearSavingDisplay();
     writesInFlight += 1;
+    const externalRevisionAtWrite = externalRevision;
     savingDisplayTimer = setTimeout(() => {
       savingDisplayTimer = null;
       if (writesInFlight > 0 && savePhase.value !== "failed") {
@@ -637,7 +643,10 @@ async function savePendingNow(force: boolean): Promise<boolean> {
     }
     originalText.value = edit.text;
     saveError.value = null;
-    if (externalState.value !== "none") {
+    // A non-force save must never hide an external change that arrived while
+    // the write was in flight. A forced save ("keep mine"/"resave") may clear
+    // the state it started with, but not a newer external event.
+    if (force && externalRevision === externalRevisionAtWrite) {
       externalState.value = "none";
     }
     if (pendingEdit === null && documentText.value !== originalText.value) {
@@ -723,10 +732,8 @@ async function prepareToLeave(): Promise<boolean> {
   }
   // A mixed-ending or previously failed file with no pending text has
   // nothing to lose; the text was undone back to the loaded version.
-  const requiresConfirmation =
-    externalState.value === "deleted" || pendingEdit !== null;
   const saved = await savePending();
-  if (saved && !requiresConfirmation) {
+  if (saved && externalState.value !== "deleted") {
     return true;
   }
   const details = documentProblemDetails();
@@ -1079,13 +1086,13 @@ async function handleWatchEvents(allEvents: readonly WorkspaceFileEvent[]) {
   }
   const classification = classifyWatchEvents(events, doc.path, true);
   if (classification.document === "deleted") {
-    externalState.value = "deleted";
+    markExternalState("deleted");
     clearSaveTimer();
     return;
   }
   if (classification.document === "modified") {
     if (externalState.value === "deleted") {
-      externalState.value = "none";
+      markExternalState("none");
     }
     await handleExternalModification();
   }
@@ -1104,7 +1111,7 @@ async function handleExternalModification() {
     saveError.value !== null ||
     documentText.value !== originalText.value
   ) {
-    externalState.value = "modified";
+    markExternalState("modified");
     clearSaveTimer();
     return;
   }
@@ -1114,8 +1121,14 @@ async function handleExternalModification() {
     if (
       sequence !== externalReadSequence ||
       currentDocument.value?.kind !== "workspace" ||
-      currentDocument.value.path !== doc.path
+      currentDocument.value.path !== doc.path ||
+      externalState.value !== "none"
     ) {
+      return;
+    }
+    if (pendingEdit !== null || documentText.value !== originalText.value) {
+      markExternalState("modified");
+      clearSaveTimer();
       return;
     }
     applyExternalText(text);
@@ -1125,7 +1138,7 @@ async function handleExternalModification() {
       currentDocument.value?.kind === "workspace" &&
       currentDocument.value.path === doc.path
     ) {
-      externalState.value = "deleted";
+      markExternalState("deleted");
       clearSaveTimer();
     }
   }
@@ -1169,7 +1182,6 @@ function keepMyVersion() {
 async function resaveDeleted() {
   const saved = await savePending(true);
   if (saved) {
-    externalState.value = "none";
     saveError.value = null;
     savePhase.value = "saved";
   }
@@ -1391,7 +1403,14 @@ async function receiveOpenedFiles() {
       const paths = await takePendingOpenedFiles();
       const last = paths.at(-1);
       if (last) {
-        await handleOpenedPath(last);
+        try {
+          await handleOpenedPath(last);
+        } finally {
+          // The offer is one-time: opening the parent consumes it in Go,
+          // AcceptSingleFile consumes it for a single file, and cancelling
+          // or failing to open must not leave the directory grant behind.
+          await dismissOfferedFile(last).catch(() => {});
+        }
       }
     })
     .catch(() => {
@@ -1533,6 +1552,22 @@ async function newFile() {
   await sidebar.value?.startCreate("create-file", dir);
 }
 
+function handleEntryRenaming(
+  oldPath: string,
+  newPath: string,
+  _isDir: boolean,
+) {
+  // Register before RenameEntry returns: the watcher may report the rename
+  // while the backend call is still in flight.
+  recentSelfRename = { oldPath, newPath, at: Date.now() };
+}
+
+function handleEntryRenameFailed(oldPath: string) {
+  if (recentSelfRename?.oldPath === oldPath) {
+    recentSelfRename = null;
+  }
+}
+
 async function renameCurrentPath(
   oldPath: string,
   newPath: string,
@@ -1552,7 +1587,6 @@ async function renameCurrentPath(
         path: updated,
         name: absoluteBaseName(updated),
       };
-      recentSelfRename = { oldPath, newPath: updated, at: Date.now() };
     }
   }
   if (doc?.kind === "preview") {
@@ -1660,6 +1694,10 @@ async function handleEntryRenamed(
   newPath: string,
   isDir: boolean,
 ) {
+  if (recentSelfRename?.oldPath === oldPath) {
+    recentSelfRename.newPath = newPath;
+    recentSelfRename.at = Date.now();
+  }
   await renameCurrentPath(oldPath, newPath, isDir);
 }
 
@@ -1779,6 +1817,8 @@ defineExpose({
       @reset-width="resetSidebarWidth"
       @open-entry="openTreeEntry"
       @entry-created="handleEntryCreated"
+      @entry-renaming="handleEntryRenaming"
+      @entry-rename-failed="handleEntryRenameFailed"
       @entry-renamed="handleEntryRenamed"
       @trash-request="requestTrash"
       @expanded-change="handleExpandedChange"

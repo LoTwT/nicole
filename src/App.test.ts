@@ -30,6 +30,7 @@ const mocks = vi.hoisted(() => ({
   removeRecentFolder: vi.fn(),
   chooseSingleFile: vi.fn(),
   acceptSingleFile: vi.fn(),
+  dismissOfferedFile: vi.fn(),
   readSingleFile: vi.fn(),
   writeSingleFile: vi.fn(),
   releaseSingleFile: vi.fn(),
@@ -73,6 +74,7 @@ vi.mock("./services/settings", () => ({
 vi.mock("./services/single-file", () => ({
   chooseSingleFile: mocks.chooseSingleFile,
   acceptSingleFile: mocks.acceptSingleFile,
+  dismissOfferedFile: mocks.dismissOfferedFile,
   readSingleFile: mocks.readSingleFile,
   writeSingleFile: mocks.writeSingleFile,
   releaseSingleFile: mocks.releaseSingleFile,
@@ -259,6 +261,7 @@ beforeEach(() => {
     path,
     name: path.slice(path.lastIndexOf("/") + 1),
   }));
+  mocks.dismissOfferedFile.mockResolvedValue(undefined);
   mocks.readSingleFile.mockResolvedValue("# Single\n");
   mocks.writeSingleFile.mockResolvedValue(undefined);
   mocks.releaseSingleFile.mockResolvedValue(undefined);
@@ -325,7 +328,7 @@ describe("application shell", () => {
     expect(host.querySelector("aside")).not.toBeNull();
     expect(host.textContent).toContain("选择一个文件开始写作");
     expect(host.textContent).toContain("a.md");
-    expect(mocks.addRecentFolder).toHaveBeenCalledWith("/notes");
+    expect(mocks.addRecentFolder).not.toHaveBeenCalled();
   });
 
   it("shows the last folder as missing instead of opening it", async () => {
@@ -557,6 +560,67 @@ describe("external changes", () => {
     );
   });
 
+  it("keeps an external change that arrives during a write", async () => {
+    vi.useFakeTimers();
+    await openFile();
+    const write = deferred<void>();
+    mocks.writeFile.mockImplementation(() => write.promise);
+
+    replaceEditorText("# Mine\n");
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(mocks.writeFile).toHaveBeenCalledTimes(1);
+
+    watchEvents?.([{ op: "write", path: "a.md", isDir: false }]);
+    await settle();
+    write.resolve();
+    await settle();
+
+    expect(host.textContent).toContain("此文件已在 Nicole 之外被修改");
+    replaceEditorText("# After\n");
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(mocks.writeFile).toHaveBeenCalledTimes(1);
+    expect(host.textContent).toContain("此文件已在 Nicole 之外被修改");
+  });
+
+  it("does not replace input typed while an external version is loading", async () => {
+    vi.useFakeTimers();
+    await openFile();
+    const reading = deferred<string>();
+    mocks.readFile.mockImplementationOnce(() => reading.promise);
+
+    watchEvents?.([{ op: "write", path: "a.md", isDir: false }]);
+    await settle();
+    replaceEditorText("# Typed while reading\n");
+    reading.resolve("# Disk version\n");
+    await settle();
+
+    expect(editorView().state.doc.toString()).toBe("# Typed while reading\n");
+    expect(host.textContent).toContain("此文件已在 Nicole 之外被修改");
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+  });
+
+  it("keeps autosave paused when typing continues after an external change", async () => {
+    vi.useFakeTimers();
+    await openFile();
+    replaceEditorText("# Mine\n");
+    await settle();
+    watchEvents?.([{ op: "write", path: "a.md", isDir: false }]);
+    await settle();
+    expect(host.textContent).toContain("此文件已在 Nicole 之外被修改");
+
+    replaceEditorText("# Mine again\n");
+    await settle();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "s", metaKey: true, bubbles: true }),
+    );
+    await settle();
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+  });
+
   it("maps the selection through an external insertion", async () => {
     await openFile("a.md", "one\ntwo\nthree\n");
     const view = editorView();
@@ -599,7 +663,95 @@ describe("external changes", () => {
   });
 });
 
+describe("renames", () => {
+  it("keeps a folder rename from looking like an external deletion", async () => {
+    tree = [
+      entry("notes", "notes", { isDir: true }),
+      entry("root.md", "root.md"),
+    ];
+    openFileText = "# A\n";
+    mocks.listDirectory.mockImplementation(async (path: string) => {
+      if (path === ".") return { path: ".", entries: tree };
+      if (path === "notes") {
+        return { path: "notes", entries: [entry("a.md", "notes/a.md")] };
+      }
+      return { path, entries: [] };
+    });
+    await openFolder();
+    host.querySelector<HTMLElement>('[data-tree-path="notes"]')!.click();
+    await settle();
+    host.querySelector<HTMLElement>('[data-tree-path="notes/a.md"]')!.click();
+    await settle();
+    expect(editorView().state.doc.toString()).toBe("# A\n");
+
+    const rename = deferred<string>();
+    mocks.renameEntry.mockReturnValue(rename.promise);
+    mocks.popupNativeMenu.mockResolvedValue("rename");
+    host
+      .querySelector<HTMLElement>('[data-tree-path="notes"]')!
+      .dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: 20,
+          clientY: 30,
+        }),
+      );
+    await settle();
+    const input = host.querySelector<HTMLInputElement>('input[aria-label="重命名"]');
+    if (!input) throw new Error("rename input not found");
+    input.value = "notes2";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+    );
+    await settle();
+
+    // The watcher can report the rename before RenameEntry resolves.
+    watchEvents?.([
+      { op: "rename", oldPath: "notes", path: "notes2", isDir: true },
+    ]);
+    await settle();
+    expect(host.textContent).not.toContain("已在磁盘上被删除或移走");
+
+    rename.resolve("notes2");
+    await settle();
+    expect(host.textContent).not.toContain("已在磁盘上被删除或移走");
+    expect(host.querySelector('[role="tab"]')?.getAttribute("title")).toBe(
+      "notes/notes2/a.md",
+    );
+  });
+});
+
 describe("single files and dialogs", () => {
+  it("does not ask to discard after a successful save when switching", async () => {
+    vi.useFakeTimers();
+    await openFile();
+    replaceEditorText("# Edited\n");
+
+    pendingFiles = ["/tmp/other.md"];
+    openHandler?.();
+    await settle();
+    dialogButton("只打开这个文件").click();
+    await settle();
+
+    expect(mocks.writeFile).toHaveBeenCalledWith("a.md", "# Edited\n", 1);
+    expect(dialog()).toBeNull();
+    expect(host.querySelector('[role="tab"]')?.textContent).toContain("other.md");
+  });
+
+  it("dismisses a system-opened file when the dialog is canceled", async () => {
+    await settle();
+    pendingFiles = ["/tmp/single.md"];
+    openHandler?.();
+    await settle();
+    dialogButton("取消").click();
+    await settle();
+
+    expect(mocks.dismissOfferedFile).toHaveBeenCalledWith("/tmp/single.md");
+    expect(mocks.acceptSingleFile).not.toHaveBeenCalled();
+  });
+
   it("opens a file outside the workspace after confirmation and saves it", async () => {
     vi.useFakeTimers();
     await settle();
