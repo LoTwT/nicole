@@ -123,6 +123,45 @@ describe("format commands", () => {
     expect(view.state.doc.toString()).toBe("代码");
   });
 
+  it("keeps lines before and after when unwrapping a code block", () => {
+    const view = mount("a\nhello\nb").view;
+    view.dispatch({ selection: { anchor: 2 } });
+
+    press(view, "c", "KeyC", { shift: true });
+    expect(view.state.doc.toString()).toBe("a\n```\nhello\n```\nb");
+    press(view, "c", "KeyC", { shift: true });
+    expect(view.state.doc.toString()).toBe("a\nhello\nb");
+  });
+
+  it("unwraps code blocks at document edges without joining lines", () => {
+    const start = mount("```\nhello\n```\nb").view;
+    start.dispatch({ selection: { anchor: 4 } });
+    press(start, "c", "KeyC", { shift: true });
+    expect(start.state.doc.toString()).toBe("hello\nb");
+
+    const end = mount("a\n```\nhello\n```").view;
+    end.dispatch({ selection: { anchor: 8 } });
+    press(end, "c", "KeyC", { shift: true });
+    expect(end.state.doc.toString()).toBe("a\nhello");
+  });
+
+  it("keeps formatting as its own undo step", () => {
+    const view = mount("").view;
+    view.dispatch({
+      changes: { from: 0, insert: "hello" },
+      selection: { anchor: 5 },
+      userEvent: "input.type",
+    });
+
+    press(view, "b", "KeyB");
+    expect(view.state.doc.toString()).toBe("hello****");
+
+    expect(editor.undo()).toBe(true);
+    expect(view.state.doc.toString()).toBe("hello");
+    expect(editor.undo()).toBe(true);
+    expect(view.state.doc.toString()).toBe("");
+  });
+
   it("inserts an empty fenced block with room for a language", () => {
     const view = mount("").view;
     press(view, "c", "KeyC", { shift: true });

@@ -30,7 +30,13 @@ async function settle() {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-function mount(doc = "") {
+function mount(
+  doc = "",
+  loadPinyin = async () => ({
+    full: (text: string) => text,
+    initials: (text: string) => text,
+  }),
+) {
   controller?.destroy();
   editor?.destroy();
   editor = createEditor({ parent, doc, platform: "macos" });
@@ -41,10 +47,7 @@ function mount(doc = "") {
     onChange: (next) => {
       state = next;
     },
-    loadPinyin: async () => ({
-      full: (text) => text,
-      initials: (text) => text,
-    }),
+    loadPinyin,
   });
   return editor.view;
 }
@@ -62,13 +65,13 @@ function key(
   view: EditorView,
   key: string,
   code = key,
-  options: { composing?: boolean } = {},
+  options: { composing?: boolean; keyCode?: number } = {},
 ) {
   view.contentDOM.dispatchEvent(
     new KeyboardEvent("keydown", {
       key,
       code,
-      keyCode: options.composing ? 229 : 0,
+      keyCode: options.keyCode ?? (options.composing ? 229 : 0),
       isComposing: options.composing ?? false,
       bubbles: true,
       cancelable: true,
@@ -169,6 +172,107 @@ describe("slash trigger", () => {
     expect(state).toBeNull();
     expect(view.state.doc.toString()).toBe("/biao");
   });
+
+  it("does not trigger inside code, inline code, frontmatter or HTML blocks", () => {
+    const cases = [
+      { doc: "```\n\n```", position: 4, name: "fenced code" },
+      { doc: "    code", position: 4, name: "indented code" },
+      { doc: "` code`", position: 2, name: "inline code" },
+      {
+        doc: "---\ntitle: x\n---\n\nbody",
+        position: 4,
+        name: "frontmatter",
+      },
+      { doc: "<div>\nhello\n</div>\n\nbody", position: 6, name: "HTML block" },
+    ];
+    for (const item of cases) {
+      const view = mount(item.doc);
+      view.dispatch({ selection: { anchor: item.position } });
+      type(view, "/");
+      expect(state, item.name).toBeNull();
+      controller?.close();
+      editor?.destroy();
+      editor = null;
+      controller = null;
+    }
+
+    const after = mount("```\ncode\n```\n");
+    after.dispatch({ selection: { anchor: after.state.doc.length } });
+    type(after, "/");
+    expect(state?.trigger).toBe("/");
+  });
+
+  it("closes when the query contains whitespace", () => {
+    const immediate = mount();
+    type(immediate, "/");
+    type(immediate, " ");
+    expect(state).toBeNull();
+    expect(immediate.state.doc.toString()).toBe("/ ");
+
+    controller?.close();
+    const view = mount("yes ");
+    view.dispatch({ selection: { anchor: 4 } });
+    type(view, "/");
+    type(view, "no");
+    type(view, " ");
+    expect(state).toBeNull();
+
+    key(view, "Enter", "Enter");
+    expect(view.state.doc.toString()).toBe("yes /no \n");
+    expect(view.state.doc.toString()).not.toContain("- [ ]");
+  });
+
+  it("closes on whitespace even while pinyin loading is pending", async () => {
+    let release = (_matcher: {
+      full(text: string): string;
+      initials(text: string): string;
+    }) => {};
+    const pending = new Promise<{
+      full(text: string): string;
+      initials(text: string): string;
+    }>((resolve) => {
+      release = resolve;
+    });
+    const view = mount("", () => pending);
+
+    type(view, "/");
+    type(view, " ");
+
+    expect(state).toBeNull();
+    release({ full: (text) => text, initials: (text) => text });
+    await settle();
+  });
+
+  it("closes when the cursor moves back into the query", () => {
+    const view = mount();
+    type(view, "/");
+    type(view, "biao");
+
+    view.dispatch({ selection: { anchor: 3 } });
+
+    expect(state).toBeNull();
+    expect(view.state.doc.toString()).toBe("/biao");
+  });
+
+  it("closes on a non-user document change", () => {
+    const view = mount();
+    type(view, "/");
+
+    view.dispatch({ changes: { from: 0, insert: "x" } });
+
+    expect(state).toBeNull();
+    expect(view.state.doc.toString()).toBe("x/");
+  });
+
+  it("closes when the editor loses focus", () => {
+    const view = mount();
+    type(view, "/");
+
+    view.contentDOM.dispatchEvent(new FocusEvent("blur"));
+
+    expect(state).toBeNull();
+    expect(view.state.doc.toString()).toBe("/");
+  });
 });
 
 describe("slash search and execution", () => {
@@ -218,6 +322,35 @@ describe("slash search and execution", () => {
     expect(state?.selectedIndex).toBe(0);
   });
 
+  it("resets the selected item when the query changes", () => {
+    const view = mount();
+    type(view, "/");
+    key(view, "ArrowDown", "ArrowDown");
+    expect(state?.selectedIndex).toBe(1);
+
+    type(view, "b");
+
+    expect(state?.selectedIndex).toBe(0);
+  });
+
+  it("undoes trigger deletion and command execution in one step", async () => {
+    const view = mount();
+    type(view, "/");
+    type(view, "biao");
+    await settle();
+    const index = state?.items.findIndex(
+      (item) => item.id === "format.heading-1",
+    );
+
+    controller?.execute(index);
+    expect(view.state.doc.toString()).toBe("# ");
+
+    expect(editor?.undo()).toBe(true);
+    expect(view.state.doc.toString()).toBe("/biao");
+    expect(editor?.undo()).toBe(true);
+    expect(view.state.doc.toString()).toBe("");
+  });
+
   it("closes without a match and keeps typing in the document", async () => {
     const view = mount();
     type(view, "/");
@@ -264,6 +397,33 @@ describe("slash IME handling", () => {
 
     expect(state).toBeNull();
     expect(view.state.doc.toString()).toBe("/zzz");
+  });
+
+  it("waits for composition to end before closing on whitespace", async () => {
+    const view = mount();
+    type(view, "/");
+    await settle();
+    composition(view, "compositionstart");
+    type(view, " ", true);
+
+    expect(state).not.toBeNull();
+
+    composition(view, "compositionend");
+    await settle();
+
+    expect(state).toBeNull();
+    expect(view.state.doc.toString()).toBe("/ ");
+  });
+
+  it("does not execute a keyCode 229 event without compositionstart", () => {
+    const view = mount();
+    type(view, "/");
+    type(view, "b");
+
+    key(view, "Enter", "Enter", { keyCode: 229 });
+
+    expect(state).not.toBeNull();
+    expect(view.state.doc.toString()).not.toContain("# ");
   });
 });
 

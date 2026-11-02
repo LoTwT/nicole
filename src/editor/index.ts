@@ -9,7 +9,6 @@ import {
   ChangeSet,
   Compartment,
   EditorState,
-  Prec,
   RangeSetBuilder,
   type Extension,
 } from "@codemirror/state";
@@ -19,7 +18,6 @@ import {
   EditorView,
   ViewPlugin,
   WidgetType,
-  keymap,
   type DecorationSet,
   type ViewUpdate,
 } from "@codemirror/view";
@@ -28,7 +26,7 @@ import { basicSetup } from "codemirror";
 
 import type { AppPlatform } from "../app/platform";
 import { commandRegistry } from "../commands/registry";
-import type { CommandDefinition } from "../commands/types";
+import { createCommandKeymap } from "./keymap";
 import type {
   CreateEditorOptions,
   EditorHandle,
@@ -388,25 +386,6 @@ function runtimePlatform(): AppPlatform {
   return "linux";
 }
 
-function commandKeyBindings(
-  commands: readonly CommandDefinition[],
-  platform: AppPlatform,
-) {
-  return commands
-    .filter((command) => command.scope === "editor")
-    .flatMap((command) =>
-      (command.keys ?? []).map((binding) => ({
-        ...binding,
-        run: (view: EditorView) => {
-          // The IME owns every key while a composition is active. Returning
-          // false leaves Enter, arrows and Escape to the candidate window.
-          if (view.compositionStarted || view.composing) return false;
-          return command.run({ view, platform });
-        },
-      })),
-    );
-}
-
 const highlightStyle = HighlightStyle.define([
   { tag: tags.strong, fontWeight: "700" },
   { tag: tags.emphasis, fontStyle: "italic" },
@@ -625,7 +604,6 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
   let mode = initialMode;
 
   const enabledCommands = [...commands, ...commandRegistry];
-  const bindings = commandKeyBindings(enabledCommands, platform);
 
   // An image insertion may arrive while an IME composition is still running.
   // It waits, and its ticket follows edits until the composition ends, so the
@@ -739,8 +717,7 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
         markdown({ base: markdownLanguage }),
         syntaxHighlighting(highlightStyle),
         editorTheme,
-        // Registered commands must win over basicSetup's default keymap.
-        Prec.highest(keymap.of(bindings)),
+        createCommandKeymap(enabledCommands, platform),
         imageHandlers(onPasteImage, createTicketAt),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) {

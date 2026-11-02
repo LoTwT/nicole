@@ -1,4 +1,4 @@
-import type { EditorView } from "@codemirror/view";
+import type { EditorState, TransactionSpec } from "@codemirror/state";
 
 import type { AppPlatform } from "../app/platform";
 
@@ -15,9 +15,19 @@ export interface CommandKeyBinding {
   linux?: string;
 }
 
+/**
+ * The part of an editor that commands need. `EditorView` satisfies it; the
+ * slash menu can also run a command against a state with the trigger removed
+ * before committing the combined transaction.
+ */
+export interface CommandTarget {
+  readonly state: EditorState;
+  dispatch(...specs: TransactionSpec[]): void;
+}
+
 export interface CommandContext {
   /** Null when an application command is invoked outside an editor. */
-  view: EditorView | null;
+  view: CommandTarget | null;
   platform: AppPlatform;
 }
 

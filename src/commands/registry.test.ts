@@ -37,6 +37,12 @@ describe("command registry", () => {
     expect(formatKeyBinding(binding, "macos")).toBe("⇧⌘X");
     expect(formatKeyBinding(binding, "windows")).toBe("Ctrl+Shift+X");
     expect(formatKeyBinding(binding, "linux")).toBe("Ctrl+Shift+X");
+    expect(formatKeyBinding({ key: "Shift-Mod-8" }, "windows")).toBe(
+      "Ctrl+Shift+8",
+    );
+    expect(formatKeyBinding({ key: "Shift-Mod-8" }, "linux")).toBe(
+      "Ctrl+Shift+8",
+    );
 
     const command = {
       ...getCommand("format.bold")!,

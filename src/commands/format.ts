@@ -1,8 +1,13 @@
+import { isolateHistory } from "@codemirror/commands";
 import { syntaxTree } from "@codemirror/language";
-import type { ChangeSpec, EditorState, Line } from "@codemirror/state";
-import type { EditorView } from "@codemirror/view";
+import type {
+  ChangeSpec,
+  EditorState,
+  Line,
+  TransactionSpec,
+} from "@codemirror/state";
 
-import type { CommandDefinition } from "./types";
+import type { CommandDefinition, CommandTarget } from "./types";
 
 interface InlineFormat {
   node: string;
@@ -20,6 +25,25 @@ const INLINE_FORMATS = {
   },
   code: { node: "InlineCode", mark: "CodeMark", marker: "`" },
 } satisfies Record<string, InlineFormat>;
+
+/**
+ * Formatting is one isolated undo step, even when it follows typing closely.
+ * The slash menu captures this transaction and merges it with the trigger
+ * deletion into a single step of its own.
+ */
+function dispatchFormat(target: CommandTarget, spec: TransactionSpec) {
+  let annotations: TransactionSpec["annotations"] = isolateHistory.of("full");
+  if (spec.annotations) {
+    annotations = Array.isArray(spec.annotations)
+      ? [isolateHistory.of("full"), ...spec.annotations]
+      : [isolateHistory.of("full"), spec.annotations];
+  }
+  target.dispatch({
+    ...spec,
+    userEvent: "input.format",
+    annotations,
+  });
+}
 
 function findAncestor(state: EditorState, pos: number, name: string) {
   let node = syntaxTree(state).resolveInner(pos, 1);
@@ -46,25 +70,25 @@ function inlineMarkPositions(
   ];
 }
 
-function toggleInline(view: EditorView, format: InlineFormat) {
+function toggleInline(view: CommandTarget, format: InlineFormat) {
   const { state } = view;
   const existing = inlineMarkPositions(state, format);
   if (existing) {
-    view.dispatch({ changes: existing });
+    dispatchFormat(view, { changes: existing });
     return true;
   }
 
   const range = state.selection.main;
   if (range.empty) {
     const at = range.from;
-    view.dispatch({
+    dispatchFormat(view, {
       changes: { from: at, insert: format.marker + format.marker },
       selection: { anchor: at + format.marker.length },
     });
     return true;
   }
 
-  view.dispatch({
+  dispatchFormat(view, {
     changes: [
       { from: range.from, insert: format.marker },
       { from: range.to, insert: format.marker },
@@ -166,7 +190,7 @@ function selectedLines(state: EditorState): Line[] {
 }
 
 function replaceLines(
-  view: EditorView,
+  view: CommandTarget,
   build: (line: Line, prefix: LinePrefix, index: number) => string,
 ): boolean {
   const { state } = view;
@@ -179,14 +203,14 @@ function replaceLines(
   });
   if (changes.length === 0) return false;
   const changeSet = state.changes(changes);
-  view.dispatch({
+  dispatchFormat(view, {
     changes: changeSet,
     selection: state.selection.map(changeSet, 1),
   });
   return true;
 }
 
-function toggleHeading(view: EditorView, level: number) {
+function toggleHeading(view: CommandTarget, level: number) {
   return replaceLines(view, (_line, prefix) => {
     if (prefix.kind === "heading" && prefix.headingLevel === level) {
       return withPrefix(prefix, "");
@@ -196,7 +220,7 @@ function toggleHeading(view: EditorView, level: number) {
 }
 
 function toggleList(
-  view: EditorView,
+  view: CommandTarget,
   kind: "bullet" | "ordered" | "task",
 ) {
   return replaceLines(view, (_line, prefix, index) => {
@@ -210,7 +234,7 @@ function toggleList(
   });
 }
 
-function toggleQuote(view: EditorView) {
+function toggleQuote(view: CommandTarget) {
   return replaceLines(view, (_line, prefix) => {
     if (prefix.quote) {
       return `${prefix.indent}${prefix.marker}${prefix.rest}`;
@@ -219,8 +243,20 @@ function toggleQuote(view: EditorView) {
   });
 }
 
-function removeFenceLines(state: EditorState, node: { from: number; to: number }) {
-  const fenced = syntaxTree(state).resolveInner(node.from, 1);
+function fenceLineChange(
+  state: EditorState,
+  line: { from: number; to: number },
+): ChangeSpec {
+  if (line.to < state.doc.length) {
+    return { from: line.from, to: line.to + 1, insert: "" };
+  }
+  // The last line has no trailing newline, so remove the line break before it
+  // instead. This keeps surrounding lines from being joined.
+  return { from: Math.max(0, line.from - 1), to: line.to, insert: "" };
+}
+
+function removeFenceLines(state: EditorState, position: number) {
+  const fenced = syntaxTree(state).resolveInner(position, 1);
   let current = fenced;
   while (current.parent && current.name !== "FencedCode") {
     current = current.parent;
@@ -232,33 +268,20 @@ function removeFenceLines(state: EditorState, node: { from: number; to: number }
   const closing = marks[marks.length - 1];
   if (!opening || !closing || opening === closing) return null;
 
-  const openingLine = state.doc.lineAt(opening.from);
-  const closingLine = state.doc.lineAt(closing.from);
-  const changes: ChangeSpec[] = [
-    {
-      from: openingLine.from,
-      to: Math.min(openingLine.to + 1, state.doc.length),
-      insert: "",
-    },
+  return [
+    fenceLineChange(state, state.doc.lineAt(opening.from)),
+    fenceLineChange(state, state.doc.lineAt(closing.from)),
   ];
-  changes.push({
-    // Include the line break before the closing fence so unwrapping does not
-    // leave an empty line behind the content.
-    from: Math.max(openingLine.to, closingLine.from - 1),
-    to: Math.min(closingLine.to + 1, state.doc.length),
-    insert: "",
-  });
-  return changes;
 }
 
-function toggleCodeBlock(view: EditorView) {
+function toggleCodeBlock(view: CommandTarget) {
   const { state } = view;
   const range = state.selection.main;
   const probe = range.empty ? range.head : Math.max(range.from, range.to - 1);
-  const fences = removeFenceLines(state, { from: probe, to: probe });
+  const fences = removeFenceLines(state, probe);
   if (fences) {
     const changeSet = state.changes(fences);
-    view.dispatch({
+    dispatchFormat(view, {
       changes: changeSet,
       selection: state.selection.map(changeSet, 1),
     });
@@ -269,7 +292,7 @@ function toggleCodeBlock(view: EditorView) {
     const line = state.doc.lineAt(range.head);
     if (line.text.trim() === "") {
       const content = "```\n\n```";
-      view.dispatch({
+      dispatchFormat(view, {
         changes: { from: line.from, to: line.to, insert: content },
         // After the opening fence: type a language name, then move into the body.
         selection: { anchor: line.from + 3 },
@@ -277,7 +300,7 @@ function toggleCodeBlock(view: EditorView) {
       return true;
     }
     const content = `\`\`\`\n${line.text}\n\`\`\``;
-    view.dispatch({
+    dispatchFormat(view, {
       changes: { from: line.from, to: line.to, insert: content },
       selection: {
         anchor: line.from + 4 + (range.head - line.from),
@@ -290,7 +313,7 @@ function toggleCodeBlock(view: EditorView) {
   const lastLine = state.doc.lineAt(Math.max(range.from, range.to - 1));
   const content = state.sliceDoc(firstLine.from, lastLine.to);
   const inserted = `\`\`\`\n${content}\n\`\`\``;
-  view.dispatch({
+  dispatchFormat(view, {
     changes: { from: firstLine.from, to: lastLine.to, insert: inserted },
     selection: {
       anchor: firstLine.from + 4 + (range.from - firstLine.from),
@@ -316,7 +339,7 @@ interface TemplateOptions {
 }
 
 function insertTemplate(
-  view: EditorView,
+  view: CommandTarget,
   template: string,
   options: TemplateOptions = {},
 ) {
@@ -331,7 +354,7 @@ function insertTemplate(
   if (range.empty && mode === "block") {
     const line = state.doc.lineAt(range.head);
     if (line.text.trim() === "") {
-      view.dispatch({
+      dispatchFormat(view, {
         changes: { from: line.from, to: line.to, insert: template },
         selection: selectionFor(line.from, template, options.select),
       });
@@ -345,7 +368,7 @@ function insertTemplate(
   }
 
   const inserted = needNewline ? `\n${template}` : template;
-  view.dispatch({
+  dispatchFormat(view, {
     changes: { from, to, insert: inserted },
     selection: selectionFor(base, inserted, options.select, needNewline ? 1 : 0),
   });
@@ -378,7 +401,7 @@ function textRange(
 }
 
 function insertInline(
-  view: EditorView,
+  view: CommandTarget,
   template: string,
   needle?: string,
 ) {
@@ -387,7 +410,11 @@ function insertInline(
   });
 }
 
-function insertBlock(view: EditorView, template: string, select?: { anchor: number; head?: number }) {
+function insertBlock(
+  view: CommandTarget,
+  template: string,
+  select?: { anchor: number; head?: number },
+) {
   insertTemplate(view, template, { mode: "block", select });
 }
 

@@ -65,6 +65,11 @@ describe("command search", () => {
     ).toEqual(["test.heading"]);
   });
 
+  it("does not match a query containing whitespace", () => {
+    expect(filterCommands(commandRegistry, "bold ")).toEqual([]);
+    expect(filterCommands(commandRegistry, " ")).toEqual([]);
+  });
+
   it("keeps recently used commands in front while filtering", () => {
     const commands = commandRegistry.filter(
       (command) =>
@@ -81,6 +86,17 @@ describe("command search", () => {
         (command) => command.id,
       ),
     ).toEqual(["format.italic", "format.bold"]);
+
+    expect(
+      filterCommands(commands, "", {
+        recentIds: ["format.italic", "format.bold"],
+      }).map((command) => command.id),
+    ).toEqual(["format.italic", "format.bold"]);
+    expect(
+      filterCommands(commands, "", {
+        recentIds: ["format.bold", "format.italic"],
+      }).map((command) => command.id),
+    ).toEqual(["format.bold", "format.italic"]);
   });
 
   it("stores recent ids without breaking on bad storage", () => {

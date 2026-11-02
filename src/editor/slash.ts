@@ -1,4 +1,13 @@
-import { Compartment, Prec, StateEffect } from "@codemirror/state";
+import { isolateHistory } from "@codemirror/commands";
+import { syntaxTree } from "@codemirror/language";
+import {
+  Compartment,
+  Prec,
+  StateEffect,
+  Transaction,
+  type ChangeSet,
+  type EditorState,
+} from "@codemirror/state";
 import { EditorView, type ViewUpdate } from "@codemirror/view";
 
 import type { AppPlatform } from "../app/platform";
@@ -14,12 +23,17 @@ import {
   type CommandStorage,
   type PinyinMatcher,
 } from "../commands/search";
-import type { CommandDefinition } from "../commands/types";
+import type {
+  CommandDefinition,
+  CommandTarget,
+} from "../commands/types";
 
 export const SLASH_MENU_WIDTH = 260;
 export const SLASH_MENU_MAX_ITEMS = 8;
 export const SLASH_MENU_MARGIN = 8;
 const SLASH_MENU_GAP = 4;
+
+const EXCLUDED_BLOCK_NODES = new Set(["FencedCode", "CodeBlock", "HTMLBlock"]);
 
 export type SlashTrigger = "/" | "、";
 
@@ -106,6 +120,39 @@ function isTriggerCharacter(text: string): text is SlashTrigger {
   return text === "/" || text === "、";
 }
 
+function frontmatterEnd(state: EditorState): number | null {
+  if (state.doc.lines < 2 || state.doc.line(1).text.trim() !== "---") {
+    return null;
+  }
+  for (let number = 2; number <= state.doc.lines; number++) {
+    const text = state.doc.line(number).text.trim();
+    if (text === "---" || text === "...") {
+      return state.doc.line(number).to;
+    }
+  }
+  return null;
+}
+
+function inExcludedContext(state: EditorState, position: number): boolean {
+  const frontmatter = frontmatterEnd(state);
+  if (frontmatter !== null && position < frontmatter) return true;
+
+  let node = syntaxTree(state).resolveInner(position, 1);
+  for (;;) {
+    if (node.name === "InlineCode") {
+      if (node.from < position && position < node.to) return true;
+    } else if (
+      EXCLUDED_BLOCK_NODES.has(node.name) &&
+      node.from <= position &&
+      position < node.to
+    ) {
+      return true;
+    }
+    if (!node.parent) return false;
+    node = node.parent;
+  }
+}
+
 export function createSlashMenu(options: SlashMenuOptions): SlashMenuController {
   const { view, platform, onChange, storage } = options;
   const commands = options.commands ?? registeredSlashCommands();
@@ -114,6 +161,7 @@ export function createSlashMenu(options: SlashMenuOptions): SlashMenuController 
 
   let open = false;
   let triggerPosition = -1;
+  let queryEnd = -1;
   let triggerCharacter: SlashTrigger = "/";
   let query = "";
   let selectedIndex = 0;
@@ -123,6 +171,8 @@ export function createSlashMenu(options: SlashMenuOptions): SlashMenuController 
   let pinyinLoading = false;
   let recentIds = readRecentCommandIds(storage);
   let destroyed = false;
+  let imeKeyPending = false;
+  let imeKeyTimer: ReturnType<typeof setTimeout> | null = null;
 
   function anchorAtCursor(): SlashAnchor {
     const position = view.state.selection.main.head;
@@ -153,6 +203,7 @@ export function createSlashMenu(options: SlashMenuOptions): SlashMenuController 
     if (!open) return;
     open = false;
     triggerPosition = -1;
+    queryEnd = -1;
     query = "";
     matches = [];
     items = [];
@@ -160,7 +211,7 @@ export function createSlashMenu(options: SlashMenuOptions): SlashMenuController 
   }
 
   function composing(): boolean {
-    return view.compositionStarted || view.composing;
+    return imeKeyPending || view.compositionStarted || view.composing;
   }
 
   function refresh() {
@@ -196,6 +247,7 @@ export function createSlashMenu(options: SlashMenuOptions): SlashMenuController 
     if (destroyed) return;
     open = true;
     triggerPosition = position;
+    queryEnd = position + 1;
     triggerCharacter = character;
     query = "";
     selectedIndex = 0;
@@ -231,23 +283,26 @@ export function createSlashMenu(options: SlashMenuOptions): SlashMenuController 
       if (fromA !== toA || toB - fromB !== 1) return;
       const text = inserted.toString();
       if (isTriggerCharacter(text)) {
-        candidates.push({ position: fromB, character: text });
+        candidates.push({ position: fromA, character: text });
       }
     });
     const candidate = candidates[0];
     if (changes !== 1 || !candidate) return;
 
-    const state = view.state;
+    // Use the state before the slash was typed so the surrounding Markdown
+    // block is still the one the user was editing.
+    const state = update.startState;
     const line = state.doc.lineAt(candidate.position);
     const previous =
       candidate.position > 0
         ? state.sliceDoc(candidate.position - 1, candidate.position)
         : "";
     if (candidate.position !== line.from && previous !== " ") return;
+    if (inExcludedContext(state, candidate.position)) return;
     openAt(candidate.position, candidate.character);
   }
 
-  function syncFromView() {
+  function syncFromView(update?: ViewUpdate) {
     if (!open) return;
     const state = view.state;
     const range = state.selection.main;
@@ -257,6 +312,11 @@ export function createSlashMenu(options: SlashMenuOptions): SlashMenuController 
       return;
     }
     const head = range.head;
+    if (update && !update.docChanged && head !== queryEnd) {
+      if (composing()) return;
+      close();
+      return;
+    }
     const offTrigger =
       triggerPosition < 0 ||
       head <= triggerPosition ||
@@ -271,7 +331,17 @@ export function createSlashMenu(options: SlashMenuOptions): SlashMenuController 
       close();
       return;
     }
-    query = state.sliceDoc(triggerPosition + 1, head);
+    const nextQuery = state.sliceDoc(triggerPosition + 1, head);
+    if (/\s/.test(nextQuery)) {
+      if (composing()) return;
+      close();
+      return;
+    }
+    if (nextQuery !== query) {
+      query = nextQuery;
+      selectedIndex = 0;
+    }
+    queryEnd = head;
     refresh();
   }
 
@@ -281,27 +351,66 @@ export function createSlashMenu(options: SlashMenuOptions): SlashMenuController 
     if (!command) return;
     const state = view.state;
     const range = state.selection.main;
-    if (!range.empty || range.head <= triggerPosition) {
+    if (
+      !range.empty ||
+      range.head <= triggerPosition ||
+      range.head !== queryEnd
+    ) {
       close();
       return;
     }
-    if (state.sliceDoc(triggerPosition, triggerPosition + 1) !== triggerCharacter) {
+    if (
+      state.sliceDoc(triggerPosition, triggerPosition + 1) !== triggerCharacter
+    ) {
       close();
       return;
     }
 
-    // Close before dispatching so the deletion update cannot reopen or close
-    // the menu again. Every other close path keeps the query in the document.
     const from = triggerPosition;
-    open = false;
-    triggerPosition = -1;
-    onChange(null);
-    view.dispatch({
-      changes: { from, to: range.head, insert: "" },
+    const deletion = state.update({
+      changes: { from, to: queryEnd, insert: "" },
       selection: { anchor: from },
     });
+    let targetState = deletion.state;
+    const capture = {
+      changes: null as ChangeSet | null,
+      effects: [] as StateEffect<unknown>[],
+    };
+    const target: CommandTarget = {
+      get state() {
+        return targetState;
+      },
+      dispatch(...specs) {
+        for (const spec of specs) {
+          const transaction = targetState.update(spec);
+          if (!transaction.changes.empty) {
+            capture.changes = capture.changes
+              ? capture.changes.compose(transaction.changes)
+              : transaction.changes;
+          }
+          capture.effects.push(...transaction.effects);
+          targetState = transaction.state;
+        }
+      },
+    };
+
+    command.run({ view: target, platform });
+    open = false;
+    triggerPosition = -1;
+    queryEnd = -1;
+    onChange(null);
+
+    const changes = capture.changes
+      ? deletion.changes.compose(capture.changes)
+      : deletion.changes;
+    view.dispatch({
+      changes,
+      selection: targetState.selection,
+      ...(capture.effects.length > 0 ? { effects: capture.effects } : {}),
+      userEvent: "input.format",
+      annotations: isolateHistory.of("full"),
+    });
     recentIds = rememberRecentCommandId(command.id, storage);
-    command.run({ view, platform });
     view.focus();
   }
 
@@ -327,16 +436,44 @@ export function createSlashMenu(options: SlashMenuOptions): SlashMenuController 
     return true;
   }
 
+  function markImeKey() {
+    imeKeyPending = true;
+    if (imeKeyTimer !== null) clearTimeout(imeKeyTimer);
+    imeKeyTimer = setTimeout(() => {
+      imeKeyTimer = null;
+      imeKeyPending = false;
+      if (open) syncFromView();
+    }, 0);
+  }
+
   const updateListener = EditorView.updateListener.of((update) => {
     if (update.docChanged) {
       if (open) {
-        syncFromView();
+        triggerPosition = update.changes.mapPos(triggerPosition, -1);
+        queryEnd = update.changes.mapPos(queryEnd, 1);
+        if (!composing()) {
+          const userEvents = update.transactions.map((tr) =>
+            tr.annotation(Transaction.userEvent),
+          );
+          if (
+            userEvents.some(
+              (event) =>
+                !event ||
+                event.startsWith("undo") ||
+                event.startsWith("redo"),
+            )
+          ) {
+            close();
+            return;
+          }
+        }
+        syncFromView(update);
       } else {
         maybeOpen(update);
       }
       return;
     }
-    if (update.selectionSet) syncFromView();
+    if (update.selectionSet) syncFromView(update);
   });
 
   // The menu must see these keys before basicSetup's editor bindings. A DOM
@@ -346,7 +483,11 @@ export function createSlashMenu(options: SlashMenuOptions): SlashMenuController 
     EditorView.domEventHandlers({
       keydown(event) {
         if (!open) return false;
-        if (event.isComposing || event.keyCode === 229 || composing()) {
+        if (event.keyCode === 229) {
+          markImeKey();
+          return false;
+        }
+        if (event.isComposing || composing()) {
           return false;
         }
         if (
@@ -369,11 +510,20 @@ export function createSlashMenu(options: SlashMenuOptions): SlashMenuController 
   });
 
   const compositionEnd = () => {
+    if (imeKeyTimer !== null) {
+      clearTimeout(imeKeyTimer);
+      imeKeyTimer = null;
+    }
+    imeKeyPending = false;
     queueMicrotask(() => {
       if (open) syncFromView();
     });
   };
+  const blur = () => {
+    if (open) close();
+  };
   view.contentDOM.addEventListener("compositionend", compositionEnd);
+  view.contentDOM.addEventListener("blur", blur);
 
   return {
     execute,
@@ -387,7 +537,11 @@ export function createSlashMenu(options: SlashMenuOptions): SlashMenuController 
       if (destroyed) return;
       destroyed = true;
       open = false;
+      if (imeKeyTimer !== null) clearTimeout(imeKeyTimer);
+      imeKeyTimer = null;
+      imeKeyPending = false;
       view.contentDOM.removeEventListener("compositionend", compositionEnd);
+      view.contentDOM.removeEventListener("blur", blur);
       view.dispatch({ effects: compartment.reconfigure([]) });
       onChange(null);
     },

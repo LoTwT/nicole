@@ -131,6 +131,9 @@ export function filterCommands(
   query: string,
   options: FilterCommandsOptions = {},
 ): CommandDefinition[] {
+  // A slash query is a single word; whitespace closes the menu in the
+  // controller and must not silently match a command here either.
+  if (/\s/.test(query)) return [];
   const normalized = normalize(query);
   const recentIds = options.recentIds ?? [];
   const matcher = options.matcher ?? null;

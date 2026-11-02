@@ -31,24 +31,9 @@ export function resolveKeyBinding(
 
 const MAC_MODIFIERS = {
   ctrl: "⌃",
-  control: "⌃",
   alt: "⌥",
-  option: "⌥",
   shift: "⇧",
   mod: "⌘",
-  cmd: "⌘",
-  meta: "⌘",
-} as const;
-
-const OTHER_MODIFIERS = {
-  ctrl: "Ctrl",
-  control: "Ctrl",
-  alt: "Alt",
-  option: "Alt",
-  shift: "Shift",
-  mod: "Ctrl",
-  cmd: "Ctrl",
-  meta: "Win",
 } as const;
 
 const KEY_LABELS: Record<string, string> = {
@@ -68,9 +53,9 @@ const KEY_LABELS: Record<string, string> = {
   space: "Space",
 };
 
-const KEY_ORDER = ["ctrl", "alt", "shift", "mod"] as const;
+const MAC_KEY_ORDER = ["ctrl", "alt", "shift", "mod"] as const;
 
-type Modifier = (typeof KEY_ORDER)[number];
+type Modifier = (typeof MAC_KEY_ORDER)[number];
 
 function canonicalModifier(part: string): Modifier | null {
   switch (part.toLowerCase()) {
@@ -121,10 +106,17 @@ export function formatKeyBinding(
   }
 
   const mac = isMac(platform);
-  const labels = mac ? MAC_MODIFIERS : OTHER_MODIFIERS;
-  const parts: string[] = KEY_ORDER.filter((modifier) =>
-    modifiers.has(modifier),
-  ).map((modifier) => labels[modifier]);
+  const parts: string[] = [];
+  if (mac) {
+    for (const modifier of MAC_KEY_ORDER) {
+      if (modifiers.has(modifier)) parts.push(MAC_MODIFIERS[modifier]);
+    }
+  } else {
+    // `Mod` is Ctrl on Windows and Linux, so it shares the first slot.
+    if (modifiers.has("mod") || modifiers.has("ctrl")) parts.push("Ctrl");
+    if (modifiers.has("alt")) parts.push("Alt");
+    if (modifiers.has("shift")) parts.push("Shift");
+  }
   parts.push(displayKeyName(base || key, platform));
   return mac ? parts.join("") : parts.join("+");
 }
