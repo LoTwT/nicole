@@ -558,8 +558,20 @@ function scheduleSave(text: string) {
   }, AUTOSAVE_DELAY_MS);
 }
 
-function savePending(force = false): Promise<boolean> {
-  const next = saveQueue.then(() => savePendingNow(force));
+function savePending(
+  force = false,
+  revisionAtRequest = externalRevision,
+): Promise<boolean> {
+  const forceRevision = force ? revisionAtRequest : null;
+  const next = saveQueue.then(() => {
+    // A forced save snapshots the revision when the user clicks, not when the
+    // queued write starts. Otherwise an external event that arrives while an
+    // earlier write is pending would be accepted as the new baseline.
+    if (force && externalRevision !== forceRevision) {
+      return stopForcedSave();
+    }
+    return savePendingNow(force, forceRevision);
+  });
   saveQueue = next.then(
     (saved) => saved,
     () => false,
@@ -567,7 +579,10 @@ function savePending(force = false): Promise<boolean> {
   return next;
 }
 
-async function savePendingNow(force: boolean): Promise<boolean> {
+async function savePendingNow(
+  force: boolean,
+  forceRevision: number | null,
+): Promise<boolean> {
   clearSaveTimer();
   const doc = currentMarkdown.value;
   if (doc === null) {
@@ -580,7 +595,6 @@ async function savePendingNow(force: boolean): Promise<boolean> {
   ) {
     return false;
   }
-  const forceExternalRevision = externalRevision;
   for (;;) {
     let edit = pendingEdit;
     if (edit === null && force) {
@@ -603,20 +617,14 @@ async function savePendingNow(force: boolean): Promise<boolean> {
     }
     // The first guard handles a save that starts while an external change is
     // known. Check again after taking the next edit: an edit can be queued
-    // while a previous write is still in flight, and a force save must also
-    // stop when a newer external event arrived since it started.
+    // while a previous write is still in flight.
     if (!force && externalState.value !== "none") {
-      savePhase.value = saveError.value === null ? "editing" : "failed";
-      return false;
-    }
-    if (force && externalRevision !== forceExternalRevision) {
       savePhase.value = saveError.value === null ? "editing" : "failed";
       return false;
     }
     pendingEdit = null;
     clearSavingDisplay();
     writesInFlight += 1;
-    const externalRevisionAtWrite = externalRevision;
     savingDisplayTimer = setTimeout(() => {
       savingDisplayTimer = null;
       if (writesInFlight > 0 && savePhase.value !== "failed") {
@@ -655,16 +663,19 @@ async function savePendingNow(force: boolean): Promise<boolean> {
     if (!isCurrentEdit(edit, doc)) {
       return true;
     }
+    // A new external event during a forced write invalidates the whole
+    // attempt. Do not accept edit.text as the baseline; otherwise the next
+    // write can overwrite the external version or the tab can close without
+    // warning.
+    if (force && externalRevision !== forceRevision) {
+      return stopForcedSave();
+    }
     originalText.value = edit.text;
     clearSaveError();
-    if (force && externalRevision !== externalRevisionAtWrite) {
-      savePhase.value = "editing";
-      return false;
-    }
     // A non-force save must never hide an external change that arrived while
-    // the write was in flight. A forced save ("keep mine"/"resave") may clear
-    // the state it started with, but not a newer external event.
-    if (force && externalRevision === externalRevisionAtWrite) {
+    // the write was in flight. A forced save that got here has no newer
+    // external event and may clear the state it started with.
+    if (force) {
       externalState.value = "none";
     }
     if (pendingEdit === null && documentText.value !== originalText.value) {
@@ -676,6 +687,18 @@ async function savePendingNow(force: boolean): Promise<boolean> {
     }
     savePhase.value = "editing";
   }
+}
+
+function stopForcedSave(): false {
+  clearSaveTimer();
+  if (
+    externalState.value !== "deleted" &&
+    documentText.value !== originalText.value
+  ) {
+    markExternalState("modified");
+  }
+  savePhase.value = "paused";
+  return false;
 }
 
 function isCurrentEdit(edit: PendingEdit, doc: MarkdownDocument): boolean {
@@ -1125,6 +1148,7 @@ async function handleExternalModification() {
     return;
   }
   if (
+    writesInFlight > 0 ||
     pendingEdit !== null ||
     saveError.value !== null ||
     documentText.value !== originalText.value
@@ -1193,12 +1217,14 @@ async function loadDiskVersion() {
 }
 
 function keepMyVersion() {
+  const revision = externalRevision;
   externalState.value = "none";
-  void savePending(true);
+  void savePending(true, revision);
 }
 
 async function resaveDeleted() {
-  const saved = await savePending(true);
+  const revision = externalRevision;
+  const saved = await savePending(true, revision);
   if (saved) {
     clearSaveError();
     savePhase.value = "saved";
@@ -1235,7 +1261,7 @@ async function closeCurrentTab() {
   if (doc.kind !== "preview") {
     const problems = documentProblemDetails();
     const mustConfirm =
-      externalState.value === "deleted" ||
+      externalState.value !== "none" ||
       mixedLineEndings.value ||
       saveError.value !== null ||
       pendingEdit !== null;
@@ -1244,7 +1270,7 @@ async function closeCurrentTab() {
         await savePending();
       }
       const stillMustConfirm =
-        externalState.value === "deleted" ||
+        externalState.value !== "none" ||
         mixedLineEndings.value ||
         saveError.value !== null ||
         pendingEdit !== null;

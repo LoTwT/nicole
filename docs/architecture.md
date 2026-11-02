@@ -55,7 +55,7 @@ src/
     EmptyState.vue        开始写作、无文件和最近文件夹
     NonMarkdownPlaceholder.vue  非 Markdown 文件的占位页
     InlineNameInput.vue   行内文件名输入框
-    AppIcon.vue           内联 SVG 图标
+    AppIcon.vue           内联 Lucide 1.66.0 图标
   editor/                 纯 TypeScript，不依赖 Vue 和 MyGo
     index.ts              createEditor、三种模式、widgets、核心命令、图片插入
     types.ts              对外类型

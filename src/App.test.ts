@@ -694,6 +694,62 @@ describe("external changes", () => {
     expect(host.textContent).toContain("此文件已在 Nicole 之外被修改");
   });
 
+  it("uses the revision from when keep-mine was clicked", async () => {
+    vi.useFakeTimers();
+    await openFile();
+    const write = deferred<void>();
+    mocks.writeFile.mockImplementation(() => write.promise);
+
+    replaceEditorText("# Mine\n");
+    await vi.advanceTimersByTimeAsync(1000);
+    watchEvents?.([{ op: "write", path: "a.md", isDir: false }]);
+    await settle();
+    button("保留我的版本").click();
+    await settle();
+
+    watchEvents?.([{ op: "write", path: "a.md", isDir: false }]);
+    await settle();
+    write.resolve();
+    await settle();
+
+    expect(mocks.writeFile).toHaveBeenCalledTimes(1);
+    expect(host.textContent).toContain("此文件已在 Nicole 之外被修改");
+    expect(host.querySelector("footer")?.textContent).toContain(
+      "已暂停自动保存",
+    );
+  });
+
+  it("does not accept a forced resave that raced an external rebuild", async () => {
+    vi.useFakeTimers();
+    await openFile();
+    watchEvents?.([{ op: "remove", path: "a.md", isDir: false }]);
+    await settle();
+    expect(host.textContent).toContain("此文件已在磁盘上被删除或移走");
+
+    const write = deferred<void>();
+    mocks.writeFile.mockImplementation(() => write.promise);
+    button("重新保存").click();
+    await settle();
+    expect(mocks.writeFile).toHaveBeenCalledTimes(1);
+
+    watchEvents?.([{ op: "create", path: "a.md", isDir: false }]);
+    await settle();
+    write.resolve();
+    await settle();
+
+    expect(mocks.writeFile).toHaveBeenCalledTimes(1);
+    expect(host.textContent).toContain("此文件已在 Nicole 之外被修改");
+    expect(host.querySelector("footer")?.textContent).toContain(
+      "已暂停自动保存",
+    );
+
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "w", metaKey: true, bubbles: true }),
+    );
+    await settle();
+    expect(dialog()?.textContent).toContain("关闭");
+  });
+
   it("maps the selection through an external insertion", async () => {
     await openFile("a.md", "one\ntwo\nthree\n");
     const view = editorView();

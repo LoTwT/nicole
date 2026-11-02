@@ -190,7 +190,7 @@ defineExpose({
     />
 
     <div
-      class="flex shrink-0 items-center justify-between border-t border-[var(--border-subtle)] px-2 py-1.5"
+      class="flex h-[26px] shrink-0 items-center justify-between border-t border-[var(--border-subtle)] px-2 py-0"
     >
       <button
         type="button"

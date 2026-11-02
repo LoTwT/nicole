@@ -36,7 +36,7 @@ const dotClass = computed(() => {
 
 <template>
   <footer
-    class="flex h-[26px] shrink-0 items-center gap-3 px-3.5 text-[12px] text-[var(--text-muted)]"
+    class="flex h-[26px] shrink-0 items-center gap-3 border-t border-[var(--border-subtle)] px-3.5 text-[12px] text-[var(--text-muted)]"
   >
     <span class="flex min-w-0 flex-1 items-center gap-1.5">
       <template v-if="notice">

@@ -1,4 +1,4 @@
-export type SavePhase = "idle" | "editing" | "saving" | "saved" | "failed" | "mixed";
+export type SavePhase = "idle" | "editing" | "saving" | "saved" | "failed" | "mixed" | "paused";
 
 export type BannerKind =
   | "deleted"
@@ -158,6 +158,8 @@ export function saveStatusPresentation(
       return { label: "已保存", tone: "success" };
     case "failed":
       return { label: "保存失败", tone: "danger" };
+    case "paused":
+      return { label: "已暂停自动保存", tone: "warning" };
     case "idle":
       return null;
   }

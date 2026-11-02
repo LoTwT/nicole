@@ -1,3 +1,4 @@
+<!-- Icon geometry from Lucide v1.66.0, ISC. See THIRD-PARTY-NOTICES.md. -->
 <script setup lang="ts">
 type IconName =
   | "sidebar"
@@ -28,76 +29,89 @@ withDefaults(
   <svg
     :width="size"
     :height="size"
-    viewBox="0 0 16 16"
+    viewBox="0 0 24 24"
     fill="none"
     stroke="currentColor"
-    stroke-width="1.5"
+    stroke-width="1.75"
     stroke-linecap="round"
     stroke-linejoin="round"
     aria-hidden="true"
     focusable="false"
   >
     <template v-if="name === 'sidebar'">
-      <rect x="2" y="3" width="12" height="10" rx="1.5" />
-      <path d="M6 3v10" />
+      <rect width="18" height="18" x="3" y="3" rx="2" />
+      <path d="M9 3v18" />
     </template>
     <template v-else-if="name === 'search'">
-      <circle cx="7" cy="7" r="4.5" />
-      <path d="M10.5 10.5 14 14" />
+      <path d="m21 21-4.34-4.34" />
+      <circle cx="11" cy="11" r="8" />
     </template>
     <template v-else-if="name === 'plus'">
-      <path d="M8 3v10M3 8h10" />
+      <path d="M5 12h14" />
+      <path d="M12 5v14" />
     </template>
     <template v-else-if="name === 'gear'">
-      <path d="M8 1.5l1.1 1.4 1.7-.5.6 1.7 1.7.6-.5 1.7L14.5 8l-1.4 1.1.5 1.7-1.7.6-.6 1.7-1.7-.5L8 14.5l-1.1-1.4-1.7.5-.6-1.7-1.7-.6.5-1.7L1.5 8l1.4-1.1-.5-1.7 1.7-.6.6-1.7 1.7.5Z" />
-      <circle cx="8" cy="8" r="2.2" />
+      <path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915" />
+      <circle cx="12" cy="12" r="3" />
     </template>
     <template v-else-if="name === 'chevron-right'">
-      <path d="m6 4 4 4-4 4" />
+      <path d="m9 18 6-6-6-6" />
     </template>
     <template v-else-if="name === 'chevron-down'">
-      <path d="m4 6 4 4 4-4" />
+      <path d="m6 9 6 6 6-6" />
     </template>
     <template v-else-if="name === 'close'">
-      <path d="m4 4 8 8M12 4l-8 8" />
+      <path d="M18 6 6 18" />
+      <path d="m6 6 12 12" />
     </template>
     <template v-else-if="name === 'folder'">
-      <path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.4l1.4 1.5h5.2A1.5 1.5 0 0 1 14 6v6.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 12.5Z" />
+      <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
     </template>
     <template v-else-if="name === 'file-text'">
-      <path d="M4 2h5l3 3v9H4Z" />
-      <path d="M9 2v3h3M6 8h4M6 10.5h4" />
+      <path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z" />
+      <path d="M14 2v5a1 1 0 0 0 1 1h5" />
+      <path d="M10 9H8" />
+      <path d="M16 13H8" />
+      <path d="M16 17H8" />
     </template>
     <template v-else-if="name === 'file'">
-      <path d="M4 2h5l3 3v9H4Z" />
-      <path d="M9 2v3h3" />
+      <path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z" />
+      <path d="M14 2v5a1 1 0 0 0 1 1h5" />
     </template>
     <template v-else-if="name === 'outline'">
-      <rect x="2" y="3" width="12" height="10" rx="1.5" />
-      <path d="M10 3v10M4.5 6h3M4.5 8.5h3M4.5 11h2" />
+      <rect width="18" height="18" x="3" y="3" rx="2" />
+      <path d="M15 3v18" />
     </template>
     <template v-else-if="name === 'sun'">
-      <circle cx="8" cy="8" r="2.6" />
-      <path d="M8 1.5v1.6M8 12.9v1.6M1.5 8h1.6M12.9 8h1.6M3.4 3.4l1.1 1.1M11.5 11.5l1.1 1.1M3.4 12.6l1.1-1.1M11.5 4.5l1.1-1.1" />
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2v2" />
+      <path d="M12 20v2" />
+      <path d="m4.93 4.93 1.41 1.41" />
+      <path d="m17.66 17.66 1.41 1.41" />
+      <path d="M2 12h2" />
+      <path d="M20 12h2" />
+      <path d="m6.34 17.66-1.41 1.41" />
+      <path d="m19.07 4.93-1.41 1.41" />
     </template>
     <template v-else-if="name === 'moon'">
-      <path d="M12.8 9.6A5 5 0 0 1 6.4 3.2a5 5 0 1 0 6.4 6.4Z" />
+      <path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401" />
     </template>
     <template v-else-if="name === 'more'">
-      <circle cx="3.5" cy="8" r="0.8" fill="currentColor" stroke="none" />
-      <circle cx="8" cy="8" r="0.8" fill="currentColor" stroke="none" />
-      <circle cx="12.5" cy="8" r="0.8" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="12" r="1" />
+      <circle cx="19" cy="12" r="1" />
+      <circle cx="5" cy="12" r="1" />
     </template>
     <template v-else-if="name === 'live'">
-      <path d="M2 8s2.2-4 6-4 6 4 6 4-2.2 4-6 4-6-4-6-4Z" />
-      <circle cx="8" cy="8" r="1.8" />
+      <path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0" />
+      <circle cx="12" cy="12" r="3" />
     </template>
     <template v-else-if="name === 'immersive'">
-      <path d="M3 12.5 4.2 9 10.8 2.4a1.4 1.4 0 0 1 2 0l.8.8a1.4 1.4 0 0 1 0 2L7 11.8Z" />
-      <path d="m9.8 3.4 2.8 2.8M3 12.5l3.5-.7" />
+      <path d="M13 21h8" />
+      <path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z" />
     </template>
     <template v-else>
-      <path d="m5.5 4.5-3.5 3.5 3.5 3.5M10.5 4.5l3.5 3.5-3.5 3.5M9 2 7 14" />
+      <path d="m16 18 6-6-6-6" />
+      <path d="m8 6-6 6 6 6" />
     </template>
   </svg>
 </template>

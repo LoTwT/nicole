@@ -86,6 +86,10 @@ describe("save status", () => {
       tone: "success",
     });
     expect(saveStatusPresentation("failed", false)?.tone).toBe("danger");
+    expect(saveStatusPresentation("paused", false)).toEqual({
+      label: "已暂停自动保存",
+      tone: "warning",
+    });
     expect(saveStatusPresentation("saved", true)?.label).toBe(
       "换行风格混合，未自动保存",
     );

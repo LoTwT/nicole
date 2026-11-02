@@ -202,3 +202,7 @@ scripts/measure-memory.sh --budget 120
 ## 目录与依赖边界
 
 目录结构、依赖边界和主题切换约束见[架构](architecture.md#进程和模块结构)与[依赖边界](architecture.md#依赖边界)。字体见[主题与字体](specs/theming.md#字体)。
+
+## 第三方声明
+
+界面图标内联自 Lucide 1.66.0，运行时没有新增图标依赖。Lucide 的 ISC 许可、Feather 来源图标的 MIT 许可以及本项目使用的图标清单见根目录的 [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md)。修改图标或升级 Lucide 时同步更新该声明和 `src/components/AppIcon.vue` 的版本注释。
