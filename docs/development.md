@@ -173,7 +173,7 @@ GOTOOLCHAIN=auto go vet ./...
 GOTOOLCHAIN=auto go test ./...
 ```
 
-Vitest 覆盖三种模式的切换；挂载 `App.vue` 后切换亮暗主题，编辑器 DOM、选区和撤销历史保持不变；沉浸模式的 `Mod-b` 加粗；应用命令（如 `Mod-i`）优先于 `basicSetup` 默认键位；`localStorage` 主题迁移和 `app:open-file` 事件接收；装订册布局、文件树按需读取与键盘导航、右键菜单调用、状态栏和横幅优先级、外部修改与图片 `create` 事件的区分、单文件打开与替换前确认、文件夹切换的防重入和取消保护、对话框焦点陷阱；图片 URL 的解析，粘贴、拖入 token 链路，插入凭据的位置映射、组合输入排队和撤销步；`src/services/` 的薄封装。Go 测试覆盖绑定服务、文件树和排除规则、文件操作的路径守卫与 generation、监听自写过滤、单文件授权、设置存储与测试数据隔离、图片协议的路径守卫与 Content-Type、drop token 的一次性和过期、图片保存的文件名、并发写入与原子失败。
+Vitest 覆盖三种模式的切换；挂载 `App.vue` 后切换亮暗主题，编辑器 DOM、选区和撤销历史保持不变；沉浸模式的 `Mod-b` 加粗；应用命令（如 `Mod-i`）优先于 `basicSetup` 默认键位；命令注册表的键位分平台显示、格式/段落命令和 `Prec.highest` 覆盖、slash 菜单的 `/` 与 `、` 触发、选区替换、拼音与最近使用排序、无匹配关闭并保留文字、执行后删除查询、翻转定位、组合输入期间的按键归属；`localStorage` 主题迁移和 `app:open-file` 事件接收；装订册布局、文件树按需读取与键盘导航、右键菜单调用、状态栏和横幅优先级、外部修改与图片 `create` 事件的区分、单文件打开与替换前确认、文件夹切换的防重入和取消保护、对话框焦点陷阱；图片 URL 的解析，粘贴、拖入 token 链路，插入凭据的位置映射、组合输入排队和撤销步；`src/services/` 的薄封装。Go 测试覆盖绑定服务、文件树和排除规则、文件操作的路径守卫与 generation、监听自写过滤、单文件授权、设置存储与测试数据隔离、图片协议的路径守卫与 Content-Type、drop token 的一次性和过期、图片保存的文件名、并发写入与原子失败。
 
 ### 内存测量
 
@@ -217,6 +217,6 @@ scripts/measure-memory.sh --budget 120
 
 运行时依赖的许可文本由 `bun run licenses` 生成到根目录的 `THIRD-PARTY-LICENSES.md`，不要手改。脚本先运行 `bun run build:web`，用 Vite 的 `build.license` 读取实际进入 bundle 的模块及其许可；再遍历 `darwin/arm64`、`darwin/amd64`、`windows/amd64`、`linux/amd64` 的 `go list -deps` 结果，从模块缓存拼接每个模块根目录的 `LICENSE`、`NOTICE` 或 `PATENTS`，并加入 `$(go env GOROOT)` 下的 Go 标准库许可。`@ayingott/theme` 与 `tailwindcss` 只贡献 CSS，Vite 注入的 modulepreload helper 也不在模块扫描结果里，脚本会额外读取 `@ayingott/theme`、`tailwindcss` 和 `vite` 的许可文件。
 
-新增、删除或升级前端生产依赖、Go 模块或 Go 工具链后，运行 `GOTOOLCHAIN=auto bun run licenses` 并提交生成的 `THIRD-PARTY-LICENSES.md`。CI 在 `ubuntu-latest` 上重新生成后执行 `git diff --exit-code`，生成结果过期会使检查失败；生成脚本覆盖三个发布平台的 Go 模块并集，结果不依赖运行平台。当前生成文件覆盖前端 bundle 中的 Vue、CodeMirror/Lezer、`mygo-runtime`、`style-mod`、`w3c-keyname`、`crelt`、`@marijn/find-cluster-break`、`@ayingott/theme`、Tailwind CSS 与 Vite（含其自带依赖声明），以及 Go 二进制中的 MyGo、`purego`、`golang.org/x/text`、Windows 上的 `golang.org/x/net` 和 Go 标准库；具体版本以生成文件为准。
+新增、删除或升级前端生产依赖、Go 模块或 Go 工具链后，运行 `GOTOOLCHAIN=auto bun run licenses` 并提交生成的 `THIRD-PARTY-LICENSES.md`。CI 在 `ubuntu-latest` 上重新生成后执行 `git diff --exit-code`，生成结果过期会使检查失败；生成脚本覆盖三个发布平台的 Go 模块并集，结果不依赖运行平台。当前生成文件覆盖前端 bundle 中的 Vue、CodeMirror/Lezer、`mygo-runtime`、`pinyin-pro`、`style-mod`、`w3c-keyname`、`crelt`、`@marijn/find-cluster-break`、`@ayingott/theme`、Tailwind CSS 与 Vite（含其自带依赖声明），以及 Go 二进制中的 MyGo、`purego`、`golang.org/x/text`、Windows 上的 `golang.org/x/net` 和 Go 标准库；具体版本以生成文件为准。
 
 `package.yml` 和 `release.yml` 在各自平台校验两个声明文件存在且与仓库内容一致；`release.yml` 还核对三个平台的更新归档，Linux 的 `.deb` 和 Windows 的 NSIS 安装包也会检查文件是否装入。不要把声明移出仓库根目录，或只在打包时临时生成而不提交；CI 校验的是仓库内的文件，缺失或过期都会失败。引入 `@ayingott/theme/fonts.css` 时，字体文件带有 OFL-1.1；当前 `dist/` 不含字体，若改为引入，需要把 OFL-1.1 文本加入声明或扩展生成脚本。

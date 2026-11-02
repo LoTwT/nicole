@@ -121,9 +121,11 @@ describe("createEditor", () => {
         {
           id: "test.insert",
           label: "插入 I",
-          key: "Mod-i",
-          run: (view) => {
-            view.dispatch({ changes: { from: 0, insert: "I" } });
+          group: "insert",
+          scope: "editor",
+          keys: [{ key: "Mod-i" }],
+          run: ({ view }) => {
+            view?.dispatch({ changes: { from: 0, insert: "I" } });
             return true;
           },
         },

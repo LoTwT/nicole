@@ -9,7 +9,6 @@ import {
   ChangeSet,
   Compartment,
   EditorState,
-  Prec,
   RangeSetBuilder,
   type Extension,
 } from "@codemirror/state";
@@ -19,16 +18,17 @@ import {
   EditorView,
   ViewPlugin,
   WidgetType,
-  keymap,
   type DecorationSet,
   type ViewUpdate,
 } from "@codemirror/view";
 import { tags } from "@lezer/highlight";
 import { basicSetup } from "codemirror";
 
+import type { AppPlatform } from "../app/platform";
+import { commandRegistry } from "../commands/registry";
+import { createCommandKeymap } from "./keymap";
 import type {
   CreateEditorOptions,
-  EditorCommand,
   EditorHandle,
   EditorMode,
   ImageResolver,
@@ -38,7 +38,6 @@ import type {
 
 export type {
   CreateEditorOptions,
-  EditorCommand,
   EditorHandle,
   EditorMode,
   ImageResolver,
@@ -380,46 +379,12 @@ function modeExtension(
   }
 }
 
-function toggleBold(view: EditorView) {
-  const { state } = view;
-  const range = state.selection.main;
-  let node = syntaxTree(state).resolveInner(range.from, 1);
-
-  while (node.parent && node.name !== "StrongEmphasis") {
-    node = node.parent;
-  }
-
-  if (node.name === "StrongEmphasis") {
-    view.dispatch({
-      changes: [
-        { from: node.from, to: node.from + 2 },
-        { from: node.to - 2, to: node.to },
-      ],
-    });
-    return true;
-  }
-
-  if (range.empty) {
-    view.dispatch({
-      changes: { from: range.from, insert: "****" },
-      selection: { anchor: range.from + 2 },
-    });
-    return true;
-  }
-
-  view.dispatch({
-    changes: [
-      { from: range.from, insert: "**" },
-      { from: range.to, insert: "**" },
-    ],
-    selection: { anchor: range.from + 2, head: range.to + 2 },
-  });
-  return true;
+function runtimePlatform(): AppPlatform {
+  const platform = navigator.platform.toLowerCase();
+  if (platform.includes("mac")) return "macos";
+  if (platform.includes("win")) return "windows";
+  return "linux";
 }
-
-const coreCommands: readonly EditorCommand[] = [
-  { id: "format.bold", label: "加粗", key: "Mod-b", run: toggleBold },
-];
 
 const highlightStyle = HighlightStyle.define([
   { tag: tags.strong, fontWeight: "700" },
@@ -628,6 +593,7 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     parent,
     doc,
     mode: initialMode = "live",
+    platform = runtimePlatform(),
     commands = [],
     resolveImage = defaultResolveImage,
     onPasteImage,
@@ -637,10 +603,7 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
   const modeCompartment = new Compartment();
   let mode = initialMode;
 
-  const enabledCommands = [...coreCommands, ...commands];
-  const bindings = enabledCommands.flatMap((command) =>
-    command.key ? [{ key: command.key, run: command.run }] : [],
-  );
+  const enabledCommands = [...commands, ...commandRegistry];
 
   // An image insertion may arrive while an IME composition is still running.
   // It waits, and its ticket follows edits until the composition ends, so the
@@ -754,8 +717,7 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
         markdown({ base: markdownLanguage }),
         syntaxHighlighting(highlightStyle),
         editorTheme,
-        // App commands must win over basicSetup's default keymap.
-        Prec.high(keymap.of(bindings)),
+        createCommandKeymap(enabledCommands, platform),
         imageHandlers(onPasteImage, createTicketAt),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) {
