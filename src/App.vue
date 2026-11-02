@@ -6,9 +6,12 @@ import {
   type EditorHandle,
   type EditorMode,
 } from "./editor";
+import { createImageInsertion } from "./image-insertion";
+import { resolveImageUrl } from "./image-url";
 import { latestOperation } from "./latest-operation";
 import { SAMPLE_DOCUMENT } from "./sample";
 import { getAppInfo, type AppInfo } from "./services/app";
+import { onWindowFileDrop } from "./services/assets";
 import { onOpenFile, takePendingOpenedFiles } from "./services/open-file";
 import {
   getSettings,
@@ -94,6 +97,14 @@ let mixedLineEndings = false;
 // breaks. Returning to it means there is nothing left to save.
 let originalText = "";
 let workspaceGeneration = 0;
+const imageInsertion = createImageInsertion({
+  getEditor: () => editor,
+  getFile: () => currentFile.value,
+  getGeneration: () => workspaceGeneration,
+  onError: () => {
+    saveStatus.value = "图片插入失败";
+  },
+});
 let offSaveBeforeClose: (() => void) | null = null;
 let offOpenFile: (() => void) | null = null;
 // Reads cannot be cancelled at the IPC layer. Instead, only the newest file
@@ -102,6 +113,7 @@ const fileSelection = latestOperation();
 // Signals and the initial pending read share one queue so a file cannot be
 // shown out of order when the event and the queue overlap.
 let openedFilesQueue: Promise<void> = Promise.resolve();
+let offFileDrop: (() => void) | null = null;
 
 function detectLineEndings(text: string): {
   ending: LineEnding;
@@ -135,7 +147,11 @@ function createEditorFor(parent: HTMLElement, doc: string): EditorHandle {
     parent,
     doc,
     mode: mode.value,
-    resolveImage: (src) => src,
+    resolveImage: (src) =>
+      resolveImageUrl(src, currentFile.value, workspaceGeneration),
+    onPasteImage: (ticket) => {
+      imageInsertion.handlePaste(ticket);
+    },
     onChange: (next) => {
       documentText.value = next;
       scheduleSave(next);
@@ -523,6 +539,9 @@ onMounted(async () => {
   offOpenFile = onOpenFile(() => {
     void receiveOpenedFiles();
   });
+  offFileDrop = onWindowFileDrop((drop) => {
+    imageInsertion.handleDrop(drop);
+  });
   void loadTheme();
   void receiveOpenedFiles();
   offSaveBeforeClose = onSaveBeforeClose(async (token) => {
@@ -550,6 +569,8 @@ onBeforeUnmount(() => {
   window.removeEventListener(EDIT_COMMAND_EVENT, handleEditCommand);
   offOpenFile?.();
   offOpenFile = null;
+  offFileDrop?.();
+  offFileDrop = null;
   offSaveBeforeClose?.();
   offSaveBeforeClose = null;
   if (saveTimer !== null) {

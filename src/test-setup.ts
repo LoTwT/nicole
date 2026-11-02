@@ -15,6 +15,10 @@ if (!Range.prototype.getBoundingClientRect) {
   };
 }
 
+if (!document.elementFromPoint) {
+  document.elementFromPoint = () => null;
+}
+
 if (!window.matchMedia) {
   window.matchMedia = ((query: string) => ({
     matches: false,

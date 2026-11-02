@@ -35,12 +35,15 @@ src/
   main.ts                 挂载 Vue
   sample.ts               示例文本
   style.css               Tailwind、主题和字体变量
+  image-url.ts            把 Markdown 图片 URL 解析成自定义协议地址
+  image-insertion.ts      粘贴、拖入图片与编辑器插入凭据的接线
   editor/                 纯 TypeScript，不依赖 Vue 和 MyGo
-    index.ts              createEditor、三种模式、widgets、核心命令
+    index.ts              createEditor、三种模式、widgets、核心命令、图片插入
     types.ts              对外类型
   services/               MyGo 边界
     mygo.ts               生成的类型化客户端
     app.ts                薄封装（getAppInfo）
+    assets.ts             薄封装（粘贴、拖入图片、窗口文件拖放事件）
     workspace.ts          薄封装（选择文件夹、列文件、读写、关窗保存）
     files.ts              文件树与文件操作
     settings.ts           全局设置和主题迁移
@@ -61,20 +64,20 @@ Go（main.go）
   OpenedFiles             系统“打开方式”的路径队列与 app:open-file 信号（当前）
   NativeMenu              页面请求的原生右键菜单（当前）
   Settings                settings.json、最近文件夹、展开状态、侧栏宽度、主题（当前）
+  Assets                  图片存到 assets/，读剪贴板和原生拖入路径（当前）
+  Image protocol          只映射当前工作区的图片，并阻止顶层导航（当前；启动时注册）
   Window state            启动时在光标屏幕居中，沿用上次尺寸（当前）
-  Assets                  图片存到 assets/（后续）
   Search                  通过 Channel 流式返回结果（后续）
   Export / Recovery       导出与崩溃恢复（后续）
-  Protocol                只映射当前工作区（后续；启动时注册，运行时读工作区根）
 ```
 
-`main.go` 负责注册插件、绑定服务、设置菜单和创建窗口；`workspace.go` 实现工作区与路径守卫，`workspace_tree.go` 实现文件树和文件操作，`workspace_watch.go` 封装监听，`single_file.go` 实现单文件授权，`settings.go` 实现设置存储，`menu.go` 实现菜单与原生右键菜单，`window_options.go` 定义窗口标题栏，`window_state.go` 实现窗口状态的居中策略。`index.html` 是 Vite 入口，`mygo.config.ts` 描述应用、文件关联、前端构建、生成客户端的位置和输出目录。
+`main.go` 负责注册插件、绑定服务、注册图片协议、设置菜单和创建窗口；`workspace.go` 实现工作区与路径守卫，`workspace_tree.go` 实现文件树和文件操作，`workspace_watch.go` 封装监听，`single_file.go` 实现单文件授权，`settings.go` 实现设置存储，`menu.go` 实现菜单与原生右键菜单，`assets.go` 实现图片保存，`protocol.go` 实现图片协议，`window_options.go` 定义窗口标题栏，`window_state.go` 实现窗口状态的居中策略。`index.html` 是 Vite 入口，`mygo.config.ts` 描述应用、文件关联、前端构建、生成客户端的位置和输出目录。
 
 ## 依赖边界
 
 - `src/editor/` 是纯 TypeScript，不依赖 Vue，也不依赖 MyGo。运行时只导出 `createEditor`；其余导出是调用方需要的类型。
 - MyGo 调用只放在 `src/services/` 和 Go 入口（`main.go` 及同一包内直接使用 MyGo 的服务实现），其他前端模块通过 `src/services/` 间接使用后端能力。生成的客户端直接输出到 `src/services/mygo.ts`。
-- `main.go` 还注册 MyGo 的 `updater.Plugin`，绑定工作区、设置、单文件、打开方式和原生菜单服务并设置应用菜单；文件监听由 `Workspace.Watch` 在页面调用时开始。更新源、版本注入和发布流程见[发布与自动更新](release.md)。
+- `main.go` 还注册 MyGo 的 `updater.Plugin`，绑定工作区、图片、设置、单文件、打开方式和原生菜单服务，注册图片协议并设置应用菜单；文件监听由 `Workspace.Watch` 在页面调用时开始。更新源、版本注入和发布流程见[发布与自动更新](release.md)。
 - `src/services/` 是生成的 `mygo.ts` 客户端上的薄封装，不承载业务逻辑。`app.ts` 只把 `Application.Info` 包装成 `getAppInfo`；`workspace.ts` 包装 `Workspace` 的 Markdown 方法与关窗保存事件；`files.ts`、`settings.ts`、`single-file.ts`、`menu.ts`、`open-file.ts` 和 `watch.ts` 分别包装对应服务。封装不拼接路径，也不缓存文件内容。
 - `createEditor` 的接口为：
 
@@ -94,11 +97,12 @@ Go（main.go）
     mode,          // 默认 "live"
     commands,      // 应用层命令；目前注册其中带 key 的绑定，核心 Mod-b 加粗始终可用
     resolveImage,  // 把图片 URL 解析成可显示地址；返回 null 时保留原文
+    onPasteImage,  // 剪贴板里有图片时回调，参数是插入凭据
     onChange,      // 文档变化时回调全文
   }): EditorHandle
   ```
 
-  `EditorHandle` 提供 `view`、`mode`、`setMode`、`undo`、`redo`、`focus` 和 `destroy`。`undo()` / `redo()` 在输入法组合期间返回 `false`，不执行历史；三种模式通过同一个 `Compartment` 重配置，`EditorView` 实例不变。
+  `EditorHandle` 提供 `view`、`mode`、`setMode`、`undo`、`redo`、`containsPoint`、`createInsertionTicket`、`insertImages`、`focus` 和 `destroy`。`undo()` / `redo()` 在输入法组合期间返回 `false`，不执行历史；`containsPoint(x, y)` 按视口坐标判断落点是否在编辑器内；`createInsertionTicket(x, y)` 按视口坐标创建插入凭据，坐标不在编辑区内时返回 null；`insertImages(ticket, markdown)` 在一个事务里插入文本，因此是一个撤销步。编辑器持续对凭据做位置映射，中文输入法组合期间先排队，组合结束后再插入；多条排队插入逐条处理，前一条插入会映射后一条的位置。`onPasteImage` 只把粘贴事件交给应用层，保存图片和生成 Markdown 由 `src/image-insertion.ts` 经 `src/services/assets.ts` 完成；编辑区不接触 MyGo。三种模式通过同一个 `Compartment` 重配置，`EditorView` 实例不变。
 
 - 编辑器主题直接读取 CSS 变量；界面切换亮暗时只改 `<html>` 上的 `.dark`，不重建编辑器（见[主题与字体](specs/theming.md#编辑器主题)）。
 - 命令注册表只有一份，各入口共用，见 [Slash 命令](specs/slash-commands.md#命令注册表)。
@@ -117,7 +121,8 @@ Go（main.go）
 - `Settings` 提供 `Get`、`MigrateLegacyTheme`、`SetTheme`、`SetSidebarWidth`、`SetExpandedFolders`、`AddRecentFolder` 和 `RemoveRecentFolder`；`SetTheme` 同时调用 `mygo.Theme.SetSource` 同步原生外观。
 - `NativeMenu.PopupNativeMenu` 在调用窗口的页面坐标显示原生菜单，返回选中项 ID 或空字符串；页面最多传 64 项，ID 唯一。正文的 WebView 右键菜单由 `Page.OnContextMenu` 裁剪，见[安全](#安全)。
 - 搜索通过 Channel 流式返回结果（见[工作区与文件](specs/workspace.md#搜索)）。
-- 图片数据不经过 IPC，避免 base64 转换和额外拷贝（见[工作区与文件](specs/workspace.md#图片)）。
+- `Assets` 提供 `PasteImage(docPath, generation)` 和 `ImportImages(docPath, generation, dropToken)`，返回保存后的工作区相对路径和 Markdown。粘贴时 Go 先读剪贴板里的本地文件列表；列表非空时只导入其中的图片，没有图片就返回“剪贴板没有图片”，只有列表为空时才读 PNG 位图；拖入时 Go 从 `Window.OnFileDrop` 保存的路径中按一次性 token 取文件。页面不再传拖入路径，图片字节也不经过 IPC（见[工作区与文件](specs/workspace.md#图片)）。
+- `src/services/assets.ts` 封装 `Assets.PasteImage`、`Assets.ImportImages` 和 `assets:file-drop`。DOM 拖放事件本身没有路径，只用于阻止浏览器默认行为；页面通过 `assets:file-drop` 从 Go 拿到一次性 token 和落点坐标，用 `EditorHandle.containsPoint` 确认在编辑区内后才创建插入凭据。绝对路径只保存在 Go，页面不记录拖放计数。
 
 各接口的具体语义、错误传播和背压行为见 [MyGo 参考](references/mygo.md#绑定与-ipc)。
 
@@ -136,7 +141,13 @@ Go（main.go）
 - 原生右键菜单只接收菜单项 ID、文字、快捷键、禁用状态和页面坐标，不接收命令或文件内容；菜单项由 Go 组装，选择结果只把 ID 返回页面。正文的 WebView 右键菜单删除“重新载入”“后退”“前进”，非开发构建还删除“检查元素”。
 - 文件关联只让系统把 `.md` 路径交给 `App.OnOpenFile`；在用户于页面确认“只打开这个文件”之前，Go 不读写该文件。
 - 设置存储和单文件授权都只使用 Go 的文件接口；测试和开发构建通过 `NICOLE_USER_DATA_DIR` 指向临时目录，避免修改用户正在使用的数据（见[开发](development.md#数据隔离)）。应用启动时请求单实例锁；不同的 `NICOLE_USER_DATA_DIR` 使用独立的锁命名空间，因此隔离的测试/开发实例不会被误转交给安装版。
-- 自定义协议只映射当前工作区；协议 handler 在启动时注册，运行时读取可替换的工作区状态。
+- 图片协议只映射当前工作区，handler 在启动时注册，运行时读取可替换的工作区状态。
+- 图片协议的 URL 带 `generation`，切换文件夹后旧请求返回 404，不会读到新工作区里的同名文件。
+- 拖入路径只从 `Window.OnFileDrop` 进入 Go；页面只能提交约 10 秒有效、一次性的 token，不能指定任意路径。源文件是符号链接或非常规文件时拒绝读取。
+- 协议只接受 `.png`、`.jpg`、`.jpeg`、`.gif`、`.webp`、`.svg`，只接受 GET 和 HEAD；路径经过与文件读写相同的检查并用 `os.Root` 打开，越界、隐藏目录、`node_modules`、符号链接逃逸和目录都返回 404。
+- 响应显式设置 `Content-Type` 和 `X-Content-Type-Options: nosniff`，不会把伪装成图片的 HTML 当页面执行。
+- **顶层导航**：MyGo 把已注册协议的页面当作受信任页面，因此窗口通过 `OnWillNavigate` 取消任何顶层导航到 `nicole-image:` 的请求。图片只在 `<img>` 中加载，不会被打开成可调用 Go 的文档。
+- **SVG**：SVG 可能内嵌脚本。页面只用 `<img>` 加载图片；导入时去掉 BOM、XML 声明、注释和 DOCTYPE 后要求第一个元素是 `<svg`。协议响应同时设置 `Content-Security-Policy: default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; sandbox`，即使直接访问 SVG，脚本也不会执行，外部资源和内嵌对象也不会加载。因此允许显示工作区里的 SVG，但禁止它成为可执行页面。
 
 ## 主要风险
 

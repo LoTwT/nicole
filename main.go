@@ -53,6 +53,7 @@ func main() {
 	if !generatingClient() {
 		applySavedTheme(settingsStore)
 	}
+	assets := NewAssets(workspace)
 
 	singleFiles := NewSingleFileService()
 	openedFiles := NewOpenedFiles()
@@ -60,6 +61,11 @@ func main() {
 	// item; `mygo build` enables it only together with signed updates and a
 	// writable install location. See docs/release.md.
 	mygo.Use(updater.Plugin)
+	// Images are served from the folder that is open when the page asks; the
+	// handler reads the same replaceable workspace state as the rest of the app.
+	if err := registerImageProtocol(workspace); err != nil {
+		log.Fatal(err)
+	}
 
 	// A file opened from the system is offered to the page; only accepting it
 	// grants the page access to that exact file. See docs/architecture.md.
@@ -77,6 +83,7 @@ func main() {
 	mygo.Bind(
 		NewApplication(mygo.App.Version()),
 		workspace,
+		assets,
 		NewSettings(settingsStore),
 		singleFiles,
 		openedFiles,
@@ -100,6 +107,12 @@ func main() {
 				event.PreventDefault()
 			}
 		})
+		// Native drops carry paths the page cannot see. Keep them in Go and
+		// send the page a one-time token plus the drop position.
+		window.OnFileDrop(newAssetDropHandler(assets, func(drop AssetDrop) error {
+			return assetFileDrop.Emit(window, drop)
+		}))
+		blockImageNavigation(window.Page())
 	})
 
 	if err := mygo.App.Run(); err != nil {

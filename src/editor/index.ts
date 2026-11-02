@@ -1,4 +1,5 @@
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
+import { isolateHistory } from "@codemirror/commands";
 import {
   HighlightStyle,
   syntaxHighlighting,
@@ -30,6 +31,8 @@ import type {
   EditorHandle,
   EditorMode,
   ImageResolver,
+  InsertionTicket,
+  PasteImageHandler,
 } from "./types";
 
 export type {
@@ -38,6 +41,8 @@ export type {
   EditorHandle,
   EditorMode,
   ImageResolver,
+  InsertionTicket,
+  PasteImageHandler,
 } from "./types";
 
 class BulletWidget extends WidgetType {
@@ -572,6 +577,51 @@ const editorTheme = EditorView.theme({
 
 const defaultResolveImage: ImageResolver = (src) => src;
 
+function clipboardHasImage(data: DataTransfer | null): boolean {
+  if (!data) return false;
+  for (let index = 0; index < data.items.length; index++) {
+    const item = data.items[index];
+    if (item?.kind === "file" && item.type.startsWith("image/")) return true;
+  }
+  return [...data.files].some((file) => file.type.startsWith("image/"));
+}
+
+function transferHasFiles(data: DataTransfer | null): boolean {
+  if (!data) return false;
+  return data.files.length > 0 || [...data.types].includes("Files");
+}
+
+function imageHandlers(
+  onPasteImage: PasteImageHandler | undefined,
+  createTicketAt: (at: number) => InsertionTicket,
+): Extension {
+  return EditorView.domEventHandlers({
+    paste(event, view) {
+      if (!onPasteImage || !clipboardHasImage(event.clipboardData)) return false;
+      event.preventDefault();
+      onPasteImage(createTicketAt(view.state.selection.main.head));
+      return true;
+    },
+    drop(event) {
+      if (!transferHasFiles(event.dataTransfer)) return false;
+      // The browser would otherwise navigate to the dropped file. The native
+      // MyGo drop event supplies the paths, token, and coordinates.
+      event.preventDefault();
+      return true;
+    },
+  });
+}
+
+interface PendingInsertion {
+  ticketId: number;
+  text: string;
+}
+
+interface TicketState {
+  id: number;
+  at: number;
+}
+
 export function createEditor(options: CreateEditorOptions): EditorHandle {
   const {
     parent,
@@ -579,6 +629,7 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     mode: initialMode = "live",
     commands = [],
     resolveImage = defaultResolveImage,
+    onPasteImage,
     onChange,
   } = options;
 
@@ -590,7 +641,76 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     command.key ? [{ key: command.key, run: command.run }] : [],
   );
 
-  const view = new EditorView({
+  // An image insertion may arrive while an IME composition is still running.
+  // It waits, and its ticket follows edits until the composition ends, so the
+  // candidate window is never interrupted and the text lands where the user
+  // dropped or pasted it.
+  const pendingInsertions: PendingInsertion[] = [];
+  const tickets = new Map<number, TicketState>();
+  let nextTicketID = 1;
+  let insertionScheduled = false;
+  let view: EditorView;
+
+  const createTicketAt = (at: number): InsertionTicket => {
+    const ticket: TicketState = { id: nextTicketID++, at };
+    tickets.set(ticket.id, ticket);
+    return ticket;
+  };
+
+  const insertTextAt = (at: number, text: string) => {
+    const position = Math.max(0, Math.min(at, view.state.doc.length));
+    const line = view.state.doc.lineAt(position);
+    // Starting at the beginning of a non-empty line would glue the image to
+    // the existing text (and break a heading); give it its own line instead.
+    const insert = position === line.from && line.length > 0 ? `${text}\n` : text;
+    view.dispatch({
+      changes: { from: position, insert },
+      selection: { anchor: position + insert.length },
+      // Keep every image insertion its own undo step, even when it follows
+      // typing closely.
+      annotations: isolateHistory.of("full"),
+    });
+  };
+
+  const flushPendingInsertions = () => {
+    insertionScheduled = false;
+    if (view.compositionStarted || view.composing) return;
+    while (pendingInsertions.length > 0) {
+      const pending = pendingInsertions.shift()!;
+      const ticket = tickets.get(pending.ticketId);
+      if (!ticket) continue;
+      insertTextAt(ticket.at, pending.text);
+      tickets.delete(ticket.id);
+    }
+  };
+
+  const scheduleInsertion = () => {
+    if (insertionScheduled) return;
+    insertionScheduled = true;
+    queueMicrotask(flushPendingInsertions);
+  };
+
+  const insertImages = (ticket: InsertionTicket, markdown: readonly string[]) => {
+    const current = tickets.get(ticket.id);
+    if (!current) return;
+    const text = markdown.filter((item) => item !== "").join("\n");
+    if (text === "") {
+      tickets.delete(ticket.id);
+      return;
+    }
+    if (view.compositionStarted || view.composing) {
+      pendingInsertions.push({ ticketId: ticket.id, text });
+      return;
+    }
+    insertTextAt(current.at, text);
+    tickets.delete(ticket.id);
+  };
+
+  const onCompositionEnd = () => {
+    if (pendingInsertions.length > 0) scheduleInsertion();
+  };
+
+  view = new EditorView({
     parent,
     state: EditorState.create({
       doc,
@@ -602,13 +722,27 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
         editorTheme,
         // App commands must win over basicSetup's default keymap.
         Prec.high(keymap.of(bindings)),
+        imageHandlers(onPasteImage, createTicketAt),
         EditorView.updateListener.of((update) => {
-          if (update.docChanged) onChange?.(update.state.doc.toString());
+          if (update.docChanged) {
+            for (const ticket of tickets.values()) {
+              ticket.at = update.changes.mapPos(ticket.at, 1);
+            }
+            onChange?.(update.state.doc.toString());
+          }
+          if (
+            pendingInsertions.length > 0 &&
+            !update.view.compositionStarted &&
+            !update.view.composing
+          ) {
+            scheduleInsertion();
+          }
         }),
         modeCompartment.of(modeExtension(mode, resolveImage)),
       ],
     }),
   });
+  view.contentDOM.addEventListener("compositionend", onCompositionEnd);
 
   return {
     get view() {
@@ -632,10 +766,23 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     redo() {
       return !view.compositionStarted && historyRedo(view);
     },
+    containsPoint(x, y) {
+      const element = document.elementFromPoint(x, y);
+      return element !== null && view.dom.contains(element);
+    },
+    createInsertionTicket(x, y) {
+      const at = view.posAtCoords({ x, y });
+      if (at === null) return null;
+      return createTicketAt(at);
+    },
+    insertImages,
     focus() {
       view.focus();
     },
     destroy() {
+      pendingInsertions.length = 0;
+      tickets.clear();
+      view.contentDOM.removeEventListener("compositionend", onCompositionEnd);
       view.destroy();
     },
   };
