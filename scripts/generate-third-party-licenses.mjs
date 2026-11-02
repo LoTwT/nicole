@@ -1,0 +1,208 @@
+// Generates THIRD-PARTY-LICENSES.md from the actual frontend bundle and the
+// Go modules linked into every release target. The committed result ships in
+// the app's resources; CI regenerates it and fails on a diff. See
+// docs/development.md.
+
+import { spawnSync } from "node:child_process";
+import { readFileSync, readdirSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const output = join(root, "THIRD-PARTY-LICENSES.md");
+
+// Vite's license plugin scans JavaScript chunks only. These packages
+// contribute CSS or Vite's injected modulepreload helper, so their license
+// files are added here.
+const extraPackages = ["@ayingott/theme", "tailwindcss", "vite"];
+
+const targets = ["darwin/arm64", "darwin/amd64", "windows/amd64", "linux/amd64"];
+
+function run(command, args, options = {}) {
+  const result = spawnSync(command, args, {
+    cwd: root,
+    encoding: "utf8",
+    env: { ...process.env, ...options.env },
+  });
+  if (result.status !== 0) {
+    process.stderr.write(result.stdout ?? "");
+    process.stderr.write(result.stderr ?? "");
+    throw new Error(`${command} ${args.join(" ")} failed with ${result.status}`);
+  }
+  return result.stdout;
+}
+
+function normalizeText(text) {
+  return text
+    .replace(/\r\n/g, "\n")
+    .replace(/[ \t]+$/gm, "")
+    .trim();
+}
+
+function compare(a, b) {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+function licenseIdentifier(pkg) {
+  return typeof pkg.license === "string" && pkg.license.trim()
+    ? pkg.license.trim()
+    : "unknown";
+}
+
+function packageLicense(name) {
+  const dir = join(root, "node_modules", name);
+  const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+  const file = readdirSync(dir)
+    .filter((entry) => /^(license|licence|copying)/i.test(entry))
+    .sort(compare)[0];
+  if (!file) {
+    throw new Error(`${name} has no license file`);
+  }
+  return {
+    name,
+    version: pkg.version ?? "0.0.0",
+    identifier: licenseIdentifier(pkg),
+    text: normalizeText(readFileSync(join(dir, file), "utf8")),
+  };
+}
+
+function frontendEntries() {
+  const entries = JSON.parse(
+    readFileSync(join(root, "dist", ".vite", "licenses.json"), "utf8"),
+  );
+  const seen = new Set(entries.map((entry) => `${entry.name}@${entry.version}`));
+  for (const name of extraPackages) {
+    const entry = packageLicense(name);
+    const key = `${entry.name}@${entry.version}`;
+    if (!seen.has(key)) {
+      entries.push(entry);
+      seen.add(key);
+    }
+  }
+  entries.sort((a, b) => compare(a.name, b.name) || compare(a.version, b.version));
+  return entries;
+}
+
+function goModules() {
+  const modules = new Map();
+  for (const target of targets) {
+    const [goos, goarch] = target.split("/");
+    const stdout = run(
+      "go",
+      [
+        "list",
+        "-deps",
+        "-f",
+        "{{with .Module}}{{if .Version}}{{.Path}}@{{.Version}}{{end}}{{end}}",
+        ".",
+      ],
+      { env: { CGO_ENABLED: "0", GOOS: goos, GOARCH: goarch } },
+    );
+    for (const key of stdout.split("\n").map((line) => line.trim()).filter(Boolean)) {
+      if (!modules.has(key)) {
+        modules.set(key, new Set());
+      }
+      modules.get(key).add(target);
+    }
+  }
+
+  const dirs = new Map();
+  for (const line of run("go", [
+    "list",
+    "-m",
+    "-f",
+    "{{.Path}}@{{.Version}}\t{{.Dir}}",
+    "all",
+  ]).split("\n")) {
+    const [key, dir] = line.replace(/\r$/, "").split("\t");
+    if (key && dir) {
+      dirs.set(key, dir);
+    }
+  }
+
+  return [...modules.keys()].sort(compare).map((key) => {
+    const dir = dirs.get(key);
+    if (!dir) {
+      throw new Error(`no module directory for ${key}`);
+    }
+    const files = readdirSync(dir)
+      .filter((entry) => /^(license|licence|copying|notice|patents)(\..*)?$/i.test(entry))
+      .sort(compare);
+    if (files.length === 0) {
+      throw new Error(`${key} has no license file`);
+    }
+    return {
+      key,
+      targets: [...modules.get(key)].sort(compare),
+      files: files.map((file) => ({
+        name: file,
+        text: normalizeText(readFileSync(join(dir, file), "utf8")),
+      })),
+    };
+  });
+}
+
+function goStandardLibrary() {
+  const goroot = run("go", ["env", "GOROOT"]).trim();
+  const version = run("go", ["env", "GOVERSION"]).trim();
+  const files = readdirSync(goroot)
+    .filter((entry) => /^(license|patents)(\..*)?$/i.test(entry))
+    .sort(compare);
+  return {
+    version,
+    files: files.map((file) => ({
+      name: file,
+      text: normalizeText(readFileSync(join(goroot, file), "utf8")),
+    })),
+  };
+}
+
+run("bun", ["run", "build:web"]);
+
+const frontend = frontendEntries();
+const modules = goModules();
+const stdlib = goStandardLibrary();
+
+const lines = [
+  "# Third-Party License Texts",
+  "",
+  "<!-- Generated by `bun run licenses` from the built frontend bundle and the Go modules linked into the release targets. Do not edit by hand. Lucide and Feather attribution stays in THIRD-PARTY-NOTICES.md. -->",
+  "",
+  "This file ships with Nicole. It records the licenses of third-party code that",
+  "is included in the frontend bundle and the Go binary.",
+  "",
+  "## Frontend bundle",
+  "",
+];
+
+for (const entry of frontend) {
+  lines.push(
+    `### ${entry.name} - ${entry.version} (${entry.identifier ?? "unknown"})`,
+    "",
+  );
+  if (entry.text) {
+    lines.push("```text", entry.text, "```", "");
+  }
+}
+
+lines.push("## Go binary", "");
+
+for (const module of modules) {
+  lines.push(`### ${module.key}`, "", `Targets: ${module.targets.join(", ")}.`, "");
+  for (const file of module.files) {
+    lines.push(`#### ${file.name}`, "", "```text", file.text, "```", "");
+  }
+}
+
+lines.push(
+  `### Go standard library - ${stdlib.version}`,
+  "",
+  `Targets: ${targets.join(", ")}.`,
+  "",
+);
+for (const file of stdlib.files) {
+  lines.push(`#### ${file.name}`, "", "```text", file.text, "```", "");
+}
+
+process.stdout.write(`Wrote ${output}\n`);
+await Bun.write(output, `${lines.join("\n").trim()}\n`);

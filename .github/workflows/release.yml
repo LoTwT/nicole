@@ -269,6 +269,17 @@ jobs:
           }
           # The ad-hoc signature must cover the whole bundle.
           codesign --verify --deep --strict --verbose=2 "$app"
+          for name in THIRD-PARTY-NOTICES.md THIRD-PARTY-LICENSES.md; do
+            notice="$app/Contents/Resources/$name"
+            if [ ! -f "$notice" ] || ! cmp -s "$notice" "$name"; then
+              echo "ERROR: the app must ship $name unchanged in Contents/Resources"
+              exit 1
+            fi
+            if ! tar -tzf "$archive" | grep -F "$name" > /dev/null; then
+              echo "ERROR: $archive does not hold $name"
+              exit 1
+            fi
+          done
 
   windows:
     name: Build and upload (windows/amd64)
@@ -331,11 +342,28 @@ jobs:
             cat "$manifest"
             exit 1
           }
+          for name in THIRD-PARTY-NOTICES.md THIRD-PARTY-LICENSES.md; do
+            notice="build/windows-amd64/$name"
+            if [ ! -f "$notice" ] || ! cmp -s "$notice" "$name"; then
+              echo "ERROR: the Windows build must ship $name unchanged next to Nicole.exe"
+              exit 1
+            fi
+            if ! tar -tzf "$archive" | grep -F "$name" > /dev/null; then
+              echo "ERROR: $archive does not hold $name"
+              exit 1
+            fi
+          done
           echo "--- installer contents (7z listing) ---"
-          7z l "$setup" | grep -q 'Nicole\.exe' || {
-            echo "ERROR: the installer does not hold Nicole.exe"
+          if ! listing=$(7z l "$setup"); then
+            echo "ERROR: cannot list the installer with 7z"
             exit 1
-          }
+          fi
+          for name in Nicole.exe THIRD-PARTY-NOTICES.md THIRD-PARTY-LICENSES.md; do
+            if ! printf '%s\n' "$listing" | grep -F "$name" > /dev/null; then
+              echo "ERROR: the installer does not hold $name"
+              exit 1
+            fi
+          done
 
   linux:
     name: Build and upload (linux/amd64)
@@ -397,6 +425,27 @@ jobs:
             cat "$manifest"
             exit 1
           }
+          for name in THIRD-PARTY-NOTICES.md THIRD-PARTY-LICENSES.md; do
+            notice="build/linux-amd64/$name"
+            if [ ! -f "$notice" ] || ! cmp -s "$notice" "$name"; then
+              echo "ERROR: the Linux build must ship $name unchanged next to the executable"
+              exit 1
+            fi
+            if ! tar -tzf "$archive" | grep -F "$name" > /dev/null; then
+              echo "ERROR: $archive does not hold $name"
+              exit 1
+            fi
+          done
+          if ! listing=$(dpkg-deb -c "$deb"); then
+            echo "ERROR: cannot list the Debian package with dpkg-deb"
+            exit 1
+          fi
+          for name in THIRD-PARTY-NOTICES.md THIRD-PARTY-LICENSES.md; do
+            if ! printf '%s\n' "$listing" | grep -F "opt/nicole/$name" > /dev/null; then
+              echo "ERROR: $deb does not install $name under /opt/nicole"
+              exit 1
+            fi
+          done
 
   publish:
     name: Verify the release assets and publish

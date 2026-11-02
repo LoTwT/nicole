@@ -2,6 +2,8 @@
 
 本项目包含或派生自以下第三方作品。发布和分发时需要保留本文件和相应的许可文本。
 
+运行时依赖（前端 bundle 与 Go 二进制）的许可文本见同目录的 `THIRD-PARTY-LICENSES.md`；该文件由 `bun run licenses` 生成，随本文件一起分发。
+
 ## Lucide 1.66.0
 
 `src/components/AppIcon.vue` 内联了 Lucide 1.66.0 的以下图标几何数据：
