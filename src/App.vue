@@ -369,21 +369,29 @@ function sameFilePath(left: string, right: string): boolean {
   return left.replace(/\\/g, "/") === right.replace(/\\/g, "/");
 }
 
-/** Finds the workspace tab or a single-file tab for the same physical path. */
-function findOpenTabForWorkspacePath(
+/** Finds a workspace tab or a single-file tab for the same physical path. */
+function findOpenTabForWorkspacePathIn(
+  list: readonly TabModel[],
   root: string,
   path: string,
 ): TabModel | undefined {
-  const workspaceTab = tabs.value.find(
+  const workspaceTab = list.find(
     (tab) => tab.kind === "workspace" && tab.path === path,
   );
   if (workspaceTab !== undefined) {
     return workspaceTab;
   }
   const absolute = workspaceAbsolutePath(root, path);
-  return tabs.value.find(
+  return list.find(
     (tab) => tab.kind === "single" && sameFilePath(tab.path, absolute),
   );
+}
+
+function findOpenTabForWorkspacePath(
+  root: string,
+  path: string,
+): TabModel | undefined {
+  return findOpenTabForWorkspacePathIn(tabs.value, root, path);
 }
 
 function showNotice(
@@ -1202,7 +1210,8 @@ async function applyWorkspace(folder: {
     applyWorkspaceState(folder);
     closedTabs.value = [];
     tabs.value = [...singles];
-    activeTabId.value = keepSingle ? previous.id : null;
+    const restoreStartActiveId = keepSingle ? previous.id : null;
+    activeTabId.value = restoreStartActiveId;
     lastWorkspaceActivePath = null;
     const restored = await restoreTabsForRoot(
       context.root,
@@ -1217,6 +1226,15 @@ async function applyWorkspace(folder: {
     const merged = [...tabs.value];
     const seen = new Set(merged.map(tabKey));
     for (const tab of restored.tabs) {
+      // A remembered workspace tab can be the same file the user already
+      // opened as a single-file tab before switching to its folder.
+      if (
+        tab.kind === "workspace" &&
+        findOpenTabForWorkspacePathIn(merged, context.root, tab.path) !==
+          undefined
+      ) {
+        continue;
+      }
       const key = tabKey(tab);
       if (seen.has(key)) {
         continue;
@@ -1225,18 +1243,25 @@ async function applyWorkspace(folder: {
       merged.push(tab);
     }
     tabs.value = merged;
-    if (!keepSingle) {
+    // Leave a tab the user opened or activated during restore in front.
+    if (!keepSingle && activeTabId.value === restoreStartActiveId) {
       const currentSingles = merged.filter((tab) => tab.kind === "single");
       const active =
         restored.activePath === null
           ? currentSingles.at(-1) ?? null
-          : merged.find((tab) => tab.path === restored.activePath) ?? null;
+          : (merged.find((tab) => tab.path === restored.activePath) ??
+            findOpenTabForWorkspacePathIn(
+              merged,
+              context.root,
+              restored.activePath,
+            ) ??
+            null);
       activeTabId.value = active?.id ?? null;
       if (active !== null && active.kind !== "single") {
         lastWorkspaceActivePath = active.path;
       }
       await mountActive(true);
-    } else if (lastWorkspaceActivePath === null) {
+    } else if (keepSingle && lastWorkspaceActivePath === null) {
       lastWorkspaceActivePath = restored.activePath;
     }
     return true;

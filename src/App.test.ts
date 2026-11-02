@@ -2234,3 +2234,143 @@ describe("review round 2 fixes", () => {
     expect(editorView().state.doc.toString()).toBe("# A\n");
   });
 });
+
+describe("review round 3 fixes", () => {
+  it("restores a single-file tab instead of a duplicate workspace tab", async () => {
+    await mountAppWithApi();
+    const opened = exposedApp!.value.openSingleFile("/notes/sub/s.md", "s.md");
+    await settle();
+    await opened;
+    expect(tabElements().length).toBe(1);
+
+    mocks.getWorkspaceTabs.mockResolvedValue({
+      tabs: [{ kind: "markdown", path: "sub/s.md" }],
+      active: "sub/s.md",
+    });
+    mocks.readFile.mockResolvedValue("# S\n");
+    mocks.pickFolder.mockResolvedValue({ path: "/notes", canceled: false });
+    mocks.openFolder.mockResolvedValue(folder("/notes"));
+    await exposedApp!.value.chooseFolder();
+    await settle();
+
+    expect(tabElements().length).toBe(1);
+    expect(tabElements()[0]!.getAttribute("title")).toBe("/notes/sub/s.md");
+    expect(tabElements()[0]!.getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("activates the single-file tab that replaces the restored active tab", async () => {
+    await mountAppWithApi();
+    tree = [entry("x.md", "x.md")];
+    mocks.readFile.mockImplementation(async (path: string) =>
+      path === "x.md" ? "# X\n" : "",
+    );
+    mocks.listDirectory.mockImplementation(async (path: string) => ({
+      path,
+      entries: path === "." ? tree : [],
+    }));
+    mocks.pickFolder.mockResolvedValue({ path: "/other", canceled: false });
+    mocks.openFolder.mockResolvedValue(folder("/other"));
+    button("打开文件夹").click();
+    await settle();
+    host.querySelector<HTMLElement>('[data-tree-path="x.md"]')!.click();
+    await settle();
+
+    const opened = exposedApp!.value.openSingleFile("/notes/sub/s.md", "s.md");
+    await settle();
+    await opened;
+    tabNamed("x.md").click();
+    await settle();
+
+    mocks.getWorkspaceTabs.mockResolvedValue({
+      tabs: [{ kind: "markdown", path: "sub/s.md" }],
+      active: "sub/s.md",
+    });
+    mocks.readFile.mockImplementation(async (path: string) =>
+      path === "sub/s.md" ? "# S\n" : "# X\n",
+    );
+    mocks.pickFolder.mockResolvedValue({ path: "/notes", canceled: false });
+    mocks.openFolder.mockResolvedValue(folder("/notes", 2));
+    const switching = exposedApp!.value.chooseFolder();
+    await settle();
+    dialogButton("切换").click();
+    await switching;
+    await settle();
+
+    expect(tabElements().length).toBe(1);
+    expect(tabElements()[0]!.getAttribute("title")).toBe("/notes/sub/s.md");
+    expect(tabElements()[0]!.getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("keeps a tab opened during restore active when nothing is remembered", async () => {
+    app?.unmount();
+    app = null;
+    mocks.getSettings.mockResolvedValue({
+      theme: "system",
+      sidebarWidth: 252,
+      recentFolders: ["/notes"],
+      expandedFolders: {},
+    });
+    mocks.openFolder.mockResolvedValue(folder("/notes"));
+    const stored = deferred<{
+      tabs: import("./services/tabs").StoredTab[];
+      active: string;
+    }>();
+    mocks.getWorkspaceTabs.mockReturnValue(stored.promise);
+    mocks.readFile.mockResolvedValue("# C\n");
+
+    await mountAppWithApi();
+    await vi.waitFor(() =>
+      expect(mocks.getWorkspaceTabs).toHaveBeenCalledWith("/notes"),
+    );
+    const opened = exposedApp!.value.openWorkspaceFile("c.md", "c.md");
+    await settle();
+    await opened;
+    expect(tabNamed("c.md").getAttribute("aria-selected")).toBe("true");
+
+    stored.resolve({ tabs: [], active: "" });
+    await settle();
+
+    expect(tabElements().length).toBe(1);
+    expect(tabNamed("c.md").getAttribute("aria-selected")).toBe("true");
+    expect(editorView().state.doc.toString()).toBe("# C\n");
+  });
+
+  it("keeps a tab opened during restore active when another tab is remembered", async () => {
+    app?.unmount();
+    app = null;
+    mocks.getSettings.mockResolvedValue({
+      theme: "system",
+      sidebarWidth: 252,
+      recentFolders: ["/notes"],
+      expandedFolders: {},
+    });
+    mocks.openFolder.mockResolvedValue(folder("/notes"));
+    const stored = deferred<{
+      tabs: import("./services/tabs").StoredTab[];
+      active: string;
+    }>();
+    mocks.getWorkspaceTabs.mockReturnValue(stored.promise);
+    mocks.readFile.mockImplementation(async (path: string) =>
+      path === "a.md" ? "# A\n" : "# C\n",
+    );
+
+    await mountAppWithApi();
+    await vi.waitFor(() =>
+      expect(mocks.getWorkspaceTabs).toHaveBeenCalledWith("/notes"),
+    );
+    const opened = exposedApp!.value.openWorkspaceFile("c.md", "c.md");
+    await settle();
+    await opened;
+
+    stored.resolve({
+      tabs: [{ kind: "markdown", path: "a.md" }],
+      active: "a.md",
+    });
+    await settle();
+
+    expect(tabElements().length).toBe(2);
+    expect(tabNamed("c.md").getAttribute("aria-selected")).toBe("true");
+    expect(tabNamed("a.md").getAttribute("aria-selected")).not.toBe("true");
+    expect(editorView().state.doc.toString()).toBe("# C\n");
+  });
+});
