@@ -185,7 +185,7 @@ type pendingImage struct {
 // those files are imported instead of a bitmap representation. generation is
 // the value ChooseFolder returned for that folder.
 func (a *Assets) PasteImage(docPath string, generation int) ([]SavedImage, error) {
-	root, err := a.currentRoot(generation)
+	root, err := a.workspace.currentRoot(generation)
 	if err != nil {
 		return nil, err
 	}
@@ -220,7 +220,7 @@ func (a *Assets) PasteImage(docPath string, generation int) ([]SavedImage, error
 // it cannot make Go read a file the user did not drop. Files without an image
 // extension are ignored.
 func (a *Assets) ImportImages(docPath string, generation int, dropToken string) ([]SavedImage, error) {
-	root, err := a.currentRoot(generation)
+	root, err := a.workspace.currentRoot(generation)
 	if err != nil {
 		return nil, err
 	}
@@ -236,17 +236,6 @@ func (a *Assets) ImportImages(docPath string, generation int, dropToken string) 
 		return []SavedImage{}, nil
 	}
 	return a.saveImages(root, docPath, pending)
-}
-
-func (a *Assets) currentRoot(generation int) (string, error) {
-	root, current := a.workspace.state.snapshot()
-	if root == "" {
-		return "", errNoWorkspace
-	}
-	if generation != current {
-		return "", fmt.Errorf("%w: got generation %d, want %d", errWorkspaceChange, generation, current)
-	}
-	return root, nil
 }
 
 // saveImages validates the document once, then writes every image. All

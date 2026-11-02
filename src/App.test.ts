@@ -6,6 +6,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App.vue";
 import { SAMPLE_DOCUMENT } from "./sample";
 import {
+  getSettings,
+  migrateLegacyTheme,
+  setTheme,
+} from "./services/settings";
+import {
   chooseFolder,
   confirmDiscard,
   finishClose,
@@ -25,6 +30,33 @@ vi.mock("./services/app", () => ({
 
 const workspaceMock = vi.hoisted(() => ({
   saveBeforeClose: null as null | ((token: number) => Promise<void>),
+}));
+
+const eventMock = vi.hoisted(() => ({
+  openFile: null as null | (() => void),
+  pending: [] as string[],
+  takeCalls: 0,
+}));
+
+vi.mock("./services/open-file", () => ({
+  onOpenFile: (handler: () => void) => {
+    eventMock.openFile = handler;
+    return () => {
+      eventMock.openFile = null;
+    };
+  },
+  takePendingOpenedFiles: async () => {
+    eventMock.takeCalls++;
+    const pending = eventMock.pending;
+    eventMock.pending = [];
+    return pending;
+  },
+}));
+
+vi.mock("./services/settings", () => ({
+  getSettings: vi.fn(),
+  migrateLegacyTheme: vi.fn(),
+  setTheme: vi.fn(),
 }));
 
 vi.mock("./services/workspace", () => ({
@@ -68,7 +100,6 @@ function folder(files: string[], generation = 1): WorkspaceFolder {
     files,
     canceled: false,
     generation,
-    watchRoot: `workspace-${generation}`,
   };
 }
 
@@ -111,6 +142,29 @@ beforeEach(() => {
   document.documentElement.classList.remove("dark");
   localStorage.clear();
 
+  vi.mocked(getSettings).mockReset();
+  vi.mocked(getSettings).mockResolvedValue({
+    theme: "system",
+    sidebarWidth: 252,
+    recentFolders: [],
+    expandedFolders: {},
+  });
+  vi.mocked(migrateLegacyTheme).mockReset();
+  vi.mocked(migrateLegacyTheme).mockImplementation(async (legacy) => ({
+    theme:
+      legacy === "light" || legacy === "dark"
+        ? legacy
+        : "system",
+    sidebarWidth: 252,
+    recentFolders: [],
+    expandedFolders: {},
+  }));
+  vi.mocked(setTheme).mockReset();
+  vi.mocked(setTheme).mockResolvedValue(undefined);
+  eventMock.openFile = null;
+  eventMock.pending = [];
+  eventMock.takeCalls = 0;
+
   vi.mocked(chooseFolder).mockReset();
   vi.mocked(confirmDiscard).mockReset();
   vi.mocked(confirmDiscard).mockResolvedValue(false);
@@ -120,6 +174,7 @@ beforeEach(() => {
   vi.mocked(finishClose).mockReset();
   vi.mocked(finishClose).mockResolvedValue(undefined);
   workspaceMock.saveBeforeClose = null;
+  eventMock.openFile = null;
 
   host = document.querySelector<HTMLElement>("#app")!;
   app = createApp(App);
@@ -128,6 +183,7 @@ beforeEach(() => {
 
 afterEach(() => {
   app?.unmount();
+  vi.restoreAllMocks();
   app = null;
   document.body.innerHTML = "";
   document.documentElement.classList.remove("dark");
@@ -162,12 +218,176 @@ describe("App", () => {
     await nextTick();
 
     expect(document.documentElement.classList.contains("dark")).toBe(true);
+    expect(setTheme).toHaveBeenCalledWith("dark");
     expect(host.querySelector(".cm-editor")).toBe(editorDOM);
     expect(view!.state.selection.main.eq(selection)).toBe(true);
     expect(view!.state.doc.toString()).toBe(edited);
 
     undo(view!);
     expect(view!.state.doc.toString()).toBe(SAMPLE_DOCUMENT);
+  });
+
+  it("follows the system appearance while the theme stays system", async () => {
+    app?.unmount();
+    const listeners: ((event: MediaQueryListEvent) => void)[] = [];
+    const mediaState = { matches: false };
+    const media = {
+      get matches() {
+        return mediaState.matches;
+      },
+      media: "(prefers-color-scheme: dark)",
+      onchange: null,
+      addEventListener: (
+        _type: string,
+        listener: (event: MediaQueryListEvent) => void,
+      ) => {
+        listeners.push(listener);
+      },
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    } as unknown as MediaQueryList;
+    vi.spyOn(window, "matchMedia").mockReturnValue(media);
+
+    app = createApp(App);
+    app.mount(host);
+    await settle();
+    expect(document.documentElement.classList.contains("dark")).toBe(false);
+
+    mediaState.matches = true;
+    listeners[0]?.({ matches: true } as MediaQueryListEvent);
+    await settle();
+    expect(document.documentElement.classList.contains("dark")).toBe(true);
+    expect(setTheme).not.toHaveBeenCalled();
+  });
+
+  it("runs the menu's undo command through CodeMirror and ignores composition", async () => {
+    await nextTick();
+    const view = editorView();
+    view.dispatch({
+      changes: { from: view.state.doc.length, insert: "!" },
+    });
+    window.dispatchEvent(
+      new CustomEvent("nicole:edit-command", { detail: "undo" }),
+    );
+    await nextTick();
+    expect(view.state.doc.toString()).toBe(SAMPLE_DOCUMENT);
+
+    view.dispatch({
+      changes: { from: view.state.doc.length, insert: "!" },
+    });
+    view.contentDOM.dispatchEvent(
+      new CompositionEvent("compositionstart", { bubbles: true }),
+    );
+    expect(view.compositionStarted).toBe(true);
+    window.dispatchEvent(
+      new CustomEvent("nicole:edit-command", { detail: "undo" }),
+    );
+    await nextTick();
+    expect(view.state.doc.toString()).toBe(`${SAMPLE_DOCUMENT}!`);
+    view.contentDOM.dispatchEvent(
+      new CompositionEvent("compositionend", { bubbles: true }),
+    );
+    window.dispatchEvent(
+      new CustomEvent("nicole:edit-command", { detail: "undo" }),
+    );
+    await nextTick();
+    expect(view.state.doc.toString()).toBe(SAMPLE_DOCUMENT);
+  });
+
+  it("falls back to document.execCommand when the editor is not focused", async () => {
+    await nextTick();
+    const view = editorView();
+    view.dispatch({
+      changes: { from: view.state.doc.length, insert: "!" },
+    });
+    const input = document.createElement("input");
+    document.body.append(input);
+    input.focus();
+    expect(document.activeElement).toBe(input);
+
+    const execCommand = vi.fn().mockReturnValue(true);
+    const hadOwnExecCommand = Object.prototype.hasOwnProperty.call(
+      document,
+      "execCommand",
+    );
+    const previousExecCommand = document.execCommand;
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: execCommand,
+    });
+    try {
+      window.dispatchEvent(
+        new CustomEvent("nicole:edit-command", { detail: "undo" }),
+      );
+      await nextTick();
+      expect(view.state.doc.toString()).toBe(`${SAMPLE_DOCUMENT}!`);
+      expect(execCommand).toHaveBeenCalledWith("undo");
+    } finally {
+      if (hadOwnExecCommand) {
+        Object.defineProperty(document, "execCommand", {
+          configurable: true,
+          value: previousExecCommand,
+        });
+      } else {
+        Reflect.deleteProperty(document, "execCommand");
+      }
+      input.remove();
+    }
+  });
+
+  it("migrates the old localStorage theme and removes it", async () => {
+    app?.unmount();
+    vi.mocked(getSettings).mockClear();
+    vi.mocked(migrateLegacyTheme).mockClear();
+    localStorage.setItem("nicole-theme", "dark");
+
+    app = createApp(App);
+    app.mount(host);
+    await settle();
+
+    expect(migrateLegacyTheme).toHaveBeenCalledWith("dark");
+    expect(getSettings).not.toHaveBeenCalled();
+    expect(localStorage.getItem("nicole-theme")).toBeNull();
+    expect(document.documentElement.classList.contains("dark")).toBe(true);
+  });
+
+  it("takes pending files when the system sends a signal", async () => {
+    const initialTakeCalls = eventMock.takeCalls;
+    eventMock.pending = ["/tmp/from-system.md"];
+    eventMock.openFile?.();
+    await settle();
+    expect(host.textContent).toContain("/tmp/from-system.md");
+
+    eventMock.pending = ["/tmp/another.md"];
+    eventMock.openFile?.();
+    await settle();
+    expect(host.textContent).toContain("/tmp/another.md");
+    expect(eventMock.takeCalls).toBe(initialTakeCalls + 2);
+  });
+
+  it("does not take the same pending file again for a later signal", async () => {
+    eventMock.pending = ["/tmp/once.md"];
+    eventMock.openFile?.();
+    await settle();
+    const callsAfterFirstSignal = eventMock.takeCalls;
+
+    eventMock.openFile?.();
+    await settle();
+    expect(eventMock.takeCalls).toBe(callsAfterFirstSignal + 1);
+    expect(host.textContent).toContain("/tmp/once.md");
+  });
+
+  it("takes a file that arrived before the page subscribed", async () => {
+    app?.unmount();
+    eventMock.pending = ["/tmp/at-launch.md"];
+
+    app = createApp(App);
+    app.mount(host);
+    await settle();
+
+    expect(host.textContent).toContain("/tmp/at-launch.md");
   });
 
   it("opens a folder and lists its Markdown files", async () => {
@@ -561,7 +781,6 @@ describe("App", () => {
       files: [],
       canceled: true,
       generation: 0,
-      watchRoot: "",
     });
     button("打开文件夹").click();
     await settle();

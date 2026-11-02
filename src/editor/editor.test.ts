@@ -175,6 +175,28 @@ describe("IME composition", () => {
     });
   }
 
+  it("ignores undo and redo while an IME composition is active", () => {
+    const instance = mount("live");
+    const view = instance.view;
+    view.dispatch({ changes: { from: view.state.doc.length, insert: "!" } });
+
+    composition(view, "compositionstart");
+    expect(instance.undo()).toBe(false);
+    expect(view.state.doc.toString()).toBe(`${doc}!`);
+    composition(view, "compositionend");
+
+    expect(instance.undo()).toBe(true);
+    expect(view.state.doc.toString()).toBe(doc);
+
+    composition(view, "compositionstart");
+    expect(instance.redo()).toBe(false);
+    expect(view.state.doc.toString()).toBe(doc);
+    composition(view, "compositionend");
+
+    expect(instance.redo()).toBe(true);
+    expect(view.state.doc.toString()).toBe(`${doc}!`);
+  });
+
   it("rebuilds decorations for ordinary typing", async () => {
     const instance = mount("live");
     const view = instance.view;

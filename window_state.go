@@ -34,9 +34,9 @@ type windowStateStore struct {
 
 var _ mygo.WindowStateStore = (*windowStateStore)(nil)
 
-// newWindowStateStore returns the store in PathUserData.
+// newWindowStateStore returns the store in the user data directory.
 func newWindowStateStore() (*windowStateStore, error) {
-	dir, err := mygo.App.Path(mygo.PathUserData)
+	dir, err := userDataDir()
 	if err != nil {
 		return nil, err
 	}
@@ -44,6 +44,18 @@ func newWindowStateStore() (*windowStateStore, error) {
 		filePath: filepath.Join(dir, windowStateFile),
 		workArea: cursorScreenWorkArea,
 	}, nil
+}
+
+// startupWindowStateStore returns the store main uses. MyGo's client-generation
+// run gets a path that is never read or created.
+func startupWindowStateStore() (*windowStateStore, error) {
+	if generatingClient() {
+		return &windowStateStore{
+			filePath: filepath.Join(os.TempDir(), "nicole-generate", windowStateFile),
+			workArea: cursorScreenWorkArea,
+		}, nil
+	}
+	return newWindowStateStore()
 }
 
 // cursorScreenWorkArea is the usable area of the display with the pointer.

@@ -145,6 +145,23 @@ macOS 的签名、通用二进制合成和 DMG 需要 macOS；Windows 安装包�
 
 4. 清理：`rm -rf "$drill"`，并确认 `git status` 干净。开发版本地不嵌入更新配置；更新开关的判定见 [MyGo 参考](references/mygo.md#自动更新)。
 
+## 数据隔离
+
+应用的用户数据目录由 `userDataDir()` 决定：默认是 MyGo 的 `PathUserData`，即 macOS 的 `~/Library/Application Support/Nicole/`；设置 `NICOLE_USER_DATA_DIR`（必须是绝对路径）后完全使用该目录，不再读取或创建默认目录。窗口状态和 `settings.json` 都走这里，`configureUserDataPath()` 同时把 MyGo 的 `PathUserData` 指向同一目录，更新器状态等插件数据也一起隔离。
+
+本地开发和测试按下面的方式使用临时目录，不要读写用户正在使用的 `~/Library/Application Support/Nicole/`：
+
+| 场景 | 用法 |
+|---|---|
+| `go test` | 无需设置。`TestMain` 为整次测试创建 `nicole-test-user-data-*` 临时目录并通过 `NICOLE_USER_DATA_DIR` 指过去，结束后删除。 |
+| `mygo dev` | 开发版的应用名是 `Nicole Dev`，已与安装版分开；仍建议使用独立目录：`NICOLE_USER_DATA_DIR=$(mktemp -d) GOTOOLCHAIN=auto bun run dev`。 |
+| 直接运行构建出的 `.app` | `NICOLE_USER_DATA_DIR=$(mktemp -d) ./build/darwin-arm64/Nicole.app/Contents/MacOS/Nicole`；不要从 `/Applications` 启动正在使用的 Nicole。 |
+| 用 Launch Services 测试“打开方式” | `open --env NICOLE_USER_DATA_DIR="$(mktemp -d)" -a "$PWD/build/darwin-arm64/Nicole.app" --args`，或 `open --env ... -a ... /tmp/note.md`。 |
+
+单实例锁按应用名和 `NICOLE_USER_DATA_DIR` 的短哈希区分：同一个数据目录只允许一个实例，第二个实例把命令行文件和激活请求交给第一个实例，再退出；不同数据目录可以同时运行，适合并存安装版和隔离测试版。锁只影响进程，不会改变用户看到的窗口或设置。
+
+`mygo.App.Path(PathUserData)` 的副作用是创建目录。`mygo generate`、`mygo dev` 和 `mygo build` 会把应用编译成临时二进制 `Nicole-<pid>` 并以 `MYGO_GENERATE` 运行来生成 TypeScript 客户端；这段启动流程曾在检查生成模式之前初始化设置和窗口状态，于是 `PathUserData` 按临时二进制名创建了真实的 `~/Library/Application Support/Nicole-<pid>/`。这些目录都是空的，时间与本地生成/构建/测试运行一致。`startupSettingsStore` 和 `startupWindowStateStore` 现在在 `MYGO_GENERATE` 下使用不会被读写的临时路径，因此 `mygo generate` 和 `mygo build` 不再创建这些目录。测试另外由 `TestMain` 指向临时目录；测试只读地对比 `~/Library/Application Support/` 下的条目即可确认没有新增或修改。
+
 ## 测试与检查
 
 ```sh
@@ -155,7 +172,7 @@ GOTOOLCHAIN=auto go vet ./...
 GOTOOLCHAIN=auto go test ./...
 ```
 
-Vitest 覆盖三种模式的切换；挂载 `App.vue` 后切换亮暗主题，编辑器 DOM、选区和撤销历史保持不变；沉浸模式的 `Mod-b` 加粗；应用命令（如 `Mod-i`）优先于 `basicSetup` 默认键位；图片 URL 的解析，粘贴、拖入 token 链路，插入凭据的位置映射、组合输入排队和撤销步。Go 测试覆盖绑定服务、图片协议的路径守卫与 Content-Type、drop token 的一次性和过期、图片保存的文件名、并发写入与原子失败。
+Vitest 覆盖三种模式的切换；挂载 `App.vue` 后切换亮暗主题，编辑器 DOM、选区和撤销历史保持不变；沉浸模式的 `Mod-b` 加粗；应用命令（如 `Mod-i`）优先于 `basicSetup` 默认键位；`localStorage` 主题迁移和 `app:open-file` 事件接收；图片 URL 的解析，粘贴、拖入 token 链路，插入凭据的位置映射、组合输入排队和撤销步；`src/services/` 的薄封装。Go 测试覆盖绑定服务、文件树和排除规则、文件操作的路径守卫与 generation、监听自写过滤、单文件授权、设置存储与测试数据隔离、图片协议的路径守卫与 Content-Type、drop token 的一次性和过期、图片保存的文件名、并发写入与原子失败。
 
 ### 内存测量
 

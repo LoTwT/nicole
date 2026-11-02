@@ -25,3 +25,15 @@ body,
 body {
   overflow: hidden;
 }
+
+/* The page draws the title bar under the window controls. The bar stays 40px
+   tall in full screen, where MyGo's inset variables are 0px. */
+.app-drag {
+  --app-region: drag;
+  padding-left: calc(1.5rem + var(--mygo-titlebar-inset-left, 0px));
+  padding-right: calc(1.5rem + var(--mygo-titlebar-inset-right, 0px));
+}
+
+.app-no-drag {
+  --app-region: no-drag;
+}

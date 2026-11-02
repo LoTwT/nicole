@@ -12,6 +12,13 @@ import { latestOperation } from "./latest-operation";
 import { SAMPLE_DOCUMENT } from "./sample";
 import { getAppInfo, type AppInfo } from "./services/app";
 import { onWindowFileDrop } from "./services/assets";
+import { onOpenFile, takePendingOpenedFiles } from "./services/open-file";
+import {
+  getSettings,
+  migrateLegacyTheme,
+  setTheme,
+  type ThemeSetting,
+} from "./services/settings";
 import {
   chooseFolder,
   confirmDiscard,
@@ -30,6 +37,10 @@ const files = ref<string[]>([]);
 const currentFile = ref<string | null>(null);
 const hasWorkspace = ref(false);
 const saveStatus = ref("");
+const openedFilePath = ref("");
+
+const EDIT_COMMAND_EVENT = "nicole:edit-command";
+type EditCommand = "undo" | "redo";
 
 const modes: readonly { id: EditorMode; label: string; hint: string }[] = [
   { id: "live", label: "实时预览", hint: "光标所在行显示原文" },
@@ -37,22 +48,29 @@ const modes: readonly { id: EditorMode; label: string; hint: string }[] = [
   { id: "source", label: "源码", hint: "始终显示 Markdown 原文" },
 ];
 
-const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-const storedTheme = localStorage.getItem("nicole-theme");
-const theme = ref<"light" | "dark">(
-  storedTheme === "light" || storedTheme === "dark"
-    ? storedTheme
-    : prefersDark
-      ? "dark"
-      : "light",
-);
-document.documentElement.classList.toggle("dark", theme.value === "dark");
+// The theme lives in Go's settings store now. "system" follows the page's
+// media query; an explicit light or dark also makes native menus and dialogs
+// follow it through Theme.SetSource.
+const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
+const systemPrefersDark = ref(systemTheme.matches);
+const theme = ref<ThemeSetting>("system");
 
+function applyTheme() {
+  const dark =
+    theme.value === "system" ? systemPrefersDark.value : theme.value === "dark";
+  document.documentElement.classList.toggle("dark", dark);
+}
+
+applyTheme();
+
+const isDark = computed(() =>
+  theme.value === "system" ? systemPrefersDark.value : theme.value === "dark",
+);
 const activeMode = computed(
   () => modes.find((item) => item.id === mode.value) ?? modes[0]!,
 );
 const themeAction = computed(() =>
-  theme.value === "light" ? "切换到暗色主题" : "切换到亮色主题",
+  isDark.value ? "切换到亮色主题" : "切换到暗色主题",
 );
 
 let editor: EditorHandle | null = null;
@@ -88,9 +106,13 @@ const imageInsertion = createImageInsertion({
   },
 });
 let offSaveBeforeClose: (() => void) | null = null;
+let offOpenFile: (() => void) | null = null;
 // Reads cannot be cancelled at the IPC layer. Instead, only the newest file
 // selection may apply its result; opening a folder invalidates all reads.
 const fileSelection = latestOperation();
+// Signals and the initial pending read share one queue so a file cannot be
+// shown out of order when the event and the queue overlap.
+let openedFilesQueue: Promise<void> = Promise.resolve();
 let offFileDrop: (() => void) | null = null;
 
 function detectLineEndings(text: string): {
@@ -410,10 +432,92 @@ function setMode(next: EditorMode) {
   editor?.focus();
 }
 
-function toggleTheme() {
-  theme.value = theme.value === "light" ? "dark" : "light";
-  document.documentElement.classList.toggle("dark", theme.value === "dark");
-  localStorage.setItem("nicole-theme", theme.value);
+async function toggleTheme() {
+  const next: ThemeSetting = isDark.value ? "light" : "dark";
+  theme.value = next;
+  applyTheme();
+  try {
+    await setTheme(next);
+  } catch {
+    // Keep the choice for this session; the next launch falls back to the
+    // saved setting.
+  }
+}
+
+function handleSystemThemeChange(event: MediaQueryListEvent) {
+  systemPrefersDark.value = event.matches;
+  if (theme.value === "system") {
+    applyTheme();
+  }
+}
+
+// The old version kept the theme in localStorage. Move it once, then remove
+// it so Go's settings are the only source.
+async function loadTheme() {
+  const legacy = localStorage.getItem("nicole-theme");
+  if (legacy !== null) {
+    try {
+      applySettings(await migrateLegacyTheme(legacy));
+      localStorage.removeItem("nicole-theme");
+    } catch {
+      // Keep the legacy value so the next launch can try again.
+    }
+    return;
+  }
+  try {
+    applySettings(await getSettings());
+  } catch {
+    // The default is "system".
+  }
+}
+
+function applySettings(settings: { theme: string }) {
+  theme.value =
+    settings.theme === "light" || settings.theme === "dark"
+      ? settings.theme
+      : "system";
+  applyTheme();
+}
+
+function handleOpenedFile(path: string) {
+  openedFilePath.value = path;
+}
+
+function receiveOpenedFiles() {
+  openedFilesQueue = openedFilesQueue
+    .then(async () => {
+      const paths = await takePendingOpenedFiles();
+      const last = paths.at(-1);
+      if (last !== undefined) {
+        handleOpenedFile(last);
+      }
+    })
+    .catch(() => {
+      // The backend may be absent when only Vite runs.
+    });
+}
+
+function handleEditCommand(event: Event) {
+  const command = (event as CustomEvent<unknown>).detail;
+  if (command !== "undo" && command !== "redo") {
+    return;
+  }
+  const target = editor;
+  if (target?.view.compositionStarted) {
+    return;
+  }
+  const editorFocused =
+    target !== null &&
+    (target.view.hasFocus || target.view.dom.contains(document.activeElement));
+  if (!editorFocused) {
+    document.execCommand(command);
+    return;
+  }
+  if (command === "undo") {
+    target.undo();
+  } else {
+    target.redo();
+  }
 }
 
 function saveBeforeExit() {
@@ -430,9 +534,16 @@ onMounted(async () => {
   window.addEventListener("beforeunload", saveBeforeExit);
   window.addEventListener("pagehide", saveBeforeExit);
   document.addEventListener("visibilitychange", saveWhenHidden);
+  systemTheme.addEventListener("change", handleSystemThemeChange);
+  window.addEventListener(EDIT_COMMAND_EVENT, handleEditCommand);
+  offOpenFile = onOpenFile(() => {
+    void receiveOpenedFiles();
+  });
   offFileDrop = onWindowFileDrop((drop) => {
     imageInsertion.handleDrop(drop);
   });
+  void loadTheme();
+  void receiveOpenedFiles();
   offSaveBeforeClose = onSaveBeforeClose(async (token) => {
     const saved = await savePending();
     try {
@@ -454,6 +565,10 @@ onBeforeUnmount(() => {
   window.removeEventListener("beforeunload", saveBeforeExit);
   window.removeEventListener("pagehide", saveBeforeExit);
   document.removeEventListener("visibilitychange", saveWhenHidden);
+  systemTheme.removeEventListener("change", handleSystemThemeChange);
+  window.removeEventListener(EDIT_COMMAND_EVENT, handleEditCommand);
+  offOpenFile?.();
+  offOpenFile = null;
   offFileDrop?.();
   offFileDrop = null;
   offSaveBeforeClose?.();
@@ -473,7 +588,7 @@ onBeforeUnmount(() => {
     class="flex h-full flex-col bg-[var(--surface-canvas)] text-[var(--text-primary)]"
   >
     <header
-      class="flex shrink-0 items-center gap-4 border-b border-[var(--border-subtle)] px-6 py-3"
+      class="app-drag flex h-10 shrink-0 items-center gap-4 border-b border-[var(--border-subtle)]"
     >
       <div class="flex min-w-0 items-baseline gap-2">
         <span class="font-display text-lg font-semibold tracking-tight">
@@ -506,7 +621,7 @@ onBeforeUnmount(() => {
       </select>
 
       <div
-        class="mx-auto flex rounded-full border border-[var(--border-subtle)] bg-[var(--surface-panel)] p-1"
+        class="app-no-drag mx-auto flex rounded-full border border-[var(--border-subtle)] bg-[var(--surface-panel)] p-1"
         role="group"
         aria-label="编辑模式"
       >
@@ -560,6 +675,9 @@ onBeforeUnmount(() => {
     >
       <span>{{ activeMode.label }} · {{ activeMode.hint }}</span>
       <span class="flex items-center gap-3">
+        <span v-if="openedFilePath" :title="openedFilePath">
+          已收到文件：{{ openedFilePath }}
+        </span>
         <span v-if="saveStatus">{{ saveStatus }}</span>
         <span>{{ documentText.length }} 字符</span>
         <span v-if="appInfo">

@@ -4,11 +4,12 @@
 
 - 工作区采用单窗口加标签页，不使用 MyGo 的 Documents API。
 - 前端持有正在编辑的内容，Go 负责落盘，停止输入约 1 秒后保存。
-- 工作区根是进程内可替换的状态；文件监听和后续的自定义协议在启动时注册，运行时读取当前根。
+- 工作区根是进程内可替换的状态；文件监听在每次打开文件夹后按当前根开始，后续的自定义协议在启动时注册、运行时读取当前根。
 - 崩溃恢复依赖 `PathUserData` 下的未保存内容副本。
 - 拖入和粘贴的图片存到 `assets/`，图片数据不经过 IPC。
 - 搜索在 MVP 阶段直接扫描文件，将来改用 SQLite FTS5 的 trigram 分词。
-- 文件监听使用 MyGo 的 `watch` 插件。
+- 文件监听通过 `Workspace.Watch` 的 Channel 交给页面，底层使用 MyGo 的 `mygo.WatchFiles`；它上报非 Markdown 文件，并过滤 Nicole 自己的写入。
+- 文件树、文件操作、单文件标签页和设置存储都有独立的接口与路径规则。
 - 启动时窗口在光标所在的屏幕居中，尺寸沿用上次保存的大小。
 
 ## 工作区接口
@@ -17,12 +18,22 @@ Go 的 `Workspace` 服务通过 `mygo.Bind` 暴露，前端经 `src/services/wor
 
 | 方法 | 行为 |
 |---|---|
-| `ChooseFolder()` | 打开原生文件夹对话框。取消时返回 `canceled: true`，当前工作区不变；成功时切换工作区并返回根目录、文件列表、`generation` 和监听根名 `watchRoot`。 |
+| `ChooseFolder()` | 打开原生文件夹对话框。取消时返回 `canceled: true`，当前工作区不变；成功时切换工作区并返回根目录、Markdown 文件列表和 `generation`。 |
 | `ListFiles()` | 返回当前工作区的 Markdown 文件，规则见[列文件规则](#列文件规则)。没有打开工作区时返回错误。 |
 | `ReadFile(path)` | 返回 Markdown 文件原始内容的字符串，不做换行或编码转换。 |
 | `WriteFile(path, content, generation)` | 原子替换文件；`generation` 与当前工作区不一致时拒绝。保证见[写入保证](#写入保证)。 |
 | `ConfirmDiscard()` | 切换文件或文件夹前，前端在保存失败或换行风格混合时询问用户是否放弃更改。多标签页界面实现后，前端改用页面对话框，不再调用它（见[界面与交互](ui.md#切换文件夹)）。 |
 | `FinishClose(token, saved)` | 回答一次关窗请求；`token` 标识该次请求。`saved` 为 `true` 时关窗，`false` 时 Go 弹出确认框，用户明确选择放弃后才关窗。过期请求的回答会被忽略。 |
+| `ListDirectory(path)` | 按需读取文件树的一层，见[文件树接口](#文件树接口)。 |
+| `CreateFile(dir, name, generation)` | 在目录中新建 Markdown 文件；见[文件操作](#文件操作)。 |
+| `CreateFolder(dir, name, generation)` | 在目录中新建文件夹。 |
+| `RenameEntry(path, name, generation)` | 重命名文件或文件夹，返回新路径。 |
+| `TrashEntry(path, generation)` | 移到废纸篓或回收站。 |
+| `OpenWithDefaultApp(path, generation)` | 用系统默认应用打开文件。 |
+| `RevealEntry(path, generation)` | 在 Finder、资源管理器或文件管理器中显示。 |
+| `Watch(generation)` | 通过 Channel 流式返回工作区变化，见[文件监听](#文件监听)。 |
+| 单文件的 `SingleFileService` | 只访问用户通过对话框或系统“打开方式”明确选择的 `.md` 文件，见[单文件标签页](#单文件标签页)。 |
+| 设置的 `Settings` | 读写用户数据目录中的全局设置，见[设置存储](#设置存储)。 |
 
 工作区根保存在进程内的一个状态对象中，`ChooseFolder()` 只替换这个状态并递增 `generation`。后续要加的自定义协议在启动时注册，运行时读取当前根，换工作区不重新注册任何东西（见[文件监听](#文件监听)与[架构](../architecture.md#进程和模块结构)）。
 
@@ -35,9 +46,47 @@ Go 的 `Workspace` 服务通过 `mygo.Bind` 暴露，前端经 `src/services/wor
 - 列表失败时返回错误，不返回部分结果。
 - 名字以 `.` 开头的文件仍会列出，例如 `.draft.md`；只有隐藏目录被跳过。
 
+## 文件树接口
+
+`ListDirectory(path)` 每次只读一层，`path` 为 `.` 或相对工作区的目录路径。返回的 `FileEntry` 带 `name`、`path`（相对工作区、以 `/` 分隔）、`isDir`、`isMarkdown` 和 `size`。空文件夹返回空数组；文件树第一次展开时再读取下一层，所以打开含 `node_modules` 的工作区不需要遍历它。
+
+- 显示文件和文件夹，包括空文件夹和非 `.md` 文件。
+- 不显示 `.git`、`.DS_Store`、`Thumbs.db`、`desktop.ini`，以及名字匹配 `.nicole-<16 位十六进制>.tmp` 的本应用临时文件。
+- 其他以 `.` 开头的文件和文件夹照常显示，例如 `.draft.md` 和 `.nicole/`；`node_modules` 也显示，首次展开时才读取。
+- 不列出符号链接，也不进入符号链接目录；读取失败时返回错误，不返回部分结果。
+- 后端按名字排序返回；界面仍按[界面与交互](ui.md#文件树)的规则用 `Intl.Collator` 排序，后端顺序只保证稳定。
+- 空路径按 `.` 处理。路径经过[文件树路径守卫](#路径守卫)，不能越出工作区。
+
+## 文件操作
+
+| 方法 | 规则 |
+|---|---|
+| `CreateFile(dir, name, generation)` | 在 `dir` 中创建空文件。`name` 没有扩展名时补 `.md`；带其他扩展名时拒绝。目标已存在时返回明确错误，不覆盖。 |
+| `CreateFolder(dir, name, generation)` | 在 `dir` 中创建文件夹。目标已存在时返回明确错误。 |
+| `RenameEntry(path, name, generation)` | `name` 是新的名字，不含分隔符。文件或文件夹都可重命名；目标已存在时拒绝，不做替换。返回新的相对路径。 |
+| `TrashEntry(path, generation)` | 文件或文件夹移到系统废纸篓或回收站；系统不支持时返回错误，不会退回永久删除。工作区根不能移走。 |
+| `OpenWithDefaultApp(path, generation)` | 只接受普通文件；按[打开方式的安全规则](#打开方式的安全规则)决定直接打开、确认后打开或拒绝。 |
+| `RevealEntry(path, generation)` | 文件或文件夹都可以在 Finder、资源管理器或文件管理器中显示；`path` 为 `.` 时显示工作区根。 |
+
+- 所有操作都要求 `generation` 与当前工作区一致；切换文件夹后，旧工作区发起的操作被拒绝。
+- 新名字和路径经过[文件树路径守卫](#路径守卫)：不能是绝对路径、不能含 `..`、`\` 或 `:`，也不能指向 `.git` 或本应用临时文件。
+- 移动和改名在 Windows 上遇到文件被占用时重试，改名后对目录做 fsync（Windows 跳过）。
+- 重命名已打开的文件后，文件监听会报告 `rename`；标签页标题和路径由界面同步，见[界面与交互](ui.md#文件树)。
+
+### 打开方式的安全规则
+
+文件树里的文件可能来自 clone 下来的仓库，不能因为用户点了一下就执行其中的程序。`OpenWithDefaultApp` 在调用系统默认应用之前先在 Go 端分类：
+
+- 图片（PNG、JPEG、GIF、WebP、HEIC 等）、PDF、纯文本和常见办公文档（`.txt`、`.md`、`.csv`、`.json`、`.docx`、`.xlsx`、`.pptx`、`.odt` 等）直接打开。带执行位的文件仍要确认。SVG 因可能包含活动内容，不在直接打开列表。
+- Windows 的 PATHEXT 类型（`.exe`、`.com`、`.cmd`、`.bat`、`.js` 等）及其快捷方式、注册表/安装/脚本类型（`.lnk`、`.url`、`.hta`、`.scf`、`.reg`、`.msi`、`.ps1`、`.application`、`.appref-ms`、`.settingcontent-ms`、`.msp`、`.chm`、`.jnlp`、`.ws`），macOS 的 `.command`、`.tool`、`.terminal`、`.jar`、`.pkg`、`.scpt` 等，以及 Linux 的 `.desktop` 直接拒绝，不弹确认框。
+- 其他类型，或 Unix 上带执行权限（`0o111`）的文件，由 Go 弹出原生确认框，写明文件名并说明“打开后可能会运行程序”。只有用户选择“打开”才调用默认应用；页面不能伪造这个确认框。用户取消时不打开，也不返回错误；启动器类型被拒绝时返回错误。
+- “在 Finder/资源管理器中显示”不经过这条限制，仍然只受文件树路径守卫约束。
+
 ## 路径守卫
 
 `ReadFile` 和 `WriteFile` 的路径参数都是相对工作区的路径，而且只能指向符合[列文件规则](#列文件规则)的 Markdown 文件：扩展名 `.md`、不在隐藏目录或 `node_modules` 里、最终是普通文件。图片写入由 `Assets` 单独提供，不放开这两个方法。
+
+文件树和文件操作使用更宽的文件树路径守卫：允许非 `.md` 文件、隐藏目录（`.git` 除外）和 `node_modules`，因为它们在[文件树](ui.md#文件树)里可见；移动、删除和用默认应用打开都需要这一范围。文件树守卫不放开 `ReadFile` 和 `WriteFile` 的 Markdown 限制，也不允许操作 `.git`、系统文件或本应用临时文件。所有守卫都先用 `os.Root` 操作，再用 `filepath.EvalSymlinks` 确认目标仍在工作区内；文件树不列出符号链接，操作也拒绝最终目标是符号链接的路径。
 
 - 空路径、`.`，或包含 `\` 或 `:`；无论当前平台是什么，`..\` 都按非法路径处理。
 - 绝对路径，包括 `/...`、`C:\...` 和 `C:/...`；以盘符开头的路径在所有平台上都拒绝。
@@ -62,6 +111,38 @@ Go 的 `Workspace` 服务通过 `mygo.Bind` 暴露，前端经 `src/services/wor
 - 打开工作区时清理本应用遗留的临时文件，只删除名字匹配 `.nicole-<16 位十六进制>.tmp` 且修改时间早于 10 分钟的文件；最近的文件可能属于另一个仍在写入的实例，不删除。
 - 保存失败会返回错误；前端只显示“保存失败”，不自动重试。
 
+## 单文件标签页
+
+工作区之外的单个 `.md` 文件由 `SingleFileService` 读写。授权按文件进行，不代表所在文件夹：
+
+- `ChooseSingleFile()` 打开只显示 `.md` 的原生文件对话框；用户选中的文件直接授权。
+- 系统“打开方式”或双击把文件交给 `App.OnOpenFile`；Go 把它记为“已提供”，但**不自动授权**。页面显示确认后调用 `AcceptSingleFile(path)`，只有与已提供路径一致的请求才会授权。
+- 授权保存解析符号链接后的绝对路径；`ReadSingleFile(path)` 和 `WriteSingleFile(path, content)` 只接受完全相同的路径。同一目录下的其他文件、相对路径、目录和非 `.md` 文件都拒绝。
+- 授权只存在内存中；关闭标签页时调用 `ReleaseSingleFile(path)`，重启应用后需要重新选择或确认。
+- 写入复用[写入保证](#写入保证)的原子替换：先写同目录临时文件，再改名；保留权限位，只读文件拒绝写入，失败时旧内容不变。文件已被外部删除时，再次保存会在原路径重新创建，与工作区文件的行为一致。换行风格的检测和“换行风格混合”保护仍由前端负责。
+- 单文件不属于工作区文件树，不在 `Watch` 范围内；界面按[界面与交互](ui.md#打开工作区之外的文件)显示相对路径和横幅。
+
+安全模型见[架构](../architecture.md#安全)。
+
+## 设置存储
+
+全局设置保存在 `PathUserData/settings.json`。可用 `NICOLE_USER_DATA_DIR` 覆盖用户数据目录（见[开发](../development.md#数据隔离)）。`Settings` 服务的读写接口：
+
+| 方法 | 内容 |
+|---|---|
+| `Get()` | 返回全部设置；文件不存在时返回默认值，不创建文件。 |
+| `MigrateLegacyTheme(legacy)` | 旧版存在 `localStorage` 的 `nicole-theme` 迁移到设置；文件已经有 `theme` 字段时不覆盖。调用方成功后删除旧值。 |
+| `SetTheme(theme)` | 保存 `system`、`light` 或 `dark`，并调用 `mygo.Theme.SetSource`，让原生菜单和对话框跟随。 |
+| `SetSidebarWidth(width)` | 保存侧栏宽度，限制在 200–400px。 |
+| `SetExpandedFolders(root, folders)` | 按根目录保存文件树展开状态；`folders` 是相对路径，只存显示状态，不用于访问文件。 |
+| `AddRecentFolder(folder)` / `RemoveRecentFolder(folder)` | 维护最近打开的文件夹，最新在前，最多 10 个。 |
+
+`settings.json` 的字段为 `theme`、`sidebarWidth`、`recentFolders` 和 `expandedFolders`（根目录绝对路径 → 展开的相对路径数组）。默认主题是 `system`，默认宽度 252px，最近文件夹和展开状态为空。写入在目标目录创建临时文件后改名替换，一次只写一个完整文件；损坏的设置文件不会被部分覆盖。
+
+文件已存在但不是合法 JSON 时，读取会先把原文件重命名为 `settings.json.corrupt-<UTC 时间>`，再以默认值继续，后续设置可以正常保存；原文件保留下来供排查。备份重命名失败时返回错误，不覆盖损坏文件。启动时的主题读取也遵循这个行为，失败时保持系统外观。
+
+主题从 `localStorage` 迁移后，系统的外观变化由页面监听 `prefers-color-scheme`；`system` 时原生外观也由 `Theme.SetSource(ThemeSystem)` 跟随系统。详见[主题与字体](theming.md#当前实现)。
+
 ## 窗口位置
 
 - 启动时窗口在光标所在的显示器工作区居中，而不是恢复上次的位置。
@@ -76,7 +157,7 @@ Go 的 `Workspace` 服务通过 `mygo.Bind` 暴露，前端经 `src/services/wor
 
 **不用** MyGo 的 Documents API（见 [MyGo 参考](../references/mygo.md#documents-api)）：每多一个窗口就多一个 WebKit 页面进程，约多 40–50MB。内存预算见[性能](performance.md#预算)。
 
-复用 MyGo 的文件关联和最近文档功能。打开一个 `.md` 文件时，按它是否位于已打开或最近用过的文件夹中分别处理，规则见[界面与交互](ui.md#打开工作区之外的文件)。
+使用 MyGo 的文件关联接收系统打开的 `.md` 文件；最近文件夹由[设置存储](#设置存储)维护。打开一个 `.md` 文件时，按它是否位于已打开或最近用过的文件夹中分别处理，规则见[界面与交互](ui.md#打开工作区之外的文件)。
 
 界面按“单窗口多根目录”设计：P0 只有一个根目录，打开另一个文件夹时替换当前根目录；P1 允许同时添加多个根目录，仍在同一个窗口里，不增加 WebKit 进程（见[界面与交互](ui.md#根目录)）。
 
@@ -131,11 +212,23 @@ Go 在 `PathUserData` 目录下保存未保存内容的副本，用于崩溃恢�
 
 ## 文件监听
 
-使用 MyGo 的 `watch` 插件监听工作区变化。插件的能力和默认参数见 [MyGo 参考](../references/mygo.md#插件)。
+`Workspace.Watch(generation)` 通过 MyGo 的 Channel 流式返回工作区变化；底层是 `mygo.WatchFiles`，与 MyGo 的 `watch` 插件使用同一个引擎。这里没有使用 `watch.New`：插件把事件直接交给页面，没有过滤点，而 Nicole 必须过滤自己的写入。前端通过 `src/services/watch.ts` 订阅，先收到一次 `ready`，之后每批事件包含 `op`（`create`、`write`、`remove`、`rename`）、相对路径、`oldPath` 和 `isDir`。
 
-- 应用启动时用 `watch.New` 注册插件，不写死根目录；每次打开文件夹返回一个带 `generation` 的根名，例如 `workspace-3`。
-- 插件通过 `Options.Resolve` 在每次 watch 时读取当前工作区根；`Resolve` 只接受当前这一代的根名，旧根名不能再次授权。
-- 换工作区只替换进程内状态，不重新注册插件或协议。前端必须先关闭旧 watcher，再用新的 `watchRoot` 开始监听。
-- 工作区根按[列文件规则](#列文件规则)的同一套规则递归监听：跳过隐藏目录、`node_modules` 和名字匹配 `.nicole-<16 位十六进制>.tmp` 的本应用临时文件。
-- 变更通过插件的 Channel 交给前端。前端如何响应外部修改由 UI-2a 接入（`@mygo-plugins/watch`），本阶段只保证 Go 端的授权、忽略规则和状态切换可用。
-- 文件树显示所有文件（见[界面与交互](ui.md#文件树)），需要非 `.md` 文件的新增、删除和改名；监听是否上报这些变化，由 UI-2a 确认后写进本节。隐藏目录和 `node_modules` 仍不监听，文件树在展开这些目录时重新读取。
+| 项目 | 规则 |
+|---|---|
+| 范围 | 递归监听工作区根。隐藏目录（名字以 `.` 开头）和 `node_modules` 不监听，里面的变化在下次展开时由 `ListDirectory` 重新读取。 |
+| 文件类型 | **上报所有非忽略文件，不限于 `.md`**。文件树需要图片、PDF 等文件的新增、删除和改名；非 `.md` 文件的内容写入也上报。 |
+| 隐藏文件 | 名字以 `.` 开头的文件照常监听，例如 `.draft.md`；`.DS_Store`、`Thumbs.db`、`desktop.ini` 不监听，因为文件树不显示。 |
+| 临时文件 | 名字匹配 `.nicole-<16 位十六进制>.tmp` 的文件不监听。 |
+| 代际 | `Watch` 开始时要求 `generation` 与当前工作区一致；工作区切换后，旧 watcher 在下一批事件前结束，不能把旧根的变化交给新页面。 |
+| 页面关闭 | Channel 关闭或调用方取消时，watcher 结束；页面换文件夹时先关闭旧 watcher，再开始新的。 |
+
+### 忽略 Nicole 自己的写入
+
+`WriteFile` 和 `CreateFile` 在替换或创建文件前记录该路径和写入内容的 SHA-256，记录保留 5 秒。收到 `write` 或 `create` 事件时，如果路径有记录、未过期，且磁盘内容仍与写入内容完全一致，就丢弃这个事件；其他事件、目录事件和已过期记录照常上报。
+
+- 判定规则基于内容而不是时间：另一个程序在 5 秒内写入不同内容时，哈希不同，事件会上报，不会被误判为 Nicole 自己的写入。
+- 另一个程序写入完全相同的内容时，哈希相同，事件会被忽略；从文件内容无法区分来源，这是该规则的已知边界。
+- 写入失败时记录立即删除；`remove`、`rename` 和 `hint` 不受此规则影响，删除和移动仍会通知页面。
+- 记录只存在内存中，按工作区路径保存；切换文件夹后旧记录不影响新工作区。
+- PR4 的图片写入不经过 `writes.record`，所以会按外部写入产生 `create` 事件；文件树需要显示新图片，这是预期行为。

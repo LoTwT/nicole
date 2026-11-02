@@ -48,6 +48,17 @@ export default defineConfig({
   buildCommand: "bun run build:web",
   frontendDist: "dist",
   bindings: "src/services/mygo.ts",
+  // The system lists Nicole for Markdown files and opens them with it; the
+  // path reaches App.OnOpenFile and then the page as app:open-file. See
+  // docs/specs/ui.md and docs/release.md.
+  fileAssociations: [
+    {
+      ext: ["md"],
+      name: "Markdown Document",
+      mimeType: "text/markdown",
+      role: "Editor",
+    },
+  ],
   out: "build",
   ...(updatesDisabled ? {} : { updates }),
 });

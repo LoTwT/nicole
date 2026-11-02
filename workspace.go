@@ -12,20 +12,17 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/egoist/mygo"
-	"github.com/egoist/mygo/plugins/watch"
 )
 
 const (
-	workspaceWatchRootPrefix = "workspace-"
-	tempFilePrefix           = ".nicole-"
-	tempFileSuffix           = ".tmp"
+	tempFilePrefix = ".nicole-"
+	tempFileSuffix = ".tmp"
 
 	// closeSaveTimeout bounds how long closing the window waits for the page
 	// to save. A page that cannot answer must not leave the window stuck.
@@ -58,19 +55,17 @@ type WorkspaceFolder struct {
 	Root     string   `json:"root"`
 	Files    []string `json:"files"`
 	Canceled bool     `json:"canceled"`
-	// Generation identifies this folder. Writes must carry it so a save
-	// prepared for one folder cannot land in the next one.
+	// Generation identifies this folder. Writes and file operations must
+	// carry it so work prepared for one folder cannot land in the next one.
 	Generation int `json:"generation"`
-	// WatchRoot is the name pages give the watch plugin for this folder.
-	// It embeds Generation so an old watcher cannot be granted again.
-	WatchRoot string `json:"watchRoot"`
 }
 
 // Workspace serves the folder the user opened: its Markdown files, and
 // reading and replacing them. `mygo generate` turns the methods into typed
 // functions in src/services/mygo.ts.
 type Workspace struct {
-	state *workspaceState
+	state  *workspaceState
+	writes *selfWrites
 
 	close *closeCoordinator
 }
@@ -78,8 +73,9 @@ type Workspace struct {
 // NewWorkspace returns a workspace with no folder open.
 func NewWorkspace() *Workspace {
 	return &Workspace{
-		state: &workspaceState{},
-		close: newCloseCoordinator(),
+		state:  &workspaceState{},
+		writes: newSelfWrites(),
+		close:  newCloseCoordinator(),
 	}
 }
 
@@ -146,8 +142,8 @@ func confirmDiscard(win *mygo.Window, reason discardReason) (bool, error) {
 	return result.Button == 0, nil
 }
 
-// workspaceState is the one current workspace of the process. Services, the
-// watch plugin and the protocol handler that follows read it; switching
+// workspaceState is the one current workspace of the process. The file tree,
+// the file watch and the protocol handler that follows read it; switching
 // folders replaces this state in place, not the registrations that read it.
 type workspaceState struct {
 	mu         sync.RWMutex
@@ -161,16 +157,12 @@ func (s *workspaceState) snapshot() (root string, generation int) {
 	return s.root, s.generation
 }
 
-func (s *workspaceState) replace(root string) (generation int, watchRoot string) {
+func (s *workspaceState) replace(root string) (generation int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.root = root
 	s.generation++
-	return s.generation, watchRootName(s.generation)
-}
-
-func watchRootName(generation int) string {
-	return workspaceWatchRootPrefix + strconv.Itoa(generation)
+	return s.generation
 }
 
 // ChooseFolder shows the native folder picker and makes the chosen folder
@@ -211,12 +203,11 @@ func (w *Workspace) open(root string) (WorkspaceFolder, error) {
 		return WorkspaceFolder{}, err
 	}
 	removeTempFiles(rootFS)
-	generation, watchRoot := w.state.replace(resolved)
+	generation := w.state.replace(resolved)
 	return WorkspaceFolder{
 		Root:       resolved,
 		Files:      files,
 		Generation: generation,
-		WatchRoot:  watchRoot,
 	}, nil
 }
 
@@ -381,12 +372,9 @@ func (w *Workspace) ReadFile(rel string) (string, error) {
 // to the target and renames it into place, so a failure leaves the original
 // file as it was, and the bytes are written unchanged.
 func (w *Workspace) WriteFile(rel, content string, generation int) error {
-	root, current := w.state.snapshot()
-	if root == "" {
-		return errNoWorkspace
-	}
-	if generation != current {
-		return fmt.Errorf("%w: got generation %d, want %d", errWorkspaceChange, generation, current)
+	root, err := w.currentRoot(generation)
+	if err != nil {
+		return err
 	}
 	target, err := resolveWritableFile(root, rel)
 	if err != nil {
@@ -398,25 +386,41 @@ func (w *Workspace) WriteFile(rel, content string, generation int) error {
 	}
 	defer rootFS.Close()
 
+	// Record the write before replacing the file: the watch can report the
+	// replacement as soon as it happens, and the page may receive that batch
+	// before this call returns.
+	w.writes.record(target, []byte(content))
 	info, err := rootFS.Stat(filepath.FromSlash(target))
 	if err == nil {
 		if !info.Mode().IsRegular() {
+			w.writes.forget(target)
 			return fmt.Errorf("workspace: not a file: %q", rel)
 		}
 		if info.Mode().Perm()&0o222 == 0 {
+			w.writes.forget(target)
 			return fmt.Errorf("%w: %q", errReadOnlyFile, rel)
 		}
-		return writeWorkspaceFile(rootFS, target, []byte(content), info.Mode().Perm())
+		if err := writeWorkspaceFile(rootFS, target, []byte(content), info.Mode().Perm()); err != nil {
+			w.writes.forget(target)
+			return err
+		}
+		return nil
 	}
 	if !errors.Is(err, fs.ErrNotExist) {
+		w.writes.forget(target)
 		return err
 	}
 	// A dangling link has nothing to write through; replacing it would
 	// silently turn a link into a regular file.
 	if info, err := rootFS.Lstat(filepath.FromSlash(rel)); err == nil && info.Mode()&fs.ModeSymlink != 0 {
+		w.writes.forget(target)
 		return fmt.Errorf("%w: %q", errDanglingLink, rel)
 	}
-	return writeWorkspaceFile(rootFS, target, []byte(content), 0)
+	if err := writeWorkspaceFile(rootFS, target, []byte(content), 0); err != nil {
+		w.writes.forget(target)
+		return err
+	}
+	return nil
 }
 
 // resolveExistingFile resolves a path relative to root to an existing regular
@@ -722,22 +726,4 @@ func (w *Workspace) finishClose(win *mygo.Window, token int, saved bool) {
 // the user sees the action that will discard the edits.
 func (w *Workspace) ConfirmDiscard(ctx context.Context) (bool, error) {
 	return w.close.confirm(mygo.CallerWindow(ctx), discardOnSwitch)
-}
-
-// watchRoot grants the watch plugin a root only for the open folder and only
-// for its current generation. The plugin asks on each watch, so a watcher
-// from an earlier folder cannot be granted again.
-func (w *Workspace) watchRoot(_ context.Context, name string) (watch.Root, bool) {
-	root, generation := w.state.snapshot()
-	if root == "" || name != watchRootName(generation) {
-		return watch.Root{}, false
-	}
-	return watch.Root{
-		Path:      root,
-		Recursive: true,
-		Ignore: func(name string, isDir bool) bool {
-			base := path.Base(name)
-			return isWorkspaceTempName(base) || isDir && ignoredFolder(base)
-		},
-	}, true
 }

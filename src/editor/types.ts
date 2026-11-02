@@ -43,6 +43,10 @@ export interface EditorHandle {
   readonly view: EditorView;
   readonly mode: EditorMode;
   setMode(mode: EditorMode): void;
+  /** Applies the editor's history unless an IME composition is active. */
+  undo(): boolean;
+  /** Applies the editor's history unless an IME composition is active. */
+  redo(): boolean;
   /**
    * Reports whether the viewport point is inside the editor. Native drops
    * carry coordinates; this keeps a drop outside the editor from becoming an

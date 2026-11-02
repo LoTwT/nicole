@@ -31,6 +31,12 @@ updates: {
 - 应用侧使用 MyGo 的 `updater.Plugin`（`main.go`），提供 Sparkle 风格更新窗口和“检查更新…”菜单项；哪些构建能检查更新由 MyGo 决定，见 [MyGo 参考](references/mygo.md#自动更新)。
 - 各平台的更新归档、差量和清单由 `mygo build` 生成，发布资产见下表；生成规则见 [MyGo 参考](references/mygo.md#自动更新)。
 
+## 文件关联
+
+`mygo.config.ts` 的 `fileAssociations` 声明 `.md` 为 Markdown 文档，系统因此可以在“打开方式”中列出 Nicole，并把双击的 `.md` 路径交给 `App.OnOpenFile`。打包时 MyGo 会把它写进各平台的安装信息：macOS 的 `Info.plist`（`CFBundleDocumentTypes`）、Windows 安装包的注册表项和 Linux 的 `.desktop` 文件与 MIME 声明。它不改变更新清单、签名或 Release 资产；打包后仍按原检查核对 `.app`、EXE 和 `.deb` 的版本与架构。
+
+发布前手测一次：把测试 `.md` 文件拖到构建出的 `.app` 或从“打开方式”选择 Nicole，确认收到 `app:open-file`；不要用 `/Applications` 里的正式安装来测试开发构建。Windows 和 Linux 的安装后关联仍待实测，见[发布后验证](#发布后验证)。
+
 ## 发布步骤
 
 1. 确认目标版本号已在 [CHANGELOG.md](../CHANGELOG.md) 有小节、相对上一发布版递增，且要发布的提交已合并 `main`。
@@ -106,6 +112,7 @@ Nicole 同时发布 `.deb` 与 `.tar.gz`；发布说明必须写清两种安装�
   1. 从 0.0.1 安装 0.0.2 后应用自动重启，界面显示 v0.0.2，与标签一致；`Info.plist` 版本核对待实测。Windows 的文件属性或“应用和功能”、Linux 的可执行文件与菜单显示待实测。
   2. 更新后用户数据、窗口状态和历史记录保留：待实测。
   3. Windows 的 NSIS 安装目录（`%LOCALAPPDATA%\Programs\Nicole`）可写，以及“应用和功能”里的版本显示（MyGo 0.7.3 的已知限制见[参考](references/mygo.md#自动更新)）：待实测。若需要随更新刷新，列为后续工作。
+- **文件关联** — 部分实测（2026-11-01，macOS 构建出的 `.app`）：用 `open -a <构建出的 .app> <临时 .md>` 打开，页面状态栏显示收到的绝对路径；Windows 注册表关联、Linux MIME 关联和未安装时的“打开方式”列表：待实测。
 - **签名拒绝**：待实测。篡改清单或换密钥的归档应安装失败并显示错误，应用继续运行原版本。可用[开发指南](development.md#自动更新的本地演练)的一次性测试密钥对演练，勿用正式密钥。
 - **macOS Gatekeeper** — 实测（2026-11-01，macOS Apple Silicon）：从浏览器下载的 `test-v0.0.1` DMG 安装后，首次打开被 Gatekeeper 拦截；在“系统设置 → 隐私与安全性”选择“仍要打开”后可以正常运行。更新到 `test-v0.0.2` 后打开没有再被拦截。其他 macOS 版本与受管设备待实测。
 - **Windows SmartScreen**：待实测。首次运行安装包与更新后的 EXE 是否出现 SmartScreen、能否继续，需记录系统版本和策略；受管设备可能直接阻止。

@@ -6,7 +6,6 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/plugins/updater"
-	"github.com/egoist/mygo/plugins/watch"
 )
 
 // AppInfo describes the running app and the Go runtime behind it.
@@ -38,72 +37,69 @@ func (app Application) Info() AppInfo {
 	}
 }
 
-// appMenu sets the standard menus and puts "Check for Updates…" in the app
-// menu, where macOS users expect it. The updater disables the check itself in
-// builds that cannot update, such as `mygo dev` and package-managed installs.
-func appMenu() *mygo.Menu {
-	appItems := []*mygo.MenuItem{
-		{Role: mygo.RoleAbout},
-		updater.MenuItem(),
-		mygo.Separator(),
-	}
-	if runtime.GOOS == "darwin" {
-		appItems = append(appItems,
-			&mygo.MenuItem{Role: mygo.RoleHide},
-			&mygo.MenuItem{Role: mygo.RoleHideOthers},
-			&mygo.MenuItem{Role: mygo.RoleUnhide},
-			mygo.Separator(),
-		)
-	}
-	appItems = append(appItems, &mygo.MenuItem{Role: mygo.RoleQuit})
-
-	items := []*mygo.MenuItem{
-		{Label: "Nicole", Submenu: appItems},
-		{Role: mygo.RoleEditMenu},
-	}
-	if runtime.GOOS == "darwin" {
-		items = append(items, &mygo.MenuItem{Role: mygo.RoleViewMenu})
-	}
-	items = append(items, &mygo.MenuItem{Role: mygo.RoleWindowMenu})
-	return mygo.NewMenu(items)
-}
-
 func main() {
+	if err := configureUserDataPath(); err != nil {
+		log.Fatal(err)
+	}
+	if !acquireSingleInstanceLock() {
+		return
+	}
+	installSecondInstanceFocus()
 	workspace := NewWorkspace()
+	settingsStore, err := startupSettingsStore()
+	if err != nil {
+		log.Fatal(err)
+	}
+	if !generatingClient() {
+		applySavedTheme(settingsStore)
+	}
 	assets := NewAssets(workspace)
 
+	singleFiles := NewSingleFileService()
+	openedFiles := NewOpenedFiles()
 	// The updater plugin adds the Sparkle-style update window and the menu
 	// item; `mygo build` enables it only together with signed updates and a
 	// writable install location. See docs/release.md.
-	// The watch plugin is registered once, before the window exists; its
-	// Resolve callback grants whatever folder is open at watch time.
-	mygo.Use(updater.Plugin, watch.New(watch.Options{Resolve: workspace.watchRoot}))
+	mygo.Use(updater.Plugin)
 	// Images are served from the folder that is open when the page asks; the
-	// handler reads the same replaceable workspace state as the watch plugin.
+	// handler reads the same replaceable workspace state as the rest of the app.
 	if err := registerImageProtocol(workspace); err != nil {
 		log.Fatal(err)
 	}
 
-	stateStore, err := newWindowStateStore()
+	// A file opened from the system is offered to the page; only accepting it
+	// grants the page access to that exact file. See docs/architecture.md.
+	mygo.App.OnOpenFile(func(path string) {
+		openedFiles.add(path)
+		singleFiles.offer(path)
+	})
+
+	stateStore, err := startupWindowStateStore()
 	if err != nil {
 		log.Fatal(err)
 	}
 	mygo.App.SetWindowStateStore(stateStore)
 
-	mygo.Bind(NewApplication(mygo.App.Version()), workspace, assets)
-	mygo.App.SetMenu(appMenu())
+	mygo.Bind(
+		NewApplication(mygo.App.Version()),
+		workspace,
+		assets,
+		NewSettings(settingsStore),
+		singleFiles,
+		openedFiles,
+		NativeMenu{},
+	)
+	menu := appMenu(mygo.IsDev())
+	customizeEditMenu(menu)
+	mygo.App.SetMenu(menu)
 
 	mygo.App.WhenReady(func() {
-		window := mygo.NewWindow(mygo.WindowOptions{
-			Title:           "Nicole",
-			Width:           defaultWindowSize.Width,
-			Height:          defaultWindowSize.Height,
-			MinWidth:        640,
-			MinHeight:       480,
-			BackgroundColor: "light-dark(#faf8f4, #121019)", // the page's surface canvas
-			StateKey:        mainWindowStateKey,
-			URL:             "/",
-		})
+		window := mygo.NewWindow(mainWindowOptions())
+		if page := window.Page(); page != nil {
+			page.OnContextMenu(func(event *mygo.ContextMenuEvent) {
+				trimPageContextMenu(event, mygo.IsDev())
+			})
+		}
 		// A close first asks the page to save its pending edits; the page
 		// calls Workspace.FinishClose when it is done.
 		window.OnClose(func(event *mygo.CloseEvent) {

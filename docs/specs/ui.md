@@ -34,6 +34,7 @@
 - 菜单栏：macOS 使用 `main.go` 设置的应用菜单。Windows 隐藏标题栏后没有菜单栏位置，按 Alt 或 F10 时 MyGo 在左上角弹出菜单。Linux 默认隐藏菜单栏，按 Alt 或 F10 时显示。
 - 菜单项的快捷键不能与[快捷键](#快捷键)表冲突，也不能提供会丢失页面状态的操作。MyGo 默认的“显示”菜单（`RoleViewMenu`）包含“重新载入”⌘R、“强制重新载入”⇧⌘R，默认的“窗口”菜单（`RoleWindowMenu`）在 Windows 和 Linux 上把 Ctrl+W 绑定到关闭窗口，这些都要去掉或替换；“显示”菜单中的“切换开发者工具”（⌥⌘I、Ctrl+Shift+I）只在开发构建中保留；缩放（⌘+、⌘-、⌘0）和全屏保留。
 - 应用主题与系统外观不同时，用 `mygo.Theme.SetSource` 同步，让原生菜单、右键菜单和对话框跟随应用主题。
+- MyGo 0.7.3 的 `RoleUndo`/`RoleRedo` 在 macOS 上使用 AppKit 的 `undo:`/`redo:` selector，不会进入 CodeMirror 的历史。这两个菜单项改为向页面发送 `nicole:edit-command`，由页面执行 CodeMirror 的历史命令；输入法组合期间（`EditorView.compositionStarted`）忽略该命令。macOS 上已实测菜单点击、⌘Z 和 ⇧⌘Z 都作用于 CodeMirror 的历史，组合期间的忽略也有 Vitest 覆盖。Windows 和 Linux 的菜单事件行为**待实测**，见[待办](#待办)。
 - 窗口启动时在光标所在的屏幕上居中，尺寸沿用上次保存的大小；规则和实现见[工作区与文件](workspace.md#窗口位置)（已由 #8 实现）。
 
 验收：
@@ -612,17 +613,7 @@ A 红绿灯（macOS）　B 隐藏侧栏　C 标签页　D 模式切换与大纲�
 
 | 事项 | 涉及 | 归属 |
 |---|---|---|
-| 窗口改为隐藏标题栏（`TitleBarStyle`、`TitleBarHeight`、macOS 的 `TrafficLightPosition`），顶部区域固定 40px；主题切换时调用 `mygo.Theme.SetSource` | `main.go` | UI-2a |
-| 替换 `main.go` 中默认的“显示”和“窗口”菜单：去掉“重新载入”“强制重新载入”，去掉 Windows 和 Linux 上 Ctrl+W 关闭窗口的绑定；“切换开发者工具”只在开发构建保留；保留缩放和全屏 | `main.go` | UI-2a |
-| 验证三个平台原生“编辑”菜单（macOS 菜单栏、Windows 和 Linux 的窗口菜单）的撤销和重做是否正确作用于 CodeMirror 的历史 | 编辑器、`main.go` | UI-2a |
-| 页面请求原生菜单的绑定（基于 `Menu.PopupAt`），以及裁剪 WebView 默认右键菜单 | `main.go`、`docs/architecture.md` | UI-2a |
-| 文件树按目录读取的接口（返回文件和文件夹，包括空文件夹和非 `.md` 文件，带排除规则）；新建、重命名、移到废纸篓、用默认应用打开、在 Finder 中显示 | `workspace.go`、`docs/specs/workspace.md` | UI-2a |
-| 文件监听范围：确认并写明监听是否上报非 `.md` 文件；文件树需要非 `.md` 文件的变化；隐藏目录和 `node_modules` 保持不监听 | `workspace.go`、`docs/specs/workspace.md`（文件监听） | UI-2a |
-| 文件监听忽略 Nicole 自己的写入，避免触发“外部修改” | `workspace.go`、前端监听 | UI-2a |
-| 单文件标签页的读写接口（工作区之外的单个 `.md` 文件） | `workspace.go`、`docs/specs/workspace.md`、`docs/architecture.md`（安全） | UI-2a |
-| 最近打开的文件夹、展开状态、侧栏宽度的存储 | Go 端设置存储、`docs/specs/workspace.md` | UI-2a |
-| 主题设置从 `localStorage`（`src/App.vue`）迁到用户数据目录，默认“跟随系统”，并在系统外观变化时实时跟随 | `src/App.vue`、Go 端设置存储、`docs/specs/theming.md` | UI-2a |
-| 在 `src/style.css` 中设置 `--nicole-checkbox-*`，使任务框满足[任务框](#任务框)的对比度要求 | `src/style.css`、`docs/specs/theming.md` | UI-2a |
+| 在 `src/style.css` 中设置 `--nicole-checkbox-*`，使任务框满足[任务框](#任务框)的对比度要求 | `src/style.css`、`docs/specs/theming.md` | UI-2a-2 |
 | 按根目录记住的标签页、选区、滚动位置和撤销历史的存储 | 前端、Go 端设置存储 | UI-2b |
 | 崩溃恢复的 Go 端接口：写入、读取、丢弃未保存内容的副本 | `workspace.go` 或新的 Go 服务、`docs/specs/workspace.md`（崩溃恢复） | UI-2b |
 | 命令注册表：“快捷键”字段支持分平台和多个键位；能注册不依赖编辑器的应用命令（`run` 不能只接受 `EditorView`）；为格式工具栏提供图标和分组；把 `src/editor/index.ts` 中 `coreCommands` 写死的 `Mod-b` 迁入注册表 | 命令注册表实现、`docs/architecture.md`（`EditorCommand`） | PR7 slash |
@@ -632,6 +623,8 @@ A 红绿灯（macOS）　B 隐藏侧栏　C 标签页　D 模式切换与大纲�
 | Nicole 的查找栏代替 CodeMirror 内置的查找面板（⌘F 不再打开内置面板） | 编辑器、前端 | PR9 查找替换 |
 | 全文搜索视图 | 前端、Go 端搜索 | PR10 全文搜索 |
 | 实现[选中文字后的操作](#选中文字后的操作)中的包裹规则（包括有选区时停用 `closeBrackets` 的包裹）、[链接与图片弹框](#链接与图片弹框)的打开方式，以及 ⌘ 加点击链接的处理 | 编辑器实现、`docs/specs/editor-modes.md`（当前实现一节） | PR12 |
+| Windows/Linux 的撤销/重做与 `.md` 文件关联实测 | 原生菜单、文件关联 | UI-2a-2 |
+| 输入法组合期间按 ⌘Z/⌘⇧Z：确认不打断组合，组合结束后撤销/重做正常 | 页面编辑命令、编辑器输入法处理 | UI-2a-2 |
 | 设置页的布局和完整设置项：在实现设置的 PR 之前单独设计 | 本文的[设置](#设置)一节 | 设置 PR |
 | macOS 应用菜单的“设置”项：Go 端菜单项触发页面中注册表的“设置”命令，菜单上显示的快捷键取自注册表 | `main.go`、命令注册表实现 | 设置 PR |
 | 多根目录：Go 端从单个根改为多个根，路径带根目录标识，全文搜索跨根目录；标签页拖动排序 | `workspace.go`、`docs/specs/workspace.md` | P1 |
