@@ -206,3 +206,15 @@ scripts/measure-memory.sh --budget 120
 ## 第三方声明
 
 界面图标内联自 Lucide 1.66.0，运行时没有新增图标依赖。Lucide 的 ISC 许可、Feather 来源图标的 MIT 许可以及本项目使用的图标清单见根目录的 [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md)。修改图标或升级 Lucide 时同步更新该声明和 `src/components/AppIcon.vue` 的版本注释。
+
+该文件登记在 `mygo.config.ts` 的 `resources` 中，由 MyGo 0.7.3 复制进每个平台的产物：
+
+| 平台 | 产物中的位置 |
+|---|---|
+| macOS | `Nicole.app/Contents/Resources/THIRD-PARTY-NOTICES.md`，DMG 内相同 |
+| Windows | `Nicole.exe` 同级的 `THIRD-PARTY-NOTICES.md`，NSIS 安装包携带整个安装目录 |
+| Linux | `/opt/nicole/THIRD-PARTY-NOTICES.md`（`.deb`），`.tar.gz` 解压目录顶层 |
+
+`package.yml` 和 `release.yml` 在各自平台校验该文件存在且与仓库内容一致；Linux 还核对 `.deb`（`release.yml` 另核对更新归档），Windows 核对 NSIS 安装包（`release.yml` 另核对更新归档）。不要把声明移出仓库根目录或改成构建时生成，否则这些校验会失败。
+
+运行时依赖的许可现状：前端 bundle 中的 Vue、CodeMirror/Lezer、`mygo-runtime`、`@ayingott/theme`（只引入 CSS，未引入 `fonts.css` 的 OFL 字体）和 Tailwind 生成的 CSS 均为 MIT；Go 二进制包含 MyGo（MIT）、`purego`（Apache-2.0）、`golang.org/x/text`（BSD-3-Clause）、Windows 构建额外的 `golang.org/x/net`（BSD-3-Clause）和 Go 标准库（BSD-3-Clause）。本 PR 只保证内联图标的声明随产物分发，上述依赖的完整许可文本是遗留工作；补全时把各依赖的 LICENSE 与 NOTICE 合并进声明或放进 `resources/`。引入 `@ayingott/theme/fonts.css` 时需同时补 OFL-1.1 声明。

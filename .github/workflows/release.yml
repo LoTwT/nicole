@@ -269,6 +269,15 @@ jobs:
           }
           # The ad-hoc signature must cover the whole bundle.
           codesign --verify --deep --strict --verbose=2 "$app"
+          notice="$app/Contents/Resources/THIRD-PARTY-NOTICES.md"
+          if [ ! -f "$notice" ] || ! cmp -s "$notice" THIRD-PARTY-NOTICES.md; then
+            echo "ERROR: the app must ship THIRD-PARTY-NOTICES.md unchanged in Contents/Resources"
+            exit 1
+          fi
+          if ! tar -tzf "$archive" | grep 'THIRD-PARTY-NOTICES[.]md' > /dev/null; then
+            echo "ERROR: $archive does not hold THIRD-PARTY-NOTICES.md"
+            exit 1
+          fi
 
   windows:
     name: Build and upload (windows/amd64)
@@ -331,9 +340,22 @@ jobs:
             cat "$manifest"
             exit 1
           }
+          notice="build/windows-amd64/THIRD-PARTY-NOTICES.md"
+          if [ ! -f "$notice" ] || ! cmp -s "$notice" THIRD-PARTY-NOTICES.md; then
+            echo "ERROR: the Windows build must ship THIRD-PARTY-NOTICES.md unchanged next to Nicole.exe"
+            exit 1
+          fi
           echo "--- installer contents (7z listing) ---"
           7z l "$setup" | grep -q 'Nicole\.exe' || {
             echo "ERROR: the installer does not hold Nicole.exe"
+            exit 1
+          }
+          7z l "$setup" | grep -q 'THIRD-PARTY-NOTICES[.]md' || {
+            echo "ERROR: the installer does not hold THIRD-PARTY-NOTICES.md"
+            exit 1
+          }
+          if ! tar -tzf "$archive" | grep 'THIRD-PARTY-NOTICES[.]md' > /dev/null; then
+            echo "ERROR: $archive does not hold THIRD-PARTY-NOTICES.md"
             exit 1
           }
 
@@ -397,6 +419,19 @@ jobs:
             cat "$manifest"
             exit 1
           }
+          notice="build/linux-amd64/THIRD-PARTY-NOTICES.md"
+          if [ ! -f "$notice" ] || ! cmp -s "$notice" THIRD-PARTY-NOTICES.md; then
+            echo "ERROR: the Linux build must ship THIRD-PARTY-NOTICES.md unchanged next to the executable"
+            exit 1
+          fi
+          if ! dpkg-deb -c "$deb" | grep -q 'opt/nicole/THIRD-PARTY-NOTICES.md'; then
+            echo "ERROR: $deb does not install THIRD-PARTY-NOTICES.md under /opt/nicole"
+            exit 1
+          fi
+          if ! tar -tzf "$archive" | grep 'THIRD-PARTY-NOTICES[.]md' > /dev/null; then
+            echo "ERROR: $archive does not hold THIRD-PARTY-NOTICES.md"
+            exit 1
+          fi
 
   publish:
     name: Verify the release assets and publish
