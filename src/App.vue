@@ -1015,14 +1015,13 @@ async function restoreTabsForRoot(
     let snapshot: EditorRestoreState | null = null;
     if (
       item.selection !== undefined ||
-      item.history !== undefined ||
       item.scrollTopLine !== undefined
     ) {
-      const lengthMatches =
-        item.textLength === undefined || item.textLength === text.length;
       snapshot = markRaw({
         selection: (item.selection as SavedSelection | null) ?? null,
-        history: lengthMatches ? item.history ?? null : null,
+        // Undo history is deliberately not restored from disk: it only lives
+        // while the app is running.
+        history: null,
         scrollTopLine: item.scrollTopLine ?? null,
         scrollTopOffset: item.scrollTopOffset ?? null,
       });
@@ -2041,10 +2040,8 @@ function storedTabsPayload(): { tabs: StoredTab[]; active: string } {
       kind: "markdown",
       path: tab.path,
       selection: clean ? snapshot?.selection ?? undefined : undefined,
-      history: clean ? snapshot?.history ?? undefined : undefined,
       scrollTopLine: snapshot?.scrollTopLine ?? undefined,
       scrollTopOffset: snapshot?.scrollTopOffset ?? undefined,
-      textLength: tab.text.length,
     };
   });
   return { tabs: stored, active: activePath };

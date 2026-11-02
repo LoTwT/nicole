@@ -1523,9 +1523,8 @@ describe("multi-tab shell", () => {
           selection: { ranges: [{ anchor: 3, head: 5 }], main: 0 },
           scrollTopLine: 1,
           scrollTopOffset: 0,
-          textLength: 11,
         },
-        { kind: "markdown", path: "b.md", textLength: 8 },
+        { kind: "markdown", path: "b.md" },
       ],
       active: "b.md",
     });

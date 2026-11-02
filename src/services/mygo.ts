@@ -142,22 +142,17 @@ export interface SingleFileSelection {
 /**
  * StoredTab is the display and restore state of one tab. Path is relative to
  * the workspace and is only used to reopen the file or placeholder; it never
- * authorizes filesystem access. Selection and history are opaque CodeMirror
- * JSON values and are validated for size and JSON syntax, not interpreted.
+ * authorizes filesystem access. Selection is an opaque CodeMirror JSON value
+ * validated for size and JSON syntax, not interpreted. Undo history is kept
+ * only in memory and deliberately not stored across restarts.
  */
 export interface StoredTab {
   kind: string;
   path: string;
   size?: number;
   selection?: unknown;
-  history?: unknown;
   scrollTopLine?: number;
   scrollTopOffset?: number;
-  /**
-   * TextLength lets the page drop a history snapshot after the file changed
-   * on disk between sessions.
-   */
-  textLength?: number;
 }
 
 /** StoredTabs is one workspace root's remembered tab layout. */

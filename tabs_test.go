@@ -38,16 +38,13 @@ func jsonEqual(left, right []byte) bool {
 func TestTabsRoundTrip(t *testing.T) {
 	service, root, filePath := newTestTabs(t)
 	selection := json.RawMessage(`{"ranges":[{"anchor":3,"head":7}],"main":0}`)
-	history := json.RawMessage(`{"done":[],"undone":[]}`)
 	tabs := []StoredTab{
 		{
 			Kind:            tabKindMarkdown,
 			Path:            "essay/README.md",
 			Selection:       selection,
-			History:         history,
 			ScrollTopLine:   12,
 			ScrollTopOffset: 6.5,
-			TextLength:      120,
 		},
 		{Kind: tabKindPreview, Path: "assets/cover.png", Size: 2048},
 	}
@@ -67,9 +64,6 @@ func TestTabsRoundTrip(t *testing.T) {
 	}
 	if !jsonEqual(got.Tabs[0].Selection, selection) {
 		t.Errorf("Selection = %s, want %s", got.Tabs[0].Selection, selection)
-	}
-	if !jsonEqual(got.Tabs[0].History, history) {
-		t.Errorf("History = %s, want %s", got.Tabs[0].History, history)
 	}
 	if got.Tabs[0].ScrollTopLine != 12 || got.Tabs[0].ScrollTopOffset != 6.5 {
 		t.Errorf("scroll state = %d/%v, want 12/6.5", got.Tabs[0].ScrollTopLine, got.Tabs[0].ScrollTopOffset)
@@ -144,7 +138,7 @@ func TestTabsSanitizesLayout(t *testing.T) {
 		{Kind: tabKindMarkdown, Path: `dir\file.md`},
 		{Kind: tabKindMarkdown, Path: "dir:file.md"},
 		{Kind: tabKindMarkdown, Path: "."},
-		{Kind: tabKindMarkdown, Path: "a.md", Selection: json.RawMessage(`{not json`), History: json.RawMessage(`[`), TextLength: -4},
+		{Kind: tabKindMarkdown, Path: "a.md", Selection: json.RawMessage(`{not json`)},
 		{Kind: tabKindMarkdown, Path: "a.md"},
 		{Kind: tabKindPreview, Path: "cover.png", Size: -2, ScrollTopLine: -9},
 	}
@@ -164,11 +158,8 @@ func TestTabsSanitizesLayout(t *testing.T) {
 	if got.Tabs[0].Path != "a.md" || got.Tabs[1].Path != "cover.png" {
 		t.Errorf("kept tabs = %+v", got.Tabs)
 	}
-	if got.Tabs[0].Selection != nil || got.Tabs[0].History != nil {
-		t.Errorf("invalid JSON snapshots were kept: %+v", got.Tabs[0])
-	}
-	if got.Tabs[0].TextLength != 0 {
-		t.Errorf("TextLength = %d, want 0", got.Tabs[0].TextLength)
+	if got.Tabs[0].Selection != nil {
+		t.Errorf("invalid JSON selection was kept: %+v", got.Tabs[0])
 	}
 	if got.Tabs[1].Size != 0 || got.Tabs[1].ScrollTopLine != 0 {
 		t.Errorf("negative preview values were kept: %+v", got.Tabs[1])
@@ -178,12 +169,10 @@ func TestTabsSanitizesLayout(t *testing.T) {
 func TestTabsDropsOversizedSnapshots(t *testing.T) {
 	service, root, _ := newTestTabs(t)
 	bigSelection := json.RawMessage(`"` + strings.Repeat("x", maxSelectionBytes) + `"`)
-	bigHistory := json.RawMessage(`"` + strings.Repeat("x", maxHistoryBytes) + `"`)
 	if err := service.Save(root, []StoredTab{{
 		Kind:      tabKindMarkdown,
 		Path:      "big.md",
 		Selection: bigSelection,
-		History:   bigHistory,
 	}}, "big.md"); err != nil {
 		t.Fatal(err)
 	}
@@ -193,9 +182,6 @@ func TestTabsDropsOversizedSnapshots(t *testing.T) {
 	}
 	if got.Tabs[0].Selection != nil {
 		t.Errorf("oversized selection was kept")
-	}
-	if got.Tabs[0].History != nil {
-		t.Errorf("oversized history was kept")
 	}
 }
 

@@ -18,8 +18,7 @@ const (
 
 	maxStoredTabs       = 200
 	maxSelectionBytes   = 1 << 20
-	maxHistoryBytes     = 8 << 20
-	maxTabSnapshotBytes = 32 << 20
+	maxTabSnapshotBytes = 8 << 20
 	tabKindMarkdown     = "markdown"
 	tabKindPreview      = "preview"
 )
@@ -31,19 +30,16 @@ var (
 
 // StoredTab is the display and restore state of one tab. Path is relative to
 // the workspace and is only used to reopen the file or placeholder; it never
-// authorizes filesystem access. Selection and history are opaque CodeMirror
-// JSON values and are validated for size and JSON syntax, not interpreted.
+// authorizes filesystem access. Selection is an opaque CodeMirror JSON value
+// validated for size and JSON syntax, not interpreted. Undo history is kept
+// only in memory and deliberately not stored across restarts.
 type StoredTab struct {
 	Kind            string          `json:"kind"`
 	Path            string          `json:"path"`
 	Size            int64           `json:"size,omitempty"`
 	Selection       json.RawMessage `json:"selection,omitempty"`
-	History         json.RawMessage `json:"history,omitempty"`
 	ScrollTopLine   int             `json:"scrollTopLine,omitempty"`
 	ScrollTopOffset float64         `json:"scrollTopOffset,omitempty"`
-	// TextLength lets the page drop a history snapshot after the file changed
-	// on disk between sessions.
-	TextLength int `json:"textLength,omitempty"`
 }
 
 // StoredTabs is one workspace root's remembered tab layout.
@@ -230,7 +226,6 @@ func sanitizeStoredTabs(tabs []StoredTab, active string) StoredTabs {
 			Kind:          tab.Kind,
 			Path:          path.Clean(tab.Path),
 			ScrollTopLine: max(0, tab.ScrollTopLine),
-			TextLength:    max(0, tab.TextLength),
 		}
 		if tab.Kind == tabKindPreview {
 			clean.Size = max(0, tab.Size)
@@ -240,7 +235,6 @@ func sanitizeStoredTabs(tabs []StoredTab, active string) StoredTabs {
 		}
 		if tab.Kind == tabKindMarkdown {
 			clean.Selection, snapshotBudget = keepSnapshot(tab.Selection, maxSelectionBytes, snapshotBudget)
-			clean.History, snapshotBudget = keepSnapshot(tab.History, maxHistoryBytes, snapshotBudget)
 		}
 		kept = append(kept, clean)
 	}

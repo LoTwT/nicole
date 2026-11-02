@@ -31,7 +31,7 @@ MyGo 的接口与版本情况见 [MyGo 参考](references/mygo.md)。
 
 ```text
 src/
-  App.vue                 单窗口外壳：装订册布局、单个文档、自动保存、外部变化与主题
+  App.vue                 单窗口外壳：装订册布局、多标签文档模型、自动保存、外部变化与主题
   main.ts                 挂载 Vue
   sample.ts               示例文本
   style.css               Tailwind、主题和字体变量
@@ -43,12 +43,14 @@ src/
     paths.ts              工作区相对路径、主目录缩写
     platform.ts           平台判断、快捷键文字/键帽拆分与右键菜单项
     status.ts             保存状态、横幅优先级和标签页圆点
-    watch-events.ts       监听事件与当前文档、文件树刷新范围的对应
+    tabs.ts               标签页模型、同名区分、关闭问题与后台快照映射
+    commands.ts           标签页命令的 id、标题、键位与执行函数
+    watch-events.ts       监听事件与已打开文档、文件树刷新范围的对应
   components/             界面组件
     AppSidebar.vue        侧栏外壳、宽度拖动、底部切换文件夹/主题/设置入口
     FileTree.vue          按需读取的文件树、右键菜单、行内新建与重命名
     FileTreeNode.vue      递归树节点与键盘可见结构
-    TopBar.vue            单文档标签、模式切换、侧栏与大纲入口
+    TopBar.vue            多标签标签栏、模式切换、侧栏与大纲入口
     StatusBar.vue         保存状态与临时提示
     AppBanner.vue         外部修改、删除和保存失败横幅
     AppDialog.vue         模态对话框、焦点陷阱与焦点恢复
@@ -68,7 +70,8 @@ src/
     workspace.ts          薄封装（选择/打开文件夹、列文件、读写、关窗保存）
     files.ts              文件树与文件操作
     settings.ts           全局设置和主题迁移
-    single-file.ts        单文件标签页的授权与读写
+    tabs.ts               当前根目录的标签页布局
+    single-file.ts        单文件标签页的授权、读写与显示
     menu.ts               原生右键菜单
     open-file.ts          系统“打开方式”事件
     watch.ts              工作区文件监听
@@ -81,10 +84,11 @@ Go（main.go）
   Workspace               选择文件夹、列 Markdown、代际绑定写入、关窗保存（当前）
   File tree / operations  ListDirectory、新建、重命名、废纸篓、默认应用、Finder（当前）
   Workspace.Watch         mygo.WatchFiles 的 Channel 封装，过滤自写（当前）
-  SingleFileService       工作区外单个 .md 的按文件授权与读写（当前）
+  SingleFileService       工作区外单个 .md 的按文件授权、读写与显示（当前）
   OpenedFiles             系统“打开方式”的路径队列与 app:open-file 信号（当前）
   NativeMenu              页面请求的原生右键菜单（当前）
   Settings                settings.json、最近文件夹、展开状态、侧栏宽度、主题（当前）
+  WorkspaceTabs           tabs.json、当前根目录的标签页布局与活动标签（当前）
   Assets                  图片存到 assets/，读剪贴板和原生拖入路径（当前）
   Image protocol          只映射当前工作区的图片，并阻止顶层导航（当前；启动时注册）
   Window state            启动时在光标屏幕居中，沿用上次尺寸（当前）
@@ -92,7 +96,7 @@ Go（main.go）
   Export / Recovery       导出与崩溃恢复（后续）
 ```
 
-`main.go` 负责注册插件、绑定服务、注册图片协议、设置菜单和创建窗口；`workspace.go` 实现工作区与路径守卫，`workspace_tree.go` 实现文件树和文件操作，`workspace_watch.go` 封装监听，`single_file.go` 实现单文件授权，`settings.go` 实现设置存储，`menu.go` 实现菜单与原生右键菜单，`assets.go` 实现图片保存，`protocol.go` 实现图片协议，`window_options.go` 定义窗口标题栏，`window_state.go` 实现窗口状态的居中策略。`index.html` 是 Vite 入口，`mygo.config.ts` 描述应用、文件关联、前端构建、生成客户端的位置和输出目录。
+`main.go` 负责注册插件、绑定服务、注册图片协议、设置菜单和创建窗口；`workspace.go` 实现工作区与路径守卫，`workspace_tree.go` 实现文件树和文件操作，`workspace_watch.go` 封装监听，`single_file.go` 实现单文件授权，`settings.go` 实现设置存储，`tabs.go` 实现标签页布局存储，`menu.go` 实现菜单与原生右键菜单，`assets.go` 实现图片保存，`protocol.go` 实现图片协议，`window_options.go` 定义窗口标题栏，`window_state.go` 实现窗口状态的居中策略。`index.html` 是 Vite 入口，`mygo.config.ts` 描述应用、文件关联、前端构建、生成客户端的位置和输出目录。
 
 ## 依赖边界
 
@@ -118,13 +122,14 @@ Go（main.go）
     doc,           // 初始 Markdown 文本
     mode,          // 默认 "live"
     commands,      // 应用层命令；目前注册其中带 key 的绑定，核心 Mod-b 加粗始终可用
+    restore,       // 后台标签页的选区、顶部行、行内偏移和 historyField JSON
     resolveImage,  // 把图片 URL 解析成可显示地址；返回 null 时保留原文
     onPasteImage,  // 剪贴板里有图片时回调，参数是插入凭据
     onChange,      // 文档变化时回调全文
   }): EditorHandle
   ```
 
-  `EditorHandle` 提供 `view`、`mode`、`setMode`、`replaceDocument`、`undo`、`redo`、`containsPoint`、`createInsertionTicket`、`insertImages`、`focus` 和 `destroy`。`replaceDocument` 把磁盘上的新文本作为一次差异修改应用，映射选区并把可见区域顶部保持在原行。`undo()` / `redo()` 在输入法组合期间返回 `false`，不执行历史；`containsPoint(x, y)` 按视口坐标判断落点是否在编辑器内；`createInsertionTicket(x, y)` 按视口坐标创建插入凭据，坐标不在编辑区内时返回 null；`insertImages(ticket, markdown)` 在一个事务里插入文本，因此是一个撤销步。编辑器持续对凭据做位置映射，中文输入法组合期间先排队，组合结束后再插入；多条排队插入逐条处理，前一条插入会映射后一条的位置。`onPasteImage` 只把粘贴事件交给应用层，保存图片和生成 Markdown 由 `src/image-insertion.ts` 经 `src/services/assets.ts` 完成；编辑区不接触 MyGo。三种模式通过同一个 `Compartment` 重配置，`EditorView` 实例不变。
+  `EditorHandle` 提供 `view`、`mode`、`setMode`、`replaceDocument`、`undo`、`redo`、`containsPoint`、`createInsertionTicket`、`insertImages`、`getRestoreState`、`focus` 和 `destroy`。`getRestoreState` 序列化选区、`historyField`、顶部行号和行内像素偏移；后台标签页销毁视图时只保留这份状态和文本。`replaceDocument` 把磁盘上的新文本作为一次差异修改应用，映射选区并把可见区域顶部保持在原行。`undo()` / `redo()` 在输入法组合期间返回 `false`，不执行历史；`containsPoint(x, y)` 按视口坐标判断落点是否在编辑器内；`createInsertionTicket(x, y)` 按视口坐标创建插入凭据，坐标不在编辑区内时返回 null；`insertImages(ticket, markdown)` 在一个事务里插入文本，因此是一个撤销步。编辑器持续对凭据做位置映射，中文输入法组合期间先排队，组合结束后再插入；多条排队插入逐条处理，前一条插入会映射后一条的位置。`onPasteImage` 只把粘贴事件交给应用层，保存图片和生成 Markdown 由 `src/image-insertion.ts` 经 `src/services/assets.ts` 完成；编辑区不接触 MyGo。三种模式通过同一个 `Compartment` 重配置，`EditorView` 实例不变。
 
 - 编辑器主题直接读取 CSS 变量；界面切换亮暗时只改 `<html>` 上的 `.dark`，不重建编辑器（见[主题与字体](specs/theming.md#编辑器主题)）。
 - 命令注册表只有一份，各入口共用，见 [Slash 命令](specs/slash-commands.md#命令注册表)。
@@ -139,8 +144,9 @@ Go（main.go）
 - `Workspace` 提供 `ChooseFolder`、`PickFolder`、`OpenFolder`、`ListFiles`、`ReadFile`、`WriteFile`、`ConfirmDiscard` 和 `FinishClose`，以及文件树的 `ListDirectory`、`CreateFile`、`CreateFolder`、`RenameEntry`、`TrashEntry`、`OpenWithDefaultApp`、`RevealEntry` 和 `Watch`。`PickFolder` 只返回用户在原生对话框中选择的路径；`OpenFolder` 只接受该路径、Go 记录的最近文件夹或系统提供的文件的所在文件夹，页面不能凭任意字符串切换根目录。只有“系统提供文件的父目录”这一来源会拒绝根目录、盘符根目录和主目录；用户主动选择、当前根目录和最近列表不受限制。成功的 `open` 由 Go 写入最近列表。写操作携带打开时返回的 `generation`，路径和文件类型的规则见[工作区与文件](specs/workspace.md#路径守卫)和[写入保证](specs/workspace.md#写入保证)。
 - 关窗时 Go 发出携带 `token` 的 `workspace:save-before-close` 事件并阻止关闭；前端保存后调用 `FinishClose(token, saved)`。保存失败时由 Go 弹出确认框，只有用户明确选择放弃才关窗；页面无响应时最多等待 5 秒。
 - `Workspace.Watch(generation)` 用 `*mygo.Channel[FileWatchPart]` 流式返回 `ready` 和事件批次；底层是 `mygo.WatchFiles`，在 Go 端过滤 Nicole 自己的写入（见[工作区与文件](specs/workspace.md#忽略-nicole-自己的写入)）。工作区状态本身是可替换的单例，后续协议 handler 在启动时注册、运行时读取同一个状态。
-- `SingleFileService` 提供 `ChooseSingleFile`、`AcceptSingleFile`、`DismissOfferedFile`、`ReadSingleFile`、`WriteSingleFile` 和 `ReleaseSingleFile`；授权按解析后的绝对路径保存，只有对话框选择或 `App.OnOpenFile` 提供的文件才能被接受。打开系统文件的父目录是一次性授权：`OpenFolder` 成功后 Go 消耗对应提供项，取消时页面调用 `DismissOfferedFile`。`OpenedFiles` 暂存系统传入的路径；`app:open-file` 只通知“有新文件”，页面收到信号后调用 `TakePendingOpenedFiles` 一次取走队列，既覆盖启动时到达的文件，也不会重复交付同一个文件。
+- `SingleFileService` 提供 `ChooseSingleFile`、`AcceptSingleFile`、`DismissOfferedFile`、`ReadSingleFile`、`WriteSingleFile`、`RevealSingleFile` 和 `ReleaseSingleFile`；授权按解析后的绝对路径保存，只有对话框选择或 `App.OnOpenFile` 提供的文件才能被接受。打开系统文件的父目录是一次性授权：`OpenFolder` 成功后 Go 消耗对应提供项，取消时页面调用 `DismissOfferedFile`。`OpenedFiles` 暂存系统传入的路径；`app:open-file` 只通知“有新文件”，页面收到信号后调用 `TakePendingOpenedFiles` 一次取走队列，既覆盖启动时到达的文件，也不会重复交付同一个文件。
 - `Settings` 提供 `Get`、`MigrateLegacyTheme`、`SetTheme`、`SetSidebarWidth`、`SetExpandedFolders`、`AddRecentFolder` 和 `RemoveRecentFolder`；`AddRecentFolder` 只接受当前已打开的根目录，最近列表由 `Workspace.open` 写入；`SetTheme` 同时调用 `mygo.Theme.SetSource` 同步原生外观。
+- `WorkspaceTabs` 提供 `Get(root)` 和 `Save(root, tabs, active)`，只接受当前打开的根目录；标签路径是相对路径，只用于显示和恢复，不构成文件授权。格式和限制见[工作区与文件](specs/workspace.md#标签页存储)。
 - `NativeMenu.PopupNativeMenu` 在调用窗口的页面坐标显示原生菜单，返回选中项 ID 或空字符串；页面最多传 64 项，ID 唯一。正文的 WebView 右键菜单由 `Page.OnContextMenu` 裁剪，见[安全](#安全)。
 - 搜索通过 Channel 流式返回结果（见[工作区与文件](specs/workspace.md#搜索)）。
 - `Assets` 提供 `PasteImage(docPath, generation)` 和 `ImportImages(docPath, generation, dropToken)`，返回保存后的工作区相对路径和 Markdown。粘贴时 Go 先读剪贴板里的本地文件列表；列表非空时只导入其中的图片，没有图片就返回“剪贴板没有图片”，只有列表为空时才读 PNG 位图；拖入时 Go 从 `Window.OnFileDrop` 保存的路径中按一次性 token 取文件。页面不再传拖入路径，图片字节也不经过 IPC（见[工作区与文件](specs/workspace.md#图片)）。
@@ -162,7 +168,7 @@ Go（main.go）
 - 系统“打开方式”传入的路径先记为“已提供”，不会自动授权；`AcceptSingleFile` 只接受已经提供的路径，页面不能凭任意字符串自行授权。打开父目录是一次性授权，成功打开后由 Go 消耗，取消或失败后由页面调用 `DismissOfferedFile` 消耗；当授权来源只是系统文件时，根目录、盘符根目录和主目录在前后端都拒绝。`app:open-file` 只是“有新文件”的信号，页面收到后调用 `TakePendingOpenedFiles` 清空队列，避免事件与启动时读取重复交付。
 - 原生右键菜单只接收菜单项 ID、文字、快捷键、禁用状态和页面坐标，不接收命令或文件内容；菜单项由 Go 组装，选择结果只把 ID 返回页面。正文的 WebView 右键菜单删除“重新载入”“后退”“前进”，非开发构建还删除“检查元素”。
 - 文件关联只让系统把 `.md` 路径交给 `App.OnOpenFile`；在用户于页面确认“只打开这个文件”之前，Go 不读写该文件。
-- 设置存储和单文件授权都只使用 Go 的文件接口；测试和开发构建通过 `NICOLE_USER_DATA_DIR` 指向临时目录，避免修改用户正在使用的数据（见[开发](development.md#数据隔离)）。应用启动时请求单实例锁；不同的 `NICOLE_USER_DATA_DIR` 使用独立的锁命名空间，因此隔离的测试/开发实例不会被误转交给安装版。
+- 设置存储、标签页布局和单文件授权都只使用 Go 的文件接口；测试和开发构建通过 `NICOLE_USER_DATA_DIR` 指向临时目录，避免修改用户正在使用的数据（见[开发](development.md#数据隔离)）。标签页布局只接受当前根目录，路径只用于显示和恢复，不能授权访问文件。应用启动时请求单实例锁；不同的 `NICOLE_USER_DATA_DIR` 使用独立的锁命名空间，因此隔离的测试/开发实例不会被误转交给安装版。
 - 图片协议只映射当前工作区，handler 在启动时注册，运行时读取可替换的工作区状态。
 - 图片协议的 URL 带 `generation`，切换文件夹后旧请求返回 404，不会读到新工作区里的同名文件。
 - 拖入路径只从 `Window.OnFileDrop` 进入 Go；页面只能提交约 10 秒有效、一次性的 token，不能指定任意路径。源文件是符号链接或非常规文件时拒绝读取。
