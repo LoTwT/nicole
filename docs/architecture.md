@@ -101,33 +101,53 @@ Go（main.go）
 - `main.go` 还注册 MyGo 的 `updater.Plugin`，绑定工作区、图片、设置、单文件、打开方式和原生菜单服务，注册图片协议并设置应用菜单；文件监听由 `Workspace.Watch` 在页面调用时开始。更新源、版本注入和发布流程见[发布与自动更新](release.md)。
 - `src/services/` 是生成的 `mygo.ts` 客户端上的薄封装，不承载业务逻辑。`app.ts` 只把 `Application.Info` 包装成 `getAppInfo`；`workspace.ts` 包装 `Workspace` 的 Markdown 方法、`PickFolder`/`OpenFolder` 和关窗保存事件；`files.ts`、`settings.ts`、`single-file.ts`、`menu.ts`、`open-file.ts` 和 `watch.ts` 分别包装对应服务；`clipboard.ts` 只负责复制界面文字。封装不拼接路径，也不缓存文件内容。
 - `src/app/` 只放不依赖 Vue 组件实例的界面逻辑，`src/components/` 只负责渲染和交互事件；`App.vue` 负责把这些模块与 `services/` 接起来，不直接调用 MyGo。
+- `src/commands/` 保存唯一命令注册表、格式与插入命令、键位显示和拼音搜索/最近使用逻辑；只依赖 CodeMirror 和 `src/app/platform.ts`，不依赖 Vue 或 MyGo。`src/editor/slash.ts` 负责 slash 触发、查询和菜单状态，`src/components/SlashMenu.vue` 只负责渲染和定位。
 - `createEditor` 的接口为：
 
   ```ts
   type EditorMode = "live" | "immersive" | "source";
 
-  interface EditorCommand {
+  interface CommandKeyBinding {
+    key?: string; // CodeMirror 键位，例如 "Mod-b"
+    mac?: string;
+    win?: string;
+    linux?: string;
+  }
+
+  interface CommandContext {
+    view: EditorView | null; // 应用命令不依赖编辑器
+    platform: AppPlatform;
+  }
+
+  interface CommandDefinition {
     id: string;
     label: string;
-    key?: string; // CodeMirror 键位，例如 "Mod-b"
-    run: (view: EditorView) => boolean;
+    pinyin?: string;        // 额外拼音和英文别名
+    icon?: string;          // 供格式工具栏使用
+    group: "inline" | "paragraph" | "block" | "insert";
+    scope: "editor" | "app";
+    glyph?: string;         // slash 菜单 22px 示意
+    keys?: readonly CommandKeyBinding[];
+    inSlashMenu?: boolean;
+    run: (context: CommandContext) => boolean;
   }
 
   createEditor({
     parent,        // 挂载的 DOM 元素
     doc,           // 初始 Markdown 文本
     mode,          // 默认 "live"
-    commands,      // 应用层命令；目前注册其中带 key 的绑定，核心 Mod-b 加粗始终可用
+    platform,      // 命令上下文里的平台，默认按 navigator.platform 推断
+    commands,      // 本次编辑器额外的命令；共享注册表始终合并进来
     resolveImage,  // 把图片 URL 解析成可显示地址；返回 null 时保留原文
     onPasteImage,  // 剪贴板里有图片时回调，参数是插入凭据
     onChange,      // 文档变化时回调全文
   }): EditorHandle
   ```
 
-  `EditorHandle` 提供 `view`、`mode`、`setMode`、`replaceDocument`、`undo`、`redo`、`containsPoint`、`createInsertionTicket`、`insertImages`、`focus` 和 `destroy`。`replaceDocument` 把磁盘上的新文本作为一次差异修改应用，映射选区并把可见区域顶部保持在原行。`undo()` / `redo()` 在输入法组合期间返回 `false`，不执行历史；`containsPoint(x, y)` 按视口坐标判断落点是否在编辑器内；`createInsertionTicket(x, y)` 按视口坐标创建插入凭据，坐标不在编辑区内时返回 null；`insertImages(ticket, markdown)` 在一个事务里插入文本，因此是一个撤销步。编辑器持续对凭据做位置映射，中文输入法组合期间先排队，组合结束后再插入；多条排队插入逐条处理，前一条插入会映射后一条的位置。`onPasteImage` 只把粘贴事件交给应用层，保存图片和生成 Markdown 由 `src/image-insertion.ts` 经 `src/services/assets.ts` 完成；编辑区不接触 MyGo。三种模式通过同一个 `Compartment` 重配置，`EditorView` 实例不变。
+  `EditorHandle` 提供 `view`、`mode`、`setMode`、`replaceDocument`、`undo`、`redo`、`containsPoint`、`createInsertionTicket`、`insertImages`、`focus` 和 `destroy`。`replaceDocument` 把磁盘上的新文本作为一次差异修改应用，映射选区并把可见区域顶部保持在原行。`undo()` / `redo()` 在输入法组合期间返回 `false`，不执行历史；`containsPoint(x, y)` 按视口坐标判断落点是否在编辑器内；`createInsertionTicket(x, y)` 按视口坐标创建插入凭据，坐标不在编辑区内时返回 null；`insertImages(ticket, markdown)` 在一个事务里插入文本，因此是一个撤销步。编辑器持续对凭据做位置映射，中文输入法组合期间先排队，组合结束后再插入；多条排队插入逐条处理，前一条插入会映射后一条的位置。`onPasteImage` 只把粘贴事件交给应用层，保存图片和生成 Markdown 由 `src/image-insertion.ts` 经 `src/services/assets.ts` 完成；编辑区不接触 MyGo。三种模式通过同一个 `Compartment` 重配置，`EditorView` 实例不变。编辑器命令的键位由注册表生成，统一通过 `Prec.highest` 注册，组合输入期间返回 `false` 交给输入法。
 
 - 编辑器主题直接读取 CSS 变量；界面切换亮暗时只改 `<html>` 上的 `.dark`，不重建编辑器（见[主题与字体](specs/theming.md#编辑器主题)）。
-- 命令注册表只有一份，各入口共用，见 [Slash 命令](specs/slash-commands.md#命令注册表)。
+- 命令注册表只有一份，各入口共用，见 [Slash 命令](specs/slash-commands.md#命令注册表)。`formatCommandShortcut` 把注册表键位转成平台显示文本；`pinyin-pro` 只在第一次打开 slash 菜单时动态加载，最近使用记录存放在 `localStorage`。
 - 编辑模式的设计和限制见[编辑模式](specs/editor-modes.md)。
 
 ## IPC 用法

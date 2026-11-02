@@ -173,7 +173,7 @@ GOTOOLCHAIN=auto go vet ./...
 GOTOOLCHAIN=auto go test ./...
 ```
 
-Vitest 覆盖三种模式的切换；挂载 `App.vue` 后切换亮暗主题，编辑器 DOM、选区和撤销历史保持不变；沉浸模式的 `Mod-b` 加粗；应用命令（如 `Mod-i`）优先于 `basicSetup` 默认键位；`localStorage` 主题迁移和 `app:open-file` 事件接收；装订册布局、文件树按需读取与键盘导航、右键菜单调用、状态栏和横幅优先级、外部修改与图片 `create` 事件的区分、单文件打开与替换前确认、文件夹切换的防重入和取消保护、对话框焦点陷阱；图片 URL 的解析，粘贴、拖入 token 链路，插入凭据的位置映射、组合输入排队和撤销步；`src/services/` 的薄封装。Go 测试覆盖绑定服务、文件树和排除规则、文件操作的路径守卫与 generation、监听自写过滤、单文件授权、设置存储与测试数据隔离、图片协议的路径守卫与 Content-Type、drop token 的一次性和过期、图片保存的文件名、并发写入与原子失败。
+Vitest 覆盖三种模式的切换；挂载 `App.vue` 后切换亮暗主题，编辑器 DOM、选区和撤销历史保持不变；沉浸模式的 `Mod-b` 加粗；应用命令（如 `Mod-i`）优先于 `basicSetup` 默认键位；命令注册表的键位分平台显示、格式/段落命令和 `Prec.highest` 覆盖、slash 菜单的 `/` 与 `、` 触发、选区替换、拼音与最近使用排序、无匹配关闭并保留文字、执行后删除查询、翻转定位、组合输入期间的按键归属；`localStorage` 主题迁移和 `app:open-file` 事件接收；装订册布局、文件树按需读取与键盘导航、右键菜单调用、状态栏和横幅优先级、外部修改与图片 `create` 事件的区分、单文件打开与替换前确认、文件夹切换的防重入和取消保护、对话框焦点陷阱；图片 URL 的解析，粘贴、拖入 token 链路，插入凭据的位置映射、组合输入排队和撤销步；`src/services/` 的薄封装。Go 测试覆盖绑定服务、文件树和排除规则、文件操作的路径守卫与 generation、监听自写过滤、单文件授权、设置存储与测试数据隔离、图片协议的路径守卫与 Content-Type、drop token 的一次性和过期、图片保存的文件名、并发写入与原子失败。
 
 ### 内存测量
 
@@ -205,4 +205,4 @@ scripts/measure-memory.sh --budget 120
 
 ## 第三方声明
 
-界面图标内联自 Lucide 1.66.0，运行时没有新增图标依赖。Lucide 的 ISC 许可、Feather 来源图标的 MIT 许可以及本项目使用的图标清单见根目录的 [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md)。修改图标或升级 Lucide 时同步更新该声明和 `src/components/AppIcon.vue` 的版本注释。
+界面图标内联自 Lucide 1.66.0，运行时没有新增图标依赖。Lucide 的 ISC 许可、Feather 来源图标的 MIT 许可以及本项目使用的图标清单见根目录的 [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md)。修改图标或升级 Lucide 时同步更新该声明和 `src/components/AppIcon.vue` 的版本注释。`pinyin-pro` 使用 MIT 许可，声明同样在该文件中；升级它时同步更新版本号和许可文本。

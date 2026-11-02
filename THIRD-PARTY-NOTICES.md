@@ -2,6 +2,34 @@
 
 本项目包含或派生自以下第三方作品。发布和分发时需要保留本文件和相应的许可文本。
 
+## pinyin-pro 3.29.5
+
+用于 slash 菜单和命令面板的拼音搜索。`pinyin-pro` 在第一次打开 slash 菜单时动态加载。
+
+来源：https://github.com/zh-lx/pinyin-pro
+
+### MIT License
+
+Copyright (c) 2022-present zh-lx
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
 ## Lucide 1.66.0
 
 `src/components/AppIcon.vue` 内联了 Lucide 1.66.0 的以下图标几何数据：

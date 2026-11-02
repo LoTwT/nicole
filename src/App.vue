@@ -1,5 +1,12 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
+import {
+  computed,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  shallowRef,
+} from "vue";
 
 import {
   detectLineEndings,
@@ -36,6 +43,7 @@ import AppDialog from "./components/AppDialog.vue";
 import AppSidebar from "./components/AppSidebar.vue";
 import EmptyState from "./components/EmptyState.vue";
 import NonMarkdownPlaceholder from "./components/NonMarkdownPlaceholder.vue";
+import SlashMenu from "./components/SlashMenu.vue";
 import StatusBar from "./components/StatusBar.vue";
 import TopBar, { type TopBarTab } from "./components/TopBar.vue";
 import {
@@ -43,6 +51,11 @@ import {
   type EditorHandle,
   type EditorMode,
 } from "./editor";
+import {
+  createSlashMenu,
+  type SlashMenuController,
+  type SlashMenuSnapshot,
+} from "./editor/slash";
 import { createImageInsertion } from "./image-insertion";
 import { resolveImageUrl } from "./image-url";
 import { getAppInfo, type AppInfo } from "./services/app";
@@ -181,6 +194,8 @@ let dialogOpen = false;
 let folderOperation: Promise<boolean> | null = null;
 
 let editor: EditorHandle | null = null;
+let slashMenu: SlashMenuController | null = null;
+const slashState = shallowRef<SlashMenuSnapshot>(null);
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let savingDisplayTimer: ReturnType<typeof setTimeout> | null = null;
 let noticeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -800,6 +815,9 @@ async function prepareToLeave(): Promise<boolean> {
 }
 
 function clearEditor() {
+  slashMenu?.destroy();
+  slashMenu = null;
+  slashState.value = null;
   editor?.destroy();
   editor = null;
   editorHost.value?.replaceChildren();
@@ -840,6 +858,7 @@ function mountDocument(text: string, focus = true) {
     parent: host,
     doc: text,
     mode: mode.value,
+    platform: platform.value,
     resolveImage: (src) =>
       doc.kind === "workspace"
         ? resolveImageUrl(src, doc.path, workspace.value?.generation ?? 0)
@@ -847,9 +866,24 @@ function mountDocument(text: string, focus = true) {
     onPasteImage: (ticket) => imageInsertion.handlePaste(ticket),
     onChange: scheduleSave,
   });
+  slashMenu = createSlashMenu({
+    view: editor.view,
+    platform: platform.value,
+    onChange: (state) => {
+      slashState.value = state;
+    },
+  });
   if (focus) {
     editor.focus();
   }
+}
+
+function executeSlashCommand(index: number) {
+  slashMenu?.execute(index);
+}
+
+function highlightSlashCommand(index: number) {
+  slashMenu?.highlight(index);
 }
 
 function loadMarkdownDocument(
@@ -1949,6 +1983,13 @@ defineExpose({
         :notice-tone="notice?.tone"
       />
     </div>
+
+    <SlashMenu
+      v-if="slashState"
+      :state="slashState"
+      @select="executeSlashCommand"
+      @highlight="highlightSlashCommand"
+    />
 
     <AppDialog
       :open="dialog !== null"

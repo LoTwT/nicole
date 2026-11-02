@@ -1,15 +1,9 @@
 import type { EditorView } from "@codemirror/view";
 
-export type EditorMode = "live" | "immersive" | "source";
+import type { AppPlatform } from "../app/platform";
+import type { CommandDefinition } from "../commands/types";
 
-export interface EditorCommand {
-  /** Stable identifier shared by menus, keymaps and the command palette. */
-  id: string;
-  label: string;
-  /** CodeMirror key binding, for example `Mod-b`. */
-  key?: string;
-  run: (view: EditorView) => boolean;
-}
+export type EditorMode = "live" | "immersive" | "source";
 
 /** Resolves a Markdown image URL for rendering; return null to keep the source visible. */
 export type ImageResolver = (src: string) => string | null;
@@ -32,8 +26,12 @@ export interface CreateEditorOptions {
   parent: HTMLElement;
   doc: string;
   mode?: EditorMode;
-  /** App-level commands. Core editing commands such as bold are always available. */
-  commands?: readonly EditorCommand[];
+  platform?: AppPlatform;
+  /**
+   * Additional commands for this editor. The shared command registry is
+   * always included, so editor commands only need to be defined there.
+   */
+  commands?: readonly CommandDefinition[];
   resolveImage?: ImageResolver;
   onPasteImage?: PasteImageHandler;
   onChange?: (doc: string) => void;
