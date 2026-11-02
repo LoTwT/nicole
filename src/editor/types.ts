@@ -1,5 +1,8 @@
 import type { EditorView } from "@codemirror/view";
 
+import type { AppPlatform } from "../app/platform";
+import type { CommandDefinition } from "../commands/types";
+
 export type EditorMode = "live" | "immersive" | "source";
 
 /** JSON form of EditorSelection, kept here so callers need no CodeMirror type. */
@@ -18,15 +21,6 @@ export interface EditorRestoreState {
   history: unknown;
   scrollTopLine: number | null;
   scrollTopOffset: number | null;
-}
-
-export interface EditorCommand {
-  /** Stable identifier shared by menus, keymaps and the command palette. */
-  id: string;
-  label: string;
-  /** CodeMirror key binding, for example `Mod-b`. */
-  key?: string;
-  run: (view: EditorView) => boolean;
 }
 
 /** Resolves a Markdown image URL for rendering; return null to keep the source visible. */
@@ -50,8 +44,12 @@ export interface CreateEditorOptions {
   parent: HTMLElement;
   doc: string;
   mode?: EditorMode;
-  /** App-level commands. Core editing commands such as bold are always available. */
-  commands?: readonly EditorCommand[];
+  platform?: AppPlatform;
+  /**
+   * Additional commands for this editor. The shared command registry is
+   * always included, so editor commands only need to be defined there.
+   */
+  commands?: readonly CommandDefinition[];
   /** Restores a background tab's selection, scroll position and undo history. */
   restore?: EditorRestoreState;
   resolveImage?: ImageResolver;

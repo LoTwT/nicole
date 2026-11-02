@@ -1,5 +1,13 @@
 <script setup lang="ts">
-import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
+import {
+  computed,
+  markRaw,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  shallowRef,
+} from "vue";
 
 import {
   createTabCommands,
@@ -48,6 +56,7 @@ import AppDialog from "./components/AppDialog.vue";
 import AppSidebar from "./components/AppSidebar.vue";
 import EmptyState from "./components/EmptyState.vue";
 import NonMarkdownPlaceholder from "./components/NonMarkdownPlaceholder.vue";
+import SlashMenu from "./components/SlashMenu.vue";
 import StatusBar from "./components/StatusBar.vue";
 import TopBar, { type TopBarTab } from "./components/TopBar.vue";
 import {
@@ -57,6 +66,11 @@ import {
   type EditorRestoreState,
   type SavedSelection,
 } from "./editor";
+import {
+  createSlashMenu,
+  type SlashMenuController,
+  type SlashMenuSnapshot,
+} from "./editor/slash";
 import { createImageInsertion } from "./image-insertion";
 import { resolveImageUrl } from "./image-url";
 import { getAppInfo, type AppInfo } from "./services/app";
@@ -176,6 +190,8 @@ let editor: EditorHandle | null = null;
 let mountSequence = 0;
 let nextTabId = 1;
 let lastWorkspaceActivePath: string | null = null;
+let slashMenu: SlashMenuController | null = null;
+const slashState = shallowRef<SlashMenuSnapshot>(null);
 let noticeTimer: ReturnType<typeof setTimeout> | null = null;
 let saveQueue: Promise<boolean> = Promise.resolve(true);
 let applyingExternal = false;
@@ -896,6 +912,9 @@ function snapshotActiveEditor() {
 }
 
 function clearEditor() {
+  slashMenu?.destroy();
+  slashMenu = null;
+  slashState.value = null;
   editor?.destroy();
   editor = null;
   editorHost.value?.replaceChildren();
@@ -927,6 +946,7 @@ async function mountActive(focus = true) {
     parent: host,
     doc: tab.text,
     mode: mode.value,
+    platform: platform.value,
     restore: restore ?? undefined,
     resolveImage: (src) =>
       tab.kind === "workspace"
@@ -935,9 +955,24 @@ async function mountActive(focus = true) {
     onPasteImage: (ticket) => imageInsertion.handlePaste(ticket),
     onChange: (text) => handleEditorChange(tab.id, text),
   });
+  slashMenu = createSlashMenu({
+    view: editor.view,
+    platform: platform.value,
+    onChange: (state) => {
+      slashState.value = state;
+    },
+  });
   if (focus) {
     editor.focus();
   }
+}
+
+function executeSlashCommand(index: number) {
+  slashMenu?.execute(index);
+}
+
+function highlightSlashCommand(index: number) {
+  slashMenu?.highlight(index);
 }
 
 async function activateTab(id: number, focus = true) {
@@ -2677,6 +2712,13 @@ defineExpose({
         :notice-tone="notice?.tone"
       />
     </div>
+
+    <SlashMenu
+      v-if="slashState"
+      :state="slashState"
+      @select="executeSlashCommand"
+      @highlight="highlightSlashCommand"
+    />
 
     <AppDialog
       :open="dialog !== null"
