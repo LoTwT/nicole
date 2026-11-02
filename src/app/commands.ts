@@ -101,8 +101,17 @@ export function createTabCommands(actions: TabCommandActions): AppCommandSpec[] 
   }));
 }
 
+function normalizedKey(key: string): string {
+  const lower = key.toLowerCase();
+  // Shift+BracketRight/BracketLeft report "}" and "{" in the browser's key
+  // value on US layouts; the binding names the physical bracket key.
+  if (lower === "}") return "]";
+  if (lower === "{") return "[";
+  return lower;
+}
+
 function matches(event: KeyboardEvent, binding: CommandKeyBinding): boolean {
-  if (event.key.toLowerCase() !== binding.key.toLowerCase()) {
+  if (normalizedKey(event.key) !== binding.key.toLowerCase()) {
     return false;
   }
   return (

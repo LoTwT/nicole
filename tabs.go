@@ -137,7 +137,7 @@ func (s *tabsStore) get(root string) (StoredTabs, error) {
 		return StoredTabs{}, err
 	}
 	state, ok := file.Roots[root]
-	if !ok {
+	if !ok || state.Tabs == nil {
 		return StoredTabs{Tabs: []StoredTab{}}, nil
 	}
 	return state, nil
@@ -200,7 +200,7 @@ func (s *tabsStore) writeLocked(file tabsFile) error {
 
 // sanitizeStoredTabs keeps the layout usable while refusing paths that could
 // look like an authorization claim. Invalid entries are dropped rather than
-// failing the whole save, so one malformed history cannot lose every tab.
+// failing the whole save, so one malformed selection cannot lose every tab.
 func sanitizeStoredTabs(tabs []StoredTab, active string) StoredTabs {
 	kept := make([]StoredTab, 0, min(len(tabs), maxStoredTabs))
 	seen := make(map[string]bool, len(tabs))

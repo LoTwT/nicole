@@ -78,6 +78,12 @@ describe("tab commands", () => {
       matchCommand(key("]", { meta: true, shift: true }), "macos", list)?.id,
     ).toBe(TAB_NEXT_COMMAND);
     expect(
+      matchCommand(key("}", { meta: true, shift: true }), "macos", list)?.id,
+    ).toBe(TAB_NEXT_COMMAND);
+    expect(
+      matchCommand(key("{", { meta: true, shift: true }), "macos", list)?.id,
+    ).toBe(TAB_PREVIOUS_COMMAND);
+    expect(
       matchCommand(key("Tab", { ctrl: true, shift: true }), "macos", list)?.id,
     ).toBe(TAB_PREVIOUS_COMMAND);
     expect(

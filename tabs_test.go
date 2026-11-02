@@ -230,3 +230,18 @@ func TestTabsConcurrentSaves(t *testing.T) {
 		t.Fatalf("Get after concurrent saves: %v", err)
 	}
 }
+
+func TestTabsNullTabsReadAsEmpty(t *testing.T) {
+	service, root, filePath := newTestTabs(t)
+	data := `{"roots":{"` + root + `":{"tabs":null,"active":"a.md"}}}` + "\n"
+	if err := os.WriteFile(filePath, []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := service.Get(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Tabs == nil || len(got.Tabs) != 0 {
+		t.Errorf("Tabs = %#v, want a non-nil empty slice", got.Tabs)
+	}
+}
