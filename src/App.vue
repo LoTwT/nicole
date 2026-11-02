@@ -357,6 +357,35 @@ function openingKey(
   return `${kind}\u0000${scope}\u0000${path}`;
 }
 
+function tabKey(tab: Pick<TabModel, "kind" | "path">): string {
+  return `${tab.kind}\u0000${tab.path}`;
+}
+
+function workspaceAbsolutePath(root: string, path: string): string {
+  return `${root.replace(/[\\/]+$/, "")}/${path}`;
+}
+
+function sameFilePath(left: string, right: string): boolean {
+  return left.replace(/\\/g, "/") === right.replace(/\\/g, "/");
+}
+
+/** Finds the workspace tab or a single-file tab for the same physical path. */
+function findOpenTabForWorkspacePath(
+  root: string,
+  path: string,
+): TabModel | undefined {
+  const workspaceTab = tabs.value.find(
+    (tab) => tab.kind === "workspace" && tab.path === path,
+  );
+  if (workspaceTab !== undefined) {
+    return workspaceTab;
+  }
+  const absolute = workspaceAbsolutePath(root, path);
+  return tabs.value.find(
+    (tab) => tab.kind === "single" && sameFilePath(tab.path, absolute),
+  );
+}
+
 function showNotice(
   text: string,
   tone: Notice["tone"] = "success",
@@ -944,10 +973,8 @@ async function openWorkspaceFile(
   if (context === null) {
     return false;
   }
-  const existing = tabs.value.find(
-    (tab) => tab.kind === "workspace" && tab.path === path,
-  );
-  if (existing) {
+  const existing = findOpenTabForWorkspacePath(context.root, path);
+  if (existing !== undefined) {
     await activateTab(existing.id);
     if (options.reveal ?? true) {
       void sidebar.value?.reveal(path);
@@ -980,9 +1007,7 @@ async function openWorkspaceFile(
     if (!isCurrentWorkspace(context.root, context.generation)) {
       return false;
     }
-    const current = tabs.value.find(
-      (tab) => tab.kind === "workspace" && tab.path === path,
-    );
+    const current = findOpenTabForWorkspacePath(context.root, path);
     if (current !== undefined) {
       await activateTab(current.id);
       if (options.reveal ?? true) {
@@ -1176,7 +1201,7 @@ async function applyWorkspace(folder: {
   try {
     applyWorkspaceState(folder);
     closedTabs.value = [];
-    tabs.value = singles;
+    tabs.value = [...singles];
     activeTabId.value = keepSingle ? previous.id : null;
     lastWorkspaceActivePath = null;
     const restored = await restoreTabsForRoot(
@@ -1189,12 +1214,23 @@ async function applyWorkspace(folder: {
     ) {
       return false;
     }
-    tabs.value = [...singles, ...restored.tabs];
+    const merged = [...tabs.value];
+    const seen = new Set(merged.map(tabKey));
+    for (const tab of restored.tabs) {
+      const key = tabKey(tab);
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      merged.push(tab);
+    }
+    tabs.value = merged;
     if (!keepSingle) {
+      const currentSingles = merged.filter((tab) => tab.kind === "single");
       const active =
         restored.activePath === null
-          ? singles.at(-1) ?? null
-          : tabs.value.find((tab) => tab.path === restored.activePath) ?? null;
+          ? currentSingles.at(-1) ?? null
+          : merged.find((tab) => tab.path === restored.activePath) ?? null;
       activeTabId.value = active?.id ?? null;
       if (active !== null && active.kind !== "single") {
         lastWorkspaceActivePath = active.path;
@@ -1790,6 +1826,10 @@ async function openSingleFile(
   path: string,
   name: string,
 ): Promise<boolean> {
+  const context = currentWorkspaceContext();
+  if (context !== null && isInFolder(context.root, path)) {
+    return openWorkspaceFile(relativePath(context.root, path), name);
+  }
   const existing = tabs.value.find(
     (tab) => tab.kind === "single" && tab.path === path,
   );
@@ -1825,7 +1865,7 @@ async function openSingleFile(
       const current = tabs.value.find(
         (tab) => tab.kind === "single" && tab.path === file.path,
       );
-      if (current === null) {
+      if (current === undefined) {
         void releaseSingleFile(file.path).catch(() => {});
         showNotice(`读取失败：${errorText(error)}`, "danger");
       }

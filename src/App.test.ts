@@ -2139,3 +2139,98 @@ describe("review round 1 fixes", () => {
     expect(mocks.finishClose).toHaveBeenCalledWith(55, true);
   });
 });
+
+describe("review round 2 fixes", () => {
+  it("releases a single-file grant when the read fails", async () => {
+    await mountAppWithApi();
+    mocks.readSingleFile.mockRejectedValue(new Error("gone"));
+
+    const opened = await exposedApp!.value.openSingleFile(
+      "/tmp/single.md",
+      "single.md",
+    );
+    await settle();
+
+    expect(opened).toBe(false);
+    expect(host.textContent).toContain("读取失败：gone");
+    expect(mocks.releaseSingleFile).toHaveBeenCalledWith("/tmp/single.md");
+    expect(tabElements().length).toBe(0);
+  });
+
+  it("reuses the single-file tab when the same file is opened as a workspace file", async () => {
+    await mountAppWithApi();
+    const opened = exposedApp!.value.openSingleFile("/notes/s.md", "s.md");
+    await settle();
+    await opened;
+    expect(tabElements().length).toBe(1);
+
+    tree = [entry("s.md", "s.md")];
+    mocks.pickFolder.mockResolvedValue({ path: "/notes", canceled: false });
+    mocks.openFolder.mockResolvedValue(folder("/notes"));
+    await exposedApp!.value.chooseFolder();
+    await settle();
+    mocks.readFile.mockClear();
+
+    await openPath("/notes/s.md");
+    expect(tabElements().length).toBe(1);
+    expect(mocks.readFile).not.toHaveBeenCalled();
+    expect(tabNamed("s.md").getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("keeps one workspace tab when a file inside the root is opened as a single file", async () => {
+    await mountAppWithApi();
+    await setupWorkspace({ "s.md": "# S\n" });
+    await openPath("/notes/s.md");
+    expect(tabElements().length).toBe(1);
+
+    mocks.acceptSingleFile.mockClear();
+    const opened = await exposedApp!.value.openSingleFile(
+      "/notes/s.md",
+      "s.md",
+    );
+    await settle();
+
+    expect(opened).toBe(true);
+    expect(mocks.acceptSingleFile).not.toHaveBeenCalled();
+    expect(tabElements().length).toBe(1);
+  });
+
+  it("does not duplicate a file opened while its tab is being restored", async () => {
+    app?.unmount();
+    app = null;
+    mocks.getSettings.mockResolvedValue({
+      theme: "system",
+      sidebarWidth: 252,
+      recentFolders: ["/notes"],
+      expandedFolders: {},
+    });
+    mocks.openFolder.mockResolvedValue(folder("/notes"));
+    const stored = deferred<{
+      tabs: import("./services/tabs").StoredTab[];
+      active: string;
+    }>();
+    mocks.getWorkspaceTabs.mockReturnValue(stored.promise);
+    mocks.readFile.mockResolvedValue("# A\n");
+
+    await mountAppWithApi();
+    await vi.waitFor(() =>
+      expect(mocks.getWorkspaceTabs).toHaveBeenCalledWith("/notes"),
+    );
+    expect(tabElements().length).toBe(0);
+
+    const opened = exposedApp!.value.openWorkspaceFile("a.md", "a.md");
+    await settle();
+    expect(tabElements().length).toBe(1);
+
+    stored.resolve({
+      tabs: [{ kind: "markdown", path: "a.md" }],
+      active: "a.md",
+    });
+    await opened;
+    await settle();
+
+    expect(tabElements().length).toBe(1);
+    expect(tabNamed("a.md").getAttribute("aria-selected")).toBe("true");
+    expect(editorView().state.doc.toString()).toBe("# A\n");
+  });
+});
