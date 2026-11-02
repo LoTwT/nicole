@@ -171,6 +171,35 @@ function replaceEditorText(text: string) {
   });
 }
 
+function typeSlashAtEnd() {
+  const view = editorView();
+  const at = view.state.doc.length;
+  view.dispatch({
+    changes: { from: at, insert: "/" },
+    selection: { anchor: at + 1 },
+    userEvent: "input.type",
+  });
+}
+
+function pressMod(key: string, code: string) {
+  editorView().contentDOM.dispatchEvent(
+    new KeyboardEvent("keydown", {
+      key,
+      code,
+      ctrlKey: true,
+      metaKey: navigator.platform.startsWith("Mac"),
+      bubbles: true,
+      cancelable: true,
+    }),
+  );
+}
+
+function slashMenuElement(): HTMLElement | null {
+  return document.querySelector<HTMLElement>(
+    '[role="listbox"][aria-label="Slash 命令"]',
+  );
+}
+
 async function openFolder(files = tree, generation = 1) {
   mocks.pickFolder.mockResolvedValue({ path: "/notes", canceled: false });
   mocks.openFolder.mockResolvedValue(folder("/notes", generation));
@@ -2372,5 +2401,64 @@ describe("review round 3 fixes", () => {
     expect(tabNamed("c.md").getAttribute("aria-selected")).toBe("true");
     expect(tabNamed("a.md").getAttribute("aria-selected")).not.toBe("true");
     expect(editorView().state.doc.toString()).toBe("# C\n");
+  });
+});
+
+describe("slash menu with tabs", () => {
+  it("closes the slash menu and recreates it when switching tabs", async () => {
+    await setupWorkspace({ "a.md": "# A\n", "b.md": "# B\n" });
+    await openPath("/notes/a.md");
+    await openPath("/notes/b.md");
+
+    typeSlashAtEnd();
+    await settle();
+    expect(slashMenuElement()).not.toBeNull();
+
+    tabNamed("a.md").click();
+    await settle();
+    expect(slashMenuElement()).toBeNull();
+
+    typeSlashAtEnd();
+    await settle();
+    expect(slashMenuElement()).not.toBeNull();
+  });
+
+  it("keeps slash commands and format shortcuts on a restored tab", async () => {
+    await setupWorkspace({ "a.md": "one\ntwo\n", "b.md": "# B\n" });
+    await openPath("/notes/a.md");
+    await openPath("/notes/b.md");
+    tabNamed("a.md").click();
+    await settle();
+
+    const view = editorView();
+    view.dispatch({ changes: { from: 0, insert: "X" } });
+    expect(view.state.doc.toString()).toBe("Xone\ntwo\n");
+
+    tabNamed("b.md").click();
+    await settle();
+    tabNamed("a.md").click();
+    await settle();
+    expect(editorView().state.doc.toString()).toBe("Xone\ntwo\n");
+
+    typeSlashAtEnd();
+    await settle();
+    expect(slashMenuElement()).not.toBeNull();
+
+    editorView().contentDOM.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Escape",
+        code: "Escape",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    expect(slashMenuElement()).toBeNull();
+
+    const restored = editorView();
+    restored.dispatch({ selection: { anchor: 1, head: 4 } });
+    pressMod("b", "KeyB");
+    await settle();
+    expect(restored.state.doc.toString()).toContain("X**one**\ntwo\n");
   });
 });

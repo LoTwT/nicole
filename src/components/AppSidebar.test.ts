@@ -33,7 +33,10 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
-function mount(width = 252) {
+function mount(
+  width = 252,
+  platform: "macos" | "windows" | "linux" = "macos",
+) {
   const changes: number[] = [];
   const commits: number[] = [];
   let resets = 0;
@@ -45,7 +48,7 @@ function mount(width = 252) {
         h(AppSidebar, {
           width,
           mode: "pinned",
-          platform: "macos",
+          platform,
           rootName: "notes",
           rootPath: "/tmp/notes",
           rootDisplayPath: "~/notes",
@@ -128,14 +131,25 @@ describe("AppSidebar", () => {
       'button[aria-label^="搜索工作区"]',
     );
     expect(search).not.toBeNull();
-    expect([...search!.querySelectorAll("kbd")].map((key) => key.textContent?.trim())).toEqual([
-      "⇧",
-      "⌘",
-      "F",
-    ]);
+    expect(search!.querySelectorAll("kbd")).toHaveLength(0);
+    expect(search!.textContent?.replace(/\s+/g, "")).toContain(
+      "搜索工作区⇧⌘F",
+    );
     expect(
       host.querySelector('button[aria-label="切换到暗色主题"]'),
     ).not.toBeNull();
+  });
+
+  it("shows the platform shortcut as plain text in the search entry", async () => {
+    mount(252, "windows");
+    await settle();
+    const search = host.querySelector<HTMLButtonElement>(
+      'button[aria-label^="搜索工作区"]',
+    )!;
+    expect(search.querySelectorAll("kbd")).toHaveLength(0);
+    expect(search.textContent?.replace(/\s+/g, "")).toContain(
+      "搜索工作区Ctrl+Shift+F",
+    );
   });
 
   it("switches folders from an icon-only footer button", async () => {

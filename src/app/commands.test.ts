@@ -49,6 +49,8 @@ describe("tab commands", () => {
     expect(commandShortcut(TAB_CLOSE_COMMAND, "macos")).toBe("⌘W");
     expect(commandShortcut(TAB_CLOSE_COMMAND, "windows")).toBe("Ctrl+W");
     expect(commandShortcut(TAB_REOPEN_COMMAND, "macos")).toBe("⇧⌘T");
+    expect(commandShortcut(TAB_REOPEN_COMMAND, "windows")).toBe("Ctrl+Shift+T");
+    expect(commandShortcut(TAB_REOPEN_COMMAND, "linux")).toBe("Ctrl+Shift+T");
     expect(commandShortcut(TAB_NEXT_COMMAND, "macos")).toBe("⌃Tab");
     expect(commandShortcut(TAB_PREVIOUS_COMMAND, "windows")).toBe(
       "Ctrl+Shift+Tab",
