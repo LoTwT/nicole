@@ -1,5 +1,5 @@
 import { EditorView } from "@codemirror/view";
-import { createApp, nextTick } from "vue";
+import { createApp, defineComponent, h, nextTick, ref } from "vue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App.vue";
@@ -114,6 +114,7 @@ const entry = (
 
 let host: HTMLElement;
 let app: ReturnType<typeof createApp> | null = null;
+let exposedApp: { value: any } | null = null;
 let tree: ReturnType<typeof entry>[] = [];
 let openFileText = "";
 let watchEvents: ((events: import("./services/mygo").WorkspaceFileEvent[]) => void) | null =
@@ -194,10 +195,29 @@ async function openFile(name = "a.md", text = "# A\n") {
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => {
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((done, fail) => {
     resolve = done;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
+}
+
+async function mountAppWithApi() {
+  await settle();
+  app?.unmount();
+  app = null;
+  exposedApp = null;
+  const Wrapper = defineComponent({
+    setup() {
+      const inner = ref<any>(null);
+      exposedApp = inner;
+      return () => h(App, { ref: inner });
+    },
+  });
+  app = createApp(Wrapper);
+  app.mount(host);
+  await settle();
 }
 
 function dialog(): HTMLElement | null {
@@ -312,6 +332,7 @@ beforeEach(() => {
     },
   );
 
+  exposedApp = null;
   host = document.querySelector<HTMLElement>("#app")!;
   app = createApp(App);
   app.mount(host);
@@ -320,6 +341,7 @@ beforeEach(() => {
 afterEach(() => {
   app?.unmount();
   app = null;
+  exposedApp = null;
   vi.restoreAllMocks();
   vi.useRealTimers();
   document.body.innerHTML = "";
@@ -1827,5 +1849,293 @@ describe("folder switch with problem tabs", () => {
     await settle();
     expect(mocks.openFolder).toHaveBeenCalledTimes(1);
     expect(editorView().state.doc.toString()).toBe("# Unsaved\n");
+  });
+});
+
+describe("review round 1 fixes", () => {
+  it("opens one workspace tab when the same file is clicked twice during a read", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    const read = deferred<string>();
+    mocks.readFile.mockImplementation((path: string) =>
+      path === "a.md" ? read.promise : Promise.resolve(""),
+    );
+    const row = host.querySelector<HTMLElement>('[data-tree-path="a.md"]')!;
+    row.click();
+    row.click();
+    await settle();
+    expect(mocks.readFile).toHaveBeenCalledTimes(1);
+
+    read.resolve("# A\n");
+    await settle();
+    expect(tabElements().length).toBe(1);
+    expect(editorView().state.doc.toString()).toBe("# A\n");
+  });
+
+  it("opens one single-file tab for concurrent requests", async () => {
+    await mountAppWithApi();
+    const read = deferred<string>();
+    mocks.readSingleFile.mockImplementation(() => read.promise);
+
+    const first = exposedApp!.value.openSingleFile("/tmp/single.md", "single.md");
+    const second = exposedApp!.value.openSingleFile("/tmp/single.md", "single.md");
+    await settle();
+    expect(mocks.acceptSingleFile).toHaveBeenCalledTimes(1);
+    expect(mocks.readSingleFile).toHaveBeenCalledTimes(1);
+
+    read.resolve("# Single\n");
+    await Promise.all([first, second]);
+    await settle();
+    expect(tabElements().length).toBe(1);
+    expect(editorView().state.doc.toString()).toBe("# Single\n");
+  });
+
+  it("does not reuse an old root's read for the same path in a new root", async () => {
+    await setupWorkspace({ "a.md": "# Old\n" });
+    mocks.openFolder.mockImplementation(async (path: string) =>
+      folder(path, path === "/notes" ? 1 : 2),
+    );
+    const oldRead = deferred<string>();
+    const newRead = deferred<string>();
+    let reads = 0;
+    mocks.readFile.mockImplementation((path: string) => {
+      if (path !== "a.md") return Promise.resolve("");
+      reads += 1;
+      return reads === 1 ? oldRead.promise : newRead.promise;
+    });
+
+    host.querySelector<HTMLElement>('[data-tree-path="a.md"]')!.click();
+    await settle();
+    mocks.pickFolder.mockResolvedValue({ path: "/second", canceled: false });
+    sidebarButton("切换文件夹").click();
+    await settle();
+    dialogButton("切换").click();
+    await settle();
+
+    const newRow = host.querySelector<HTMLElement>('[data-tree-path="a.md"]');
+    expect(newRow).not.toBeNull();
+    newRow!.click();
+    await settle();
+    expect(reads).toBe(2);
+
+    oldRead.resolve("# Old\n");
+    await settle();
+    expect(tabElements().length).toBe(0);
+    newRead.resolve("# New\n");
+    await settle();
+    expect(tabElements().length).toBe(1);
+    expect(editorView().state.doc.toString()).toBe("# New\n");
+    expect(tabNamed("a.md").getAttribute("title")).toBe("second/a.md");
+  });
+
+  it("drops a workspace read that finishes after the folder changed", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    mocks.openFolder.mockImplementation(async (path: string) =>
+      folder(path, path === "/notes" ? 1 : 2),
+    );
+    const read = deferred<string>();
+    mocks.readFile.mockImplementation((path: string) =>
+      path === "a.md" ? read.promise : Promise.resolve(""),
+    );
+    host.querySelector<HTMLElement>('[data-tree-path="a.md"]')!.click();
+    await settle();
+
+    mocks.pickFolder.mockResolvedValue({ path: "/second", canceled: false });
+    sidebarButton("切换文件夹").click();
+    await settle();
+    dialogButton("切换").click();
+    await settle();
+    expect(host.textContent).toContain("选择一个文件开始写作");
+
+    read.resolve("# A\n");
+    await settle();
+    expect(tabElements().length).toBe(0);
+    expect(host.textContent).toContain("选择一个文件开始写作");
+  });
+
+  it("does not show a read error from a folder that is no longer current", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    mocks.openFolder.mockImplementation(async (path: string) =>
+      folder(path, path === "/notes" ? 1 : 2),
+    );
+    const read = deferred<string>();
+    mocks.readFile.mockImplementation((path: string) =>
+      path === "a.md" ? read.promise : Promise.resolve(""),
+    );
+    host.querySelector<HTMLElement>('[data-tree-path="a.md"]')!.click();
+    await settle();
+
+    mocks.pickFolder.mockResolvedValue({ path: "/second", canceled: false });
+    sidebarButton("切换文件夹").click();
+    await settle();
+    dialogButton("切换").click();
+    await settle();
+
+    read.reject(new Error("gone"));
+    await settle();
+    expect(host.textContent).not.toContain("读取失败");
+    expect(tabElements().length).toBe(0);
+  });
+
+  it("drops a reopened read that finishes after the folder changed", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    await openPath("/notes/a.md");
+    await closeTabNamed("a.md");
+    expect(tabElements().length).toBe(0);
+
+    mocks.openFolder.mockImplementation(async (path: string) =>
+      folder(path, path === "/notes" ? 1 : 2),
+    );
+    const read = deferred<string>();
+    mocks.readFile.mockImplementation((path: string) =>
+      path === "a.md" ? read.promise : Promise.resolve(""),
+    );
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "t",
+        metaKey: true,
+        shiftKey: true,
+        bubbles: true,
+      }),
+    );
+    await settle();
+
+    mocks.pickFolder.mockResolvedValue({ path: "/second", canceled: false });
+    sidebarButton("切换文件夹").click();
+    await settle();
+    dialogButton("切换").click();
+    await settle();
+    read.resolve("# A\n");
+    await settle();
+    expect(tabElements().length).toBe(0);
+    expect(host.textContent).toContain("选择一个文件开始写作");
+  });
+
+  it("saves to the new path when a rename lands during a write", async () => {
+    vi.useFakeTimers();
+    await setupWorkspace({ "a.md": "# A\n" });
+    await openPath("/notes/a.md");
+    replaceEditorText("# Edited\n");
+
+    const firstWrite = deferred<void>();
+    let held = true;
+    mocks.writeFile.mockImplementation(() => {
+      if (held) {
+        held = false;
+        return firstWrite.promise;
+      }
+      return Promise.resolve();
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(mocks.writeFile).toHaveBeenCalledWith("a.md", "# Edited\n", 1);
+
+    watchEvents?.([{ op: "rename", oldPath: "a.md", path: "b.md", isDir: false }]);
+    await settle();
+    firstWrite.resolve();
+    await settle();
+
+    expect(mocks.writeFile).toHaveBeenCalledWith("b.md", "# Edited\n", 1);
+    expect(host.querySelector("footer")?.textContent).toContain("已保存");
+    expect(tabNamed("b.md").getAttribute("title")).toBe("notes/b.md");
+  });
+
+  it("does not persist an empty layout while restoring tabs", async () => {
+    app?.unmount();
+    app = null;
+    mocks.getSettings.mockResolvedValue({
+      theme: "system",
+      sidebarWidth: 252,
+      recentFolders: ["/notes"],
+      expandedFolders: {},
+    });
+    mocks.openFolder.mockResolvedValue(folder("/notes"));
+    mocks.getWorkspaceTabs.mockResolvedValue({
+      tabs: [
+        { kind: "markdown", path: "a.md" },
+        { kind: "markdown", path: "b.md" },
+      ],
+      active: "a.md",
+    });
+    const first = deferred<string>();
+    mocks.readFile.mockImplementation((path: string) =>
+      path === "a.md" ? first.promise : Promise.resolve("# B\n"),
+    );
+
+    app = createApp(App);
+    app.mount(host);
+    await settle();
+
+    const hidden = vi
+      .spyOn(document, "visibilityState", "get")
+      .mockReturnValue("hidden");
+    document.dispatchEvent(new Event("visibilitychange"));
+    await settle();
+    expect(
+      mocks.saveWorkspaceTabs.mock.calls.some(
+        (call) =>
+          call[0] === "/notes" &&
+          Array.isArray(call[1]) &&
+          call[1].length === 0,
+      ),
+    ).toBe(false);
+    hidden.mockRestore();
+
+    first.resolve("# A\n");
+    await settle();
+    expect(tabElements().length).toBe(2);
+    expect(tabNamed("a.md").getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("serializes startup restore with a folder operation", async () => {
+    app?.unmount();
+    app = null;
+    mocks.getSettings.mockResolvedValue({
+      theme: "system",
+      sidebarWidth: 252,
+      recentFolders: ["/notes"],
+      expandedFolders: {},
+    });
+    const opening = deferred<ReturnType<typeof folder>>();
+    mocks.openFolder.mockReturnValue(opening.promise);
+
+    app = createApp(App);
+    app.mount(host);
+    await settle();
+    button("打开文件夹").click();
+    await settle();
+    expect(mocks.pickFolder).not.toHaveBeenCalled();
+
+    opening.resolve(folder("/notes"));
+    await settle();
+    expect(host.querySelector("aside")).not.toBeNull();
+  });
+
+  it("saves every dirty tab before finishing a window close", async () => {
+    vi.useFakeTimers();
+    await setupWorkspace({ "a.md": "# A\n", "b.md": "# B\n" });
+    await openPath("/notes/a.md");
+    await openPath("/notes/b.md");
+
+    tabNamed("a.md").click();
+    await settle();
+    replaceEditorText("# A edited\n");
+    tabNamed("b.md").click();
+    await settle();
+    replaceEditorText("# B edited\n");
+
+    await openPath("/tmp/single.md");
+    dialogButton("只打开这个文件").click();
+    await settle();
+    replaceEditorText("# Single edited\n");
+
+    await closeHandler?.(55);
+    await settle();
+
+    expect(mocks.writeFile).toHaveBeenCalledWith("a.md", "# A edited\n", 1);
+    expect(mocks.writeFile).toHaveBeenCalledWith("b.md", "# B edited\n", 1);
+    expect(mocks.writeSingleFile).toHaveBeenCalledWith(
+      "/tmp/single.md",
+      "# Single edited\n",
+    );
+    expect(mocks.finishClose).toHaveBeenCalledWith(55, true);
   });
 });

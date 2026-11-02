@@ -179,6 +179,9 @@ let lastWorkspaceActivePath: string | null = null;
 let noticeTimer: ReturnType<typeof setTimeout> | null = null;
 let saveQueue: Promise<boolean> = Promise.resolve(true);
 let applyingExternal = false;
+let restoringTabs = false;
+// Two entry points can request the same file before either read finishes.
+const openingTabs = new Map<string, Promise<boolean>>();
 let recentSelfRename:
   | { oldPath: string; newPath: string; at: number }
   | null = null;
@@ -324,6 +327,34 @@ function errorText(error: unknown): string {
 function findTab(id: number | null): TabModel | null {
   if (id === null) return null;
   return tabs.value.find((tab) => tab.id === id) ?? null;
+}
+
+interface WorkspaceContext {
+  root: string;
+  generation: number;
+}
+
+function currentWorkspaceContext(): WorkspaceContext | null {
+  const current = workspace.value;
+  return current === null
+    ? null
+    : { root: current.root, generation: current.generation };
+}
+
+function isCurrentWorkspace(root: string, generation: number): boolean {
+  return (
+    workspace.value !== null &&
+    workspace.value.root === root &&
+    workspace.value.generation === generation
+  );
+}
+
+function openingKey(
+  kind: "workspace" | "single",
+  path: string,
+  scope = "",
+): string {
+  return `${kind}\u0000${scope}\u0000${path}`;
 }
 
 function showNotice(
@@ -688,8 +719,10 @@ async function saveTabNow(
     }
     if (current.path !== edit.path || current.kind !== edit.kind) {
       // A rename landed while the write was in flight. Do not treat the old
-      // path's content as the new path's baseline.
-      return false;
+      // path's content as the new path's baseline; save the current text to
+      // the new path instead.
+      current.savePhase = "editing";
+      continue;
     }
     current.originalText = edit.text;
     current.saveError = null;
@@ -783,6 +816,7 @@ function makePreviewTab(
   path: string,
   name: string,
   size: number,
+  options: { generation?: number } = {},
 ): TabModel {
   return {
     id: nextTabId++,
@@ -798,7 +832,7 @@ function makePreviewTab(
     saveErrorDetail: null,
     externalState: "none",
     revision: 0,
-    generation: workspace.value?.generation ?? 0,
+    generation: options.generation ?? workspace.value?.generation ?? 0,
     previewSize: size,
     previewFolder: previewFolderFor(path),
     snapshot: null,
@@ -901,51 +935,114 @@ function cycleTab(delta: number) {
   return activateTab(tabs.value[next]!.id, true);
 }
 
-async function openWorkspaceFile(path: string, name?: string) {
-  if (workspace.value === null) {
-    return;
+async function openWorkspaceFile(
+  path: string,
+  name?: string,
+  options: { silent?: boolean; reveal?: boolean } = {},
+): Promise<boolean> {
+  const context = currentWorkspaceContext();
+  if (context === null) {
+    return false;
   }
   const existing = tabs.value.find(
     (tab) => tab.kind === "workspace" && tab.path === path,
   );
   if (existing) {
     await activateTab(existing.id);
-    void sidebar.value?.reveal(path);
-    return;
+    if (options.reveal ?? true) {
+      void sidebar.value?.reveal(path);
+    }
+    return true;
   }
-  let text: string;
-  try {
-    text = await readFile(path);
-  } catch (error) {
-    showNotice(`读取失败：${errorText(error)}`, "danger");
-    return;
-  }
-  const tab = makeMarkdownTab(
+  const key = openingKey(
     "workspace",
     path,
-    name ?? absoluteBaseName(path),
-    text,
+    `${context.root}\u0000${context.generation}`,
   );
-  insertTab(tab);
-  await activateTab(tab.id);
-  void sidebar.value?.reveal(path);
+  const pending = openingTabs.get(key);
+  if (pending !== undefined) {
+    return pending;
+  }
+
+  const task = (async (): Promise<boolean> => {
+    let text: string;
+    try {
+      text = await readFile(path);
+    } catch (error) {
+      if (
+        isCurrentWorkspace(context.root, context.generation) &&
+        !options.silent
+      ) {
+        showNotice(`读取失败：${errorText(error)}`, "danger");
+      }
+      return false;
+    }
+    if (!isCurrentWorkspace(context.root, context.generation)) {
+      return false;
+    }
+    const current = tabs.value.find(
+      (tab) => tab.kind === "workspace" && tab.path === path,
+    );
+    if (current !== undefined) {
+      await activateTab(current.id);
+      if (options.reveal ?? true) {
+        void sidebar.value?.reveal(path);
+      }
+      return true;
+    }
+    const tab = makeMarkdownTab(
+      "workspace",
+      path,
+      name ?? absoluteBaseName(path),
+      text,
+      { generation: context.generation },
+    );
+    insertTab(tab);
+    await activateTab(tab.id);
+    if (options.reveal ?? true) {
+      void sidebar.value?.reveal(path);
+    }
+    return true;
+  })();
+
+  openingTabs.set(key, task);
+  try {
+    return await task;
+  } finally {
+    if (openingTabs.get(key) === task) {
+      openingTabs.delete(key);
+    }
+  }
 }
 
-async function openPreviewEntry(entry: {
-  path: string;
-  name: string;
-  size: number;
-}) {
+async function openPreviewEntry(
+  entry: {
+    path: string;
+    name: string;
+    size: number;
+  },
+  options: { context?: WorkspaceContext } = {},
+): Promise<boolean> {
+  const context = options.context ?? currentWorkspaceContext();
+  if (
+    context === null ||
+    !isCurrentWorkspace(context.root, context.generation)
+  ) {
+    return false;
+  }
   const existing = tabs.value.find(
     (tab) => tab.kind === "preview" && tab.path === entry.path,
   );
   if (existing) {
     await activateTab(existing.id);
-    return;
+    return true;
   }
-  const tab = makePreviewTab(entry.path, entry.name, entry.size);
+  const tab = makePreviewTab(entry.path, entry.name, entry.size, {
+    generation: context.generation,
+  });
   insertTab(tab);
   await activateTab(tab.id);
+  return true;
 }
 
 function parentOfRelative(path: string): string {
@@ -976,19 +1073,35 @@ function applyWorkspaceState(folder: {
 
 async function restoreTabsForRoot(
   root: string,
-): Promise<{ tabs: TabModel[]; activePath: string | null }> {
+  generation: number,
+): Promise<{ tabs: TabModel[]; activePath: string | null } | null> {
   let stored;
   try {
     stored = await getWorkspaceTabs(root);
   } catch {
     return { tabs: [], activePath: null };
   }
+  if (!isCurrentWorkspace(root, generation)) {
+    return null;
+  }
   const restored: TabModel[] = [];
+  const seen = new Set<string>();
   for (const item of stored.tabs) {
+    if (item.kind !== "markdown" && item.kind !== "preview") {
+      continue;
+    }
+    const key = `${item.kind}\u0000${item.path}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
     if (item.kind === "preview") {
       let size = item.size ?? 0;
       try {
         const listing = await listDirectory(parentOfRelative(item.path));
+        if (!isCurrentWorkspace(root, generation)) {
+          return null;
+        }
         const entry = listing.entries.find(
           (candidate) => candidate.path === item.path,
         );
@@ -997,26 +1110,31 @@ async function restoreTabsForRoot(
         }
         size = entry.size;
       } catch {
+        if (!isCurrentWorkspace(root, generation)) {
+          return null;
+        }
         continue;
       }
-      const tab = makePreviewTab(item.path, absoluteBaseName(item.path), size);
+      const tab = makePreviewTab(item.path, absoluteBaseName(item.path), size, {
+        generation,
+      });
       restored.push(tab);
-      continue;
-    }
-    if (item.kind !== "markdown") {
       continue;
     }
     let text: string;
     try {
       text = await readFile(item.path);
     } catch {
+      if (!isCurrentWorkspace(root, generation)) {
+        return null;
+      }
       continue;
     }
+    if (!isCurrentWorkspace(root, generation)) {
+      return null;
+    }
     let snapshot: EditorRestoreState | null = null;
-    if (
-      item.selection !== undefined ||
-      item.scrollTopLine !== undefined
-    ) {
+    if (item.selection !== undefined || item.scrollTopLine !== undefined) {
       snapshot = markRaw({
         selection: (item.selection as SavedSelection | null) ?? null,
         // Undo history is deliberately not restored from disk: it only lives
@@ -1028,9 +1146,13 @@ async function restoreTabsForRoot(
     }
     restored.push(
       makeMarkdownTab("workspace", item.path, absoluteBaseName(item.path), text, {
+        generation,
         snapshot,
       }),
     );
+  }
+  if (!isCurrentWorkspace(root, generation)) {
+    return null;
   }
   const active =
     restored.find((tab) => tab.path === stored.active) ?? restored[0] ?? null;
@@ -1040,35 +1162,53 @@ async function restoreTabsForRoot(
 async function applyWorkspace(folder: {
   root: string;
   generation: number;
-}) {
+}): Promise<boolean> {
+  const context = { root: folder.root, generation: folder.generation };
   const previous = findTab(activeTabId.value);
   const keepSingle = previous?.kind === "single";
   const singles = tabs.value.filter((tab) => tab.kind === "single");
   if (!keepSingle) {
     clearEditor();
   }
-  applyWorkspaceState(folder);
-  closedTabs.value = [];
-  tabs.value = singles;
-  activeTabId.value = keepSingle ? previous.id : null;
-  lastWorkspaceActivePath = null;
-
-  const restored = await restoreTabsForRoot(folder.root);
-  if (restored.tabs.length > 0) {
-    tabs.value = [...singles, ...restored.tabs];
-  }
-  if (!keepSingle) {
-    const active =
-      restored.activePath === null
-        ? singles.at(-1) ?? null
-        : tabs.value.find((tab) => tab.path === restored.activePath) ?? null;
-    activeTabId.value = active?.id ?? null;
-    if (active !== null && active.kind !== "single") {
-      lastWorkspaceActivePath = active.path;
+  // Visibility changes and the persist debounce must not write the temporary
+  // list while the remembered tabs are still being read.
+  restoringTabs = true;
+  try {
+    applyWorkspaceState(folder);
+    closedTabs.value = [];
+    tabs.value = singles;
+    activeTabId.value = keepSingle ? previous.id : null;
+    lastWorkspaceActivePath = null;
+    const restored = await restoreTabsForRoot(
+      context.root,
+      context.generation,
+    );
+    if (
+      restored === null ||
+      !isCurrentWorkspace(context.root, context.generation)
+    ) {
+      return false;
     }
-    await mountActive(true);
-  } else if (lastWorkspaceActivePath === null) {
-    lastWorkspaceActivePath = restored.activePath;
+    tabs.value = [...singles, ...restored.tabs];
+    if (!keepSingle) {
+      const active =
+        restored.activePath === null
+          ? singles.at(-1) ?? null
+          : tabs.value.find((tab) => tab.path === restored.activePath) ?? null;
+      activeTabId.value = active?.id ?? null;
+      if (active !== null && active.kind !== "single") {
+        lastWorkspaceActivePath = active.path;
+      }
+      await mountActive(true);
+    } else if (lastWorkspaceActivePath === null) {
+      lastWorkspaceActivePath = restored.activePath;
+    }
+    return true;
+  } finally {
+    restoringTabs = false;
+    if (isCurrentWorkspace(context.root, context.generation)) {
+      schedulePersistTabs();
+    }
   }
 }
 
@@ -1115,8 +1255,7 @@ async function switchToFolder(path: string): Promise<boolean> {
     showNotice(`打开失败：${errorText(error)}`, "danger");
     return false;
   }
-  await applyWorkspace(folder);
-  return true;
+  return applyWorkspace(folder);
 }
 
 async function startFolderOperation(
@@ -1156,18 +1295,25 @@ async function restoreLastWorkspace() {
   if (!last) {
     return;
   }
-  try {
-    const folder = await openFolderAtPath(last);
-    await applyWorkspace(folder);
-    // Opening the last folder should not move it again; it is already first.
-    recentFolders.value = [
-      folder.root,
-      ...recentFolders.value.filter((item) => item !== folder.root),
-    ].slice(0, 10);
-  } catch {
-    missingLastFolder.value = last;
-    markMissing(last);
-  }
+  await startFolderOperation(async () => {
+    try {
+      const folder = await openFolderAtPath(last);
+      const applied = await applyWorkspace(folder);
+      if (!applied) {
+        return false;
+      }
+      // Opening the last folder should not move it again; it is already first.
+      recentFolders.value = [
+        folder.root,
+        ...recentFolders.value.filter((item) => item !== folder.root),
+      ].slice(0, 10);
+      return true;
+    } catch {
+      missingLastFolder.value = last;
+      markMissing(last);
+      return false;
+    }
+  });
 }
 
 function startWatch(generation: number) {
@@ -1312,7 +1458,9 @@ async function handleExternalModification(tabId: number) {
       sequence === externalReadSequence.get(tabId) &&
       current !== null &&
       current.kind === "workspace" &&
-      current.path === tab.path
+      current.path === tab.path &&
+      current.generation === tab.generation &&
+      workspace.value?.generation === current.generation
     ) {
       markExternalState(current, "deleted");
       clearTabSaveTimer(tabId);
@@ -1325,6 +1473,8 @@ async function handleExternalModification(tabId: number) {
     current === null ||
     current.kind !== "workspace" ||
     current.path !== tab.path ||
+    current.generation !== tab.generation ||
+    workspace.value?.generation !== current.generation ||
     current.externalState !== "none"
   ) {
     return;
@@ -1379,9 +1529,28 @@ async function loadDiskVersion() {
   }
   try {
     const text = await readFile(tab.path);
-    applyExternalText(tab, text);
+    const current = findTab(tab.id);
+    if (
+      current === null ||
+      current.kind !== "workspace" ||
+      current.path !== tab.path ||
+      current.generation !== tab.generation ||
+      workspace.value?.generation !== current.generation
+    ) {
+      return;
+    }
+    applyExternalText(current, text);
   } catch (error) {
-    showNotice(`读取失败：${errorText(error)}`, "danger");
+    const current = findTab(tab.id);
+    if (
+      current !== null &&
+      current.kind === "workspace" &&
+      current.path === tab.path &&
+      current.generation === tab.generation &&
+      workspace.value?.generation === current.generation
+    ) {
+      showNotice(`读取失败：${errorText(error)}`, "danger");
+    }
   }
 }
 
@@ -1560,9 +1729,12 @@ async function closeAllTabs() {
 }
 
 async function reopenClosedTab() {
-  if (workspace.value === null) {
+  const context = currentWorkspaceContext();
+  if (context === null) {
     return;
   }
+  const stillCurrent = () =>
+    isCurrentWorkspace(context.root, context.generation);
   while (closedTabs.value.length > 0) {
     const closed = closedTabs.value.shift()!;
     const existing = tabs.value.find(
@@ -1576,6 +1748,9 @@ async function reopenClosedTab() {
       let entry: { path: string; name: string; size: number } | null = null;
       try {
         const listing = await listDirectory(parentOfRelative(closed.path));
+        if (!stillCurrent()) {
+          return;
+        }
         const found = listing.entries.find(
           (candidate) => candidate.path === closed.path && !candidate.isDir,
         );
@@ -1583,59 +1758,105 @@ async function reopenClosedTab() {
           entry = { path: found.path, name: found.name, size: found.size };
         }
       } catch {
+        if (!stillCurrent()) {
+          return;
+        }
         entry = null;
       }
       if (entry !== null) {
-        await openPreviewEntry(entry);
+        await openPreviewEntry(entry, { context });
         return;
       }
       continue;
     }
-    let text: string;
-    try {
-      text = await readFile(closed.path);
-    } catch {
-      continue;
+    if (
+      await openWorkspaceFile(closed.path, absoluteBaseName(closed.path), {
+        silent: true,
+        reveal: false,
+      })
+    ) {
+      return;
     }
-    const tab = makeMarkdownTab(
-      "workspace",
-      closed.path,
-      absoluteBaseName(closed.path),
-      text,
-    );
-    insertTab(tab);
-    await activateTab(tab.id);
-    return;
+    if (!stillCurrent()) {
+      return;
+    }
   }
-  showNotice("没有可重新打开的标签页", "muted");
+  if (stillCurrent()) {
+    showNotice("没有可重新打开的标签页", "muted");
+  }
 }
 
-async function openSingleFile(path: string, name: string) {
+async function openSingleFile(
+  path: string,
+  name: string,
+): Promise<boolean> {
   const existing = tabs.value.find(
     (tab) => tab.kind === "single" && tab.path === path,
   );
   if (existing) {
     await activateTab(existing.id);
-    return;
+    return true;
   }
-  let file;
+  const key = openingKey("single", path);
+  const pending = openingTabs.get(key);
+  if (pending !== undefined) {
+    return pending;
+  }
+
+  const task = (async (): Promise<boolean> => {
+    let file;
+    try {
+      file = await acceptSingleFile(path);
+    } catch (error) {
+      showNotice(`无法打开文件：${errorText(error)}`, "danger");
+      return false;
+    }
+    const alreadyOpen = tabs.value.find(
+      (tab) => tab.kind === "single" && tab.path === file.path,
+    );
+    if (alreadyOpen) {
+      await activateTab(alreadyOpen.id);
+      return true;
+    }
+    let text: string;
+    try {
+      text = await readSingleFile(file.path);
+    } catch (error) {
+      const current = tabs.value.find(
+        (tab) => tab.kind === "single" && tab.path === file.path,
+      );
+      if (current === null) {
+        void releaseSingleFile(file.path).catch(() => {});
+        showNotice(`读取失败：${errorText(error)}`, "danger");
+      }
+      return false;
+    }
+    const current = tabs.value.find(
+      (tab) => tab.kind === "single" && tab.path === file.path,
+    );
+    if (current) {
+      await activateTab(current.id);
+      return true;
+    }
+    const tab = makeMarkdownTab(
+      "single",
+      file.path,
+      file.name || name,
+      text,
+    );
+    insertTab(tab);
+    await activateTab(tab.id);
+    return true;
+  })();
+
+  openingTabs.set(key, task);
   try {
-    file = await acceptSingleFile(path);
-  } catch (error) {
-    showNotice(`无法打开文件：${errorText(error)}`, "danger");
-    return;
+    return await task;
+  } finally {
+    if (openingTabs.get(key) === task) {
+      openingTabs.delete(key);
+    }
   }
-  let text: string;
-  try {
-    text = await readSingleFile(file.path);
-  } catch (error) {
-    void releaseSingleFile(file.path).catch(() => {});
-    showNotice(`读取失败：${errorText(error)}`, "danger");
-    return;
-  }
-  const tab = makeMarkdownTab("single", file.path, file.name, text);
-  insertTab(tab);
-  await activateTab(tab.id);
 }
 
 async function openPreviewDefault() {
@@ -1711,12 +1932,12 @@ async function askOpenSingleFile(path: string) {
 }
 
 async function openPathInWorkspace(path: string) {
-  const root = workspace.value?.root;
-  if (!root || !isInFolder(root, path)) {
+  const context = currentWorkspaceContext();
+  if (context === null || !isInFolder(context.root, path)) {
     await askOpenSingleFile(path);
     return;
   }
-  const rel = relativePath(root, path);
+  const rel = relativePath(context.root, path);
   if (/\.md$/i.test(path)) {
     await openWorkspaceFile(rel, absoluteBaseName(path));
     return;
@@ -1724,11 +1945,20 @@ async function openPathInWorkspace(path: string) {
   let size = 0;
   try {
     const listing = await listDirectory(parentOfRelative(rel));
+    if (!isCurrentWorkspace(context.root, context.generation)) {
+      return;
+    }
     size = listing.entries.find((entry) => entry.path === rel)?.size ?? 0;
   } catch {
+    if (!isCurrentWorkspace(context.root, context.generation)) {
+      return;
+    }
     // A stale file still opens as an empty preview.
   }
-  await openPreviewEntry({ path: rel, name: absoluteBaseName(path), size });
+  await openPreviewEntry(
+    { path: rel, name: absoluteBaseName(path), size },
+    { context },
+  );
 }
 
 async function handleOpenedPath(path: string) {
@@ -2047,6 +2277,9 @@ function cancelPersistTimer() {
 
 async function persistTabsNow(): Promise<void> {
   cancelPersistTimer();
+  if (restoringTabs) {
+    return;
+  }
   const current = workspace.value;
   if (current === null) {
     return;
@@ -2060,6 +2293,9 @@ async function persistTabsNow(): Promise<void> {
 }
 
 function schedulePersistTabs() {
+  if (restoringTabs) {
+    return;
+  }
   cancelPersistTimer();
   persistTimer = setTimeout(() => {
     persistTimer = null;
@@ -2257,6 +2493,7 @@ onBeforeUnmount(() => {
 defineExpose({
   chooseFolder,
   openWorkspaceFile,
+  openSingleFile,
   handleWatchEvents,
 });
 </script>
