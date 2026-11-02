@@ -542,11 +542,6 @@ function scheduleSave(text: string) {
     savePhase.value = "mixed";
     return;
   }
-  if (externalState.value !== "none") {
-    clearSaveTimer();
-    savePhase.value = saveError.value === null ? "editing" : "failed";
-    return;
-  }
   savePhase.value = saveError.value === null ? "editing" : "failed";
   clearSaveTimer();
   saveTimer = setTimeout(() => {
@@ -595,10 +590,6 @@ async function savePendingNow(force: boolean): Promise<boolean> {
     }
     if (mixedLineEndings.value && !force) {
       savePhase.value = "mixed";
-      return false;
-    }
-    if (!force && externalState.value !== "none") {
-      savePhase.value = saveError.value === null ? "editing" : "failed";
       return false;
     }
     pendingEdit = null;
