@@ -1313,6 +1313,28 @@ describe("multi-tab shell", () => {
     }
   });
 
+  it("saves a background tab to its own path when its autosave fires", async () => {
+    vi.useFakeTimers();
+    await setupWorkspace({ "a.md": "# A\n", "b.md": "# B\n" });
+    await openPath("/notes/a.md");
+    await openPath("/notes/b.md");
+    tabNamed("a.md").click();
+    await settle();
+    replaceEditorText("# Background save\n");
+    tabNamed("b.md").click();
+    await settle();
+    await vi.advanceTimersByTimeAsync(1000);
+    await settle();
+
+    expect(mocks.writeFile).toHaveBeenCalledTimes(1);
+    expect(mocks.writeFile).toHaveBeenCalledWith(
+      "a.md",
+      "# Background save\n",
+      1,
+    );
+    expect(editorView().state.doc.toString()).toBe("# B\n");
+  });
+
   it("confirms closing a failed tab from the dot, shortcut, middle click and menu", async () => {
     vi.useFakeTimers();
     await setupWorkspace({ "a.md": "# A\n" });
@@ -1783,5 +1805,27 @@ describe("tab persistence on close", () => {
       ranges: [{ anchor: 1, head: 4 }],
       main: 0,
     });
+  });
+});
+
+describe("folder switch with problem tabs", () => {
+  it("lists save failures and uses the discard label", async () => {
+    vi.useFakeTimers();
+    await setupWorkspace({ "a.md": "# A\n" });
+    await openPath("/notes/a.md");
+    mocks.writeFile.mockRejectedValue(new Error("read-only"));
+    replaceEditorText("# Unsaved\n");
+    await vi.advanceTimersByTimeAsync(1000);
+    await settle();
+
+    mocks.pickFolder.mockResolvedValue({ path: "/second", canceled: false });
+    sidebarButton("切换文件夹").click();
+    await settle();
+    expect(dialog()?.textContent).toContain("放弃更改并切换");
+    expect(dialog()?.textContent).toContain("a.md：保存失败");
+    dialogButton("取消").click();
+    await settle();
+    expect(mocks.openFolder).toHaveBeenCalledTimes(1);
+    expect(editorView().state.doc.toString()).toBe("# Unsaved\n");
   });
 });
