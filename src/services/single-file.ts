@@ -31,6 +31,11 @@ export function writeSingleFile(path: string, content: string): Promise<void> {
   return SingleFileService.writeSingleFile(path, content);
 }
 
+/** Reveals a granted single file in Finder, Explorer or the file manager. */
+export function revealSingleFile(path: string): Promise<void> {
+  return SingleFileService.revealSingleFile(path);
+}
+
 /** Forgets a single-file grant, for example when its tab closes. */
 export function releaseSingleFile(path: string): Promise<void> {
   return SingleFileService.releaseSingleFile(path);

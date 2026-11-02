@@ -81,4 +81,50 @@ describe("platform menus", () => {
     expect(items.find((item) => item.id === "close-other-tabs")?.disabled).toBe(true);
     expect(items.find((item) => item.id === "reveal-in-tree")?.disabled).toBe(false);
   });
+
+  it("enables the multi-tab actions when they apply", () => {
+    const items = buildContextMenu({
+      target: "tab",
+      platform: "macos",
+      isMarkdown: true,
+      inWorkspace: true,
+      hasOtherTabs: true,
+      hasTabsRight: true,
+      canReopen: true,
+    });
+    expect(items.find((item) => item.id === "close-other-tabs")?.disabled).toBe(
+      false,
+    );
+    expect(items.find((item) => item.id === "close-tabs-right")?.disabled).toBe(
+      false,
+    );
+    expect(items.find((item) => item.id === "reopen-tab")?.disabled).toBe(false);
+    expect(
+      items.find((item) => item.id === "reopen-tab")?.accelerator,
+    ).toBe("⇧⌘T");
+  });
+
+  it("limits the tab menu of a single file to path actions", () => {
+    const items = buildContextMenu({
+      target: "tab",
+      platform: "windows",
+      isMarkdown: true,
+      inWorkspace: false,
+      hasOtherTabs: false,
+      hasTabsRight: false,
+      canReopen: false,
+    });
+    expect(
+      items.find((item) => item.id === "reveal-in-tree")?.disabled,
+    ).toBe(true);
+    expect(
+      items.find((item) => item.id === "copy-relative-path")?.disabled,
+    ).toBe(true);
+    expect(items.find((item) => item.id === "reveal")?.label).toBe(
+      "在资源管理器中显示",
+    );
+    expect(items.find((item) => item.id === "close-tab")?.accelerator).toBe(
+      "Ctrl+W",
+    );
+  });
 });

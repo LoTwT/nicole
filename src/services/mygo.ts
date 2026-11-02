@@ -140,6 +140,33 @@ export interface SingleFileSelection {
 }
 
 /**
+ * StoredTab is the display and restore state of one tab. Path is relative to
+ * the workspace and is only used to reopen the file or placeholder; it never
+ * authorizes filesystem access. Selection and history are opaque CodeMirror
+ * JSON values and are validated for size and JSON syntax, not interpreted.
+ */
+export interface StoredTab {
+  kind: string;
+  path: string;
+  size?: number;
+  selection?: unknown;
+  history?: unknown;
+  scrollTopLine?: number;
+  scrollTopOffset?: number;
+  /**
+   * TextLength lets the page drop a history snapshot after the file changed
+   * on disk between sessions.
+   */
+  textLength?: number;
+}
+
+/** StoredTabs is one workspace root's remembered tab layout. */
+export interface StoredTabs {
+  tabs: StoredTab[];
+  active?: string;
+}
+
+/**
  * WorkspaceFileEvent is a change in the workspace that the page did not make
  * itself. It names paths relative to the workspace, separated by slashes.
  */
@@ -402,6 +429,25 @@ export const Settings = {
 } as const;
 
 /**
+ * WorkspaceTabs serves the remembered tabs of the open root. It is bound to
+ * the page; Get and Save only accept the current workspace root so the service
+ * cannot read or write layout records for other folders.
+ */
+export const WorkspaceTabs = {
+  /** Get returns the remembered tabs for root, or an empty layout. */
+  get(root: string): Promise<StoredTabs> {
+    return call("WorkspaceTabs.Get", root);
+  },
+  /**
+   * Save replaces the remembered layout for root. An empty layout deletes the
+   * record so old roots do not accumulate.
+   */
+  save(root: string, tabs: StoredTab[], active: string): Promise<void> {
+    return call("WorkspaceTabs.Save", root, tabs, active);
+  },
+} as const;
+
+/**
  * SingleFileService reads and writes one Markdown file that is not in the
  * workspace. Grants are in memory and per file: a path may be granted by the
  * native file dialog or by accepting a file the system opened with Nicole.
@@ -439,6 +485,13 @@ export const SingleFileService = {
   /** ReleaseSingleFile forgets a grant, such as when its tab closes. */
   releaseSingleFile(path: string): Promise<void> {
     return call("SingleFileService.ReleaseSingleFile", path);
+  },
+  /**
+   * RevealSingleFile shows a granted file in the desktop's file manager. It
+   * accepts only an existing grant, like the read and write methods.
+   */
+  revealSingleFile(path: string): Promise<void> {
+    return call("SingleFileService.RevealSingleFile", path);
   },
   /**
    * WriteSingleFile atomically replaces a granted file. It follows the workspace

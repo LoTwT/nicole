@@ -292,3 +292,63 @@ describe("task checkbox", () => {
     expect(document.activeElement).toBe(input);
   });
 });
+
+describe("background restore state", () => {
+  it("restores the selection and undo history into a new view", () => {
+    const first = createEditor({ parent, doc: "one\ntwo\n" });
+    first.view.dispatch({
+      changes: { from: 7, insert: "three\n" },
+      selection: { anchor: 2, head: 4 },
+    });
+    const restore = first.getRestoreState();
+    first.destroy();
+
+    expect(restore.selection?.ranges[0]).toEqual({ anchor: 2, head: 4 });
+    expect(restore.history).not.toBeNull();
+
+    editor = createEditor({
+      parent,
+      doc: "one\ntwo\nthree\n",
+      restore,
+    });
+    expect(editor.view.state.selection.main.from).toBe(2);
+    expect(editor.view.state.selection.main.to).toBe(4);
+    expect(editor.undo()).toBe(true);
+    expect(editor.view.state.doc.toString()).toBe("one\ntwo\n");
+  });
+
+  it("restores multiple selections", () => {
+    // Dispatching a fresh multi-selection needs layout that jsdom does not
+    // provide; restoring one directly exercises the app's background-tab path.
+    editor = createEditor({
+      parent,
+      doc: "alpha beta gamma",
+      restore: {
+        selection: {
+          ranges: [
+            { anchor: 0, head: 5 },
+            { anchor: 11, head: 16 },
+          ],
+          main: 1,
+        },
+        history: null,
+        scrollTopLine: null,
+        scrollTopOffset: null,
+      },
+    });
+    expect(editor.view.state.selection.ranges).toHaveLength(2);
+    expect(editor.view.state.selection.main.from).toBe(11);
+    expect(editor.view.state.selection.main.to).toBe(16);
+  });
+
+  it("clamps a stale selection to the current document", () => {
+    const first = createEditor({ parent, doc: "alpha beta" });
+    first.view.dispatch({ selection: { anchor: 8, head: 10 } });
+    const restore = first.getRestoreState();
+    first.destroy();
+
+    editor = createEditor({ parent, doc: "short", restore });
+    expect(editor.view.state.selection.main.from).toBe(5);
+    expect(editor.view.state.selection.main.to).toBe(5);
+  });
+});

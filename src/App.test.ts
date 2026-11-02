@@ -34,6 +34,9 @@ const mocks = vi.hoisted(() => ({
   readSingleFile: vi.fn(),
   writeSingleFile: vi.fn(),
   releaseSingleFile: vi.fn(),
+  revealSingleFile: vi.fn(),
+  getWorkspaceTabs: vi.fn(),
+  saveWorkspaceTabs: vi.fn(),
   onOpenFile: vi.fn(),
   takePendingOpenedFiles: vi.fn(),
   onWindowFileDrop: vi.fn(),
@@ -78,6 +81,11 @@ vi.mock("./services/single-file", () => ({
   readSingleFile: mocks.readSingleFile,
   writeSingleFile: mocks.writeSingleFile,
   releaseSingleFile: mocks.releaseSingleFile,
+  revealSingleFile: mocks.revealSingleFile,
+}));
+vi.mock("./services/tabs", () => ({
+  getWorkspaceTabs: mocks.getWorkspaceTabs,
+  saveWorkspaceTabs: mocks.saveWorkspaceTabs,
 }));
 vi.mock("./services/open-file", () => ({
   onOpenFile: mocks.onOpenFile,
@@ -267,6 +275,9 @@ beforeEach(() => {
   mocks.readSingleFile.mockResolvedValue("# Single\n");
   mocks.writeSingleFile.mockResolvedValue(undefined);
   mocks.releaseSingleFile.mockResolvedValue(undefined);
+  mocks.revealSingleFile.mockResolvedValue(undefined);
+  mocks.getWorkspaceTabs.mockResolvedValue({ tabs: [], active: "" });
+  mocks.saveWorkspaceTabs.mockResolvedValue(undefined);
   mocks.takePendingOpenedFiles.mockImplementation(async () => {
     const files = pendingFiles;
     pendingFiles = [];
@@ -897,13 +908,15 @@ describe("renames", () => {
       { op: "rename", oldPath: "notes", path: "notes2", isDir: true },
     ]);
     await settle();
-    expect(host.textContent).toContain("此文件已在磁盘上被删除或移走");
+    expect(host.textContent).not.toContain("此文件已在磁盘上被删除或移走");
+    expect(host.querySelector('[role="tab"]')?.getAttribute("title")).toBe(
+      "notes/notes2/a.md",
+    );
   });
 });
 
 describe("single files and dialogs", () => {
-  it("does not ask to discard after a successful save when switching", async () => {
-    vi.useFakeTimers();
+  it("opens a single file as a tab without discarding the workspace tab", async () => {
     await openFile();
     replaceEditorText("# Edited\n");
 
@@ -913,9 +926,13 @@ describe("single files and dialogs", () => {
     dialogButton("只打开这个文件").click();
     await settle();
 
-    expect(mocks.writeFile).toHaveBeenCalledWith("a.md", "# Edited\n", 1);
     expect(dialog()).toBeNull();
-    expect(host.querySelector('[role="tab"]')?.textContent).toContain("other.md");
+    const tabNames = [...host.querySelectorAll('[role="tab"]')].map(
+      (tab) => tab.textContent ?? "",
+    );
+    expect(tabNames.some((name) => name.includes("a.md"))).toBe(true);
+    expect(tabNames.some((name) => name.includes("other.md"))).toBe(true);
+    expect(host.querySelectorAll(".cm-editor").length).toBe(1);
   });
 
   it("dismisses a system-opened file when the dialog is canceled", async () => {
@@ -953,7 +970,7 @@ describe("single files and dialogs", () => {
     );
   });
 
-  it("keeps the current document when a single-file replacement is canceled", async () => {
+  it("opens a single-file tab even when another tab has a save failure", async () => {
     vi.useFakeTimers();
     await openFile();
     mocks.writeFile.mockRejectedValue(new Error("read-only"));
@@ -966,12 +983,11 @@ describe("single files and dialogs", () => {
     await settle();
     dialogButton("只打开这个文件").click();
     await settle();
-    expect(dialog()?.textContent).toContain("放弃未保存的更改");
-    dialogButton("取消").click();
-    await settle();
 
-    expect(mocks.acceptSingleFile).not.toHaveBeenCalled();
-    expect(editorView().state.doc.toString()).toBe("# Unsaved\n");
+    expect(dialog()).toBeNull();
+    expect(mocks.acceptSingleFile).toHaveBeenCalledWith("/tmp/single.md");
+    expect(editorView().state.doc.toString()).toBe("# Single\n");
+    expect(host.querySelectorAll('[role="tab"]').length).toBe(2);
   });
 
   it("keeps a single-file tab when another folder opens", async () => {
@@ -1147,5 +1163,626 @@ describe("theme and accessibility", () => {
       'button[aria-label^="切换到"]',
     );
     expect(themeButton).not.toBeNull();
+  });
+});
+
+async function setupWorkspace(
+  files: Record<string, string>,
+  root = "/notes",
+): Promise<void> {
+  tree = Object.keys(files).map((path) => entry(path.split("/").at(-1)!, path));
+  mocks.readFile.mockImplementation(async (path: string) => files[path] ?? "");
+  mocks.listDirectory.mockImplementation(async (path: string) => ({
+    path,
+    entries: path === "." ? tree : [],
+  }));
+  mocks.pickFolder.mockResolvedValue({ path: root, canceled: false });
+  mocks.openFolder.mockResolvedValue(folder(root));
+  await openFolder();
+}
+
+async function openPath(path: string): Promise<void> {
+  pendingFiles = [path];
+  openHandler?.();
+  await settle();
+}
+
+function tabElements(): HTMLElement[] {
+  return [...host.querySelectorAll<HTMLElement>('[role="tab"]')];
+}
+
+function tabNamed(name: string): HTMLElement {
+  const found = tabElements().find((tab) =>
+    tab.textContent?.replace(/\s+/g, "").includes(name),
+  );
+  if (!found) throw new Error(`tab ${name} not found`);
+  return found;
+}
+
+describe("multi-tab shell", () => {
+  it("keeps one editor view, restores selection and undo history", async () => {
+    await setupWorkspace({ "a.md": "one\ntwo\n", "b.md": "# B\n" });
+    await openPath("/notes/a.md");
+    await openPath("/notes/b.md");
+    tabNamed("a.md").click();
+    await settle();
+    let view = editorView();
+    view.dispatch({
+      changes: { from: view.state.doc.length, insert: "three\n" },
+      selection: { anchor: 6, head: 9 },
+    });
+    await settle();
+
+    tabNamed("b.md").click();
+    await settle();
+    expect(host.querySelectorAll(".cm-editor").length).toBe(1);
+    expect(editorView().state.doc.toString()).toBe("# B\n");
+
+    tabNamed("a.md").click();
+    await settle();
+    view = editorView();
+    expect(host.querySelectorAll(".cm-editor").length).toBe(1);
+    expect(view.state.doc.toString()).toBe("one\ntwo\nthree\n");
+    expect(view.state.selection.main.from).toBe(6);
+    expect(view.state.selection.main.to).toBe(9);
+
+    view.focus();
+    window.dispatchEvent(
+      new CustomEvent("nicole:edit-command", { detail: "undo" }),
+    );
+    await settle();
+    expect(editorView().state.doc.toString()).toBe("one\ntwo\n");
+  });
+
+  it("restores the scroll position of a background tab", async () => {
+    await setupWorkspace({ "a.md": "one\ntwo\nthree\n", "b.md": "# B\n" });
+    await openPath("/notes/a.md");
+    await openPath("/notes/b.md");
+    tabNamed("a.md").click();
+    await settle();
+
+    const blockForSecondLine = (view: EditorView) => {
+      const line = view.state.doc.line(2);
+      return {
+        from: line.from,
+        to: line.to,
+        top: 10,
+        bottom: 24,
+        height: 14,
+      };
+    };
+    const height = vi
+      .spyOn(EditorView.prototype, "lineBlockAtHeight")
+      .mockImplementation(function (this: EditorView) {
+        return blockForSecondLine(this) as never;
+      });
+    const block = vi
+      .spyOn(EditorView.prototype, "lineBlockAt")
+      .mockImplementation(function (this: EditorView, pos: number) {
+        const line = this.state.doc.lineAt(pos);
+        return {
+          from: line.from,
+          to: line.to,
+          top: 10,
+          bottom: 24,
+          height: 14,
+        } as never;
+      });
+    try {
+      const first = editorView();
+      first.scrollDOM.scrollTop = 24;
+      tabNamed("b.md").click();
+      await settle();
+      tabNamed("a.md").click();
+      await settle();
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => resolve()),
+      );
+      const restored = editorView();
+      const restoredBlock = blockForSecondLine(restored);
+      expect(restored.scrollDOM.scrollTop).toBe(24);
+      expect(restored.state.doc.lineAt(restoredBlock.from).number).toBe(2);
+    } finally {
+      height.mockRestore();
+      block.mockRestore();
+    }
+  });
+
+  it("saves the model's own path while another tab is active", async () => {
+    vi.useFakeTimers();
+    await setupWorkspace({ "a.md": "# A\n", "b.md": "# B\n" });
+    await openPath("/notes/a.md");
+    await openPath("/notes/b.md");
+
+    tabNamed("a.md").click();
+    await settle();
+    replaceEditorText("# Mine\n");
+    const write = deferred<void>();
+    mocks.writeFile.mockImplementation(() => write.promise);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(mocks.writeFile).toHaveBeenCalledWith("a.md", "# Mine\n", 1);
+
+    tabNamed("b.md").click();
+    await settle();
+    write.resolve();
+    await settle();
+    expect(editorView().state.doc.toString()).toBe("# B\n");
+    expect(mocks.writeFile).toHaveBeenCalledTimes(1);
+    for (const call of mocks.writeFile.mock.calls) {
+      expect(call[0]).toBe("a.md");
+    }
+  });
+
+  it("confirms closing a failed tab from the dot, shortcut, middle click and menu", async () => {
+    vi.useFakeTimers();
+    await setupWorkspace({ "a.md": "# A\n" });
+    await openPath("/notes/a.md");
+    mocks.writeFile.mockRejectedValue(new Error("permission denied"));
+    replaceEditorText("# Unsaved\n");
+    await vi.advanceTimersByTimeAsync(1000);
+    await settle();
+
+    const dot = tabNamed("a.md").querySelector<HTMLButtonElement>(
+      'button[aria-label^="关闭"]',
+    );
+    expect(dot).not.toBeNull();
+    dot!.click();
+    await settle();
+    expect(dialog()?.textContent).toContain("关闭“a.md”");
+    dialogButton("取消").click();
+    await settle();
+    expect(tabElements().length).toBe(1);
+
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "w", metaKey: true, bubbles: true }),
+    );
+    await settle();
+    expect(dialog()).not.toBeNull();
+    dialogButton("取消").click();
+    await settle();
+
+    tabNamed("a.md").dispatchEvent(
+      new MouseEvent("auxclick", {
+        button: 1,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    expect(dialog()).not.toBeNull();
+    dialogButton("取消").click();
+    await settle();
+
+    mocks.popupNativeMenu.mockResolvedValue("close-tab");
+    tabNamed("a.md").dispatchEvent(
+      new MouseEvent("contextmenu", {
+        bubbles: true,
+        cancelable: true,
+        clientX: 10,
+        clientY: 10,
+      }),
+    );
+    await settle();
+    expect(dialog()).not.toBeNull();
+    dialogButton("放弃更改并关闭").click();
+    await settle();
+    expect(tabElements().length).toBe(0);
+    expect(host.textContent).toContain("选择一个文件开始写作");
+
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "t",
+        metaKey: true,
+        shiftKey: true,
+        bubbles: true,
+      }),
+    );
+    await settle();
+    expect(tabElements().length).toBe(1);
+    expect(editorView().state.doc.toString()).toBe("# A\n");
+  });
+
+  it("confirms closing a tab from the deletion banner", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    await openPath("/notes/a.md");
+    watchEvents?.([{ op: "remove", path: "a.md", isDir: false }]);
+    await settle();
+    button("关闭标签页").click();
+    await settle();
+    expect(dialog()?.textContent).toContain("文件已在磁盘上被删除或移走");
+    dialogButton("取消").click();
+    await settle();
+    expect(tabElements().length).toBe(1);
+  });
+
+  it("confirms a batch close that contains a failed tab", async () => {
+    vi.useFakeTimers();
+    await setupWorkspace({
+      "a.md": "# A\n",
+      "b.md": "# B\n",
+      "c.md": "# C\n",
+    });
+    await openPath("/notes/a.md");
+    await openPath("/notes/b.md");
+    await openPath("/notes/c.md");
+    mocks.writeFile.mockImplementation(async (path: string) => {
+      if (path === "b.md") throw new Error("read-only");
+    });
+    tabNamed("b.md").click();
+    await settle();
+    replaceEditorText("# B edited\n");
+    await vi.advanceTimersByTimeAsync(1000);
+    await settle();
+
+    tabNamed("a.md").click();
+    await settle();
+    mocks.popupNativeMenu.mockResolvedValue("close-other-tabs");
+    tabNamed("a.md").dispatchEvent(
+      new MouseEvent("contextmenu", {
+        bubbles: true,
+        cancelable: true,
+        clientX: 10,
+        clientY: 10,
+      }),
+    );
+    await settle();
+    expect(dialog()?.textContent).toContain("关闭这些标签页");
+    expect(dialog()?.textContent).toContain("b.md");
+    expect(dialog()?.textContent).toContain("保存失败");
+    dialogButton("取消").click();
+    await settle();
+    expect(tabElements().length).toBe(3);
+
+    tabNamed("a.md").dispatchEvent(
+      new MouseEvent("contextmenu", {
+        bubbles: true,
+        cancelable: true,
+        clientX: 10,
+        clientY: 10,
+      }),
+    );
+    await settle();
+    dialogButton("放弃更改并关闭").click();
+    await settle();
+    expect(tabElements().length).toBe(1);
+    expect(tabNamed("a.md")).not.toBeNull();
+  });
+
+  it("remembers tabs per root and restores the active selection", async () => {
+    const stored = new Map<
+      string,
+      { tabs: import("./services/tabs").StoredTab[]; active: string }
+    >();
+    mocks.getWorkspaceTabs.mockImplementation(
+      async (root: string) => stored.get(root) ?? { tabs: [], active: "" },
+    );
+    mocks.saveWorkspaceTabs.mockImplementation(
+      async (
+        root: string,
+        tabs: import("./services/tabs").StoredTab[],
+        active: string,
+      ) => {
+        stored.set(root, { tabs, active });
+      },
+    );
+    await setupWorkspace({ "a.md": "alpha\nbeta\n", "b.md": "one\ntwo\n" });
+    mocks.openFolder.mockImplementation(async (path: string) =>
+      folder(path, path === "/notes" ? 1 : 2),
+    );
+    await openPath("/notes/a.md");
+    await openPath("/notes/b.md");
+    const view = editorView();
+    view.dispatch({ selection: { anchor: 4, head: 7 } });
+    await settle();
+
+    mocks.pickFolder.mockResolvedValue({ path: "/second", canceled: false });
+    sidebarButton("切换文件夹").click();
+    await settle();
+    expect(dialog()?.textContent).toContain("当前文件夹的 2 个标签页会关闭");
+    expect(dialog()?.textContent).toContain("切回“notes”时会恢复这些标签页");
+    dialogButton("切换").click();
+    await settle();
+    expect(host.textContent).toContain("选择一个文件开始写作");
+    expect(stored.get("/notes")?.active).toBe("b.md");
+    expect(stored.get("/notes")?.tabs.map((tab) => tab.path)).toEqual([
+      "a.md",
+      "b.md",
+    ]);
+
+    mocks.pickFolder.mockResolvedValue({ path: "/notes", canceled: false });
+    sidebarButton("切换文件夹").click();
+    await settle();
+    dialogButton("切换").click();
+    await settle();
+
+    expect(tabElements().length).toBe(2);
+    expect(tabNamed("b.md").getAttribute("aria-selected")).toBe("true");
+    expect(editorView().state.doc.toString()).toBe("one\ntwo\n");
+    expect(editorView().state.selection.main.from).toBe(4);
+    expect(editorView().state.selection.main.to).toBe(7);
+  });
+
+  it("restores tabs and selection after a restart", async () => {
+    app?.unmount();
+    app = null;
+    mocks.getSettings.mockResolvedValue({
+      theme: "system",
+      sidebarWidth: 252,
+      recentFolders: ["/notes"],
+      expandedFolders: {},
+    });
+    mocks.openFolder.mockResolvedValue(folder("/notes"));
+    mocks.readFile.mockImplementation(async (path: string) =>
+      path === "a.md" ? "alpha\nbeta\n" : "one\ntwo\n",
+    );
+    mocks.getWorkspaceTabs.mockResolvedValue({
+      tabs: [
+        {
+          kind: "markdown",
+          path: "a.md",
+          selection: { ranges: [{ anchor: 3, head: 5 }], main: 0 },
+          scrollTopLine: 1,
+          scrollTopOffset: 0,
+          textLength: 11,
+        },
+        { kind: "markdown", path: "b.md", textLength: 8 },
+      ],
+      active: "b.md",
+    });
+
+    app = createApp(App);
+    app.mount(host);
+    await settle();
+
+    expect(tabElements().length).toBe(2);
+    expect(tabNamed("b.md").getAttribute("aria-selected")).toBe("true");
+    expect(editorView().state.doc.toString()).toBe("one\ntwo\n");
+  });
+
+  it("keeps single-file tabs out of the remembered workspace layout", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    await openPath("/notes/a.md");
+    await openPath("/tmp/single.md");
+    dialogButton("只打开这个文件").click();
+    await settle();
+    expect(tabElements().length).toBe(2);
+
+    mocks.pickFolder.mockResolvedValue({ path: "/second", canceled: false });
+    sidebarButton("切换文件夹").click();
+    await settle();
+    expect(dialog()?.textContent).toContain("1 个标签页会关闭");
+    dialogButton("切换").click();
+    await settle();
+
+    expect(tabElements().length).toBe(1);
+    expect(tabNamed("single.md")).not.toBeNull();
+    expect(editorView().state.doc.toString()).toBe("# Single\n");
+    const notesCall = mocks.saveWorkspaceTabs.mock.calls.find(
+      (call) => call[0] === "/notes",
+    );
+    expect(notesCall).not.toBeUndefined();
+    expect(notesCall![1].map((tab: { path: string }) => tab.path)).toEqual([
+      "a.md",
+    ]);
+    expect(JSON.stringify(notesCall)).not.toContain("single.md");
+
+    await closeTabNamed("single.md");
+    expect(mocks.releaseSingleFile).toHaveBeenCalledWith("/tmp/single.md");
+  });
+
+  it("follows an external rename of a background tab and saves to the new path", async () => {
+    vi.useFakeTimers();
+    await setupWorkspace({ "a.md": "# A\n", "b.md": "# B\n" });
+    await openPath("/notes/a.md");
+    await openPath("/notes/b.md");
+    watchEvents?.([{ op: "rename", oldPath: "a.md", path: "c.md", isDir: false }]);
+    await settle();
+    expect(tabNamed("c.md").getAttribute("title")).toBe("notes/c.md");
+    expect(host.textContent).not.toContain("已删除或移走");
+
+    tabNamed("c.md").click();
+    await settle();
+    replaceEditorText("# Renamed\n");
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(mocks.writeFile).toHaveBeenCalledWith("c.md", "# Renamed\n", 1);
+  });
+
+  it("loads an external change into a background tab and marks deletion", async () => {
+    await setupWorkspace({ "a.md": "one\n", "b.md": "# B\n" });
+    await openPath("/notes/a.md");
+    await openPath("/notes/b.md");
+    mocks.readFile.mockImplementation(async (path: string) =>
+      path === "a.md" ? "disk version\n" : "# B\n",
+    );
+    watchEvents?.([{ op: "write", path: "a.md", isDir: false }]);
+    await settle();
+    expect(host.textContent).not.toContain("已在 Nicole 之外被修改");
+    tabNamed("a.md").click();
+    await settle();
+    expect(editorView().state.doc.toString()).toBe("disk version\n");
+
+    tabNamed("b.md").click();
+    await settle();
+    watchEvents?.([{ op: "remove", path: "a.md", isDir: false }]);
+    await settle();
+    expect(tabNamed("a.md").querySelector('[role="img"]')).not.toBeNull();
+    tabNamed("a.md").click();
+    await settle();
+    expect(host.textContent).toContain("此文件已在磁盘上被删除或移走");
+  });
+
+  it("pauses a dirty background tab on an external change", async () => {
+    vi.useFakeTimers();
+    await setupWorkspace({ "a.md": "# A\n", "b.md": "# B\n" });
+    await openPath("/notes/a.md");
+    await openPath("/notes/b.md");
+    tabNamed("a.md").click();
+    await settle();
+    replaceEditorText("# Mine\n");
+    tabNamed("b.md").click();
+    await settle();
+
+    watchEvents?.([{ op: "write", path: "a.md", isDir: false }]);
+    await settle();
+    tabNamed("a.md").click();
+    await settle();
+    expect(host.textContent).toContain("此文件已在 Nicole 之外被修改");
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+  });
+
+  it("keeps the top bar usable with fifteen tabs", async () => {
+    const files: Record<string, string> = {};
+    for (let index = 0; index < 15; index++) {
+      files[`note-${index}.md`] = `# ${index}\n`;
+    }
+    await setupWorkspace(files);
+    const scroll = vi.fn();
+    const original = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = scroll;
+    try {
+      for (const path of Object.keys(files)) {
+        await openPath(`/notes/${path}`);
+      }
+      expect(tabElements().length).toBe(15);
+      expect(tabElements().at(-1)?.getAttribute("aria-selected")).toBe("true");
+      expect(
+        host
+          .querySelector('[role="tablist"]')
+          ?.className.includes("overflow-x-auto"),
+      ).toBe(true);
+      expect(scroll).toHaveBeenCalled();
+      expect(
+        host.querySelector('[role="group"][aria-label="编辑模式"]'),
+      ).not.toBeNull();
+    } finally {
+      if (original) {
+        HTMLElement.prototype.scrollIntoView = original;
+      } else {
+        delete (HTMLElement.prototype as { scrollIntoView?: unknown })
+          .scrollIntoView;
+      }
+    }
+  });
+
+  it("moves tab focus with the arrow keys and activates with Enter", async () => {
+    await setupWorkspace({ "a.md": "# A\n", "b.md": "# B\n" });
+    await openPath("/notes/a.md");
+    await openPath("/notes/b.md");
+    const first = tabElements()[0]!;
+    first.focus();
+    first.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "ArrowRight",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    expect(document.activeElement).toBe(tabElements()[1]);
+    (document.activeElement as HTMLElement).dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Enter",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    expect(tabElements()[1]!.getAttribute("aria-selected")).toBe("true");
+    expect(editorView().state.doc.toString()).toBe("# B\n");
+  });
+
+  it("shows the same-name disambiguation suffix", async () => {
+    tree = [
+      entry("essay", "essay", { isDir: true }),
+      entry("travel", "travel", { isDir: true }),
+    ];
+    mocks.listDirectory.mockImplementation(async (path: string) => ({
+      path,
+      entries:
+        path === "."
+          ? tree
+          : path === "essay"
+            ? [entry("README.md", "essay/README.md")]
+            : path === "travel"
+              ? [entry("README.md", "travel/README.md")]
+              : [],
+    }));
+    mocks.readFile.mockImplementation(async (path: string) =>
+      path === "essay/README.md" ? "essay\n" : "travel\n",
+    );
+    await openFolder();
+    host.querySelector<HTMLElement>('[data-tree-path="essay"]')!.click();
+    await settle();
+    host.querySelector<HTMLElement>('[data-tree-path="travel"]')!.click();
+    await settle();
+    host.querySelector<HTMLElement>('[data-tree-path="essay/README.md"]')!.click();
+    await settle();
+    host.querySelector<HTMLElement>('[data-tree-path="travel/README.md"]')!.click();
+    await settle();
+
+    const labels = tabElements().map((tab) =>
+      [...tab.querySelectorAll("span")]
+        .map((span) => span.textContent?.trim() ?? "")
+        .filter(Boolean)
+        .join(" "),
+    );
+    expect(labels).toEqual(["README.md essay", "README.md travel"]);
+  });
+});
+
+async function closeTabNamed(name: string): Promise<void> {
+  const tab = tabNamed(name);
+  const close = tab.querySelector<HTMLButtonElement>("button:not([role])");
+  if (close) {
+    close.click();
+  } else {
+    tab.dispatchEvent(
+      new MouseEvent("auxclick", {
+        button: 1,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  }
+  await settle();
+}
+
+describe("tab persistence on close", () => {
+  it("writes the active tab and selection before finishing a window close", async () => {
+    let savedLayout:
+      | {
+          root: string;
+          tabs: import("./services/tabs").StoredTab[];
+          active: string;
+        }
+      | undefined;
+    mocks.getWorkspaceTabs.mockResolvedValue({ tabs: [], active: "" });
+    mocks.saveWorkspaceTabs.mockImplementation(
+      async (
+        root: string,
+        tabs: import("./services/tabs").StoredTab[],
+        active: string,
+      ) => {
+        savedLayout = { root, tabs, active };
+      },
+    );
+    await setupWorkspace({ "a.md": "# A\n", "b.md": "one\ntwo\n" });
+    await openPath("/notes/a.md");
+    await openPath("/notes/b.md");
+    editorView().dispatch({ selection: { anchor: 1, head: 4 } });
+    await settle();
+
+    await closeHandler?.(9);
+    await settle();
+
+    expect(mocks.finishClose).toHaveBeenCalledWith(9, true);
+    expect(savedLayout?.root).toBe("/notes");
+    expect(savedLayout?.active).toBe("b.md");
+    expect(savedLayout?.tabs.map((tab) => tab.path)).toEqual(["a.md", "b.md"]);
+    expect(savedLayout?.tabs[1]?.selection).toEqual({
+      ranges: [{ anchor: 1, head: 4 }],
+      main: 0,
+    });
   });
 });

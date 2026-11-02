@@ -1,12 +1,10 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 
 import {
-  detectLineEndings,
-  normalizeLineEndings,
-  withLineEnding,
-  type LineEnding,
-} from "./app/line-endings";
+  createTabCommands,
+  matchCommand,
+} from "./app/commands";
 import {
   absoluteBaseName,
   absoluteParent,
@@ -15,21 +13,35 @@ import {
   relativePath,
 } from "./app/paths";
 import {
+  buildContextMenu,
   isMac,
   shortcutText,
   trashLabel,
   type AppPlatform,
 } from "./app/platform";
 import {
+  detectLineEndings,
+  normalizeLineEndings,
+  withLineEnding,
+  type LineEnding,
+} from "./app/line-endings";
+import {
   saveFailureMessage,
   saveStatusPresentation,
   selectBanner,
-  tabProblem,
   type SavePhase,
 } from "./app/status";
 import {
-  classifyWatchEvents,
-} from "./app/watch-events";
+  distinguishingSuffixes,
+  insertionIndex,
+  isDirty,
+  mapSnapshotForReplacement,
+  tabBadge,
+  tabCloseProblems,
+  tabTooltip,
+  type TabModel,
+} from "./app/tabs";
+import { classifyWatchEvents } from "./app/watch-events";
 import type { TreeNode } from "./app/file-tree";
 import AppBanner from "./components/AppBanner.vue";
 import AppDialog from "./components/AppDialog.vue";
@@ -42,17 +54,21 @@ import {
   createEditor,
   type EditorHandle,
   type EditorMode,
+  type EditorRestoreState,
+  type SavedSelection,
 } from "./editor";
 import { createImageInsertion } from "./image-insertion";
 import { resolveImageUrl } from "./image-url";
 import { getAppInfo, type AppInfo } from "./services/app";
 import { onWindowFileDrop } from "./services/assets";
+import { copyText } from "./services/clipboard";
 import {
   listDirectory,
   openWithDefaultApp,
   revealEntry,
   trashEntry,
 } from "./services/files";
+import { popupNativeMenu } from "./services/menu";
 import { onOpenFile, takePendingOpenedFiles } from "./services/open-file";
 import {
   getSettings,
@@ -69,8 +85,14 @@ import {
   dismissOfferedFile,
   readSingleFile,
   releaseSingleFile,
+  revealSingleFile,
   writeSingleFile,
 } from "./services/single-file";
+import {
+  getWorkspaceTabs,
+  saveWorkspaceTabs as saveTabsForRoot,
+  type StoredTab,
+} from "./services/tabs";
 import type { WorkspaceFileEvent } from "./services/mygo";
 import {
   finishClose,
@@ -85,41 +107,11 @@ import { watchWorkspace, type WorkspaceWatcher } from "./services/watch";
 const AUTOSAVE_DELAY_MS = 1000;
 const SAVING_DISPLAY_DELAY_MS = 300;
 const NOTICE_DURATION_MS = 3000;
+const PERSIST_TABS_DELAY_MS = 400;
 
 interface WorkspaceState {
   root: string;
   generation: number;
-}
-
-interface WorkspaceDocument {
-  kind: "workspace";
-  path: string;
-  name: string;
-}
-
-interface SingleDocument {
-  kind: "single";
-  path: string;
-  name: string;
-}
-
-interface PreviewDocument {
-  kind: "preview";
-  path: string;
-  name: string;
-  size: number;
-  folder: string;
-}
-
-type MarkdownDocument = WorkspaceDocument | SingleDocument;
-type CurrentDocument = MarkdownDocument | PreviewDocument;
-
-interface PendingEdit {
-  kind: "workspace" | "single";
-  path: string;
-  generation: number;
-  text: string;
-  ending: LineEnding;
 }
 
 interface Notice {
@@ -143,19 +135,19 @@ interface DialogState {
   actions: DialogAction[];
 }
 
+interface ClosedTab {
+  kind: "markdown" | "preview";
+  path: string;
+  name: string;
+}
+
 const editorHost = ref<HTMLElement | null>(null);
 const sidebar = ref<InstanceType<typeof AppSidebar> | null>(null);
 const appInfo = ref<AppInfo | null>(null);
 const workspace = ref<WorkspaceState | null>(null);
-const currentDocument = ref<CurrentDocument | null>(null);
-const documentText = ref("");
-const originalText = ref("");
-const lineEnding = ref<LineEnding>("\n");
-const mixedLineEndings = ref(false);
-const savePhase = ref<SavePhase>("idle");
-const saveError = ref<string | null>(null);
-const saveErrorDetail = ref<string | null>(null);
-const externalState = ref<"none" | "modified" | "deleted">("none");
+const tabs = ref<TabModel[]>([]);
+const activeTabId = ref<number | null>(null);
+const closedTabs = ref<ClosedTab[]>([]);
 const notice = ref<Notice | null>(null);
 const mode = ref<EditorMode>("live");
 
@@ -181,16 +173,21 @@ let dialogOpen = false;
 let folderOperation: Promise<boolean> | null = null;
 
 let editor: EditorHandle | null = null;
-let saveTimer: ReturnType<typeof setTimeout> | null = null;
-let savingDisplayTimer: ReturnType<typeof setTimeout> | null = null;
+let mountSequence = 0;
+let nextTabId = 1;
+let lastWorkspaceActivePath: string | null = null;
 let noticeTimer: ReturnType<typeof setTimeout> | null = null;
 let saveQueue: Promise<boolean> = Promise.resolve(true);
-let pendingEdit: PendingEdit | null = null;
-let writesInFlight = 0;
+let applyingExternal = false;
 let recentSelfRename:
   | { oldPath: string; newPath: string; at: number }
   | null = null;
-let applyingExternal = false;
+const saveTimers = new Map<number, ReturnType<typeof setTimeout>>();
+const savingTimers = new Map<number, ReturnType<typeof setTimeout>>();
+const writesInFlight = new Map<number, number>();
+const externalReadSequence = new Map<number, number>();
+let persistTimer: ReturnType<typeof setTimeout> | null = null;
+
 let watcher: WorkspaceWatcher | null = null;
 let offSaveBeforeClose: (() => void) | null = null;
 let offOpenFile: (() => void) | null = null;
@@ -198,14 +195,12 @@ let offFileDrop: (() => void) | null = null;
 let openedFilesQueue: Promise<void> = Promise.resolve();
 let appReady = false;
 let pendingOpenSignal = false;
-let externalReadSequence = 0;
-let externalRevision = 0;
 
 const imageInsertion = createImageInsertion({
   getEditor: () => editor,
   getFile: () => {
-    const doc = currentDocument.value;
-    return doc?.kind === "workspace" ? doc.path : null;
+    const tab = currentMarkdown.value;
+    return tab?.kind === "workspace" ? tab.path : null;
   },
   getGeneration: () => workspace.value?.generation ?? 0,
   onError: () => showNotice("图片插入失败", "danger"),
@@ -229,13 +224,16 @@ const isDark = computed(() =>
 );
 
 const hasWorkspace = computed(() => workspace.value !== null);
-const currentMarkdown = computed<MarkdownDocument | null>(() => {
-  const doc = currentDocument.value;
-  return doc !== null && doc.kind !== "preview" ? doc : null;
+const currentTab = computed<TabModel | null>(
+  () => tabs.value.find((tab) => tab.id === activeTabId.value) ?? null,
+);
+const currentMarkdown = computed<TabModel | null>(() => {
+  const tab = currentTab.value;
+  return tab !== null && tab.kind !== "preview" ? tab : null;
 });
-const currentPreview = computed<PreviewDocument | null>(() => {
-  const doc = currentDocument.value;
-  return doc?.kind === "preview" ? doc : null;
+const currentPreview = computed<TabModel | null>(() => {
+  const tab = currentTab.value;
+  return tab?.kind === "preview" ? tab : null;
 });
 const isMarkdownOpen = computed(() => currentMarkdown.value !== null);
 
@@ -248,9 +246,9 @@ const showSidebarToggle = computed(
   () => hasWorkspace.value && !sidebarShown.value,
 );
 const selectedTreePath = computed(() => {
-  const doc = currentDocument.value;
-  return doc?.kind === "workspace" || doc?.kind === "preview"
-    ? doc.path
+  const tab = currentTab.value;
+  return tab?.kind === "workspace" || tab?.kind === "preview"
+    ? tab.path
     : null;
 });
 
@@ -266,75 +264,66 @@ const expandedForRoot = computed(() => {
 });
 
 const saveStatus = computed(() => {
-  if (currentMarkdown.value === null) {
+  const tab = currentMarkdown.value;
+  if (tab === null) {
     return null;
   }
-  return saveStatusPresentation(savePhase.value, mixedLineEndings.value);
+  return saveStatusPresentation(tab.savePhase, tab.mixedLineEndings);
 });
 
 const banner = computed(() => {
-  if (currentMarkdown.value === null) {
+  const tab = currentMarkdown.value;
+  if (tab === null) {
     return null;
   }
   return selectBanner({
-    deleted: externalState.value === "deleted",
-    externallyModified: externalState.value === "modified",
-    saveError: saveError.value,
-    saveErrorDetail: saveErrorDetail.value,
-    mixedLineEndings: mixedLineEndings.value,
-    singleFile: currentMarkdown.value.kind === "single",
+    deleted: tab.externalState === "deleted",
+    externallyModified: tab.externalState === "modified",
+    saveError: tab.saveError,
+    saveErrorDetail: tab.saveErrorDetail,
+    mixedLineEndings: tab.mixedLineEndings,
+    singleFile: tab.kind === "single",
   });
 });
 
-const tab = computed<TopBarTab | null>(() => {
-  const doc = currentDocument.value;
-  if (doc === null) {
-    return null;
-  }
-  const failed = saveError.value !== null;
-  const deleted =
-    doc.kind === "workspace" && externalState.value === "deleted";
-  const problem = tabProblem(deleted, mixedLineEndings.value, failed);
-  let problemLabel = "";
-  if (deleted) {
-    problemLabel = "文件已在磁盘上被删除或移走";
-  } else if (failed) {
-    problemLabel = "保存失败";
-  } else if (mixedLineEndings.value) {
-    problemLabel = "换行风格混合";
-  }
-  let title: string;
-  if (doc.kind === "workspace") {
-    title = `${rootName.value}/${doc.path}`;
-  } else if (doc.kind === "single") {
-    title = doc.path;
-  } else {
-    title = `${rootName.value}/${doc.path}`;
-  }
-  return {
-    name: doc.name,
-    title,
-    problem,
-    problemLabel,
-  };
+const topBarTabs = computed<TopBarTab[]>(() => {
+  const suffixes = distinguishingSuffixes(tabs.value, rootName.value);
+  return tabs.value.map((tab) => {
+    const badge = tabBadge(tab);
+    return {
+      id: tab.id,
+      name: tab.name,
+      suffix: suffixes.get(tab.id) ?? null,
+      title: tabTooltip(tab, rootName.value),
+      problem: badge?.tone ?? null,
+      problemLabel: badge?.label ?? "",
+    };
+  });
 });
 
 const startState = computed(
-  () => workspace.value === null && currentDocument.value === null,
+  () => workspace.value === null && tabs.value.length === 0,
 );
 const noFileState = computed(
-  () => workspace.value !== null && currentDocument.value === null,
+  () => workspace.value !== null && tabs.value.length === 0,
 );
 
 const dialogActions = computed(() => dialog.value?.actions ?? []);
+
+const tabCommands = createTabCommands({
+  close: () => closeActiveTab(),
+  reopen: () => reopenClosedTab(),
+  next: () => cycleTab(1),
+  previous: () => cycleTab(-1),
+});
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function clearSaveError() {
-  saveError.value = null;
-  saveErrorDetail.value = null;
+function findTab(id: number | null): TabModel | null {
+  if (id === null) return null;
+  return tabs.value.find((tab) => tab.id === id) ?? null;
 }
 
 function showNotice(
@@ -497,250 +486,6 @@ function handleExpandedChange(folders: string[]) {
   void setExpandedFolders(root, [...folders]).catch(() => {});
 }
 
-function clearSaveTimer() {
-  if (saveTimer !== null) {
-    clearTimeout(saveTimer);
-    saveTimer = null;
-  }
-}
-
-function clearSavingDisplay() {
-  if (savingDisplayTimer !== null) {
-    clearTimeout(savingDisplayTimer);
-    savingDisplayTimer = null;
-  }
-}
-
-function markExternalState(next: "none" | "modified" | "deleted") {
-  externalState.value = next;
-  externalRevision += 1;
-}
-
-function currentEditForDocument(doc: MarkdownDocument): PendingEdit {
-  return {
-    kind: doc.kind,
-    path: doc.path,
-    generation:
-      doc.kind === "workspace" ? workspace.value?.generation ?? 0 : 0,
-    text: documentText.value,
-    ending: lineEnding.value,
-  };
-}
-
-function scheduleSave(text: string) {
-  documentText.value = text;
-  if (applyingExternal) {
-    return;
-  }
-  const doc = currentMarkdown.value;
-  if (doc === null) {
-    return;
-  }
-  if (text === originalText.value) {
-    pendingEdit = null;
-    clearSaveTimer();
-    if (savePhase.value !== "failed" && savePhase.value !== "saving") {
-      savePhase.value = "saved";
-    }
-    return;
-  }
-  pendingEdit = currentEditForDocument(doc);
-  if (mixedLineEndings.value) {
-    clearSaveTimer();
-    savePhase.value = "mixed";
-    return;
-  }
-  savePhase.value = saveError.value === null ? "editing" : "failed";
-  clearSaveTimer();
-  saveTimer = setTimeout(() => {
-    saveTimer = null;
-    void savePending();
-  }, AUTOSAVE_DELAY_MS);
-}
-
-function savePending(
-  force = false,
-  revisionAtRequest = externalRevision,
-): Promise<boolean> {
-  const forceRevision = force ? revisionAtRequest : null;
-  const next = saveQueue.then(() => {
-    // A forced save snapshots the revision when the user clicks, not when the
-    // queued write starts. Otherwise an external event that arrives while an
-    // earlier write is pending would be accepted as the new baseline.
-    if (force && externalRevision !== forceRevision) {
-      return stopForcedSave();
-    }
-    return savePendingNow(force, forceRevision);
-  });
-  saveQueue = next.then(
-    (saved) => saved,
-    () => false,
-  );
-  return next;
-}
-
-async function savePendingNow(
-  force: boolean,
-  forceRevision: number | null,
-): Promise<boolean> {
-  clearSaveTimer();
-  const doc = currentMarkdown.value;
-  if (doc === null) {
-    return true;
-  }
-  if (
-    !force &&
-    externalState.value !== "none" &&
-    (pendingEdit !== null || externalState.value === "deleted")
-  ) {
-    return false;
-  }
-  for (;;) {
-    let edit = pendingEdit;
-    if (edit === null && force) {
-      edit = currentEditForDocument(doc);
-    }
-    if (edit === null) {
-      return true;
-    }
-    if (
-      edit.path !== doc.path ||
-      edit.kind !== doc.kind ||
-      edit.generation !==
-        (doc.kind === "workspace" ? workspace.value?.generation ?? 0 : 0)
-    ) {
-      return false;
-    }
-    if (mixedLineEndings.value && !force) {
-      savePhase.value = "mixed";
-      return false;
-    }
-    // The first guard handles a save that starts while an external change is
-    // known. Check again after taking the next edit: an edit can be queued
-    // while a previous write is still in flight.
-    if (!force && externalState.value !== "none") {
-      savePhase.value = saveError.value === null ? "editing" : "failed";
-      return false;
-    }
-    pendingEdit = null;
-    clearSavingDisplay();
-    writesInFlight += 1;
-    savingDisplayTimer = setTimeout(() => {
-      savingDisplayTimer = null;
-      if (writesInFlight > 0 && savePhase.value !== "failed") {
-        savePhase.value = "saving";
-      }
-    }, SAVING_DISPLAY_DELAY_MS);
-    try {
-      if (edit.kind === "workspace") {
-        await writeFile(
-          edit.path,
-          withLineEnding(edit.text, edit.ending),
-          edit.generation,
-        );
-      } else {
-        await writeSingleFile(
-          edit.path,
-          withLineEnding(edit.text, edit.ending),
-        );
-      }
-    } catch (error) {
-      writesInFlight = Math.max(0, writesInFlight - 1);
-      clearSavingDisplay();
-      if (isCurrentEdit(edit, doc)) {
-        if (pendingEdit === null) {
-          pendingEdit = edit;
-        }
-        const raw = errorText(error);
-        saveError.value = saveFailureMessage(raw);
-        saveErrorDetail.value = raw;
-        savePhase.value = "failed";
-      }
-      return false;
-    }
-    writesInFlight = Math.max(0, writesInFlight - 1);
-    clearSavingDisplay();
-    if (!isCurrentEdit(edit, doc)) {
-      return true;
-    }
-    // A new external event during a forced write invalidates the whole
-    // attempt. Do not accept edit.text as the baseline; otherwise the next
-    // write can overwrite the external version or the tab can close without
-    // warning.
-    if (force && externalRevision !== forceRevision) {
-      return stopForcedSave();
-    }
-    originalText.value = edit.text;
-    clearSaveError();
-    // A non-force save must never hide an external change that arrived while
-    // the write was in flight. A forced save that got here has no newer
-    // external event and may clear the state it started with.
-    if (force) {
-      externalState.value = "none";
-    }
-    if (pendingEdit === null && documentText.value !== originalText.value) {
-      pendingEdit = currentEditForDocument(doc);
-    }
-    if (pendingEdit === null) {
-      savePhase.value = "saved";
-      return true;
-    }
-    savePhase.value = "editing";
-  }
-}
-
-function stopForcedSave(): false {
-  clearSaveTimer();
-  if (
-    externalState.value !== "deleted" &&
-    documentText.value !== originalText.value
-  ) {
-    markExternalState("modified");
-  }
-  savePhase.value = "paused";
-  return false;
-}
-
-function isCurrentEdit(edit: PendingEdit, doc: MarkdownDocument): boolean {
-  const current = currentMarkdown.value;
-  return (
-    current !== null &&
-    current.kind === doc.kind &&
-    current.path === doc.path &&
-    edit.path === doc.path
-  );
-}
-
-function discardCurrentEdits() {
-  clearSaveTimer();
-  clearSavingDisplay();
-  pendingEdit = null;
-  clearSaveError();
-  mixedLineEndings.value = false;
-  externalState.value = "none";
-  savePhase.value = "idle";
-}
-
-function documentProblemDetails(): string[] {
-  const doc = currentMarkdown.value;
-  if (doc === null) {
-    return [];
-  }
-  const details: string[] = [];
-  if (externalState.value === "deleted") {
-    details.push(`${doc.name}：文件已在磁盘上被删除或移走`);
-  } else if (externalState.value === "modified") {
-    details.push(`${doc.name}：文件已在 Nicole 之外被修改`);
-  }
-  if (saveError.value !== null) {
-    details.push(`${doc.name}：保存失败`);
-  }
-  if (mixedLineEndings.value) {
-    details.push(`${doc.name}：换行风格混合`);
-  }
-  return details;
-}
-
 function askDialog(state: DialogState): Promise<string> {
   if (dialogResolve !== null) {
     resolveDialog("cancel");
@@ -766,37 +511,317 @@ function cancelOpenDialog() {
   }
 }
 
-async function prepareToLeave(): Promise<boolean> {
-  const doc = currentMarkdown.value;
-  if (doc === null) {
+function clearTabSaveTimer(id: number) {
+  const timer = saveTimers.get(id);
+  if (timer !== undefined) {
+    clearTimeout(timer);
+    saveTimers.delete(id);
+  }
+}
+
+function clearSavingDisplay(id: number) {
+  const timer = savingTimers.get(id);
+  if (timer !== undefined) {
+    clearTimeout(timer);
+    savingTimers.delete(id);
+  }
+}
+
+function markExternalState(tab: TabModel, next: "none" | "modified" | "deleted") {
+  tab.externalState = next;
+  tab.revision += 1;
+}
+
+function handleEditorChange(tabId: number, text: string) {
+  const tab = findTab(tabId);
+  if (tab === null) {
+    return;
+  }
+  tab.text = text;
+  if (applyingExternal) {
+    return;
+  }
+  if (tab.text === tab.originalText) {
+    clearTabSaveTimer(tabId);
+    if (tab.savePhase !== "failed" && tab.savePhase !== "saving") {
+      tab.savePhase = "saved";
+    }
+    return;
+  }
+  if (tab.mixedLineEndings) {
+    clearTabSaveTimer(tabId);
+    tab.savePhase = "mixed";
+    return;
+  }
+  tab.savePhase = tab.saveError === null ? "editing" : "failed";
+  clearTabSaveTimer(tabId);
+  saveTimers.set(
+    tabId,
+    setTimeout(() => {
+      saveTimers.delete(tabId);
+      void saveTab(tabId);
+    }, AUTOSAVE_DELAY_MS),
+  );
+}
+
+function saveTab(
+  tabId: number,
+  force = false,
+  revisionAtRequest?: number,
+): Promise<boolean> {
+  const tab = findTab(tabId);
+  if (tab === null) {
+    return Promise.resolve(true);
+  }
+  const revision = revisionAtRequest ?? tab.revision;
+  const next = saveQueue.then(() => saveTabNow(tabId, force, revision));
+  saveQueue = next.then(
+    (saved) => saved,
+    () => false,
+  );
+  return next;
+}
+
+function beginWrite(tabId: number) {
+  writesInFlight.set(tabId, (writesInFlight.get(tabId) ?? 0) + 1);
+  clearSavingDisplay(tabId);
+  savingTimers.set(
+    tabId,
+    setTimeout(() => {
+      savingTimers.delete(tabId);
+      const tab = findTab(tabId);
+      if (
+        tab !== null &&
+        (writesInFlight.get(tabId) ?? 0) > 0 &&
+        tab.savePhase !== "failed"
+      ) {
+        tab.savePhase = "saving";
+      }
+    }, SAVING_DISPLAY_DELAY_MS),
+  );
+}
+
+function endWrite(tabId: number) {
+  writesInFlight.set(tabId, Math.max(0, (writesInFlight.get(tabId) ?? 0) - 1));
+  clearSavingDisplay(tabId);
+}
+
+async function saveTabNow(
+  tabId: number,
+  force: boolean,
+  revisionAtRequest: number,
+): Promise<boolean> {
+  let tab = findTab(tabId);
+  if (tab === null) {
     return true;
   }
-  // A mixed-ending or previously failed file with no pending text has
-  // nothing to lose; the text was undone back to the loaded version.
-  const saved = await savePending();
-  if (saved && externalState.value !== "deleted") {
-    return true;
+  if (force && tab.revision !== revisionAtRequest) {
+    return stopForcedSave(tabId);
   }
-  const details = documentProblemDetails();
-  const choice = await askDialog({
-    title: "放弃未保存的更改？",
-    message: `继续操作将关闭“${doc.name}”，未保存的内容会丢失。`,
-    details,
-    actions: [
-      { label: "取消", value: "cancel", autofocus: true },
-      {
-        label: "放弃更改并继续",
-        value: "discard",
-        primary: true,
-        danger: true,
-      },
-    ],
-  });
-  if (choice !== "discard") {
+  if (
+    !force &&
+    tab.externalState !== "none" &&
+    (isDirty(tab) || tab.externalState === "deleted")
+  ) {
     return false;
   }
-  discardCurrentEdits();
-  return true;
+  let mustWrite = force;
+  for (;;) {
+    tab = findTab(tabId);
+    if (tab === null) {
+      return true;
+    }
+    if (tab.mixedLineEndings && !force) {
+      tab.savePhase = "mixed";
+      return false;
+    }
+    if (!isDirty(tab) && !mustWrite) {
+      if (tab.savePhase !== "failed" && tab.savePhase !== "saving") {
+        tab.savePhase = "saved";
+      }
+      return true;
+    }
+    if (!force && tab.externalState !== "none") {
+      tab.savePhase = tab.saveError === null ? "editing" : "failed";
+      return false;
+    }
+    const edit = {
+      kind: tab.kind,
+      path: tab.path,
+      generation: tab.generation,
+      text: tab.text,
+      ending: tab.lineEnding,
+    };
+    beginWrite(tabId);
+    try {
+      if (edit.kind === "workspace") {
+        await writeFile(
+          edit.path,
+          withLineEnding(edit.text, edit.ending),
+          edit.generation,
+        );
+      } else if (edit.kind === "single") {
+        await writeSingleFile(
+          edit.path,
+          withLineEnding(edit.text, edit.ending),
+        );
+      }
+    } catch (error) {
+      endWrite(tabId);
+      const current = findTab(tabId);
+      if (current !== null && current.path === edit.path) {
+        const raw = errorText(error);
+        current.saveError = saveFailureMessage(raw);
+        current.saveErrorDetail = raw;
+        current.savePhase = "failed";
+      }
+      return false;
+    }
+    endWrite(tabId);
+    mustWrite = false;
+    const current = findTab(tabId);
+    if (current === null) {
+      return true;
+    }
+    if (force && current.revision !== revisionAtRequest) {
+      return stopForcedSave(tabId);
+    }
+    if (current.path !== edit.path || current.kind !== edit.kind) {
+      // A rename landed while the write was in flight. Do not treat the old
+      // path's content as the new path's baseline.
+      return false;
+    }
+    current.originalText = edit.text;
+    current.saveError = null;
+    current.saveErrorDetail = null;
+    if (force) {
+      current.externalState = "none";
+    }
+    if (current.text === current.originalText) {
+      current.savePhase = "saved";
+      return true;
+    }
+    current.savePhase = "editing";
+  }
+}
+
+function stopForcedSave(tabId: number): false {
+  clearTabSaveTimer(tabId);
+  const tab = findTab(tabId);
+  if (
+    tab !== null &&
+    tab.externalState !== "deleted" &&
+    tab.text !== tab.originalText
+  ) {
+    markExternalState(tab, "modified");
+  }
+  if (tab !== null) {
+    tab.savePhase = "paused";
+  }
+  return false;
+}
+
+async function saveAllTabs(force = false): Promise<boolean> {
+  const ids = tabs.value
+    .filter((tab) => tab.kind !== "preview")
+    .map((tab) => tab.id);
+  const results = await Promise.all(ids.map((id) => saveTab(id, force)));
+  return results.every(Boolean);
+}
+
+async function saveWorkspaceTabs(): Promise<boolean> {
+  const ids = tabs.value
+    .filter((tab) => tab.kind === "workspace")
+    .map((tab) => tab.id);
+  const results = await Promise.all(ids.map((id) => saveTab(id)));
+  return results.every(Boolean);
+}
+
+function makeMarkdownTab(
+  kind: "workspace" | "single",
+  path: string,
+  name: string,
+  text: string,
+  options: {
+    generation?: number;
+    snapshot?: EditorRestoreState | null;
+  } = {},
+): TabModel {
+  const detected = detectLineEndings(text);
+  const normalized = normalizeLineEndings(text);
+  return {
+    id: nextTabId++,
+    kind,
+    path,
+    name,
+    text: normalized,
+    originalText: normalized,
+    lineEnding: detected.ending,
+    mixedLineEndings: detected.mixed,
+    savePhase: detected.mixed ? "mixed" : "saved",
+    saveError: null,
+    saveErrorDetail: null,
+    externalState: "none",
+    revision: 0,
+    generation:
+      kind === "workspace"
+        ? options.generation ?? workspace.value?.generation ?? 0
+        : 0,
+    snapshot: options.snapshot ?? null,
+  };
+}
+
+function previewFolderFor(path: string): string {
+  const root = workspace.value?.root ?? "";
+  const parent = parentOfRelative(path);
+  return parent === "."
+    ? displayPath(root, homeDir.value)
+    : displayPath(`${root}/${parent}`, homeDir.value);
+}
+
+function makePreviewTab(
+  path: string,
+  name: string,
+  size: number,
+): TabModel {
+  return {
+    id: nextTabId++,
+    kind: "preview",
+    path,
+    name,
+    text: "",
+    originalText: "",
+    lineEnding: "\n",
+    mixedLineEndings: false,
+    savePhase: "idle",
+    saveError: null,
+    saveErrorDetail: null,
+    externalState: "none",
+    revision: 0,
+    generation: workspace.value?.generation ?? 0,
+    previewSize: size,
+    previewFolder: previewFolderFor(path),
+    snapshot: null,
+  };
+}
+
+function insertTab(tab: TabModel) {
+  const index = insertionIndex(tabs.value, activeTabId.value);
+  tabs.value.splice(index, 0, tab);
+}
+
+function snapshotActiveEditor() {
+  const tab = findTab(activeTabId.value);
+  if (tab === null || tab.kind === "preview" || editor === null) {
+    return;
+  }
+  const state = editor.getRestoreState();
+  tab.snapshot = markRaw({
+    selection: state.selection ?? null,
+    history: state.history ?? null,
+    scrollTopLine: state.scrollTopLine ?? null,
+    scrollTopOffset: state.scrollTopOffset ?? null,
+  });
 }
 
 function clearEditor() {
@@ -805,83 +830,87 @@ function clearEditor() {
   editorHost.value?.replaceChildren();
 }
 
-function resetDocumentState() {
+async function mountActive(focus = true) {
+  const sequence = ++mountSequence;
   clearEditor();
-  const doc = currentDocument.value;
-  currentDocument.value = null;
-  documentText.value = "";
-  originalText.value = "";
-  pendingEdit = null;
-  mixedLineEndings.value = false;
-  lineEnding.value = "\n";
-  savePhase.value = "idle";
-  clearSaveError();
-  externalState.value = "none";
-  clearSaveTimer();
-  clearSavingDisplay();
-  if (doc?.kind === "single") {
-    void releaseSingleFile(doc.path).catch(() => {});
-  }
-}
-
-function mountDocument(text: string, focus = true) {
-  const doc = currentMarkdown.value;
-  if (doc === null) {
-    clearEditor();
+  const target = findTab(activeTabId.value);
+  if (target === null || target.kind === "preview") {
     return;
   }
-  clearEditor();
+  await nextTick();
+  if (sequence !== mountSequence) {
+    return;
+  }
+  const tab = findTab(activeTabId.value);
+  if (tab === null || tab.id !== target.id || tab.kind === "preview") {
+    return;
+  }
   const host = editorHost.value;
   if (!host) {
     return;
   }
+  const restore = tab.snapshot;
+  tab.snapshot = null;
   host.replaceChildren();
   editor = createEditor({
     parent: host,
-    doc: text,
+    doc: tab.text,
     mode: mode.value,
+    restore: restore ?? undefined,
     resolveImage: (src) =>
-      doc.kind === "workspace"
-        ? resolveImageUrl(src, doc.path, workspace.value?.generation ?? 0)
+      tab.kind === "workspace"
+        ? resolveImageUrl(src, tab.path, tab.generation)
         : null,
     onPasteImage: (ticket) => imageInsertion.handlePaste(ticket),
-    onChange: scheduleSave,
+    onChange: (text) => handleEditorChange(tab.id, text),
   });
   if (focus) {
     editor.focus();
   }
 }
 
-function loadMarkdownDocument(
-  doc: MarkdownDocument,
-  text: string,
-  options: { focus?: boolean } = {},
-) {
-  const detected = detectLineEndings(text);
-  const normalized = normalizeLineEndings(text);
-  currentDocument.value = doc;
-  lineEnding.value = detected.ending;
-  mixedLineEndings.value = detected.mixed;
-  originalText.value = normalized;
-  documentText.value = normalized;
-  pendingEdit = null;
-  clearSaveError();
-  externalState.value = "none";
-  savePhase.value = detected.mixed ? "mixed" : "saved";
-  mountDocument(normalized, options.focus ?? true);
+async function activateTab(id: number, focus = true) {
+  const target = findTab(id);
+  if (target === null) {
+    return;
+  }
+  if (activeTabId.value === id) {
+    closeOverlaySidebar();
+    if (focus) {
+      editor?.focus();
+    }
+    return;
+  }
+  snapshotActiveEditor();
+  activeTabId.value = id;
+  if (target.kind === "workspace" || target.kind === "preview") {
+    lastWorkspaceActivePath = target.path;
+  }
+  await mountActive(focus);
+  closeOverlaySidebar();
+  schedulePersistTabs();
+}
+
+function cycleTab(delta: number) {
+  if (tabs.value.length === 0) {
+    return;
+  }
+  const index = tabs.value.findIndex((tab) => tab.id === activeTabId.value);
+  const next =
+    (index === -1 ? 0 : index + delta + tabs.value.length) % tabs.value.length;
+  return activateTab(tabs.value[next]!.id, true);
 }
 
 async function openWorkspaceFile(path: string, name?: string) {
   if (workspace.value === null) {
     return;
   }
-  const current = currentDocument.value;
-  if (current?.kind === "workspace" && current.path === path) {
-    closeOverlaySidebar();
-    editor?.focus();
-    return;
-  }
-  if (!(await prepareToLeave())) {
+  const existing = tabs.value.find(
+    (tab) => tab.kind === "workspace" && tab.path === path,
+  );
+  if (existing) {
+    await activateTab(existing.id);
+    void sidebar.value?.reveal(path);
     return;
   }
   let text: string;
@@ -891,16 +920,14 @@ async function openWorkspaceFile(path: string, name?: string) {
     showNotice(`读取失败：${errorText(error)}`, "danger");
     return;
   }
-  const previous = currentMarkdown.value;
-  loadMarkdownDocument({
-    kind: "workspace",
+  const tab = makeMarkdownTab(
+    "workspace",
     path,
-    name: name ?? absoluteBaseName(path),
-  }, text);
-  if (previous?.kind === "single") {
-    void releaseSingleFile(previous.path).catch(() => {});
-  }
-  closeOverlaySidebar();
+    name ?? absoluteBaseName(path),
+    text,
+  );
+  insertTab(tab);
+  await activateTab(tab.id);
   void sidebar.value?.reveal(path);
 }
 
@@ -909,37 +936,16 @@ async function openPreviewEntry(entry: {
   name: string;
   size: number;
 }) {
-  if (!(await prepareToLeave())) {
+  const existing = tabs.value.find(
+    (tab) => tab.kind === "preview" && tab.path === entry.path,
+  );
+  if (existing) {
+    await activateTab(existing.id);
     return;
   }
-  const root = workspace.value?.root ?? "";
-  const parent = parentOfRelative(entry.path);
-  const folder =
-    parent === "."
-      ? displayPath(root, homeDir.value)
-      : displayPath(`${root}/${parent}`, homeDir.value);
-  const previous = currentDocument.value;
-  currentDocument.value = {
-    kind: "preview",
-    path: entry.path,
-    name: entry.name,
-    size: entry.size,
-    folder,
-  };
-  documentText.value = "";
-  originalText.value = "";
-  pendingEdit = null;
-  savePhase.value = "idle";
-  clearSaveError();
-  externalState.value = "none";
-  mixedLineEndings.value = false;
-  clearSaveTimer();
-  clearSavingDisplay();
-  clearEditor();
-  if (previous?.kind === "single") {
-    void releaseSingleFile(previous.path).catch(() => {});
-  }
-  closeOverlaySidebar();
+  const tab = makePreviewTab(entry.path, entry.name, entry.size);
+  insertTab(tab);
+  await activateTab(tab.id);
 }
 
 function parentOfRelative(path: string): string {
@@ -958,15 +964,113 @@ async function openTreeEntry(entry: TreeNode) {
   }
 }
 
-function applyWorkspace(folder: { root: string; generation: number }) {
+function applyWorkspaceState(folder: {
+  root: string;
+  generation: number;
+}) {
   workspace.value = { root: folder.root, generation: folder.generation };
   missingLastFolder.value = null;
   rememberRecent(folder.root);
-  const doc = currentDocument.value;
-  if (doc === null || doc.kind === "workspace" || doc.kind === "preview") {
-    resetDocumentState();
-  }
   startWatch(folder.generation);
+}
+
+async function restoreTabsForRoot(
+  root: string,
+): Promise<{ tabs: TabModel[]; activePath: string | null }> {
+  let stored;
+  try {
+    stored = await getWorkspaceTabs(root);
+  } catch {
+    return { tabs: [], activePath: null };
+  }
+  const restored: TabModel[] = [];
+  for (const item of stored.tabs) {
+    if (item.kind === "preview") {
+      let size = item.size ?? 0;
+      try {
+        const listing = await listDirectory(parentOfRelative(item.path));
+        const entry = listing.entries.find(
+          (candidate) => candidate.path === item.path,
+        );
+        if (!entry || entry.isDir) {
+          continue;
+        }
+        size = entry.size;
+      } catch {
+        continue;
+      }
+      const tab = makePreviewTab(item.path, absoluteBaseName(item.path), size);
+      restored.push(tab);
+      continue;
+    }
+    if (item.kind !== "markdown") {
+      continue;
+    }
+    let text: string;
+    try {
+      text = await readFile(item.path);
+    } catch {
+      continue;
+    }
+    let snapshot: EditorRestoreState | null = null;
+    if (
+      item.selection !== undefined ||
+      item.history !== undefined ||
+      item.scrollTopLine !== undefined
+    ) {
+      const lengthMatches =
+        item.textLength === undefined || item.textLength === text.length;
+      snapshot = markRaw({
+        selection: (item.selection as SavedSelection | null) ?? null,
+        history: lengthMatches ? item.history ?? null : null,
+        scrollTopLine: item.scrollTopLine ?? null,
+        scrollTopOffset: item.scrollTopOffset ?? null,
+      });
+    }
+    restored.push(
+      makeMarkdownTab("workspace", item.path, absoluteBaseName(item.path), text, {
+        snapshot,
+      }),
+    );
+  }
+  const active =
+    restored.find((tab) => tab.path === stored.active) ?? restored[0] ?? null;
+  return { tabs: restored, activePath: active?.path ?? null };
+}
+
+async function applyWorkspace(folder: {
+  root: string;
+  generation: number;
+}) {
+  const previous = findTab(activeTabId.value);
+  const keepSingle = previous?.kind === "single";
+  const singles = tabs.value.filter((tab) => tab.kind === "single");
+  if (!keepSingle) {
+    clearEditor();
+  }
+  applyWorkspaceState(folder);
+  closedTabs.value = [];
+  tabs.value = singles;
+  activeTabId.value = keepSingle ? previous.id : null;
+  lastWorkspaceActivePath = null;
+
+  const restored = await restoreTabsForRoot(folder.root);
+  if (restored.tabs.length > 0) {
+    tabs.value = [...singles, ...restored.tabs];
+  }
+  if (!keepSingle) {
+    const active =
+      restored.activePath === null
+        ? singles.at(-1) ?? null
+        : tabs.value.find((tab) => tab.path === restored.activePath) ?? null;
+    activeTabId.value = active?.id ?? null;
+    if (active !== null && active.kind !== "single") {
+      lastWorkspaceActivePath = active.path;
+    }
+    await mountActive(true);
+  } else if (lastWorkspaceActivePath === null) {
+    lastWorkspaceActivePath = restored.activePath;
+  }
 }
 
 async function switchToFolder(path: string): Promise<boolean> {
@@ -974,48 +1078,35 @@ async function switchToFolder(path: string): Promise<boolean> {
     closeOverlaySidebar();
     return true;
   }
-  const doc = currentDocument.value;
   const targetName = absoluteBaseName(path);
-  let discard = false;
+  const currentWorkspace = workspace.value;
+  let hadProblems = false;
 
-  if (doc?.kind === "workspace") {
-    const saved = await savePending();
-    const problems = documentProblemDetails();
-    if (!saved) {
-      problems.push("当前文件有未保存的更改");
+  if (currentWorkspace !== null) {
+    const closingTabs = tabs.value.filter(
+      (tab) => tab.kind === "workspace" || tab.kind === "preview",
+    );
+    await saveWorkspaceTabs();
+    const problems = closingTabs.flatMap(tabCloseProblems);
+    hadProblems = problems.length > 0;
+    const choice = await askDialog({
+      title: `切换到“${targetName}”`,
+      message: `当前文件夹的 ${closingTabs.length} 个标签页会关闭，切回“${rootName.value}”时会恢复这些标签页`,
+      details: problems,
+      actions: [
+        { label: "取消", value: "cancel", autofocus: true },
+        {
+          label: hadProblems ? "放弃更改并切换" : "切换",
+          value: "switch",
+          primary: true,
+          danger: hadProblems,
+        },
+      ],
+    });
+    if (choice !== "switch") {
+      return false;
     }
-    if (problems.length === 0) {
-      const choice = await askDialog({
-        title: `切换到“${targetName}”`,
-        message: "当前标签页会关闭。切回时需要重新打开文件。",
-        actions: [
-          { label: "取消", value: "cancel", autofocus: true },
-          { label: "切换", value: "switch", primary: true },
-        ],
-      });
-      if (choice !== "switch") {
-        return false;
-      }
-    } else {
-      const choice = await askDialog({
-        title: `切换到“${targetName}”`,
-        message: "当前标签页会关闭，未保存的内容会丢失。",
-        details: problems,
-        actions: [
-          { label: "取消", value: "cancel", autofocus: true },
-          {
-            label: "放弃更改并切换",
-            value: "switch",
-            primary: true,
-            danger: true,
-          },
-        ],
-      });
-      if (choice !== "switch") {
-        return false;
-      }
-      discard = true;
-    }
+    await persistTabsNow();
   }
 
   let folder;
@@ -1025,10 +1116,7 @@ async function switchToFolder(path: string): Promise<boolean> {
     showNotice(`打开失败：${errorText(error)}`, "danger");
     return false;
   }
-  if (discard) {
-    discardCurrentEdits();
-  }
-  applyWorkspace(folder);
+  await applyWorkspace(folder);
   return true;
 }
 
@@ -1071,7 +1159,7 @@ async function restoreLastWorkspace() {
   }
   try {
     const folder = await openFolderAtPath(last);
-    applyWorkspace(folder);
+    await applyWorkspace(folder);
     // Opening the last folder should not move it again; it is already first.
     recentFolders.value = [
       folder.root,
@@ -1099,6 +1187,49 @@ function stopWatch() {
   watcher = null;
 }
 
+function remapTabPath(
+  path: string,
+  oldPath: string,
+  newPath: string,
+  isDir: boolean,
+): string | null {
+  if (!isDir && path === oldPath) {
+    return newPath;
+  }
+  if (isDir && (path === oldPath || path.startsWith(`${oldPath}/`))) {
+    return `${newPath}${path.slice(oldPath.length)}`;
+  }
+  return null;
+}
+
+function renameTabPaths(oldPath: string, newPath: string, isDir: boolean) {
+  for (const tab of tabs.value) {
+    if (tab.kind === "single") {
+      continue;
+    }
+    const updated = remapTabPath(tab.path, oldPath, newPath, isDir);
+    if (updated === null) {
+      continue;
+    }
+    tab.path = updated;
+    tab.name = absoluteBaseName(updated);
+    if (tab.kind === "preview") {
+      tab.previewFolder = previewFolderFor(updated);
+    }
+  }
+  if (lastWorkspaceActivePath !== null) {
+    const updated = remapTabPath(
+      lastWorkspaceActivePath,
+      oldPath,
+      newPath,
+      isDir,
+    );
+    if (updated !== null) {
+      lastWorkspaceActivePath = updated;
+    }
+  }
+}
+
 async function handleWatchEvents(allEvents: readonly WorkspaceFileEvent[]) {
   if (workspace.value === null) {
     return;
@@ -1121,114 +1252,166 @@ async function handleWatchEvents(allEvents: readonly WorkspaceFileEvent[]) {
     return;
   }
   await sidebar.value?.refreshFromEvents(events);
-  const doc = currentDocument.value;
-  if (doc?.kind !== "workspace") {
-    return;
-  }
-  const classification = classifyWatchEvents(events, doc.path, true);
-  if (classification.document === "deleted") {
-    markExternalState("deleted");
-    clearSaveTimer();
-    return;
-  }
-  if (classification.document === "modified") {
-    if (externalState.value === "deleted") {
-      markExternalState("none");
+
+  for (const event of events) {
+    if (event.op === "rename" && event.oldPath && event.oldPath !== event.path) {
+      renameTabPaths(event.oldPath, event.path, event.isDir);
     }
-    await handleExternalModification();
   }
+
+  // The path changes above follow an external rename. Only other event kinds
+  // can mean that the file content or existence changed.
+  const contentEvents = events.filter((event) => event.op !== "rename");
+  if (contentEvents.length === 0) {
+    schedulePersistTabs();
+    return;
+  }
+
+  for (const tab of tabs.value.filter((item) => item.kind === "workspace")) {
+    const classification = classifyWatchEvents(contentEvents, tab.path, true);
+    if (classification.document === "deleted") {
+      markExternalState(tab, "deleted");
+      clearTabSaveTimer(tab.id);
+      continue;
+    }
+    if (classification.document === "modified") {
+      if (tab.externalState === "deleted") {
+        markExternalState(tab, "none");
+      }
+      await handleExternalModification(tab.id);
+    }
+  }
+  schedulePersistTabs();
 }
 
-async function handleExternalModification() {
-  const doc = currentMarkdown.value;
-  if (doc?.kind !== "workspace") {
+async function handleExternalModification(tabId: number) {
+  const tab = findTab(tabId);
+  if (tab === null || tab.kind !== "workspace") {
     return;
   }
-  if (externalState.value === "deleted" || externalState.value === "modified") {
+  if (tab.externalState === "deleted" || tab.externalState === "modified") {
     return;
   }
   if (
-    writesInFlight > 0 ||
-    pendingEdit !== null ||
-    saveError.value !== null ||
-    documentText.value !== originalText.value
+    (writesInFlight.get(tabId) ?? 0) > 0 ||
+    isDirty(tab) ||
+    tab.saveError !== null ||
+    tab.mixedLineEndings
   ) {
-    markExternalState("modified");
-    clearSaveTimer();
+    markExternalState(tab, "modified");
+    clearTabSaveTimer(tabId);
     return;
   }
-  const sequence = ++externalReadSequence;
+  const sequence = (externalReadSequence.get(tabId) ?? 0) + 1;
+  externalReadSequence.set(tabId, sequence);
+  let text: string;
   try {
-    const text = await readFile(doc.path);
-    if (
-      sequence !== externalReadSequence ||
-      currentDocument.value?.kind !== "workspace" ||
-      currentDocument.value.path !== doc.path ||
-      externalState.value !== "none"
-    ) {
-      return;
-    }
-    if (pendingEdit !== null || documentText.value !== originalText.value) {
-      markExternalState("modified");
-      clearSaveTimer();
-      return;
-    }
-    applyExternalText(text);
+    text = await readFile(tab.path);
   } catch {
+    const current = findTab(tabId);
     if (
-      sequence === externalReadSequence &&
-      currentDocument.value?.kind === "workspace" &&
-      currentDocument.value.path === doc.path
+      sequence === externalReadSequence.get(tabId) &&
+      current !== null &&
+      current.kind === "workspace" &&
+      current.path === tab.path
     ) {
-      markExternalState("deleted");
-      clearSaveTimer();
+      markExternalState(current, "deleted");
+      clearTabSaveTimer(tabId);
     }
+    return;
+  }
+  const current = findTab(tabId);
+  if (
+    sequence !== externalReadSequence.get(tabId) ||
+    current === null ||
+    current.kind !== "workspace" ||
+    current.path !== tab.path ||
+    current.externalState !== "none"
+  ) {
+    return;
+  }
+  if (
+    isDirty(current) ||
+    current.saveError !== null ||
+    (writesInFlight.get(tabId) ?? 0) > 0
+  ) {
+    markExternalState(current, "modified");
+    clearTabSaveTimer(tabId);
+    return;
+  }
+  applyExternalText(current, text);
+}
+
+function applyExternalText(tab: TabModel, text: string) {
+  const detected = detectLineEndings(text);
+  const normalized = normalizeLineEndings(text);
+  const active = tab.id === activeTabId.value;
+  if (active) {
+    applyingExternal = true;
+  } else {
+    const mapped = mapExternalSnapshot(tab.snapshot, tab.text, normalized);
+    tab.snapshot = mapped === null ? null : markRaw(mapped);
+  }
+  tab.lineEnding = detected.ending;
+  tab.mixedLineEndings = detected.mixed;
+  tab.originalText = normalized;
+  tab.text = normalized;
+  tab.saveError = null;
+  tab.saveErrorDetail = null;
+  tab.externalState = "none";
+  tab.savePhase = detected.mixed ? "mixed" : "saved";
+  if (active && editor !== null) {
+    editor.replaceDocument(normalized);
+  }
+  applyingExternal = false;
+  if (active) {
+    showNotice("已载入磁盘上的新内容", "success", NOTICE_DURATION_MS);
   }
 }
 
-function applyExternalText(text: string) {
-  const detected = detectLineEndings(text);
-  const normalized = normalizeLineEndings(text);
-  applyingExternal = true;
-  lineEnding.value = detected.ending;
-  mixedLineEndings.value = detected.mixed;
-  originalText.value = normalized;
-  documentText.value = normalized;
-  pendingEdit = null;
-  clearSaveError();
-  externalState.value = "none";
-  savePhase.value = detected.mixed ? "mixed" : "saved";
-  editor?.replaceDocument(normalized);
-  applyingExternal = false;
-  showNotice("已载入磁盘上的新内容", "success", NOTICE_DURATION_MS);
+function mapExternalSnapshot(
+  snapshot: EditorRestoreState | null,
+  oldText: string,
+  newText: string,
+): EditorRestoreState | null {
+  if (snapshot === null) {
+    return null;
+  }
+  // The helper is imported lazily here to keep the edit path separate from
+  // the tab setup code; it maps selection and drops incompatible history.
+  return mapSnapshotForReplacement(snapshot, oldText, newText);
 }
 
 async function loadDiskVersion() {
-  const doc = currentMarkdown.value;
-  if (doc?.kind !== "workspace") {
+  const tab = currentMarkdown.value;
+  if (tab?.kind !== "workspace") {
     return;
   }
   try {
-    const text = await readFile(doc.path);
-    applyExternalText(text);
+    const text = await readFile(tab.path);
+    applyExternalText(tab, text);
   } catch (error) {
     showNotice(`读取失败：${errorText(error)}`, "danger");
   }
 }
 
 function keepMyVersion() {
-  const revision = externalRevision;
-  externalState.value = "none";
-  void savePending(true, revision);
+  const tab = currentMarkdown.value;
+  if (tab === null) {
+    return;
+  }
+  const revision = tab.revision;
+  tab.externalState = "none";
+  void saveTab(tab.id, true, revision);
 }
 
 async function resaveDeleted() {
-  const revision = externalRevision;
-  const saved = await savePending(true, revision);
-  if (saved) {
-    clearSaveError();
-    savePhase.value = "saved";
+  const tab = currentMarkdown.value;
+  if (tab === null) {
+    return;
   }
+  const revision = tab.revision;
+  await saveTab(tab.id, true, revision);
 }
 
 async function handleBannerAction(
@@ -1236,7 +1419,9 @@ async function handleBannerAction(
 ) {
   switch (action) {
     case "retry":
-      await savePending(true);
+      if (currentMarkdown.value !== null) {
+        await saveTab(currentMarkdown.value.id, true);
+      }
       break;
     case "load-disk":
       await loadDiskVersion();
@@ -1248,63 +1433,199 @@ async function handleBannerAction(
       await resaveDeleted();
       break;
     case "close-tab":
-      await closeCurrentTab();
+      if (activeTabId.value !== null) {
+        await closeTab(activeTabId.value);
+      }
       break;
   }
 }
 
-async function closeCurrentTab() {
-  const doc = currentDocument.value;
-  if (doc === null) {
-    return;
+async function confirmCloseTabs(models: readonly TabModel[]): Promise<boolean> {
+  if (models.length === 0) {
+    return true;
   }
-  if (doc.kind !== "preview") {
-    const problems = documentProblemDetails();
-    const mustConfirm =
-      externalState.value !== "none" ||
-      mixedLineEndings.value ||
-      saveError.value !== null ||
-      pendingEdit !== null;
-    if (mustConfirm) {
-      if (pendingEdit !== null && saveError.value === null) {
-        await savePending();
-      }
-      const stillMustConfirm =
-        externalState.value !== "none" ||
-        mixedLineEndings.value ||
-        saveError.value !== null ||
-        pendingEdit !== null;
-      if (stillMustConfirm) {
-        const choice = await askDialog({
-          title: `关闭“${doc.name}”？`,
-          message: "关闭后，这个标签页中未保存的内容会丢失。",
-          details: documentProblemDetails(),
-          actions: [
-            { label: "取消", value: "cancel", autofocus: true },
-            {
-              label: "放弃更改并关闭",
-              value: "close",
-              primary: true,
-              danger: true,
-            },
-          ],
-        });
-        if (choice !== "close") {
-          return;
-        }
-      }
+  for (const model of models) {
+    if (
+      isDirty(model) &&
+      model.externalState === "none" &&
+      !model.mixedLineEndings
+    ) {
+      await saveTab(model.id);
     }
   }
-  resetDocumentState();
+  const currentModels = models
+    .map((model) => findTab(model.id))
+    .filter((model): model is TabModel => model !== null);
+  const problems = currentModels.flatMap(tabCloseProblems);
+  if (problems.length === 0) {
+    return true;
+  }
+  const single = currentModels.length === 1 ? currentModels[0]! : null;
+  const choice = await askDialog({
+    title: single ? `关闭“${single.name}”？` : "关闭这些标签页？",
+    message: single
+      ? "关闭后，这个标签页中未保存的内容会丢失。"
+      : "以下标签页中的未保存内容会丢失。",
+    details: [...new Set(problems)],
+    actions: [
+      { label: "取消", value: "cancel", autofocus: true },
+      {
+        label: "放弃更改并关闭",
+        value: "close",
+        primary: true,
+        danger: true,
+      },
+    ],
+  });
+  return choice === "close";
+}
+
+async function closeTabsById(
+  ids: readonly number[],
+  options: { record?: boolean } = {},
+) {
+  const closing = new Set(ids);
+  if (closing.size === 0) {
+    return;
+  }
+  const activeBefore = activeTabId.value;
+  const activeIndex = tabs.value.findIndex((tab) => tab.id === activeBefore);
+  const record = options.record ?? true;
+  for (const tab of tabs.value) {
+    if (!closing.has(tab.id)) continue;
+    clearTabSaveTimer(tab.id);
+    clearSavingDisplay(tab.id);
+    if (tab.kind === "single") {
+      void releaseSingleFile(tab.path).catch(() => {});
+    } else if (record) {
+      const closed: ClosedTab = {
+        kind: tab.kind === "preview" ? "preview" : "markdown",
+        path: tab.path,
+        name: tab.name,
+      };
+      closedTabs.value = [closed, ...closedTabs.value].slice(0, 20);
+    }
+  }
+  tabs.value = tabs.value.filter((tab) => !closing.has(tab.id));
+  if (activeBefore !== null && closing.has(activeBefore)) {
+    if (tabs.value.length === 0) {
+      activeTabId.value = null;
+      clearEditor();
+    } else {
+      const nextIndex = Math.min(Math.max(activeIndex, 0), tabs.value.length - 1);
+      const next = tabs.value[nextIndex]!;
+      activeTabId.value = next.id;
+      if (next.kind !== "single") {
+        lastWorkspaceActivePath = next.path;
+      }
+      await mountActive(true);
+    }
+  }
+  schedulePersistTabs();
+}
+
+async function closeTab(id: number) {
+  const tab = findTab(id);
+  if (tab === null) {
+    return;
+  }
+  if (!(await confirmCloseTabs([tab]))) {
+    return;
+  }
+  await closeTabsById([id]);
+}
+
+async function closeActiveTab() {
+  if (activeTabId.value !== null) {
+    await closeTab(activeTabId.value);
+  }
+}
+
+async function closeOtherTabs(id: number) {
+  const targets = tabs.value.filter((tab) => tab.id !== id);
+  if (!(await confirmCloseTabs(targets))) {
+    return;
+  }
+  await closeTabsById(targets.map((tab) => tab.id));
+}
+
+async function closeTabsRight(id: number) {
+  const index = tabs.value.findIndex((tab) => tab.id === id);
+  if (index === -1) {
+    return;
+  }
+  const targets = tabs.value.slice(index + 1);
+  if (!(await confirmCloseTabs(targets))) {
+    return;
+  }
+  await closeTabsById(targets.map((tab) => tab.id));
+}
+
+async function closeAllTabs() {
+  const targets = [...tabs.value];
+  if (!(await confirmCloseTabs(targets))) {
+    return;
+  }
+  await closeTabsById(targets.map((tab) => tab.id));
+}
+
+async function reopenClosedTab() {
+  if (workspace.value === null) {
+    return;
+  }
+  while (closedTabs.value.length > 0) {
+    const closed = closedTabs.value.shift()!;
+    const existing = tabs.value.find(
+      (tab) => tab.kind !== "single" && tab.path === closed.path,
+    );
+    if (existing) {
+      await activateTab(existing.id);
+      return;
+    }
+    if (closed.kind === "preview") {
+      let entry: { path: string; name: string; size: number } | null = null;
+      try {
+        const listing = await listDirectory(parentOfRelative(closed.path));
+        const found = listing.entries.find(
+          (candidate) => candidate.path === closed.path && !candidate.isDir,
+        );
+        if (found) {
+          entry = { path: found.path, name: found.name, size: found.size };
+        }
+      } catch {
+        entry = null;
+      }
+      if (entry !== null) {
+        await openPreviewEntry(entry);
+        return;
+      }
+      continue;
+    }
+    let text: string;
+    try {
+      text = await readFile(closed.path);
+    } catch {
+      continue;
+    }
+    const tab = makeMarkdownTab(
+      "workspace",
+      closed.path,
+      absoluteBaseName(closed.path),
+      text,
+    );
+    insertTab(tab);
+    await activateTab(tab.id);
+    return;
+  }
+  showNotice("没有可重新打开的标签页", "muted");
 }
 
 async function openSingleFile(path: string, name: string) {
-  const current = currentMarkdown.value;
-  if (current?.kind === "single" && current.path === path) {
-    editor?.focus();
-    return;
-  }
-  if (!(await prepareToLeave())) {
+  const existing = tabs.value.find(
+    (tab) => tab.kind === "single" && tab.path === path,
+  );
+  if (existing) {
+    await activateTab(existing.id);
     return;
   }
   let file;
@@ -1318,38 +1639,34 @@ async function openSingleFile(path: string, name: string) {
   try {
     text = await readSingleFile(file.path);
   } catch (error) {
+    void releaseSingleFile(file.path).catch(() => {});
     showNotice(`读取失败：${errorText(error)}`, "danger");
     return;
   }
-  const previous = currentMarkdown.value;
-  loadMarkdownDocument(
-    { kind: "single", path: file.path, name: file.name },
-    text,
-  );
-  if (previous?.kind === "single") {
-    void releaseSingleFile(previous.path).catch(() => {});
-  }
+  const tab = makeMarkdownTab("single", file.path, file.name, text);
+  insertTab(tab);
+  await activateTab(tab.id);
 }
 
 async function openPreviewDefault() {
-  const doc = currentPreview.value;
-  if (!doc || !workspace.value) {
+  const tab = currentPreview.value;
+  if (!tab || !workspace.value) {
     return;
   }
   try {
-    await openWithDefaultApp(doc.path, workspace.value.generation);
+    await openWithDefaultApp(tab.path, workspace.value.generation);
   } catch (error) {
     showNotice(`打开失败：${errorText(error)}`, "danger");
   }
 }
 
 async function revealPreview() {
-  const doc = currentPreview.value;
-  if (!doc || !workspace.value) {
+  const tab = currentPreview.value;
+  if (!tab || !workspace.value) {
     return;
   }
   try {
-    await revealEntry(doc.path, workspace.value.generation);
+    await revealEntry(tab.path, workspace.value.generation);
   } catch (error) {
     showNotice(`无法显示：${errorText(error)}`, "danger");
   }
@@ -1492,7 +1809,7 @@ function setMode(next: EditorMode) {
   editor?.focus();
 }
 
-function activateTab() {
+function activateCurrentTab() {
   closeOverlaySidebar();
   editor?.focus();
 }
@@ -1516,9 +1833,6 @@ function handleGlobalKeydown(event: KeyboardEvent) {
     return;
   }
   if (event.key === "Escape") {
-    if (dialogOpen) {
-      return;
-    }
     if (overlaySidebar.value) {
       event.preventDefault();
       overlaySidebar.value = false;
@@ -1526,6 +1840,12 @@ function handleGlobalKeydown(event: KeyboardEvent) {
     return;
   }
   if (event.defaultPrevented || isTextInput(event.target)) {
+    return;
+  }
+  const command = matchCommand(event, platform.value, tabCommands);
+  if (command !== null) {
+    event.preventDefault();
+    void command.run();
     return;
   }
   const key = event.key.toLowerCase();
@@ -1567,13 +1887,9 @@ function handleGlobalKeydown(event: KeyboardEvent) {
   }
   if (modifier && !event.shiftKey && key === "s") {
     event.preventDefault();
-    void savePending();
-    return;
-  }
-  if (modifier && !event.shiftKey && key === "w") {
-    event.preventDefault();
-    void closeCurrentTab();
-    return;
+    if (currentMarkdown.value !== null) {
+      void saveTab(currentMarkdown.value.id);
+    }
   }
 }
 
@@ -1612,55 +1928,17 @@ function handleEntryRenameFailed(oldPath: string) {
   }
 }
 
-async function renameCurrentPath(
+async function handleEntryRenamed(
   oldPath: string,
   newPath: string,
   isDir: boolean,
 ) {
-  const doc = currentDocument.value;
-  if (doc?.kind === "workspace") {
-    let updated: string | null = null;
-    if (!isDir && doc.path === oldPath) {
-      updated = newPath;
-    } else if (isDir && (doc.path === oldPath || doc.path.startsWith(`${oldPath}/`))) {
-      updated = `${newPath}${doc.path.slice(oldPath.length)}`;
-    }
-    if (updated !== null) {
-      currentDocument.value = {
-        kind: "workspace",
-        path: updated,
-        name: absoluteBaseName(updated),
-      };
-    }
+  if (recentSelfRename?.oldPath === oldPath) {
+    recentSelfRename.newPath = newPath;
+    recentSelfRename.at = Date.now();
   }
-  if (doc?.kind === "preview") {
-    let updated: string | null = null;
-    if (!isDir && doc.path === oldPath) {
-      updated = newPath;
-    } else if (isDir && (doc.path === oldPath || doc.path.startsWith(`${oldPath}/`))) {
-      updated = `${newPath}${doc.path.slice(oldPath.length)}`;
-    }
-    if (updated !== null) {
-      const root = workspace.value?.root ?? "";
-      const parent = parentOfRelative(updated);
-      currentDocument.value = {
-        ...doc,
-        path: updated,
-        name: absoluteBaseName(updated),
-        folder:
-          parent === "."
-            ? displayPath(root, homeDir.value)
-            : displayPath(`${root}/${parent}`, homeDir.value),
-      };
-    }
-  }
-  if (pendingEdit !== null && pendingEdit.kind === "workspace") {
-    if (!isDir && pendingEdit.path === oldPath) {
-      pendingEdit.path = newPath;
-    } else if (isDir && (pendingEdit.path === oldPath || pendingEdit.path.startsWith(`${oldPath}/`))) {
-      pendingEdit.path = `${newPath}${pendingEdit.path.slice(oldPath.length)}`;
-    }
-  }
+  renameTabPaths(oldPath, newPath, isDir);
+  schedulePersistTabs();
 }
 
 async function requestTrash(entry: TreeNode) {
@@ -1701,16 +1979,26 @@ async function requestTrash(entry: TreeNode) {
     showNotice(`移到废纸篓失败：${errorText(error)}`, "danger");
     return;
   }
-  const doc = currentDocument.value;
-  const removed =
-    doc !== null &&
-    (doc.kind === "workspace" || doc.kind === "preview") &&
-    (doc.path === entry.path ||
-      (entry.isDir && doc.path.startsWith(`${entry.path}/`)));
   sidebar.value?.removePath(entry.path);
-  if (removed) {
-    resetDocumentState();
+  const affected = tabs.value.filter(
+    (tab) =>
+      tab.kind !== "single" &&
+      (tab.path === entry.path ||
+        (entry.isDir && tab.path.startsWith(`${entry.path}/`))),
+  );
+  const previewIds = affected
+    .filter((tab) => tab.kind === "preview")
+    .map((tab) => tab.id);
+  for (const tab of affected) {
+    if (tab.kind === "workspace") {
+      markExternalState(tab, "deleted");
+      clearTabSaveTimer(tab.id);
+    }
   }
+  if (previewIds.length > 0) {
+    await closeTabsById(previewIds, { record: false });
+  }
+  schedulePersistTabs();
 }
 
 async function countFiles(path: string): Promise<number> {
@@ -1733,26 +2021,168 @@ async function handleEntryCreated(path: string, isDir: boolean) {
   await openWorkspaceFile(path, absoluteBaseName(path));
 }
 
-async function handleEntryRenamed(
-  oldPath: string,
-  newPath: string,
-  isDir: boolean,
-) {
-  if (recentSelfRename?.oldPath === oldPath) {
-    recentSelfRename.newPath = newPath;
-    recentSelfRename.at = Date.now();
+function storedTabsPayload(): { tabs: StoredTab[]; active: string } {
+  const workspaceTabs = tabs.value.filter((tab) => tab.kind !== "single");
+  const activePath =
+    lastWorkspaceActivePath !== null &&
+    workspaceTabs.some((tab) => tab.path === lastWorkspaceActivePath)
+      ? lastWorkspaceActivePath
+      : workspaceTabs[0]?.path ?? "";
+  const stored: StoredTab[] = workspaceTabs.map((tab) => {
+    if (tab.kind === "preview") {
+      return { kind: "preview", path: tab.path, size: tab.previewSize ?? 0 };
+    }
+    const snapshot =
+      tab.id === activeTabId.value && editor !== null
+        ? editor.getRestoreState()
+        : tab.snapshot;
+    const clean = tab.text === tab.originalText;
+    return {
+      kind: "markdown",
+      path: tab.path,
+      selection: clean ? snapshot?.selection ?? undefined : undefined,
+      history: clean ? snapshot?.history ?? undefined : undefined,
+      scrollTopLine: snapshot?.scrollTopLine ?? undefined,
+      scrollTopOffset: snapshot?.scrollTopOffset ?? undefined,
+      textLength: tab.text.length,
+    };
+  });
+  return { tabs: stored, active: activePath };
+}
+
+function cancelPersistTimer() {
+  if (persistTimer !== null) {
+    clearTimeout(persistTimer);
+    persistTimer = null;
   }
-  await renameCurrentPath(oldPath, newPath, isDir);
+}
+
+async function persistTabsNow(): Promise<void> {
+  cancelPersistTimer();
+  const current = workspace.value;
+  if (current === null) {
+    return;
+  }
+  const payload = storedTabsPayload();
+  try {
+    await saveTabsForRoot(current.root, payload.tabs, payload.active);
+  } catch {
+    // Remembering tabs is best effort; editing must keep working.
+  }
+}
+
+function schedulePersistTabs() {
+  cancelPersistTimer();
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    void persistTabsNow();
+  }, PERSIST_TABS_DELAY_MS);
+}
+
+async function openTabMenu(id: number, x: number, y: number) {
+  const tab = findTab(id);
+  if (tab === null) {
+    return;
+  }
+  const index = tabs.value.findIndex((item) => item.id === id);
+  const items = buildContextMenu({
+    target: "tab",
+    platform: platform.value,
+    isMarkdown: tab.kind !== "preview",
+    inWorkspace: tab.kind !== "single",
+    hasOtherTabs: tabs.value.length > 1,
+    hasTabsRight: index !== -1 && index < tabs.value.length - 1,
+    canReopen: closedTabs.value.length > 0,
+  });
+  let choice = "";
+  try {
+    choice = await popupNativeMenu({
+      x: Math.round(x),
+      y: Math.round(y),
+      items,
+    });
+  } catch (error) {
+    showNotice(`菜单打开失败：${errorText(error)}`, "danger");
+    return;
+  }
+  if (choice === "") {
+    return;
+  }
+  const currentTab = findTab(id);
+  if (currentTab === null) {
+    return;
+  }
+  switch (choice) {
+    case "close-tab":
+      await closeTab(id);
+      break;
+    case "close-other-tabs":
+      await closeOtherTabs(id);
+      break;
+    case "close-tabs-right":
+      await closeTabsRight(id);
+      break;
+    case "close-all-tabs":
+      await closeAllTabs();
+      break;
+    case "reopen-tab":
+      await reopenClosedTab();
+      break;
+    case "reveal-in-tree":
+      await activateTab(id);
+      if (!sidebarShown.value) {
+        if (isWide.value) {
+          sidebarOpen.value = true;
+        } else {
+          overlaySidebar.value = true;
+        }
+      }
+      await nextTick();
+      if (currentTab.kind !== "single") {
+        await sidebar.value?.reveal(currentTab.path);
+      }
+      break;
+    case "reveal":
+      try {
+        if (currentTab.kind === "single") {
+          await revealSingleFile(currentTab.path);
+        } else if (workspace.value !== null) {
+          await revealEntry(currentTab.path, workspace.value.generation);
+        }
+      } catch (error) {
+        showNotice(`无法显示：${errorText(error)}`, "danger");
+      }
+      break;
+    case "copy-path": {
+      const absolute =
+        currentTab.kind === "single"
+          ? currentTab.path
+          : `${workspace.value?.root ?? ""}/${currentTab.path}`;
+      if (!(await copyText(absolute))) {
+        showNotice("复制失败", "danger");
+      }
+      break;
+    }
+    case "copy-relative-path":
+      if (currentTab.kind !== "single") {
+        if (!(await copyText(currentTab.path))) {
+          showNotice("复制失败", "danger");
+        }
+      }
+      break;
+  }
 }
 
 function handleVisibilityChange() {
   if (document.visibilityState === "hidden") {
-    void savePending();
+    void saveAllTabs();
+    void persistTabsNow();
   }
 }
 
 function saveBeforeExit() {
-  void savePending();
+  void saveAllTabs();
+  void persistTabsNow();
 }
 
 function handleWindowResize() {
@@ -1780,7 +2210,8 @@ onMounted(async () => {
   offSaveBeforeClose = onSaveBeforeClose(async (token) => {
     cancelOpenDialog();
     await nextTick();
-    const saved = await savePending();
+    const saved = await saveAllTabs();
+    await persistTabsNow();
     try {
       await finishClose(token, saved);
     } catch {
@@ -1802,7 +2233,6 @@ onMounted(async () => {
     }
     await receiveOpenedFiles();
   })();
-
 });
 
 onBeforeUnmount(() => {
@@ -1820,13 +2250,19 @@ onBeforeUnmount(() => {
   offSaveBeforeClose?.();
   offSaveBeforeClose = null;
   stopWatch();
-  clearSaveTimer();
-  clearSavingDisplay();
+  cancelPersistTimer();
+  for (const id of [...saveTimers.keys()]) {
+    clearTabSaveTimer(id);
+  }
+  for (const id of [...savingTimers.keys()]) {
+    clearSavingDisplay(id);
+  }
   if (noticeTimer !== null) {
     clearTimeout(noticeTimer);
     noticeTimer = null;
   }
-  void savePending();
+  void saveAllTabs();
+  void persistTabsNow();
   clearEditor();
 });
 
@@ -1876,17 +2312,19 @@ defineExpose({
       @pointerdown.capture="handleContentPointerDown"
     >
       <TopBar
-        :tab="tab"
+        :tabs="topBarTabs"
+        :active-tab-id="activeTabId"
         :mode="mode"
         :platform="platform"
         :compact="isCompactTopBar"
         :sidebar-shown="sidebarShown"
         :show-sidebar-toggle="showSidebarToggle"
-        :show-open-folder="!hasWorkspace && currentDocument !== null"
+        :show-open-folder="!hasWorkspace && tabs.length > 0"
         :outline-enabled="false"
         :outline-on="false"
-        @close-tab="closeCurrentTab"
+        @close-tab="closeTab"
         @activate-tab="activateTab"
+        @tab-menu="openTabMenu"
         @set-mode="setMode"
         @toggle-sidebar="toggleSidebar"
         @open-folder="chooseFolder"
@@ -1927,8 +2365,8 @@ defineExpose({
             <NonMarkdownPlaceholder
               v-else-if="currentPreview"
               :name="currentPreview.name"
-              :size="currentPreview.size"
-              :folder="currentPreview.folder"
+              :size="currentPreview.previewSize ?? 0"
+              :folder="currentPreview.previewFolder ?? ''"
               :platform="platform"
               @open-default="openPreviewDefault"
               @reveal="revealPreview"

@@ -156,6 +156,17 @@ func (s *SingleFileService) WriteSingleFile(path, content string) error {
 	return writeFileAtomicAbs(granted, []byte(content))
 }
 
+// RevealSingleFile shows a granted file in the desktop's file manager. It
+// accepts only an existing grant, like the read and write methods.
+func (s *SingleFileService) RevealSingleFile(path string) error {
+	granted, err := s.grantedPath(path)
+	if err != nil {
+		return err
+	}
+	revealWorkspaceItem(granted)
+	return nil
+}
+
 // ReleaseSingleFile forgets a grant, such as when its tab closes.
 func (s *SingleFileService) ReleaseSingleFile(path string) {
 	s.mu.Lock()

@@ -235,6 +235,33 @@ func TestSingleFileOfferCanBeDismissedOrConsumedByFolder(t *testing.T) {
 	}
 }
 
+func TestSingleFileRevealRequiresGrant(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "note.md")
+	mustWriteFile(t, path, []byte("note"))
+
+	originalReveal := revealWorkspaceItem
+	var revealed []string
+	revealWorkspaceItem = func(path string) { revealed = append(revealed, path) }
+	t.Cleanup(func() { revealWorkspaceItem = originalReveal })
+
+	service := NewSingleFileService()
+	if err := service.RevealSingleFile(path); !errors.Is(err, errSingleFileNotGranted) {
+		t.Fatalf("Reveal before grant = %v, want %v", err, errSingleFileNotGranted)
+	}
+	service.offer(path)
+	file, err := service.AcceptSingleFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RevealSingleFile(file.Path); err != nil {
+		t.Fatal(err)
+	}
+	if len(revealed) != 1 || revealed[0] != file.Path {
+		t.Errorf("revealed = %q, want %q", revealed, file.Path)
+	}
+}
+
 func TestSingleFileOfferResolvesSymlinks(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("creating symlinks needs a developer mode or administrator rights")
