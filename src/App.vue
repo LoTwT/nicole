@@ -36,6 +36,9 @@ const hasWorkspace = ref(false);
 const saveStatus = ref("");
 const openedFilePath = ref("");
 
+const EDIT_COMMAND_EVENT = "nicole:edit-command";
+type EditCommand = "undo" | "redo";
+
 const modes: readonly { id: EditorMode; label: string; hint: string }[] = [
   { id: "live", label: "实时预览", hint: "光标所在行显示原文" },
   { id: "immersive", label: "沉浸", hint: "符号隐藏，⌘B 切换加粗" },
@@ -96,6 +99,9 @@ let offOpenFile: (() => void) | null = null;
 // Reads cannot be cancelled at the IPC layer. Instead, only the newest file
 // selection may apply its result; opening a folder invalidates all reads.
 const fileSelection = latestOperation();
+// Signals and the initial pending read share one queue so a file cannot be
+// shown out of order when the event and the queue overlap.
+let openedFilesQueue: Promise<void> = Promise.resolve();
 
 function detectLineEndings(text: string): {
   ending: LineEnding;
@@ -461,6 +467,36 @@ function handleOpenedFile(path: string) {
   openedFilePath.value = path;
 }
 
+function receiveOpenedFiles() {
+  openedFilesQueue = openedFilesQueue
+    .then(async () => {
+      const paths = await takePendingOpenedFiles();
+      const last = paths.at(-1);
+      if (last !== undefined) {
+        handleOpenedFile(last);
+      }
+    })
+    .catch(() => {
+      // The backend may be absent when only Vite runs.
+    });
+}
+
+function handleEditCommand(event: Event) {
+  const command = (event as CustomEvent<unknown>).detail;
+  if (command !== "undo" && command !== "redo") {
+    return;
+  }
+  const target = editor;
+  if (!target || target.view.compositionStarted) {
+    return;
+  }
+  if (command === "undo") {
+    target.undo();
+  } else {
+    target.redo();
+  }
+}
+
 function saveBeforeExit() {
   void savePending();
 }
@@ -476,18 +512,12 @@ onMounted(async () => {
   window.addEventListener("pagehide", saveBeforeExit);
   document.addEventListener("visibilitychange", saveWhenHidden);
   systemTheme.addEventListener("change", handleSystemThemeChange);
-  offOpenFile = onOpenFile(handleOpenedFile);
+  window.addEventListener(EDIT_COMMAND_EVENT, handleEditCommand);
+  offOpenFile = onOpenFile(() => {
+    void receiveOpenedFiles();
+  });
   void loadTheme();
-  void takePendingOpenedFiles()
-    .then((paths) => {
-      const last = paths.at(-1);
-      if (last !== undefined) {
-        handleOpenedFile(last);
-      }
-    })
-    .catch(() => {
-      // The backend may be absent when only Vite runs.
-    });
+  void receiveOpenedFiles();
   offSaveBeforeClose = onSaveBeforeClose(async (token) => {
     const saved = await savePending();
     try {
@@ -510,6 +540,7 @@ onBeforeUnmount(() => {
   window.removeEventListener("pagehide", saveBeforeExit);
   document.removeEventListener("visibilitychange", saveWhenHidden);
   systemTheme.removeEventListener("change", handleSystemThemeChange);
+  window.removeEventListener(EDIT_COMMAND_EVENT, handleEditCommand);
   offOpenFile?.();
   offOpenFile = null;
   offSaveBeforeClose?.();

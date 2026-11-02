@@ -41,6 +41,10 @@ func main() {
 	if err := configureUserDataPath(); err != nil {
 		log.Fatal(err)
 	}
+	if !acquireSingleInstanceLock() {
+		return
+	}
+	installSecondInstanceFocus()
 	workspace := NewWorkspace()
 	settingsStore, err := startupSettingsStore()
 	if err != nil {

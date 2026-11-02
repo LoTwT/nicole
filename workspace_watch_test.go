@@ -75,6 +75,18 @@ func TestSelfWritesSuppressOwnContent(t *testing.T) {
 	}
 }
 
+func TestWriteFileRecordsTheWriteForTheWatch(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "note.md"), []byte("old"))
+	workspace := openTestWorkspace(t, root)
+	if err := workspace.WriteFile("note.md", "new", currentGeneration(workspace)); err != nil {
+		t.Fatal(err)
+	}
+	if !workspace.writes.suppress(root, mygo.FileEvent{Op: mygo.FileWrite, Path: "note.md"}) {
+		t.Error("WriteFile did not record its write; the watch would report it as external")
+	}
+}
+
 func TestSelfWritesExpire(t *testing.T) {
 	root := t.TempDir()
 	writes := newSelfWrites()

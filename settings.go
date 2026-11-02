@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/egoist/mygo"
 )
@@ -246,7 +247,10 @@ func (s *settingsStore) readLocked() (AppSettings, bool, error) {
 	}
 	var file settingsFile
 	if err := json.Unmarshal(data, &file); err != nil {
-		return defaultSettings(), false, fmt.Errorf("settings: cannot read %s: %w", s.filePath, err)
+		if backupErr := s.backupCorruptLocked(); backupErr != nil {
+			return defaultSettings(), false, fmt.Errorf("settings: cannot read %s: %w (backup failed: %v)", s.filePath, err, backupErr)
+		}
+		return defaultSettings(), false, nil
 	}
 	themePresent := file.Theme != nil
 	settings := AppSettings{
@@ -259,6 +263,17 @@ func (s *settingsStore) readLocked() (AppSettings, bool, error) {
 		settings.Theme = *file.Theme
 	}
 	return normalizeSettings(settings), themePresent, nil
+}
+
+// backupCorruptLocked moves a damaged settings file aside so the next write
+// can start from defaults without destroying the evidence. The caller holds
+// the store lock. A failed backup is returned instead of overwriting the file.
+func (s *settingsStore) backupCorruptLocked() error {
+	backup := s.filePath + ".corrupt-" + time.Now().UTC().Format("20060102T150405.000000000Z")
+	if err := os.Rename(s.filePath, backup); err != nil {
+		return fmt.Errorf("rename to %s: %w", backup, err)
+	}
+	return nil
 }
 
 func (s *settingsStore) writeLocked(settings AppSettings) error {

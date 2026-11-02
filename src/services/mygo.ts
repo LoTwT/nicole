@@ -211,7 +211,9 @@ export const Workspace = {
   },
   /**
    * OpenWithDefaultApp opens a file with the application the desktop uses for
-   * it. Folders are refused here; RevealEntry shows them instead.
+   * it. Folders are refused here; RevealEntry shows them instead. Known launcher
+   * types are refused. Other types, and any Unix file with an executable bit,
+   * require a native confirmation that the page cannot forge.
    */
   openWithDefaultApp(rel: string, generation: number): Promise<void> {
     return call("Workspace.OpenWithDefaultApp", rel, generation);
@@ -398,11 +400,12 @@ export const NativeMenu = {
 /** Events sent by the Go side. Subscribe with `events.name.on(listener)`. */
 export const events = {
   /**
-   * appOpenFile tells the page that the system asked Nicole to open a file, for
-   * example from the file manager. The page decides whether the file belongs to
-   * the open folder or may be opened as a single-file tab.
+   * appOpenFile tells the page that the system asked Nicole to open at least one
+   * file, for example from the file manager. It carries no path: the page calls
+   * TakePendingOpenedFiles once per signal, so a file is delivered exactly once
+   * even when the event and the pending queue overlap.
    */
-  appOpenFile: event<string>("app:open-file"),
+  appOpenFile: event<boolean>("app:open-file"),
   /**
    * workspaceSaveBeforeClose asks the page to save pending edits before its
    * window closes. The token identifies this close attempt, so a late answer

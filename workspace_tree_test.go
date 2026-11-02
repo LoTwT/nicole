@@ -112,6 +112,25 @@ func TestListDirectoryRejectsEscapes(t *testing.T) {
 	}
 }
 
+func TestResolveTreeEntryRejectsResolvedPathOutsideRoot(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "note.txt"), []byte("note"))
+	mustWriteFile(t, filepath.Join(outside, "secret.txt"), []byte("secret"))
+	workspace := openTestWorkspace(t, root)
+	resolvedRoot, _ := workspace.state.snapshot()
+
+	original := evalTreeSymlinks
+	evalTreeSymlinks = func(string) (string, error) {
+		return filepath.Join(outside, "secret.txt"), nil
+	}
+	t.Cleanup(func() { evalTreeSymlinks = original })
+
+	if _, _, err := resolveTreeEntry(resolvedRoot, "note.txt"); !errors.Is(err, errPathOutside) {
+		t.Errorf("resolveTreeEntry() = %v, want %v", err, errPathOutside)
+	}
+}
+
 func TestListDirectorySkipsSymlinks(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("creating symlinks needs a developer mode or administrator rights")

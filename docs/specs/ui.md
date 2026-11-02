@@ -34,7 +34,7 @@
 - 菜单栏：macOS 使用 `main.go` 设置的应用菜单。Windows 隐藏标题栏后没有菜单栏位置，按 Alt 或 F10 时 MyGo 在左上角弹出菜单。Linux 默认隐藏菜单栏，按 Alt 或 F10 时显示。
 - 菜单项的快捷键不能与[快捷键](#快捷键)表冲突，也不能提供会丢失页面状态的操作。MyGo 默认的“显示”菜单（`RoleViewMenu`）包含“重新载入”⌘R、“强制重新载入”⇧⌘R，默认的“窗口”菜单（`RoleWindowMenu`）在 Windows 和 Linux 上把 Ctrl+W 绑定到关闭窗口，这些都要去掉或替换；“显示”菜单中的“切换开发者工具”（⌥⌘I、Ctrl+Shift+I）只在开发构建中保留；缩放（⌘+、⌘-、⌘0）和全屏保留。
 - 应用主题与系统外观不同时，用 `mygo.Theme.SetSource` 同步，让原生菜单、右键菜单和对话框跟随应用主题。
-- MyGo 0.7.3 的 `RoleUndo`/`RoleRedo` 在 macOS 上使用 AppKit 的 `undo:`/`redo:` selector，不会进入 CodeMirror 的历史；实现需要把这两个菜单项改成向页面执行 `document.execCommand("undo"/"redo")`，同时保留标签和快捷键。macOS 上已实测菜单点击、⌘Z 和 ⇧⌘Z 都作用于 CodeMirror 的历史。Windows 和 Linux 的 MyGo 实现也通过 `document.execCommand` 执行这两个角色，按源码推断行为相同，**待实测**。
+- MyGo 0.7.3 的 `RoleUndo`/`RoleRedo` 在 macOS 上使用 AppKit 的 `undo:`/`redo:` selector，不会进入 CodeMirror 的历史。这两个菜单项改为向页面发送 `nicole:edit-command`，由页面执行 CodeMirror 的历史命令；输入法组合期间（`EditorView.compositionStarted`）忽略该命令。macOS 上已实测菜单点击、⌘Z 和 ⇧⌘Z 都作用于 CodeMirror 的历史，组合期间的忽略也有 Vitest 覆盖。Windows 和 Linux 的菜单事件行为**待实测**，见[待办](#待办)。
 - 窗口启动时在光标所在的屏幕上居中，尺寸沿用上次保存的大小；规则和实现见[工作区与文件](workspace.md#窗口位置)（已由 #8 实现）。
 
 验收：
@@ -623,6 +623,8 @@ A 红绿灯（macOS）　B 隐藏侧栏　C 标签页　D 模式切换与大纲�
 | Nicole 的查找栏代替 CodeMirror 内置的查找面板（⌘F 不再打开内置面板） | 编辑器、前端 | PR9 查找替换 |
 | 全文搜索视图 | 前端、Go 端搜索 | PR10 全文搜索 |
 | 实现[选中文字后的操作](#选中文字后的操作)中的包裹规则（包括有选区时停用 `closeBrackets` 的包裹）、[链接与图片弹框](#链接与图片弹框)的打开方式，以及 ⌘ 加点击链接的处理 | 编辑器实现、`docs/specs/editor-modes.md`（当前实现一节） | PR12 |
+| Windows/Linux 的撤销/重做与 `.md` 文件关联实测 | 原生菜单、文件关联 | UI-2a-2 |
+| 输入法组合期间按 ⌘Z/⌘⇧Z：确认不打断组合，组合结束后撤销/重做正常 | 页面编辑命令、编辑器输入法处理 | UI-2a-2 |
 | 设置页的布局和完整设置项：在实现设置的 PR 之前单独设计 | 本文的[设置](#设置)一节 | 设置 PR |
 | macOS 应用菜单的“设置”项：Go 端菜单项触发页面中注册表的“设置”命令，菜单上显示的快捷键取自注册表 | `main.go`、命令注册表实现 | 设置 PR |
 | 多根目录：Go 端从单个根改为多个根，路径带根目录标识，全文搜索跨根目录；标签页拖动排序 | `workspace.go`、`docs/specs/workspace.md` | P1 |

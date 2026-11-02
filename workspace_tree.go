@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -19,7 +21,73 @@ var (
 	errSymlinkEntry = errors.New("workspace: symbolic links are not listed or changed")
 	errNotFolder    = errors.New("workspace: not a folder")
 	errNotRegular   = errors.New("workspace: not a regular file")
+	errInvalidName  = errors.New("workspace: invalid name")
+	errLauncherType = errors.New("workspace: executable file types cannot be opened")
 )
+
+// directOpenExtensions are file types Nicole lets the desktop open without a
+// second confirmation. The list is deliberately data and documents only;
+// anything that can be executed or interpreted as a program is either below
+// or absent. SVG is absent because it can contain active content.
+var directOpenExtensions = map[string]bool{
+	".avif": true, ".bmp": true, ".gif": true, ".heic": true, ".heif": true,
+	".ico": true, ".jpeg": true, ".jpg": true, ".png": true, ".tif": true,
+	".tiff": true, ".webp": true,
+	".pdf": true,
+	".txt": true, ".md": true, ".markdown": true, ".csv": true, ".tsv": true,
+	".log": true, ".json": true, ".xml": true, ".yaml": true, ".yml": true,
+	".toml": true, ".ini": true, ".cfg": true, ".conf": true, ".tex": true,
+	".doc": true, ".docx": true, ".xls": true, ".xlsx": true, ".ppt": true,
+	".pptx": true, ".odt": true, ".ods": true, ".odp": true, ".rtf": true,
+	".pages": true, ".numbers": true, ".key": true,
+}
+
+// launcherExtensions never reach the desktop, even after a confirmation.
+// They are the Windows PATHEXT types and shortcuts, the common macOS launchers
+// and Linux desktop entries. An unknown executable bit is handled separately:
+// that asks for confirmation because it can also be a harmless text file.
+var launcherExtensions = map[string]bool{
+	".com": true, ".exe": true, ".bat": true, ".cmd": true, ".vbs": true,
+	".vbe": true, ".js": true, ".jse": true, ".wsf": true, ".wsh": true,
+	".msc": true, ".cpl": true, ".scr": true, ".pif": true, ".msi": true,
+	".ps1": true, ".lnk": true, ".url": true, ".hta": true, ".scf": true,
+	".reg":     true,
+	".command": true, ".tool": true, ".terminal": true, ".fileloc": true,
+	".inetloc": true, ".webloc": true, ".jar": true, ".pkg": true, ".scpt": true,
+	".desktop": true,
+}
+
+// openAction is what OpenWithDefaultApp does after checking the file type.
+type openAction int
+
+const (
+	openDirectly openAction = iota
+	openAfterConfirmation
+	openRejected
+)
+
+// confirmRiskyOpen is a variable so tests can exercise the branch without
+// showing a native dialog. It is never exposed to the page.
+var confirmRiskyOpen = func(win *mygo.Window, name string, executable bool) (bool, error) {
+	reason := fmt.Sprintf("%s 不是 Nicole 可直接打开的类型，打开后可能会运行程序。", name)
+	if executable {
+		reason = fmt.Sprintf("%s 带有执行权限，打开后可能会运行程序。", name)
+	}
+	result, err := mygo.Dialog.Message(mygo.MessageOptions{
+		Parent:        win,
+		Type:          mygo.MessageWarning,
+		Title:         "打开文件",
+		Message:       reason,
+		Detail:        "只在你信任这个文件时继续。",
+		Buttons:       []string{"打开", "取消"},
+		DefaultButton: 1,
+		CancelButton:  1,
+	})
+	if err != nil {
+		return false, err
+	}
+	return result.Button == 0, nil
+}
 
 // FileEntry is one item of a folder in the workspace tree. Path is relative
 // to the workspace root and separated by slashes.
@@ -46,6 +114,10 @@ var (
 		mygo.Shell.ShowItemInFolder(absPath)
 	}
 	openWorkspaceItem = func(absPath string) error { return mygo.Shell.OpenPath(absPath) }
+
+	// evalTreeSymlinks is a variable so tests can force the resolved-path
+	// branch that follows. os.Root itself also rejects symlinked parents.
+	evalTreeSymlinks = filepath.EvalSymlinks
 )
 
 // ListDirectory reads one level of the workspace tree: every file and folder
@@ -246,8 +318,10 @@ func (w *Workspace) TrashEntry(rel string, generation int) error {
 }
 
 // OpenWithDefaultApp opens a file with the application the desktop uses for
-// it. Folders are refused here; RevealEntry shows them instead.
-func (w *Workspace) OpenWithDefaultApp(rel string, generation int) error {
+// it. Folders are refused here; RevealEntry shows them instead. Known launcher
+// types are refused. Other types, and any Unix file with an executable bit,
+// require a native confirmation that the page cannot forge.
+func (w *Workspace) OpenWithDefaultApp(ctx context.Context, rel string, generation int) error {
 	root, err := w.currentRoot(generation)
 	if err != nil {
 		return err
@@ -259,7 +333,57 @@ func (w *Workspace) OpenWithDefaultApp(rel string, generation int) error {
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("%w: %q", errNotRegular, rel)
 	}
+	name := filepath.Base(target)
+	action := classifyOpenAction(name, info)
+	if action == openRejected {
+		return fmt.Errorf("%w: %q", errLauncherType, name)
+	}
+	if action == openAfterConfirmation {
+		ok, err := confirmRiskyOpen(mygo.CallerWindow(ctx), name, isExecutableFile(info))
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nil
+		}
+	}
 	return openWorkspaceItem(filepath.Join(root, filepath.FromSlash(target)))
+}
+
+// classifyOpenAction decides whether a regular file may be handed to the
+// desktop directly, needs confirmation, or is a known launcher.
+func classifyOpenAction(name string, info fs.FileInfo) openAction {
+	extension := strings.ToLower(filepath.Ext(name))
+	if isLauncherExtension(extension) {
+		return openRejected
+	}
+	if !directOpenExtensions[extension] || isExecutableFile(info) {
+		return openAfterConfirmation
+	}
+	return openDirectly
+}
+
+// isLauncherExtension also consults PATHEXT on Windows, where an installation
+// can add types such as .PY to the executable set.
+func isLauncherExtension(extension string) bool {
+	if launcherExtensions[extension] {
+		return true
+	}
+	if runtime.GOOS != "windows" {
+		return false
+	}
+	for _, item := range strings.Split(os.Getenv("PATHEXT"), ";") {
+		if strings.EqualFold(strings.TrimSpace(item), extension) {
+			return true
+		}
+	}
+	return false
+}
+
+// isExecutableFile reports Unix permission bits. Windows does not put execute
+// permission in the mode, so its launchers are handled by extension only.
+func isExecutableFile(info fs.FileInfo) bool {
+	return runtime.GOOS != "windows" && info.Mode().Perm()&0o111 != 0
 }
 
 // RevealEntry shows a file or folder in the desktop's file manager. The
@@ -321,7 +445,7 @@ func resolveTreeEntry(root, rel string) (string, fs.FileInfo, error) {
 	if linkInfo.Mode()&fs.ModeSymlink != 0 {
 		return "", nil, fmt.Errorf("%w: %q", errSymlinkEntry, rel)
 	}
-	resolved, err := filepath.EvalSymlinks(filepath.Join(root, filepath.FromSlash(rel)))
+	resolved, err := evalTreeSymlinks(filepath.Join(root, filepath.FromSlash(rel)))
 	if err != nil {
 		return "", nil, err
 	}
@@ -403,10 +527,10 @@ func validateTreePath(rel string) error {
 func validateTreeName(name string) error {
 	if name == "" || name == "." || name == ".." ||
 		strings.ContainsRune(name, '/') || strings.ContainsRune(name, '\\') || strings.ContainsRune(name, ':') {
-		return fmt.Errorf("workspace: invalid name: %q", name)
+		return fmt.Errorf("%w: %q", errInvalidName, name)
 	}
 	if !fs.ValidPath(name) || !filepath.IsLocal(name) {
-		return fmt.Errorf("workspace: invalid name: %q", name)
+		return fmt.Errorf("%w: %q", errInvalidName, name)
 	}
 	return validateTreePath(name)
 }

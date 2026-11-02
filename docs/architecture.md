@@ -58,7 +58,7 @@ Go（main.go）
   File tree / operations  ListDirectory、新建、重命名、废纸篓、默认应用、Finder（当前）
   Workspace.Watch         mygo.WatchFiles 的 Channel 封装，过滤自写（当前）
   SingleFileService       工作区外单个 .md 的按文件授权与读写（当前）
-  OpenedFiles             系统“打开方式”的路径队列与 app:open-file 事件（当前）
+  OpenedFiles             系统“打开方式”的路径队列与 app:open-file 信号（当前）
   NativeMenu              页面请求的原生右键菜单（当前）
   Settings                settings.json、最近文件夹、展开状态、侧栏宽度、主题（当前）
   Window state            启动时在光标屏幕居中，沿用上次尺寸（当前）
@@ -113,7 +113,7 @@ Go（main.go）
 - `Workspace` 提供 `ChooseFolder`、`ListFiles`、`ReadFile`、`WriteFile`、`ConfirmDiscard` 和 `FinishClose`，以及文件树的 `ListDirectory`、`CreateFile`、`CreateFolder`、`RenameEntry`、`TrashEntry`、`OpenWithDefaultApp`、`RevealEntry` 和 `Watch`。写操作携带打开时返回的 `generation`，路径和文件类型的规则见[工作区与文件](specs/workspace.md#路径守卫)和[写入保证](specs/workspace.md#写入保证)。
 - 关窗时 Go 发出携带 `token` 的 `workspace:save-before-close` 事件并阻止关闭；前端保存后调用 `FinishClose(token, saved)`。保存失败时由 Go 弹出确认框，只有用户明确选择放弃才关窗；页面无响应时最多等待 5 秒。
 - `Workspace.Watch(generation)` 用 `*mygo.Channel[FileWatchPart]` 流式返回 `ready` 和事件批次；底层是 `mygo.WatchFiles`，在 Go 端过滤 Nicole 自己的写入（见[工作区与文件](specs/workspace.md#忽略-nicole-自己的写入)）。工作区状态本身是可替换的单例，后续协议 handler 在启动时注册、运行时读取同一个状态。
-- `SingleFileService` 提供 `ChooseSingleFile`、`AcceptSingleFile`、`ReadSingleFile`、`WriteSingleFile` 和 `ReleaseSingleFile`；授权按解析后的绝对路径保存，只有对话框选择或 `App.OnOpenFile` 提供的文件才能被接受。`OpenedFiles` 暂存系统传入的路径，`app:open-file` 事件通知页面，页面也可用 `TakePendingOpenedFiles` 取启动时到达的文件。
+- `SingleFileService` 提供 `ChooseSingleFile`、`AcceptSingleFile`、`ReadSingleFile`、`WriteSingleFile` 和 `ReleaseSingleFile`；授权按解析后的绝对路径保存，只有对话框选择或 `App.OnOpenFile` 提供的文件才能被接受。`OpenedFiles` 暂存系统传入的路径；`app:open-file` 只通知“有新文件”，页面收到信号后调用 `TakePendingOpenedFiles` 一次取走队列，既覆盖启动时到达的文件，也不会重复交付同一个文件。
 - `Settings` 提供 `Get`、`MigrateLegacyTheme`、`SetTheme`、`SetSidebarWidth`、`SetExpandedFolders`、`AddRecentFolder` 和 `RemoveRecentFolder`；`SetTheme` 同时调用 `mygo.Theme.SetSource` 同步原生外观。
 - `NativeMenu.PopupNativeMenu` 在调用窗口的页面坐标显示原生菜单，返回选中项 ID 或空字符串；页面最多传 64 项，ID 唯一。正文的 WebView 右键菜单由 `Page.OnContextMenu` 裁剪，见[安全](#安全)。
 - 搜索通过 Channel 流式返回结果（见[工作区与文件](specs/workspace.md#搜索)）。
@@ -131,10 +131,11 @@ Go（main.go）
 - 沙箱 iframe 可能会额外起进程，尽量不用。
 - Go 的文件服务限制见[工作区与文件](specs/workspace.md#路径守卫)。工作区内的读取、写入和文件操作都以 `os.OpenRoot` 的根为边界，并在操作前用 `filepath.EvalSymlinks` 确认目标仍在工作区内；文件树操作不能借 `..`、绝对路径、盘符路径或符号链接越出根目录。
 - 工作区外的文件采用按文件授权：`SingleFileService` 只保存用户通过原生对话框选择、或通过 `App.OnOpenFile` 提供并在页面确认后的解析绝对路径。读写只接受完全相同的路径，列出目录、访问同目录其他文件、相对路径和目录本身都拒绝；授权不跨重启保存，关闭标签页时释放。见[单文件标签页](specs/workspace.md#单文件标签页)。
-- 系统“打开方式”传入的路径先记为“已提供”，不会自动授权；`AcceptSingleFile` 只接受已经提供的路径，页面不能凭任意字符串自行授权。
+- 文件树的“用默认应用打开”在 Go 端按白名单分类：图片、PDF、纯文本和常见办公文档可直接打开；已知启动器类型（PATHEXT、macOS 脚本/快捷方式、Linux `.desktop` 等）直接拒绝；其他类型和 Unix 可执行文件必须先经过 Go 弹出的原生确认框，页面无法绕过。详见[文件操作](specs/workspace.md#打开方式的安全规则)。
+- 系统“打开方式”传入的路径先记为“已提供”，不会自动授权；`AcceptSingleFile` 只接受已经提供的路径，页面不能凭任意字符串自行授权。`app:open-file` 只是“有新文件”的信号，页面收到后调用 `TakePendingOpenedFiles` 清空队列，避免事件与启动时读取重复交付。
 - 原生右键菜单只接收菜单项 ID、文字、快捷键、禁用状态和页面坐标，不接收命令或文件内容；菜单项由 Go 组装，选择结果只把 ID 返回页面。正文的 WebView 右键菜单删除“重新载入”“后退”“前进”，非开发构建还删除“检查元素”。
 - 文件关联只让系统把 `.md` 路径交给 `App.OnOpenFile`；在用户于页面确认“只打开这个文件”之前，Go 不读写该文件。
-- 设置存储和单文件授权都只使用 Go 的文件接口；测试和开发构建通过 `NICOLE_USER_DATA_DIR` 指向临时目录，避免修改用户正在使用的数据（见[开发](development.md#数据隔离)）。
+- 设置存储和单文件授权都只使用 Go 的文件接口；测试和开发构建通过 `NICOLE_USER_DATA_DIR` 指向临时目录，避免修改用户正在使用的数据（见[开发](development.md#数据隔离)）。应用启动时请求单实例锁；不同的 `NICOLE_USER_DATA_DIR` 使用独立的锁命名空间，因此隔离的测试/开发实例不会被误转交给安装版。
 - 自定义协议只映射当前工作区；协议 handler 在启动时注册，运行时读取可替换的工作区状态。
 
 ## 主要风险

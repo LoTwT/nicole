@@ -298,16 +298,41 @@ func TestSettingsAtomicConcurrentWrites(t *testing.T) {
 	}
 }
 
-func TestSettingsCorruptFile(t *testing.T) {
+func TestSettingsCorruptFileIsBackedUpAndRecovered(t *testing.T) {
 	store, dir := newTestSettings(t)
+	captureThemeSource(t)
 	filePath := filepath.Join(dir, settingsFileName)
-	if err := os.WriteFile(filePath, []byte("{not json"), 0o644); err != nil {
+	corrupt := []byte("{not json")
+	if err := os.WriteFile(filePath, corrupt, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.get(); err == nil {
-		t.Fatal("get() accepted corrupt settings")
+
+	settings, err := store.get()
+	if err != nil {
+		t.Fatalf("get() = %v, want defaults after backing up the file", err)
 	}
-	if err := store.setTheme(themeDark); err == nil {
-		t.Fatal("setTheme() overwrote corrupt settings")
+	if settings.Theme != themeSystem || settings.SidebarWidth != defaultSidebarWidth {
+		t.Errorf("defaults after corrupt settings = %+v", settings)
+	}
+	if _, err := os.Stat(filePath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("corrupt settings still at the original path: %v", err)
+	}
+	backups, err := filepath.Glob(filePath + ".corrupt-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backups) != 1 {
+		t.Fatalf("backup files = %q, want one", backups)
+	}
+	if data, err := os.ReadFile(backups[0]); err != nil || string(data) != string(corrupt) {
+		t.Errorf("backup content = %q, %v; want the original bytes", data, err)
+	}
+
+	if err := store.setTheme(themeDark); err != nil {
+		t.Fatalf("setTheme() after corrupt settings = %v", err)
+	}
+	settings, err = store.get()
+	if err != nil || settings.Theme != themeDark {
+		t.Errorf("settings after recovery = %+v, %v; want dark", settings, err)
 	}
 }

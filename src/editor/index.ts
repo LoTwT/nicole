@@ -11,6 +11,7 @@ import {
   RangeSetBuilder,
   type Extension,
 } from "@codemirror/state";
+import { redo as historyRedo, undo as historyUndo } from "@codemirror/commands";
 import {
   Decoration,
   EditorView,
@@ -624,6 +625,12 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
           modeExtension(next, resolveImage),
         ),
       });
+    },
+    undo() {
+      return !view.compositionStarted && historyUndo(view);
+    },
+    redo() {
+      return !view.compositionStarted && historyRedo(view);
     },
     focus() {
       view.focus();

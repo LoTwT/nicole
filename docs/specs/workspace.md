@@ -65,13 +65,22 @@ Go 的 `Workspace` 服务通过 `mygo.Bind` 暴露，前端经 `src/services/wor
 | `CreateFolder(dir, name, generation)` | 在 `dir` 中创建文件夹。目标已存在时返回明确错误。 |
 | `RenameEntry(path, name, generation)` | `name` 是新的名字，不含分隔符。文件或文件夹都可重命名；目标已存在时拒绝，不做替换。返回新的相对路径。 |
 | `TrashEntry(path, generation)` | 文件或文件夹移到系统废纸篓或回收站；系统不支持时返回错误，不会退回永久删除。工作区根不能移走。 |
-| `OpenWithDefaultApp(path, generation)` | 只接受普通文件，用系统默认应用打开。 |
+| `OpenWithDefaultApp(path, generation)` | 只接受普通文件；按[打开方式的安全规则](#打开方式的安全规则)决定直接打开、确认后打开或拒绝。 |
 | `RevealEntry(path, generation)` | 文件或文件夹都可以在 Finder、资源管理器或文件管理器中显示；`path` 为 `.` 时显示工作区根。 |
 
 - 所有操作都要求 `generation` 与当前工作区一致；切换文件夹后，旧工作区发起的操作被拒绝。
 - 新名字和路径经过[文件树路径守卫](#路径守卫)：不能是绝对路径、不能含 `..`、`\` 或 `:`，也不能指向 `.git` 或本应用临时文件。
 - 移动和改名在 Windows 上遇到文件被占用时重试，改名后对目录做 fsync（Windows 跳过）。
 - 重命名已打开的文件后，文件监听会报告 `rename`；标签页标题和路径由界面同步，见[界面与交互](ui.md#文件树)。
+
+### 打开方式的安全规则
+
+文件树里的文件可能来自 clone 下来的仓库，不能因为用户点了一下就执行其中的程序。`OpenWithDefaultApp` 在调用系统默认应用之前先在 Go 端分类：
+
+- 图片（PNG、JPEG、GIF、WebP、HEIC 等）、PDF、纯文本和常见办公文档（`.txt`、`.md`、`.csv`、`.json`、`.docx`、`.xlsx`、`.pptx`、`.odt` 等）直接打开。带执行位的文件仍要确认。SVG 因可能包含活动内容，不在直接打开列表。
+- Windows 的 PATHEXT 类型（`.exe`、`.com`、`.cmd`、`.bat`、`.js` 等）及其快捷方式、注册表/安装/脚本类型（`.lnk`、`.url`、`.hta`、`.scf`、`.reg`、`.msi`、`.ps1`），macOS 的 `.command`、`.tool`、`.terminal`、`.jar`、`.pkg`、`.scpt` 等，以及 Linux 的 `.desktop` 直接拒绝，不弹确认框。
+- 其他类型，或 Unix 上带执行权限（`0o111`）的文件，由 Go 弹出原生确认框，写明文件名并说明“打开后可能会运行程序”。只有用户选择“打开”才调用默认应用；页面不能伪造这个确认框。拒绝时返回明确错误。
+- “在 Finder/资源管理器中显示”不经过这条限制，仍然只受文件树路径守卫约束。
 
 ## 路径守卫
 
@@ -129,6 +138,8 @@ Go 的 `Workspace` 服务通过 `mygo.Bind` 暴露，前端经 `src/services/wor
 | `AddRecentFolder(folder)` / `RemoveRecentFolder(folder)` | 维护最近打开的文件夹，最新在前，最多 10 个。 |
 
 `settings.json` 的字段为 `theme`、`sidebarWidth`、`recentFolders` 和 `expandedFolders`（根目录绝对路径 → 展开的相对路径数组）。默认主题是 `system`，默认宽度 252px，最近文件夹和展开状态为空。写入在目标目录创建临时文件后改名替换，一次只写一个完整文件；损坏的设置文件不会被部分覆盖。
+
+文件已存在但不是合法 JSON 时，读取会先把原文件重命名为 `settings.json.corrupt-<UTC 时间>`，再以默认值继续，后续设置可以正常保存；原文件保留下来供排查。备份重命名失败时返回错误，不覆盖损坏文件。启动时的主题读取也遵循这个行为，失败时保持系统外观。
 
 主题从 `localStorage` 迁移后，系统的外观变化由页面监听 `prefers-color-scheme`；`system` 时原生外观也由 `Theme.SetSource(ThemeSystem)` 跟随系统。详见[主题与字体](theming.md#当前实现)。
 

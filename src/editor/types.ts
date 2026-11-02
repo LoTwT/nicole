@@ -28,6 +28,10 @@ export interface EditorHandle {
   readonly view: EditorView;
   readonly mode: EditorMode;
   setMode(mode: EditorMode): void;
+  /** Applies the editor's history unless an IME composition is active. */
+  undo(): boolean;
+  /** Applies the editor's history unless an IME composition is active. */
+  redo(): boolean;
   focus(): void;
   destroy(): void;
 }

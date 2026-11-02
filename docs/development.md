@@ -158,6 +158,8 @@ macOS 的签名、通用二进制合成和 DMG 需要 macOS；Windows 安装包�
 | 直接运行构建出的 `.app` | `NICOLE_USER_DATA_DIR=$(mktemp -d) ./build/darwin-arm64/Nicole.app/Contents/MacOS/Nicole`；不要从 `/Applications` 启动正在使用的 Nicole。 |
 | 用 Launch Services 测试“打开方式” | `open --env NICOLE_USER_DATA_DIR="$(mktemp -d)" -a "$PWD/build/darwin-arm64/Nicole.app" --args`，或 `open --env ... -a ... /tmp/note.md`。 |
 
+单实例锁按应用名和 `NICOLE_USER_DATA_DIR` 的短哈希区分：同一个数据目录只允许一个实例，第二个实例把命令行文件和激活请求交给第一个实例，再退出；不同数据目录可以同时运行，适合并存安装版和隔离测试版。锁只影响进程，不会改变用户看到的窗口或设置。
+
 `mygo.App.Path(PathUserData)` 的副作用是创建目录。`mygo generate`、`mygo dev` 和 `mygo build` 会把应用编译成临时二进制 `Nicole-<pid>` 并以 `MYGO_GENERATE` 运行来生成 TypeScript 客户端；这段启动流程曾在检查生成模式之前初始化设置和窗口状态，于是 `PathUserData` 按临时二进制名创建了真实的 `~/Library/Application Support/Nicole-<pid>/`。这些目录都是空的，时间与本地生成/构建/测试运行一致。`startupSettingsStore` 和 `startupWindowStateStore` 现在在 `MYGO_GENERATE` 下使用不会被读写的临时路径，因此 `mygo generate` 和 `mygo build` 不再创建这些目录。测试另外由 `TestMain` 指向临时目录；测试只读地对比 `~/Library/Application Support/` 下的条目即可确认没有新增或修改。
 
 ## 测试与检查

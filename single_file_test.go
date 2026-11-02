@@ -174,6 +174,40 @@ func TestSingleFileReleaseAndDeletion(t *testing.T) {
 	}
 }
 
+func TestSingleFileWriteRejectsAReplacedSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks needs a developer mode or administrator rights")
+	}
+	root := t.TempDir()
+	path := filepath.Join(root, "note.md")
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	mustWriteFile(t, path, []byte("note"))
+	mustWriteFile(t, outside, []byte("outside"))
+
+	service := NewSingleFileService()
+	service.offer(path)
+	file, err := service.AcceptSingleFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, path); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := service.WriteSingleFile(file.Path, "changed"); !errors.Is(err, errNotRegular) {
+		t.Fatalf("WriteSingleFile(replaced symlink) = %v, want %v", err, errNotRegular)
+	}
+	if data, err := os.ReadFile(outside); err != nil || string(data) != "outside" {
+		t.Errorf("outside target = %q, %v; want it unchanged", data, err)
+	}
+	if info, err := os.Lstat(path); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("granted path is no longer a symlink: %v, %v", info, err)
+	}
+}
+
 func TestSingleFileOfferResolvesSymlinks(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("creating symlinks needs a developer mode or administrator rights")

@@ -46,12 +46,11 @@ func appMenu(dev bool) *mygo.Menu {
 	return mygo.NewMenu(items)
 }
 
-// customizeEditMenu makes Undo and Redo run document.execCommand in the page
+// customizeEditMenu makes Undo and Redo send an edit command to the page
 // instead of AppKit's undo: and redo: selectors. The selectors act on the web
-// view's own undo manager, which knows nothing of CodeMirror's history, so a
-// Cmd+Z accelerator would do nothing; the command reaches CodeMirror's
-// beforeinput handler, as clicking the menu item already did. The labels and
-// accelerators stay the ones MyGo localizes.
+// view's own undo manager, which knows nothing of CodeMirror's history. The
+// page runs CodeMirror's history itself so it can ignore the command during an
+// IME composition. The labels and accelerators stay the ones MyGo localizes.
 func customizeEditMenu(menu *mygo.Menu) {
 	if menu == nil {
 		return
@@ -73,9 +72,9 @@ func customizeEditMenu(menu *mygo.Menu) {
 	}
 }
 
-// pageCommand runs a browser editing command in the page of the window the
-// menu belongs to. execCommand is deprecated but remains the command CodeMirror
-// turns into its own undo and redo, and the one MyGo's roles use elsewhere.
+// pageCommand asks the page to run an edit command in the window the menu
+// belongs to. The page owns CodeMirror's history and can ignore the command
+// while an IME composition is active; execCommand cannot make that decision.
 func pageCommand(command string) func(*mygo.MenuItem, *mygo.Window) {
 	return func(_ *mygo.MenuItem, win *mygo.Window) {
 		if win == nil {
@@ -85,7 +84,11 @@ func pageCommand(command string) func(*mygo.MenuItem, *mygo.Window) {
 			return
 		}
 		if page := win.Page(); page != nil {
-			_, _ = page.Eval(`document.execCommand("` + command + `")`)
+			script := fmt.Sprintf(
+				`window.dispatchEvent(new CustomEvent("nicole:edit-command", { detail: %q }))`,
+				command,
+			)
+			_, _ = page.Eval(script)
 		}
 	}
 }

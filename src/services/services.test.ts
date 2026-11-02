@@ -206,12 +206,13 @@ describe("service wrappers", () => {
 
     const handler = vi.fn();
     const off = onOpenFile(handler);
-    expect(mocks.appOpenFileOn).toHaveBeenCalledWith(handler);
+    expect(mocks.appOpenFileOn).toHaveBeenCalledOnce();
     const registered = mocks.appOpenFileOn.mock.calls[0]?.[0] as (
-      path: string,
+      signal: boolean,
     ) => void;
-    registered("/tmp/from-system.md");
-    expect(handler).toHaveBeenCalledWith("/tmp/from-system.md");
+    registered(true);
+    expect(handler).toHaveBeenCalledOnce();
+    expect(handler).toHaveBeenCalledWith();
     off();
 
     await expect(takePendingOpenedFiles()).resolves.toEqual(["/tmp/note.md"]);

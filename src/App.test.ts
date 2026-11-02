@@ -33,18 +33,24 @@ const workspaceMock = vi.hoisted(() => ({
 }));
 
 const eventMock = vi.hoisted(() => ({
-  openFile: null as null | ((path: string) => void),
+  openFile: null as null | (() => void),
   pending: [] as string[],
+  takeCalls: 0,
 }));
 
 vi.mock("./services/open-file", () => ({
-  onOpenFile: (handler: (path: string) => void) => {
+  onOpenFile: (handler: () => void) => {
     eventMock.openFile = handler;
     return () => {
       eventMock.openFile = null;
     };
   },
-  takePendingOpenedFiles: async () => eventMock.pending,
+  takePendingOpenedFiles: async () => {
+    eventMock.takeCalls++;
+    const pending = eventMock.pending;
+    eventMock.pending = [];
+    return pending;
+  },
 }));
 
 vi.mock("./services/settings", () => ({
@@ -63,7 +69,6 @@ vi.mock("./services/workspace", () => ({
     workspaceMock.saveBeforeClose = handler;
     return () => {
       workspaceMock.saveBeforeClose = null;
-  eventMock.openFile = null;
     };
   },
   finishClose: vi.fn(),
@@ -158,6 +163,7 @@ beforeEach(() => {
   vi.mocked(setTheme).mockResolvedValue(undefined);
   eventMock.openFile = null;
   eventMock.pending = [];
+  eventMock.takeCalls = 0;
 
   vi.mocked(chooseFolder).mockReset();
   vi.mocked(confirmDiscard).mockReset();
@@ -256,6 +262,40 @@ describe("App", () => {
     expect(setTheme).not.toHaveBeenCalled();
   });
 
+  it("runs the menu's undo command through CodeMirror and ignores composition", async () => {
+    await nextTick();
+    const view = editorView();
+    view.dispatch({
+      changes: { from: view.state.doc.length, insert: "!" },
+    });
+    window.dispatchEvent(
+      new CustomEvent("nicole:edit-command", { detail: "undo" }),
+    );
+    await nextTick();
+    expect(view.state.doc.toString()).toBe(SAMPLE_DOCUMENT);
+
+    view.dispatch({
+      changes: { from: view.state.doc.length, insert: "!" },
+    });
+    view.contentDOM.dispatchEvent(
+      new CompositionEvent("compositionstart", { bubbles: true }),
+    );
+    expect(view.compositionStarted).toBe(true);
+    window.dispatchEvent(
+      new CustomEvent("nicole:edit-command", { detail: "undo" }),
+    );
+    await nextTick();
+    expect(view.state.doc.toString()).toBe(`${SAMPLE_DOCUMENT}!`);
+    view.contentDOM.dispatchEvent(
+      new CompositionEvent("compositionend", { bubbles: true }),
+    );
+    window.dispatchEvent(
+      new CustomEvent("nicole:edit-command", { detail: "undo" }),
+    );
+    await nextTick();
+    expect(view.state.doc.toString()).toBe(SAMPLE_DOCUMENT);
+  });
+
   it("migrates the old localStorage theme and removes it", async () => {
     app?.unmount();
     vi.mocked(getSettings).mockClear();
@@ -272,14 +312,30 @@ describe("App", () => {
     expect(document.documentElement.classList.contains("dark")).toBe(true);
   });
 
-  it("shows the path of a file the system opened", async () => {
-    eventMock.openFile?.("/tmp/from-system.md");
+  it("takes pending files when the system sends a signal", async () => {
+    const initialTakeCalls = eventMock.takeCalls;
+    eventMock.pending = ["/tmp/from-system.md"];
+    eventMock.openFile?.();
     await settle();
     expect(host.textContent).toContain("/tmp/from-system.md");
 
-    eventMock.openFile?.("/tmp/another.md");
+    eventMock.pending = ["/tmp/another.md"];
+    eventMock.openFile?.();
     await settle();
     expect(host.textContent).toContain("/tmp/another.md");
+    expect(eventMock.takeCalls).toBe(initialTakeCalls + 2);
+  });
+
+  it("does not take the same pending file again for a later signal", async () => {
+    eventMock.pending = ["/tmp/once.md"];
+    eventMock.openFile?.();
+    await settle();
+    const callsAfterFirstSignal = eventMock.takeCalls;
+
+    eventMock.openFile?.();
+    await settle();
+    expect(eventMock.takeCalls).toBe(callsAfterFirstSignal + 1);
+    expect(host.textContent).toContain("/tmp/once.md");
   });
 
   it("takes a file that arrived before the page subscribed", async () => {

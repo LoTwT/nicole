@@ -1,17 +1,40 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"github.com/egoist/mygo"
 )
 
 type systemActionLog struct {
 	trashed  []string
 	revealed []string
 	opened   []string
+}
+
+type openConfirmationLog struct {
+	calls      int
+	name       string
+	executable bool
+	allow      bool
+	err        error
+}
+
+func stubOpenConfirmation(t *testing.T, log *openConfirmationLog) {
+	t.Helper()
+	original := confirmRiskyOpen
+	confirmRiskyOpen = func(_ *mygo.Window, name string, executable bool) (bool, error) {
+		log.calls++
+		log.name = name
+		log.executable = executable
+		return log.allow, log.err
+	}
+	t.Cleanup(func() { confirmRiskyOpen = original })
 }
 
 func stubSystemActions(t *testing.T) *systemActionLog {
@@ -158,6 +181,21 @@ func TestRenameEntry(t *testing.T) {
 			t.Errorf("RenameEntry(name %q) succeeded, want an error", name)
 		}
 	}
+	// The slash-only check must run before the filesystem: with an existing
+	// folder named a, the old implementation would have renamed the file to
+	// a/b instead of rejecting the name.
+	if err := os.Mkdir(filepath.Join(root, "a"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := workspace.RenameEntry("renamed.md", "a/b", generation); !errors.Is(err, errInvalidName) {
+		t.Errorf("RenameEntry(a/b with folder a) = %v, want %v", err, errInvalidName)
+	}
+	if _, err := os.Stat(filepath.Join(root, "a", "b")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("RenameEntry created a/b: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "renamed.md")); err != nil {
+		t.Errorf("source disappeared after rejected rename: %v", err)
+	}
 	if _, err := workspace.RenameEntry("missing.md", "new.md", generation); err == nil {
 		t.Error("RenameEntry(missing) succeeded")
 	}
@@ -230,16 +268,16 @@ func TestOpenAndRevealUseTheGuard(t *testing.T) {
 	generation := currentGeneration(workspace)
 	resolvedRoot, _ := workspace.state.snapshot()
 
-	if err := workspace.OpenWithDefaultApp("image.png", generation); err != nil {
+	if err := workspace.OpenWithDefaultApp(context.Background(), "image.png", generation); err != nil {
 		t.Fatal(err)
 	}
-	if err := workspace.OpenWithDefaultApp("folder", generation); !errors.Is(err, errNotRegular) {
+	if err := workspace.OpenWithDefaultApp(context.Background(), "folder", generation); !errors.Is(err, errNotRegular) {
 		t.Errorf("OpenWithDefaultApp(folder) = %v, want %v", err, errNotRegular)
 	}
-	if err := workspace.OpenWithDefaultApp("../escape", generation); err == nil {
+	if err := workspace.OpenWithDefaultApp(context.Background(), "../escape", generation); err == nil {
 		t.Error("OpenWithDefaultApp(escape) succeeded")
 	}
-	if err := workspace.OpenWithDefaultApp("image.png", generation-1); !errors.Is(err, errWorkspaceChange) {
+	if err := workspace.OpenWithDefaultApp(context.Background(), "image.png", generation-1); !errors.Is(err, errWorkspaceChange) {
 		t.Errorf("OpenWithDefaultApp(stale) = %v, want %v", err, errWorkspaceChange)
 	}
 
@@ -260,6 +298,172 @@ func TestOpenAndRevealUseTheGuard(t *testing.T) {
 	}
 	if len(log.revealed) != 3 || log.revealed[0] != resolvedRoot || log.revealed[1] != filepath.Join(resolvedRoot, "image.png") {
 		t.Errorf("revealed = %q", log.revealed)
+	}
+}
+
+func TestOpenWithDefaultAppAllowsKnownDocumentAndImageTypes(t *testing.T) {
+	log := stubSystemActions(t)
+	confirmation := &openConfirmationLog{}
+	stubOpenConfirmation(t, confirmation)
+	root := t.TempDir()
+	for _, name := range []string{"photo.png", "paper.pdf", "notes.txt", "report.docx"} {
+		mustWriteFile(t, filepath.Join(root, name), []byte("x"))
+	}
+	workspace := openTestWorkspace(t, root)
+	generation := currentGeneration(workspace)
+
+	for _, name := range []string{"photo.png", "paper.pdf", "notes.txt", "report.docx"} {
+		if err := workspace.OpenWithDefaultApp(context.Background(), name, generation); err != nil {
+			t.Errorf("OpenWithDefaultApp(%q) = %v, want nil", name, err)
+		}
+	}
+	if len(log.opened) != 4 {
+		t.Errorf("opened = %q, want four files", log.opened)
+	}
+	if confirmation.calls != 0 {
+		t.Errorf("confirmation calls = %d, want none for the direct list", confirmation.calls)
+	}
+}
+
+func TestOpenWithDefaultAppRejectsLaunchers(t *testing.T) {
+	for _, name := range []string{"run.bat", "run.exe", "run.ps1", "run.command", "run.desktop", "run.jar", "run.lnk"} {
+		t.Run(name, func(t *testing.T) {
+			log := stubSystemActions(t)
+			confirmation := &openConfirmationLog{allow: true}
+			stubOpenConfirmation(t, confirmation)
+			root := t.TempDir()
+			mustWriteFile(t, filepath.Join(root, name), []byte("x"))
+			workspace := openTestWorkspace(t, root)
+
+			err := workspace.OpenWithDefaultApp(context.Background(), name, currentGeneration(workspace))
+			if !errors.Is(err, errLauncherType) {
+				t.Fatalf("OpenWithDefaultApp(%q) = %v, want %v", name, err, errLauncherType)
+			}
+			if len(log.opened) != 0 {
+				t.Errorf("launcher %q reached the desktop: %q", name, log.opened)
+			}
+			if confirmation.calls != 0 {
+				t.Errorf("launcher %q asked for confirmation %d times", name, confirmation.calls)
+			}
+		})
+	}
+}
+
+func TestLauncherExtensionsCoverTheRequiredTypes(t *testing.T) {
+	root := t.TempDir()
+	sample := filepath.Join(root, "sample")
+	mustWriteFile(t, sample, []byte("x"))
+	info, err := os.Stat(sample)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, extension := range []string{
+		".com", ".exe", ".bat", ".cmd", ".vbs", ".vbe", ".js", ".jse",
+		".wsf", ".wsh", ".msc", ".cpl", ".scr", ".msi", ".ps1", ".lnk",
+		".url", ".hta", ".scf", ".reg",
+		".command", ".tool", ".terminal", ".fileloc", ".inetloc", ".webloc",
+		".jar", ".pkg", ".scpt",
+		".desktop",
+	} {
+		if got := classifyOpenAction("file"+extension, info); got != openRejected {
+			t.Errorf("classifyOpenAction(%q) = %v, want openRejected", extension, got)
+		}
+	}
+}
+
+func TestOpenWithDefaultAppConfirmsUnknownTypes(t *testing.T) {
+	log := stubSystemActions(t)
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "archive.xyz"), []byte("x"))
+	workspace := openTestWorkspace(t, root)
+	generation := currentGeneration(workspace)
+
+	confirmation := &openConfirmationLog{allow: false}
+	stubOpenConfirmation(t, confirmation)
+	if err := workspace.OpenWithDefaultApp(context.Background(), "archive.xyz", generation); err != nil {
+		t.Fatalf("cancelled confirmation = %v, want nil", err)
+	}
+	if confirmation.calls != 1 || confirmation.name != "archive.xyz" || confirmation.executable {
+		t.Errorf("confirmation = %+v, want one call for archive.xyz without an executable bit", confirmation)
+	}
+	if len(log.opened) != 0 {
+		t.Errorf("cancelled confirmation opened %q", log.opened)
+	}
+
+	confirmation = &openConfirmationLog{allow: true}
+	stubOpenConfirmation(t, confirmation)
+	if err := workspace.OpenWithDefaultApp(context.Background(), "archive.xyz", generation); err != nil {
+		t.Fatalf("accepted confirmation = %v, want nil", err)
+	}
+	resolvedRoot, _ := workspace.state.snapshot()
+	if len(log.opened) != 1 || log.opened[0] != filepath.Join(resolvedRoot, "archive.xyz") {
+		t.Errorf("accepted confirmation opened %q", log.opened)
+	}
+
+	confirmation = &openConfirmationLog{allow: true, err: errors.New("dialog failed")}
+	stubOpenConfirmation(t, confirmation)
+	if err := workspace.OpenWithDefaultApp(context.Background(), "archive.xyz", generation); err == nil {
+		t.Error("dialog failure was ignored")
+	}
+}
+
+func TestOpenWithDefaultAppConfirmsExecutableBit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not represent executable permission in the file mode")
+	}
+	log := stubSystemActions(t)
+	root := t.TempDir()
+	name := filepath.Join(root, "readme.txt")
+	mustWriteFile(t, name, []byte("x"))
+	if err := os.Chmod(name, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	workspace := openTestWorkspace(t, root)
+	confirmation := &openConfirmationLog{allow: false}
+	stubOpenConfirmation(t, confirmation)
+
+	if err := workspace.OpenWithDefaultApp(context.Background(), "readme.txt", currentGeneration(workspace)); err != nil {
+		t.Fatal(err)
+	}
+	if confirmation.calls != 1 || !confirmation.executable {
+		t.Errorf("confirmation = %+v, want the executable bit reported", confirmation)
+	}
+	if len(log.opened) != 0 {
+		t.Errorf("an executable file opened without confirmation: %q", log.opened)
+	}
+}
+
+func TestRenamedMarkdownCannotBeOpenedAsAScript(t *testing.T) {
+	log := stubSystemActions(t)
+	confirmation := &openConfirmationLog{allow: true}
+	stubOpenConfirmation(t, confirmation)
+	root := t.TempDir()
+	workspace := openTestWorkspace(t, root)
+	generation := currentGeneration(workspace)
+
+	if _, err := workspace.CreateFile(".", "note", generation); err != nil {
+		t.Fatal(err)
+	}
+	if err := workspace.WriteFile("note.md", "echo hi", generation); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := workspace.RenameEntry("note.md", "note.bat", generation); err != nil {
+		t.Fatal(err)
+	}
+	if err := workspace.OpenWithDefaultApp(context.Background(), "note.bat", generation); !errors.Is(err, errLauncherType) {
+		t.Fatalf("OpenWithDefaultApp(renamed .bat) = %v, want %v", err, errLauncherType)
+	}
+	if len(log.opened) != 0 {
+		t.Errorf("renamed script reached the desktop: %q", log.opened)
+	}
+	if confirmation.calls != 0 {
+		t.Errorf("renamed script asked for confirmation %d times", confirmation.calls)
+	}
+	if err := workspace.RevealEntry("note.bat", generation); err != nil {
+		t.Fatal(err)
+	}
+	if len(log.revealed) != 1 {
+		t.Errorf("RevealEntry(script) = %q, want it unaffected", log.revealed)
 	}
 }
 
