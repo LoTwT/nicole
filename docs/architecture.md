@@ -41,11 +41,11 @@ src/
     file-tree.ts          文件树节点、排序、展开与增量合并
     line-endings.ts       换行风格检测与写回
     paths.ts              工作区相对路径、主目录缩写
-    platform.ts           平台判断、快捷键文字与右键菜单项
+    platform.ts           平台判断、快捷键文字/键帽拆分与右键菜单项
     status.ts             保存状态、横幅优先级和标签页圆点
     watch-events.ts       监听事件与当前文档、文件树刷新范围的对应
   components/             界面组件
-    AppSidebar.vue        侧栏外壳、宽度拖动、底部文件夹/主题/设置入口
+    AppSidebar.vue        侧栏外壳、宽度拖动、底部切换文件夹/主题/设置入口
     FileTree.vue          按需读取的文件树、右键菜单、行内新建与重命名
     FileTreeNode.vue      递归树节点与键盘可见结构
     TopBar.vue            单文档标签、模式切换、侧栏与大纲入口
@@ -56,6 +56,7 @@ src/
     NonMarkdownPlaceholder.vue  非 Markdown 文件的占位页
     InlineNameInput.vue   行内文件名输入框
     AppIcon.vue           内联 Lucide 1.66.0 图标
+    KeyHint.vue           按平台拆分的快捷键键帽
   editor/                 纯 TypeScript，不依赖 Vue 和 MyGo
     index.ts              createEditor、三种模式、widgets、核心命令、图片插入
     types.ts              对外类型

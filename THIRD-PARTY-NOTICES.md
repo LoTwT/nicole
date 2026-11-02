@@ -6,7 +6,7 @@
 
 `src/components/AppIcon.vue` 内联了 Lucide 1.66.0 的以下图标几何数据：
 
-`panel-left`、`search`、`plus`、`settings`、`chevron-right`、`chevron-down`、`x`、`folder`、`file-text`、`file`、`panel-right`、`sun`、`moon`、`ellipsis`、`eye`、`pen-line`、`code`。
+`panel-left`、`search`、`plus`、`settings`、`chevron-right`、`chevron-down`、`x`、`folder`、`folder-open`、`file-text`、`file`、`panel-right`、`sun`、`moon`、`ellipsis`、`eye`、`pen-line`、`code`。
 
 项目不包含 Lucide 的运行时包或字体文件；图标以 24×24 viewBox 和 `stroke-width="1.75"` 内联在 Vue 组件中。
 
@@ -31,8 +31,12 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ### Feather-derived icons
 
 The following Lucide icons are derived from the Feather project. The
-icons used by Nicole that appear in this list are `search`, `plus`,
-`chevron-down`, `chevron-right`, `x`, `moon`, and `code`.
+icons used by Nicole that appear in this list are `panel-left` (Feather
+`sidebar`), `search`, `plus`, `chevron-down`, `chevron-right`, `x`,
+`moon`, `ellipsis` (Feather `more-horizontal`), and `code`.
+
+`folder-open` is a Lucide icon and is not part of the Feather-derived
+list; it is covered by the ISC license above.
 
 airplay, alert-circle, alert-octagon, alert-triangle, aperture,
 arrow-down-circle, arrow-down-left, arrow-down-right, arrow-down,

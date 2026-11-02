@@ -7,6 +7,7 @@ import {
   type AppPlatform,
 } from "../app/platform";
 import AppIcon from "./AppIcon.vue";
+import KeyHint from "./KeyHint.vue";
 
 export interface TopBarTab {
   name: string;
@@ -196,14 +197,13 @@ onBeforeUnmount(() => {
               type="button"
               role="menuitemradio"
               :aria-checked="mode === item.id"
+              :aria-label="`${item.full} ${shortcutText(item.command, platform)}`"
               class="focus-ring flex w-full items-center gap-2 rounded-[var(--radius-control)] px-2 py-1.5 text-left hover:bg-[var(--surface-subtle)]"
               @click="chooseMode(item.id)"
             >
               <AppIcon :name="item.icon" :size="14" />
               <span class="flex-1">{{ item.full }}</span>
-              <kbd class="text-[11px] text-[var(--text-muted)]">
-                {{ shortcutText(item.command, platform) }}
-              </kbd>
+              <KeyHint :shortcut="shortcutText(item.command, platform)" />
             </button>
           </div>
         </div>

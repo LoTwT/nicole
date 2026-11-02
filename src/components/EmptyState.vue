@@ -4,6 +4,7 @@ import { computed } from "vue";
 import { displayPath } from "../app/paths";
 import { isMac, shortcutText, type AppPlatform } from "../app/platform";
 import AppIcon from "./AppIcon.vue";
+import KeyHint from "./KeyHint.vue";
 
 const props = defineProps<{
   mode: "start" | "no-file";
@@ -53,10 +54,11 @@ function folderName(path: string): string {
       <button
         type="button"
         class="focus-ring mt-5 inline-flex items-center gap-2 rounded-full bg-[var(--accent-primary)] px-4 py-2 text-[13px] font-medium text-[var(--accent-contrast)]"
+        :aria-label="`打开文件夹 ${openFolderKey}`"
         @click="emit('open-folder')"
       >
         打开文件夹
-        <kbd class="text-[11px] font-normal opacity-75">{{ openFolderKey }}</kbd>
+        <KeyHint :shortcut="openFolderKey" />
       </button>
 
       <div v-if="recentFolders.length > 0" class="mt-8 text-left">
@@ -107,11 +109,14 @@ function folderName(path: string): string {
         <button
           type="button"
           class="focus-ring rounded-[var(--radius-control)] hover:text-[var(--text-primary)]"
+          :aria-label="`新建文件 ${newFileKey}`"
           @click="emit('new-file')"
         >
-          新建文件 <kbd>{{ newFileKey }}</kbd>
+          新建文件 <KeyHint :shortcut="newFileKey" />
         </button>
-        <span>快速打开 <kbd>{{ quickOpenKey }}</kbd></span>
+        <span class="inline-flex items-center gap-1">
+          快速打开 <KeyHint :shortcut="quickOpenKey" />
+        </span>
       </p>
     </div>
   </div>

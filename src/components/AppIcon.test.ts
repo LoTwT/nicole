@@ -22,6 +22,7 @@ describe("AppIcon", () => {
       "chevron-down",
       "close",
       "folder",
+      "folder-open",
       "file-text",
       "file",
       "outline",

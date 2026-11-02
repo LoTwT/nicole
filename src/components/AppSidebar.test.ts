@@ -38,6 +38,7 @@ function mount(width = 252) {
   const commits: number[] = [];
   let resets = 0;
   let themes = 0;
+  let openFolders = 0;
   const Component = defineComponent({
     setup() {
       return () =>
@@ -60,12 +61,21 @@ function mount(width = 252) {
           onToggleTheme: () => {
             themes += 1;
           },
+          onOpenFolder: () => {
+            openFolders += 1;
+          },
         });
     },
   });
   app = createApp(Component);
   app.mount(host);
-  return { changes, commits, resets: () => resets, themes: () => themes };
+  return {
+    changes,
+    commits,
+    resets: () => resets,
+    themes: () => themes,
+    openFolders: () => openFolders,
+  };
 }
 
 describe("AppSidebar", () => {
@@ -114,12 +124,31 @@ describe("AppSidebar", () => {
     expect(
       host.querySelector('button[aria-label^="设置"]'),
     ).not.toBeNull();
-    expect(
-      host.querySelector('button[aria-label^="搜索全部文件夹"]'),
-    ).not.toBeNull();
+    const search = host.querySelector<HTMLButtonElement>(
+      'button[aria-label^="搜索工作区"]',
+    );
+    expect(search).not.toBeNull();
+    expect([...search!.querySelectorAll("kbd")].map((key) => key.textContent?.trim())).toEqual([
+      "⇧",
+      "⌘",
+      "F",
+    ]);
     expect(
       host.querySelector('button[aria-label="切换到暗色主题"]'),
     ).not.toBeNull();
+  });
+
+  it("switches folders from an icon-only footer button", async () => {
+    const log = mount();
+    await settle();
+    const button = host.querySelector<HTMLButtonElement>(
+      'button[aria-label="切换文件夹 ⌘O"]',
+    );
+    expect(button).not.toBeNull();
+    expect(button?.textContent?.trim()).toBe("");
+    expect(button?.querySelector('svg[viewBox="0 0 24 24"]')).not.toBeNull();
+    button!.click();
+    expect(log.openFolders()).toBe(1);
   });
 
   it("toggles the theme from the sidebar footer", async () => {

@@ -139,7 +139,9 @@ function button(label: string): HTMLButtonElement {
 
 function sidebarButton(label: string): HTMLButtonElement {
   const found = [...host.querySelectorAll<HTMLButtonElement>("aside button")].find(
-    (item) => item.textContent?.replace(/\s+/g, "").includes(label),
+    (item) =>
+      item.textContent?.replace(/\s+/g, "").includes(label) ||
+      item.getAttribute("aria-label")?.replace(/\s+/g, "").includes(label),
   );
   if (!found) throw new Error(`sidebar button ${label} not found`);
   return found;
@@ -353,7 +355,7 @@ describe("application shell", () => {
     expect(host.textContent).toContain("a.md");
 
     mocks.pickFolder.mockResolvedValue({ path: "/second", canceled: false });
-    sidebarButton("打开文件夹").click();
+    sidebarButton("切换文件夹").click();
     await settle();
     expect(dialog()?.textContent).toContain("切换到“second”");
     dialogButton("取消").click();
@@ -422,7 +424,7 @@ describe("application shell", () => {
     expect(host.textContent).toContain("保存失败");
 
     mocks.pickFolder.mockResolvedValue({ path: "", canceled: true });
-    sidebarButton("打开文件夹").click();
+    sidebarButton("切换文件夹").click();
     await settle();
     expect(dialog()).toBeNull();
     expect(editorView().state.doc.toString()).toBe("# Changed\n");
@@ -434,7 +436,7 @@ describe("application shell", () => {
     const pick = deferred<{ path: string; canceled: boolean }>();
     mocks.pickFolder.mockImplementation(() => pick.promise);
     mocks.openFolder.mockResolvedValue(folder("/second", 2));
-    sidebarButton("打开文件夹").click();
+    sidebarButton("切换文件夹").click();
     await settle();
 
     replaceEditorText("# Typed during picker\n");
@@ -1012,7 +1014,7 @@ describe("single files and dialogs", () => {
   it("closes an open page dialog before a window close request", async () => {
     await openFile();
     mocks.pickFolder.mockResolvedValue({ path: "/second", canceled: false });
-    sidebarButton("打开文件夹").click();
+    sidebarButton("切换文件夹").click();
     await settle();
     expect(dialog()).not.toBeNull();
 
