@@ -79,7 +79,7 @@ func TestSingleFileWriteIsAtomicAndKeepsMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o640 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o640 {
 		t.Errorf("mode = %o, want 640", info.Mode().Perm())
 	}
 	tempFiles, err := filepath.Glob(filepath.Join(root, tempFilePrefix+"*"+tempFileSuffix))
