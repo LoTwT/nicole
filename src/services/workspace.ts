@@ -1,10 +1,28 @@
-import { Workspace, events, type WorkspaceFolder } from "./mygo";
+import {
+  Workspace,
+  events,
+  type FolderPick,
+  type WorkspaceFolder,
+} from "./mygo";
 
-export type { WorkspaceFolder };
+export type { FolderPick, WorkspaceFolder };
 
 /** Opens the native folder picker and switches the folder in Go. */
 export function chooseFolder(): Promise<WorkspaceFolder> {
   return Workspace.chooseFolder();
+}
+
+/** Picks a folder without switching; the page confirms before opening it. */
+export function pickFolder(): Promise<FolderPick> {
+  return Workspace.pickFolder();
+}
+
+/**
+ * Switches to a folder the user just picked, a recent folder, or the folder
+ * of a system-provided file. Go refuses any other path.
+ */
+export function openFolder(path: string): Promise<WorkspaceFolder> {
+  return Workspace.openFolder(path);
 }
 
 /** Lists the Markdown files of the open folder, as slash-separated relative paths. */

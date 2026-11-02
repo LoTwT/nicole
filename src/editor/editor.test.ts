@@ -256,6 +256,21 @@ describe("task checkbox", () => {
     ).toBe(false);
   });
 
+  it("maps the selection through an external document replacement", () => {
+    const instance = createEditor({ parent, doc });
+    editor = instance;
+    const view = instance.view;
+    const target = doc.indexOf("加粗") + 1;
+    view.dispatch({ selection: { anchor: target } });
+
+    const next = `新增的前言\n\n${doc}`;
+    instance.replaceDocument(next);
+
+    expect(view.state.doc.toString()).toBe(next);
+    const mapped = view.state.selection.main.head;
+    expect(view.state.sliceDoc(mapped - 1, mapped + 1)).toBe("加粗");
+  });
+
   it("keeps focus on the checkbox when it is toggled", async () => {
     const instance = mount("live");
     const view = instance.view;

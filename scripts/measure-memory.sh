@@ -15,6 +15,8 @@ PROGRAM=${0##*/}
 WAIT_SECONDS=10
 BUDGET_MB=
 APP_PATH=
+USER_DATA_DIR=
+CREATED_USER_DATA=0
 
 # How long to wait for the main process to appear, and for how long a single
 # candidate whose environment is unreadable must remain alone before it is
@@ -24,12 +26,19 @@ FALLBACK_STABLE_SECONDS=10
 
 usage() {
   cat <<EOF
-Usage: $PROGRAM [--app PATH] [--wait SECONDS] [--budget MB]
+Usage: $PROGRAM [--app PATH] [--wait SECONDS] [--budget MB] [--user-data-dir DIR]
 
-  --app PATH      .app bundle to launch (default: build/<os>-<arch>/Nicole.app)
-  --wait SECONDS  stabilization delay after the app process appears (default: 10)
-  --budget MB     exit with status 2 when the total exceeds this threshold
-  -h, --help      print this help
+  --app PATH             .app bundle to launch (default: build/<os>-<arch>/Nicole.app)
+  --wait SECONDS         stabilization delay after the app process appears (default: 10)
+  --budget MB            exit with status 2 when the total exceeds this threshold
+  --user-data-dir DIR    data directory for this run (default: a fresh temporary
+                         directory, removed afterwards). The directory must be
+                         absolute; it is created when missing.
+  -h, --help             print this help
+
+The measured instance always runs with NICOLE_USER_DATA_DIR set, so it never
+reads or writes the user's real Nicole data. A fresh directory also means the
+default window size (1100x780) is used.
 
 Output: a table with the main process, GPU, WebContent, Networking and other
 WebKit processes, followed by one machine-readable \`SUMMARY key=value ...\`
@@ -79,6 +88,15 @@ while [ "$#" -gt 0 ]; do
       BUDGET_MB=${1#--budget=}
       shift
       ;;
+    --user-data-dir)
+      [ "$#" -ge 2 ] || fail "--user-data-dir needs a path"
+      USER_DATA_DIR=$2
+      shift 2
+      ;;
+    --user-data-dir=*)
+      USER_DATA_DIR=${1#--user-data-dir=}
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -125,6 +143,21 @@ if [ -z "$APP_PATH" ]; then
   [ "$build_arch" = "x86_64" ] && build_arch=amd64
   APP_PATH="build/$(uname -s | tr '[:upper:]' '[:lower:]')-$build_arch/Nicole.app"
 fi
+
+if [ -z "$USER_DATA_DIR" ]; then
+  USER_DATA_DIR=$(mktemp -d "${TMPDIR:-/tmp}/nicole-measure-user-data-XXXXXX") ||
+    fail "could not create a temporary user data directory"
+  CREATED_USER_DATA=1
+else
+  case $USER_DATA_DIR in
+    /*) ;;
+    *) fail "--user-data-dir must be an absolute path: $USER_DATA_DIR" ;;
+  esac
+  mkdir -p "$USER_DATA_DIR" ||
+    fail "could not create user data directory: $USER_DATA_DIR"
+fi
+USER_DATA_DIR=$(cd "$USER_DATA_DIR" 2>/dev/null && pwd -P) ||
+  fail "cannot resolve user data directory: $USER_DATA_DIR"
 
 [ -e "$APP_PATH" ] || fail "app bundle not found: $APP_PATH (build it first, or pass --app)"
 [ -d "$APP_PATH" ] || fail "not an app bundle directory: $APP_PATH"
@@ -327,9 +360,13 @@ stop_launched_instance() {
 cleanup() {
   if [ -n "$LAUNCHED_PID" ]; then
     stop_launched_instance
+    cleanup_user_data
     return 0
   fi
-  [ "$LAUNCH_ATTEMPTED" -eq 1 ] || return 0
+  if [ "$LAUNCH_ATTEMPTED" -ne 1 ]; then
+    cleanup_user_data
+    return 0
+  fi
   # The launch was attempted but no PID was claimed yet, for example because a
   # signal arrived right after `open`. Poll for a token match for a few
   # seconds and stop only that instance; never signal an unmarked process.
@@ -340,22 +377,33 @@ cleanup() {
         if select_launched_pid "$pid"; then
           stop_launched_instance
         fi
+        cleanup_user_data
         return 0
       fi
     done
-    [ "$(date +%s)" -ge "$cleanup_deadline" ] && return 0
+    [ "$(date +%s)" -ge "$cleanup_deadline" ] && break
     sleep 0.2
   done
+  cleanup_user_data
 }
+cleanup_user_data() {
+  if [ "$CREATED_USER_DATA" -eq 1 ] && [ -n "$USER_DATA_DIR" ]; then
+    rm -rf "$USER_DATA_DIR"
+    CREATED_USER_DATA=0
+  fi
+}
+
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
 printf 'App: %s\n' "$APP_PATH"
+printf 'User data: %s\n' "$USER_DATA_DIR"
 printf 'Waiting %s seconds after the app process appears.\n' "$WAIT_SECONDS"
 
 LAUNCH_ATTEMPTED=1
-if ! open -n --env "$LAUNCH_TOKEN_VAR=$LAUNCH_TOKEN" "$APP_PATH"; then
+if ! open -n --env "$LAUNCH_TOKEN_VAR=$LAUNCH_TOKEN" \
+  --env "NICOLE_USER_DATA_DIR=$USER_DATA_DIR" "$APP_PATH"; then
   LAUNCH_ATTEMPTED=0
   fail "open -n failed for $APP_PATH"
 fi

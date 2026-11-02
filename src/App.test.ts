@@ -1,180 +1,300 @@
-import { undo } from "@codemirror/commands";
 import { EditorView } from "@codemirror/view";
 import { createApp, nextTick } from "vue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App.vue";
-import { SAMPLE_DOCUMENT } from "./sample";
-import {
-  getSettings,
-  migrateLegacyTheme,
-  setTheme,
-} from "./services/settings";
-import {
-  chooseFolder,
-  confirmDiscard,
-  finishClose,
-  readFile,
-  writeFile,
-  type WorkspaceFolder,
-} from "./services/workspace";
 
-vi.mock("./services/app", () => ({
-  getAppInfo: async () => ({
-    version: "0.0.1",
-    os: "test",
-    arch: "test",
-    goVersion: "go1.test",
-  }),
-}));
-
-const workspaceMock = vi.hoisted(() => ({
-  saveBeforeClose: null as null | ((token: number) => Promise<void>),
-}));
-
-const eventMock = vi.hoisted(() => ({
-  openFile: null as null | (() => void),
-  pending: [] as string[],
-  takeCalls: 0,
-}));
-
-vi.mock("./services/open-file", () => ({
-  onOpenFile: (handler: () => void) => {
-    eventMock.openFile = handler;
-    return () => {
-      eventMock.openFile = null;
-    };
-  },
-  takePendingOpenedFiles: async () => {
-    eventMock.takeCalls++;
-    const pending = eventMock.pending;
-    eventMock.pending = [];
-    return pending;
-  },
-}));
-
-vi.mock("./services/settings", () => ({
+const mocks = vi.hoisted(() => ({
+  getAppInfo: vi.fn(),
+  pickFolder: vi.fn(),
+  openFolder: vi.fn(),
+  readFile: vi.fn(),
+  writeFile: vi.fn(),
+  onSaveBeforeClose: vi.fn(),
+  finishClose: vi.fn(),
+  listDirectory: vi.fn(),
+  createFile: vi.fn(),
+  createFolder: vi.fn(),
+  renameEntry: vi.fn(),
+  trashEntry: vi.fn(),
+  openWithDefaultApp: vi.fn(),
+  revealEntry: vi.fn(),
+  popupNativeMenu: vi.fn(),
+  copyText: vi.fn(),
   getSettings: vi.fn(),
   migrateLegacyTheme: vi.fn(),
   setTheme: vi.fn(),
+  setSidebarWidth: vi.fn(),
+  setExpandedFolders: vi.fn(),
+  addRecentFolder: vi.fn(),
+  removeRecentFolder: vi.fn(),
+  chooseSingleFile: vi.fn(),
+  acceptSingleFile: vi.fn(),
+  readSingleFile: vi.fn(),
+  writeSingleFile: vi.fn(),
+  releaseSingleFile: vi.fn(),
+  onOpenFile: vi.fn(),
+  takePendingOpenedFiles: vi.fn(),
+  onWindowFileDrop: vi.fn(),
+  pasteImage: vi.fn(),
+  importImages: vi.fn(),
+  watchWorkspace: vi.fn(),
 }));
 
+vi.mock("./services/app", () => ({ getAppInfo: mocks.getAppInfo }));
 vi.mock("./services/workspace", () => ({
-  chooseFolder: vi.fn(),
-  confirmDiscard: vi.fn(),
-  listFiles: vi.fn(),
-  readFile: vi.fn(),
-  writeFile: vi.fn(),
-  onSaveBeforeClose: (handler: (token: number) => Promise<void>) => {
-    workspaceMock.saveBeforeClose = handler;
-    return () => {
-      workspaceMock.saveBeforeClose = null;
-    };
-  },
-  finishClose: vi.fn(),
+  pickFolder: mocks.pickFolder,
+  openFolder: mocks.openFolder,
+  readFile: mocks.readFile,
+  writeFile: mocks.writeFile,
+  onSaveBeforeClose: mocks.onSaveBeforeClose,
+  finishClose: mocks.finishClose,
 }));
+vi.mock("./services/files", () => ({
+  listDirectory: mocks.listDirectory,
+  createFile: mocks.createFile,
+  createFolder: mocks.createFolder,
+  renameEntry: mocks.renameEntry,
+  trashEntry: mocks.trashEntry,
+  openWithDefaultApp: mocks.openWithDefaultApp,
+  revealEntry: mocks.revealEntry,
+}));
+vi.mock("./services/menu", () => ({ popupNativeMenu: mocks.popupNativeMenu }));
+vi.mock("./services/clipboard", () => ({ copyText: mocks.copyText }));
+vi.mock("./services/settings", () => ({
+  getSettings: mocks.getSettings,
+  migrateLegacyTheme: mocks.migrateLegacyTheme,
+  setTheme: mocks.setTheme,
+  setSidebarWidth: mocks.setSidebarWidth,
+  setExpandedFolders: mocks.setExpandedFolders,
+  addRecentFolder: mocks.addRecentFolder,
+  removeRecentFolder: mocks.removeRecentFolder,
+}));
+vi.mock("./services/single-file", () => ({
+  chooseSingleFile: mocks.chooseSingleFile,
+  acceptSingleFile: mocks.acceptSingleFile,
+  readSingleFile: mocks.readSingleFile,
+  writeSingleFile: mocks.writeSingleFile,
+  releaseSingleFile: mocks.releaseSingleFile,
+}));
+vi.mock("./services/open-file", () => ({
+  onOpenFile: mocks.onOpenFile,
+  takePendingOpenedFiles: mocks.takePendingOpenedFiles,
+}));
+vi.mock("./services/assets", () => ({
+  onWindowFileDrop: mocks.onWindowFileDrop,
+  pasteImage: mocks.pasteImage,
+  importImages: mocks.importImages,
+}));
+vi.mock("./services/watch", () => ({
+  watchWorkspace: mocks.watchWorkspace,
+}));
+
+const entry = (
+  name: string,
+  path: string,
+  options: { isDir?: boolean; isMarkdown?: boolean; size?: number } = {},
+) => ({
+  name,
+  path,
+  isDir: options.isDir ?? false,
+  isMarkdown: options.isMarkdown ?? name.endsWith(".md"),
+  size: options.size ?? 10,
+});
 
 let host: HTMLElement;
 let app: ReturnType<typeof createApp> | null = null;
+let tree: ReturnType<typeof entry>[] = [];
+let openFileText = "";
+let watchEvents: ((events: import("./services/mygo").WorkspaceFileEvent[]) => void) | null =
+  null;
+let closeHandler: ((token: number) => Promise<void>) | null = null;
+let openHandler: (() => void) | null = null;
+let pendingFiles: string[] = [];
 
 async function settle() {
-  for (let index = 0; index < 10; index++) {
+  for (let index = 0; index < 20; index++) {
     await Promise.resolve();
     await nextTick();
   }
 }
 
-function button(label: string): HTMLButtonElement {
-  const found = [...host.querySelectorAll("button")].find(
-    (item) => item.textContent?.trim() === label,
+function folder(root: string, generation = 1) {
+  return { root, files: [], canceled: false, generation };
+}
+
+function buttons(label: string): HTMLButtonElement[] {
+  return [...host.querySelectorAll<HTMLButtonElement>("button")].filter(
+    (item) => item.textContent?.replace(/\s+/g, "").includes(label),
   );
-  if (!found) {
-    throw new Error(`button ${label} not found`);
-  }
+}
+
+function button(label: string): HTMLButtonElement {
+  const found = buttons(label)[0];
+  if (!found) throw new Error(`button ${label} not found`);
   return found;
 }
 
-function folder(files: string[], generation = 1): WorkspaceFolder {
-  return {
-    root: `/notes-${generation}`,
-    files,
-    canceled: false,
-    generation,
-  };
-}
-
-async function openFolder(files: string[]): Promise<HTMLSelectElement> {
-  vi.mocked(chooseFolder).mockResolvedValue(folder(files));
-  button("打开文件夹").click();
-  await settle();
-  const select = host.querySelector<HTMLSelectElement>(
-    'select[aria-label="Markdown 文件"]',
+function sidebarButton(label: string): HTMLButtonElement {
+  const found = [...host.querySelectorAll<HTMLButtonElement>("aside button")].find(
+    (item) => item.textContent?.replace(/\s+/g, "").includes(label),
   );
-  if (!select) {
-    throw new Error("file select not found");
-  }
-  return select;
-}
-
-async function chooseFile(
-  select: HTMLSelectElement,
-  path: string,
-): Promise<void> {
-  select.value = path;
-  select.dispatchEvent(new Event("change"));
-  await settle();
+  if (!found) throw new Error(`sidebar button ${label} not found`);
+  return found;
 }
 
 function editorView(): EditorView {
-  const editorDOM = host.querySelector<HTMLElement>(".cm-editor");
-  if (!editorDOM) {
-    throw new Error("editor not found");
-  }
-  const view = EditorView.findFromDOM(editorDOM);
-  if (!view) {
-    throw new Error("editor view not found");
-  }
+  const element = host.querySelector<HTMLElement>(".cm-editor");
+  if (!element) throw new Error("editor not found");
+  const view = EditorView.findFromDOM(element);
+  if (!view) throw new Error("editor view not found");
   return view;
+}
+
+function replaceEditorText(text: string) {
+  const view = editorView();
+  view.dispatch({
+    changes: { from: 0, to: view.state.doc.length, insert: text },
+  });
+}
+
+async function openFolder(files = tree, generation = 1) {
+  mocks.pickFolder.mockResolvedValue({ path: "/notes", canceled: false });
+  mocks.openFolder.mockResolvedValue(folder("/notes", generation));
+  button("打开文件夹").click();
+  await settle();
+}
+
+async function openFile(name = "a.md", text = "# A\n") {
+  tree = [entry(name, name)];
+  mocks.listDirectory.mockImplementation(async (path: string) => ({
+    path,
+    entries: path === "." ? tree : [],
+  }));
+  openFileText = text;
+  mocks.readFile.mockResolvedValue(text);
+  await openFolder();
+  const row = host.querySelector<HTMLElement>(`[data-tree-path="${name}"]`);
+  if (!row) throw new Error(`tree row ${name} not found`);
+  row.click();
+  await settle();
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+function dialog(): HTMLElement | null {
+  return document.querySelector('[role="dialog"]');
+}
+
+function dialogButton(label: string): HTMLButtonElement {
+  const found = [...(dialog()?.querySelectorAll<HTMLButtonElement>("button") ?? [])].find(
+    (item) => item.textContent?.trim() === label,
+  );
+  if (!found) throw new Error(`dialog button ${label} not found`);
+  return found;
 }
 
 beforeEach(() => {
   document.body.innerHTML = '<div id="app"></div>';
   document.documentElement.classList.remove("dark");
   localStorage.clear();
+  tree = [];
+  pendingFiles = [];
+  openFileText = "";
+  watchEvents = null;
+  closeHandler = null;
+  openHandler = null;
 
-  vi.mocked(getSettings).mockReset();
-  vi.mocked(getSettings).mockResolvedValue({
+  vi.clearAllMocks();
+  mocks.getAppInfo.mockResolvedValue({
+    version: "0.0.1",
+    os: "darwin",
+    arch: "arm64",
+    goVersion: "go1.27",
+    homeDir: "/Users/tester",
+  });
+  mocks.pickFolder.mockResolvedValue({ path: "/notes", canceled: false });
+  mocks.openFolder.mockResolvedValue(folder("/notes"));
+  mocks.readFile.mockImplementation(async () => openFileText);
+  mocks.writeFile.mockResolvedValue(undefined);
+  mocks.listDirectory.mockImplementation(async (path: string) => ({
+    path,
+    entries: path === "." ? tree : [],
+  }));
+  mocks.createFile.mockResolvedValue("new.md");
+  mocks.createFolder.mockResolvedValue("folder");
+  mocks.renameEntry.mockImplementation(async (path: string, name: string) => {
+    const parent = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+    return parent ? `${parent}/${name}` : name;
+  });
+  mocks.trashEntry.mockResolvedValue(undefined);
+  mocks.openWithDefaultApp.mockResolvedValue(undefined);
+  mocks.revealEntry.mockResolvedValue(undefined);
+  mocks.popupNativeMenu.mockResolvedValue("");
+  mocks.copyText.mockResolvedValue(true);
+  mocks.getSettings.mockResolvedValue({
     theme: "system",
     sidebarWidth: 252,
     recentFolders: [],
     expandedFolders: {},
   });
-  vi.mocked(migrateLegacyTheme).mockReset();
-  vi.mocked(migrateLegacyTheme).mockImplementation(async (legacy) => ({
-    theme:
-      legacy === "light" || legacy === "dark"
-        ? legacy
-        : "system",
+  mocks.migrateLegacyTheme.mockResolvedValue({
+    theme: "system",
     sidebarWidth: 252,
     recentFolders: [],
     expandedFolders: {},
+  });
+  mocks.setTheme.mockResolvedValue(undefined);
+  mocks.setSidebarWidth.mockResolvedValue(undefined);
+  mocks.setExpandedFolders.mockResolvedValue(undefined);
+  mocks.addRecentFolder.mockResolvedValue(undefined);
+  mocks.removeRecentFolder.mockResolvedValue(undefined);
+  mocks.acceptSingleFile.mockImplementation(async (path: string) => ({
+    path,
+    name: path.slice(path.lastIndexOf("/") + 1),
   }));
-  vi.mocked(setTheme).mockReset();
-  vi.mocked(setTheme).mockResolvedValue(undefined);
-  eventMock.openFile = null;
-  eventMock.pending = [];
-  eventMock.takeCalls = 0;
-
-  vi.mocked(chooseFolder).mockReset();
-  vi.mocked(confirmDiscard).mockReset();
-  vi.mocked(confirmDiscard).mockResolvedValue(false);
-  vi.mocked(readFile).mockReset();
-  vi.mocked(writeFile).mockReset();
-  vi.mocked(writeFile).mockResolvedValue(undefined);
-  vi.mocked(finishClose).mockReset();
-  vi.mocked(finishClose).mockResolvedValue(undefined);
-  workspaceMock.saveBeforeClose = null;
-  eventMock.openFile = null;
+  mocks.readSingleFile.mockResolvedValue("# Single\n");
+  mocks.writeSingleFile.mockResolvedValue(undefined);
+  mocks.releaseSingleFile.mockResolvedValue(undefined);
+  mocks.takePendingOpenedFiles.mockImplementation(async () => {
+    const files = pendingFiles;
+    pendingFiles = [];
+    return files;
+  });
+  mocks.onOpenFile.mockImplementation((handler: () => void) => {
+    openHandler = handler;
+    return () => {
+      openHandler = null;
+    };
+  });
+  mocks.onWindowFileDrop.mockReturnValue(() => {});
+  mocks.pasteImage.mockResolvedValue([]);
+  mocks.importImages.mockResolvedValue([]);
+  mocks.onSaveBeforeClose.mockImplementation(
+    (handler: (token: number) => Promise<void>) => {
+      closeHandler = handler;
+      return () => {
+        closeHandler = null;
+      };
+    },
+  );
+  mocks.finishClose.mockResolvedValue(undefined);
+  mocks.watchWorkspace.mockImplementation(
+    (_generation: number, onEvents: typeof watchEvents) => {
+      watchEvents = onEvents;
+      return {
+        ready: Promise.resolve(),
+        closed: new Promise<void>(() => {}),
+        close: vi.fn(),
+      };
+    },
+  );
 
   host = document.querySelector<HTMLElement>("#app")!;
   app = createApp(App);
@@ -183,64 +303,421 @@ beforeEach(() => {
 
 afterEach(() => {
   app?.unmount();
-  vi.restoreAllMocks();
   app = null;
-  document.body.innerHTML = "";
-  document.documentElement.classList.remove("dark");
-  localStorage.clear();
+  vi.restoreAllMocks();
   vi.useRealTimers();
+  document.body.innerHTML = "";
+  localStorage.clear();
+  document.documentElement.classList.remove("dark");
 });
 
-describe("App", () => {
-  it("keeps the editor DOM, selection and undo history when the theme changes", async () => {
-    await nextTick();
+describe("application shell", () => {
+  it("starts with the empty workspace and opens a folder", async () => {
+    await settle();
+    expect(host.textContent).toContain("开始写作");
+    expect(host.textContent).toContain("打开一个文件夹作为工作区");
+    expect(host.querySelector("aside")).toBeNull();
 
-    const editorDOM = host.querySelector<HTMLElement>(".cm-editor");
-    expect(editorDOM).not.toBeNull();
+    tree = [entry("a.md", "a.md")];
+    await openFolder();
+    expect(mocks.pickFolder).toHaveBeenCalledOnce();
+    expect(mocks.openFolder).toHaveBeenCalledWith("/notes");
+    expect(host.querySelector("aside")).not.toBeNull();
+    expect(host.textContent).toContain("选择一个文件开始写作");
+    expect(host.textContent).toContain("a.md");
+    expect(mocks.addRecentFolder).toHaveBeenCalledWith("/notes");
+  });
 
-    const view = EditorView.findFromDOM(editorDOM!);
-    expect(view).not.toBeNull();
-
-    view!.dispatch({
-      changes: { from: 0, insert: "X" },
-      selection: { anchor: 6, head: 10 },
+  it("shows the last folder as missing instead of opening it", async () => {
+    app?.unmount();
+    mocks.getSettings.mockResolvedValue({
+      theme: "system",
+      sidebarWidth: 252,
+      recentFolders: ["/gone"],
+      expandedFolders: {},
     });
-    await nextTick();
+    mocks.openFolder.mockRejectedValue(new Error("not found"));
+    await settle();
+    app = createApp(App);
+    app.mount(host);
+    await settle();
+    expect(mocks.openFolder).toHaveBeenCalledWith("/gone");
+    expect(host.textContent).toContain("上次打开的文件夹“gone”已不存在");
+  });
 
-    const selection = view!.state.selection.main;
-    const edited = view!.state.doc.toString();
+  it("confirms a folder switch and keeps the current file on cancel", async () => {
+    await openFile();
+    expect(host.textContent).toContain("a.md");
+
+    mocks.pickFolder.mockResolvedValue({ path: "/second", canceled: false });
+    sidebarButton("打开文件夹").click();
+    await settle();
+    expect(dialog()?.textContent).toContain("切换到“second”");
+    dialogButton("取消").click();
+    await settle();
+
+    expect(mocks.openFolder).toHaveBeenCalledTimes(1);
+    expect(host.textContent).toContain("a.md");
+    expect(editorView().state.doc.toString()).toBe("# A\n");
+  });
+
+  it("opens a non-Markdown file as a placeholder with system actions", async () => {
+    tree = [
+      entry("cover.png", "assets/cover.png", {
+        isMarkdown: false,
+        size: 2048,
+      }),
+    ];
+    mocks.listDirectory.mockImplementation(async (path: string) => ({
+      path,
+      entries: path === "." ? [entry("assets", "assets", { isDir: true })] : tree,
+    }));
+    await openFolder();
+    host
+      .querySelector<HTMLElement>('[data-tree-path="assets"]')!
+      .click();
+    await settle();
+    host
+      .querySelector<HTMLElement>('[data-tree-path="assets/cover.png"]')!
+      .click();
+    await settle();
+
+    expect(host.textContent).toContain("无法预览此类型的文件");
+    expect(host.textContent).toContain("cover.png · 2.0 KB");
+    expect(host.querySelector('[role="tab"]')?.textContent).toContain("cover.png");
+
+    button("用默认应用打开").click();
+    await settle();
+    expect(mocks.openWithDefaultApp).toHaveBeenCalledWith(
+      "assets/cover.png",
+      1,
+    );
+    buttons("显示")[0]!.click();
+    await settle();
+    expect(mocks.revealEntry).toHaveBeenCalledWith("assets/cover.png", 1);
+  });
+
+  it("does not open two folder pickers at once", async () => {
+    const pick = deferred<{ path: string; canceled: boolean }>();
+    mocks.pickFolder.mockImplementation(() => pick.promise);
+    button("打开文件夹").click();
+    button("打开文件夹").click();
+    await settle();
+    expect(mocks.pickFolder).toHaveBeenCalledOnce();
+    pick.resolve({ path: "/notes", canceled: true });
+    await settle();
+    expect(mocks.openFolder).not.toHaveBeenCalled();
+  });
+
+  it("keeps edits when the folder picker is canceled after a failed save", async () => {
+    vi.useFakeTimers();
+    await openFile();
+    mocks.writeFile.mockRejectedValue(new Error("read-only"));
+    replaceEditorText("# Changed\n");
+    await vi.advanceTimersByTimeAsync(1000);
+    await settle();
+    expect(host.textContent).toContain("保存失败");
+
+    mocks.pickFolder.mockResolvedValue({ path: "", canceled: true });
+    sidebarButton("打开文件夹").click();
+    await settle();
+    expect(dialog()).toBeNull();
+    expect(editorView().state.doc.toString()).toBe("# Changed\n");
+    expect(mocks.openFolder).toHaveBeenCalledTimes(1);
+  });
+
+  it("saves edits typed while the folder picker is open", async () => {
+    await openFile();
+    const pick = deferred<{ path: string; canceled: boolean }>();
+    mocks.pickFolder.mockImplementation(() => pick.promise);
+    mocks.openFolder.mockResolvedValue(folder("/second", 2));
+    sidebarButton("打开文件夹").click();
+    await settle();
+
+    replaceEditorText("# Typed during picker\n");
+    pick.resolve({ path: "/second", canceled: false });
+    await settle();
+
+    expect(mocks.writeFile).toHaveBeenCalledWith(
+      "a.md",
+      "# Typed during picker\n",
+      1,
+    );
+    expect(dialog()?.textContent).toContain("切换到“second”");
+    dialogButton("切换").click();
+    await settle();
+    expect(mocks.openFolder).toHaveBeenCalledWith("/second");
+  });
+
+  it("uses a single document tab and switches modes", async () => {
+    await openFile();
+    expect(host.querySelector('[role="tablist"]')?.textContent).toContain("a.md");
+    expect(host.querySelectorAll('[role="tab"]').length).toBe(1);
+
+    const source = buttons("源码").find((item) => item.closest("header"));
+    source!.click();
+    await settle();
+    expect(source?.getAttribute("aria-pressed")).toBe("true");
+  });
+});
+
+describe("saving and status", () => {
+  it("shows editing, delays saving, and then shows saved", async () => {
+    vi.useFakeTimers();
+    await openFile();
+    const write = deferred<void>();
+    mocks.writeFile.mockImplementation(() => write.promise);
+
+    replaceEditorText("# Edited\n");
+    await settle();
+    expect(host.querySelector("footer")?.textContent).toContain("编辑中");
+    await vi.advanceTimersByTimeAsync(999);
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(mocks.writeFile).toHaveBeenCalledWith("a.md", "# Edited\n", 1);
+    await vi.advanceTimersByTimeAsync(299);
+    expect(host.querySelector("footer")?.textContent).not.toContain("保存中");
+    await vi.advanceTimersByTimeAsync(1);
+    expect(host.querySelector("footer")?.textContent).toContain("保存中");
+
+    write.resolve();
+    await settle();
+    expect(host.querySelector("footer")?.textContent).toContain("已保存");
+  });
+
+  it("shows the save failure banner, tab dot and retries", async () => {
+    vi.useFakeTimers();
+    await openFile();
+    mocks.writeFile.mockRejectedValueOnce(new Error("permission denied"));
+    replaceEditorText("# Edited\n");
+    await vi.advanceTimersByTimeAsync(1000);
+    await settle();
+
+    expect(host.textContent).toContain("无法保存：permission denied");
+    expect(host.textContent).toContain("重试");
+    const tab = host.querySelector('[role="tab"]');
+    expect(tab?.querySelector('[role="img"]')).not.toBeNull();
+
+    mocks.writeFile.mockResolvedValue(undefined);
+    button("重试").click();
+    await settle();
+    expect(host.textContent).not.toContain("无法保存");
+    expect(host.querySelector("footer")?.textContent).toContain("已保存");
+  });
+
+  it("does not autosave a mixed line-ending file", async () => {
+    vi.useFakeTimers();
+    await openFile("mixed.md", "a\r\nb\nc\r\n");
+    expect(host.textContent).toContain("换行风格混合");
+    replaceEditorText("a\r\nb\nc\r\nd\r\n");
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+  });
+
+  it("writes the original line-ending style", async () => {
+    vi.useFakeTimers();
+    await openFile("crlf.md", "a\r\nb\r\n");
+    replaceEditorText("a\r\nb\r\nc\r\n");
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(mocks.writeFile).toHaveBeenCalledWith(
+      "crlf.md",
+      "a\r\nb\r\nc\r\n",
+      1,
+    );
+  });
+});
+
+describe("external changes", () => {
+  it("reloads an unedited file and ignores image create events for the document", async () => {
+    mocks.listDirectory.mockImplementation(async (path: string) => ({
+      path,
+      entries:
+        path === "."
+          ? [entry("a.md", "a.md")]
+          : path === "assets"
+            ? [entry("cover.png", "assets/cover.png", { isMarkdown: false })]
+            : [],
+    }));
+    await openFile();
+    const initialReads = mocks.readFile.mock.calls.length;
+
+    openFileText = "# A\n\nimage\n";
+    mocks.readFile.mockResolvedValue(openFileText);
+    watchEvents?.([{ op: "create", path: "assets/cover.png", isDir: false }]);
+    await settle();
+    expect(mocks.readFile).toHaveBeenCalledTimes(initialReads);
+    expect(host.textContent).not.toContain("已在 Nicole 之外被修改");
+
+    watchEvents?.([{ op: "write", path: "a.md", isDir: false }]);
+    await settle();
+    expect(mocks.readFile).toHaveBeenCalledTimes(initialReads + 1);
+    expect(editorView().state.doc.toString()).toBe(openFileText);
+    expect(host.querySelector("footer")?.textContent).toContain(
+      "已载入磁盘上的新内容",
+    );
+  });
+
+  it("maps the selection through an external insertion", async () => {
+    await openFile("a.md", "one\ntwo\nthree\n");
+    const view = editorView();
+    const target = view.state.doc.toString().indexOf("three") + 2;
+    view.dispatch({ selection: { anchor: target } });
+
+    mocks.readFile.mockResolvedValue("zero\none\ntwo\nthree\n");
+    watchEvents?.([{ op: "write", path: "a.md", isDir: false }]);
+    await settle();
+    expect(view.state.sliceDoc(view.state.selection.main.from - 2, view.state.selection.main.from)).toBe("th");
+  });
+
+  it("pauses autosave and offers both versions when local edits exist", async () => {
+    vi.useFakeTimers();
+    await openFile();
+    replaceEditorText("# Mine\n");
+    await settle();
+    watchEvents?.([{ op: "write", path: "a.md", isDir: false }]);
+    await settle();
+    expect(host.textContent).toContain("此文件已在 Nicole 之外被修改");
+    expect(host.textContent).toContain("载入磁盘版本");
+    expect(host.textContent).toContain("保留我的版本");
+
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+    button("保留我的版本").click();
+    await settle();
+    expect(mocks.writeFile).toHaveBeenCalledWith("a.md", "# Mine\n", 1);
+  });
+
+  it("shows the deletion banner and recreates the file", async () => {
+    await openFile();
+    watchEvents?.([{ op: "remove", path: "a.md", isDir: false }]);
+    await settle();
+    expect(host.textContent).toContain("此文件已在磁盘上被删除或移走");
+    button("重新保存").click();
+    await settle();
+    expect(mocks.writeFile).toHaveBeenCalledWith("a.md", "# A\n", 1);
+    expect(host.textContent).not.toContain("此文件已在磁盘上被删除或移走");
+  });
+});
+
+describe("single files and dialogs", () => {
+  it("opens a file outside the workspace after confirmation and saves it", async () => {
+    vi.useFakeTimers();
+    await settle();
+    pendingFiles = ["/tmp/single.md"];
+    openHandler?.();
+    await settle();
+    expect(dialog()?.textContent).toContain("这个文件不在已打开的文件夹中");
+    dialogButton("只打开这个文件").click();
+    await settle();
+
+    expect(mocks.acceptSingleFile).toHaveBeenCalledWith("/tmp/single.md");
+    expect(mocks.readSingleFile).toHaveBeenCalledWith("/tmp/single.md");
+    expect(host.textContent).toContain("这个文件不在已打开的文件夹中");
+    expect(host.querySelector('[role="tab"]')?.textContent).toContain("single.md");
+
+    replaceEditorText("# Single edited\n");
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(mocks.writeSingleFile).toHaveBeenCalledWith(
+      "/tmp/single.md",
+      "# Single edited\n",
+    );
+  });
+
+  it("keeps the current document when a single-file replacement is canceled", async () => {
+    vi.useFakeTimers();
+    await openFile();
+    mocks.writeFile.mockRejectedValue(new Error("read-only"));
+    replaceEditorText("# Unsaved\n");
+    await vi.advanceTimersByTimeAsync(1000);
+    await settle();
+
+    pendingFiles = ["/tmp/single.md"];
+    openHandler?.();
+    await settle();
+    dialogButton("只打开这个文件").click();
+    await settle();
+    expect(dialog()?.textContent).toContain("放弃未保存的更改");
+    dialogButton("取消").click();
+    await settle();
+
+    expect(mocks.acceptSingleFile).not.toHaveBeenCalled();
+    expect(editorView().state.doc.toString()).toBe("# Unsaved\n");
+  });
+
+  it("keeps a single-file tab when another folder opens", async () => {
+    await settle();
+    pendingFiles = ["/tmp/single.md"];
+    openHandler?.();
+    await settle();
+    dialogButton("只打开这个文件").click();
+    await settle();
+
+    mocks.pickFolder.mockResolvedValue({ path: "/notes", canceled: false });
+    await settle();
+    button("打开文件夹").click();
+    await settle();
+    expect(dialog()).toBeNull();
+    expect(mocks.openFolder).toHaveBeenCalledWith("/notes");
+    expect(editorView().state.doc.toString()).toBe("# Single\n");
+  });
+
+  it("closes a mixed-ending tab only after confirmation", async () => {
+    await openFile("mixed.md", "a\r\nb\n");
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "w", metaKey: true, bubbles: true }),
+    );
+    await settle();
+    expect(dialog()?.textContent).toContain("换行风格混合");
+    dialogButton("取消").click();
+    await settle();
+    expect(editorView().state.doc.toString()).toBe("a\nb\n");
+
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "w", metaKey: true, bubbles: true }),
+    );
+    await settle();
+    dialogButton("放弃更改并关闭").click();
+    await settle();
+    expect(host.textContent).toContain("选择一个文件开始写作");
+  });
+
+  it("closes an open page dialog before a window close request", async () => {
+    await openFile();
+    mocks.pickFolder.mockResolvedValue({ path: "/second", canceled: false });
+    sidebarButton("打开文件夹").click();
+    await settle();
+    expect(dialog()).not.toBeNull();
+
+    await closeHandler?.(7);
+    await settle();
+    expect(dialog()).toBeNull();
+    expect(mocks.finishClose).toHaveBeenCalledWith(7, true);
+  });
+});
+
+describe("theme and accessibility", () => {
+  it("toggles an explicit theme from the status bar", async () => {
+    await settle();
     const themeButton = host.querySelector<HTMLButtonElement>(
       'button[aria-label="切换到暗色主题"]',
     );
-    expect(themeButton).not.toBeNull();
-
     themeButton!.click();
-    await nextTick();
-
+    await settle();
     expect(document.documentElement.classList.contains("dark")).toBe(true);
-    expect(setTheme).toHaveBeenCalledWith("dark");
-    expect(host.querySelector(".cm-editor")).toBe(editorDOM);
-    expect(view!.state.selection.main.eq(selection)).toBe(true);
-    expect(view!.state.doc.toString()).toBe(edited);
-
-    undo(view!);
-    expect(view!.state.doc.toString()).toBe(SAMPLE_DOCUMENT);
+    expect(mocks.setTheme).toHaveBeenCalledWith("dark");
   });
 
   it("follows the system appearance while the theme stays system", async () => {
     app?.unmount();
     const listeners: ((event: MediaQueryListEvent) => void)[] = [];
-    const mediaState = { matches: false };
+    const state = { matches: false };
     const media = {
       get matches() {
-        return mediaState.matches;
+        return state.matches;
       },
       media: "(prefers-color-scheme: dark)",
       onchange: null,
-      addEventListener: (
-        _type: string,
-        listener: (event: MediaQueryListEvent) => void,
-      ) => {
+      addEventListener: (_type: string, listener: (event: MediaQueryListEvent) => void) => {
         listeners.push(listener);
       },
       removeEventListener: () => {},
@@ -249,860 +726,75 @@ describe("App", () => {
       dispatchEvent: () => false,
     } as unknown as MediaQueryList;
     vi.spyOn(window, "matchMedia").mockReturnValue(media);
-
     app = createApp(App);
     app.mount(host);
     await settle();
-    expect(document.documentElement.classList.contains("dark")).toBe(false);
 
-    mediaState.matches = true;
+    state.matches = true;
     listeners[0]?.({ matches: true } as MediaQueryListEvent);
     await settle();
     expect(document.documentElement.classList.contains("dark")).toBe(true);
-    expect(setTheme).not.toHaveBeenCalled();
+    expect(mocks.setTheme).not.toHaveBeenCalled();
   });
 
-  it("runs the menu's undo command through CodeMirror and ignores composition", async () => {
-    await nextTick();
+  it("toggles the sidebar with Ctrl+Cmd+S instead of saving", async () => {
+    await openFile();
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "s",
+        ctrlKey: true,
+        metaKey: true,
+        bubbles: true,
+      }),
+    );
+    await settle();
+    expect(host.querySelector("aside")).toBeNull();
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+  });
+
+  it("runs native Undo through CodeMirror and ignores it during composition", async () => {
+    await openFile();
     const view = editorView();
-    view.dispatch({
-      changes: { from: view.state.doc.length, insert: "!" },
-    });
+    view.focus();
+    view.dispatch({ changes: { from: view.state.doc.length, insert: "!" } });
     window.dispatchEvent(
       new CustomEvent("nicole:edit-command", { detail: "undo" }),
     );
-    await nextTick();
-    expect(view.state.doc.toString()).toBe(SAMPLE_DOCUMENT);
+    await settle();
+    expect(view.state.doc.toString()).toBe("# A\n");
 
-    view.dispatch({
-      changes: { from: view.state.doc.length, insert: "!" },
-    });
+    view.dispatch({ changes: { from: view.state.doc.length, insert: "!" } });
     view.contentDOM.dispatchEvent(
       new CompositionEvent("compositionstart", { bubbles: true }),
     );
-    expect(view.compositionStarted).toBe(true);
     window.dispatchEvent(
       new CustomEvent("nicole:edit-command", { detail: "undo" }),
     );
-    await nextTick();
-    expect(view.state.doc.toString()).toBe(`${SAMPLE_DOCUMENT}!`);
+    await settle();
+    expect(view.state.doc.toString()).toBe("# A\n!");
     view.contentDOM.dispatchEvent(
       new CompositionEvent("compositionend", { bubbles: true }),
     );
     window.dispatchEvent(
       new CustomEvent("nicole:edit-command", { detail: "undo" }),
     );
-    await nextTick();
-    expect(view.state.doc.toString()).toBe(SAMPLE_DOCUMENT);
+    await settle();
+    expect(view.state.doc.toString()).toBe("# A\n");
   });
 
-  it("falls back to document.execCommand when the editor is not focused", async () => {
-    await nextTick();
-    const view = editorView();
-    view.dispatch({
-      changes: { from: view.state.doc.length, insert: "!" },
-    });
-    const input = document.createElement("input");
-    document.body.append(input);
-    input.focus();
-    expect(document.activeElement).toBe(input);
-
-    const execCommand = vi.fn().mockReturnValue(true);
-    const hadOwnExecCommand = Object.prototype.hasOwnProperty.call(
-      document,
-      "execCommand",
+  it("has named icon-only buttons and a tree", async () => {
+    await openFile();
+    const tree = host.querySelector('[role="tree"]');
+    expect(tree).not.toBeNull();
+    expect(tree?.querySelectorAll('[role="treeitem"]').length).toBe(1);
+    const sidebarButton = host.querySelector<HTMLButtonElement>(
+      'button[aria-label^="隐藏侧栏"]',
     );
-    const previousExecCommand = document.execCommand;
-    Object.defineProperty(document, "execCommand", {
-      configurable: true,
-      value: execCommand,
-    });
-    try {
-      window.dispatchEvent(
-        new CustomEvent("nicole:edit-command", { detail: "undo" }),
-      );
-      await nextTick();
-      expect(view.state.doc.toString()).toBe(`${SAMPLE_DOCUMENT}!`);
-      expect(execCommand).toHaveBeenCalledWith("undo");
-    } finally {
-      if (hadOwnExecCommand) {
-        Object.defineProperty(document, "execCommand", {
-          configurable: true,
-          value: previousExecCommand,
-        });
-      } else {
-        Reflect.deleteProperty(document, "execCommand");
-      }
-      input.remove();
-    }
-  });
-
-  it("migrates the old localStorage theme and removes it", async () => {
-    app?.unmount();
-    vi.mocked(getSettings).mockClear();
-    vi.mocked(migrateLegacyTheme).mockClear();
-    localStorage.setItem("nicole-theme", "dark");
-
-    app = createApp(App);
-    app.mount(host);
-    await settle();
-
-    expect(migrateLegacyTheme).toHaveBeenCalledWith("dark");
-    expect(getSettings).not.toHaveBeenCalled();
-    expect(localStorage.getItem("nicole-theme")).toBeNull();
-    expect(document.documentElement.classList.contains("dark")).toBe(true);
-  });
-
-  it("takes pending files when the system sends a signal", async () => {
-    const initialTakeCalls = eventMock.takeCalls;
-    eventMock.pending = ["/tmp/from-system.md"];
-    eventMock.openFile?.();
-    await settle();
-    expect(host.textContent).toContain("/tmp/from-system.md");
-
-    eventMock.pending = ["/tmp/another.md"];
-    eventMock.openFile?.();
-    await settle();
-    expect(host.textContent).toContain("/tmp/another.md");
-    expect(eventMock.takeCalls).toBe(initialTakeCalls + 2);
-  });
-
-  it("does not take the same pending file again for a later signal", async () => {
-    eventMock.pending = ["/tmp/once.md"];
-    eventMock.openFile?.();
-    await settle();
-    const callsAfterFirstSignal = eventMock.takeCalls;
-
-    eventMock.openFile?.();
-    await settle();
-    expect(eventMock.takeCalls).toBe(callsAfterFirstSignal + 1);
-    expect(host.textContent).toContain("/tmp/once.md");
-  });
-
-  it("takes a file that arrived before the page subscribed", async () => {
-    app?.unmount();
-    eventMock.pending = ["/tmp/at-launch.md"];
-
-    app = createApp(App);
-    app.mount(host);
-    await settle();
-
-    expect(host.textContent).toContain("/tmp/at-launch.md");
-  });
-
-  it("opens a folder and lists its Markdown files", async () => {
-    const select = await openFolder(["a.md", "nested/b.md"]);
-
-    expect(chooseFolder).toHaveBeenCalledOnce();
-    expect(select.disabled).toBe(false);
-    expect([...select.options].map((option) => option.value)).toEqual([
-      "",
-      "a.md",
-      "nested/b.md",
-    ]);
-  });
-
-  it("loads the selected file into the editor", async () => {
-    vi.mocked(readFile).mockResolvedValue("# second\n");
-    const select = await openFolder(["a.md", "b.md"]);
-
-    await chooseFile(select, "b.md");
-
-    expect(readFile).toHaveBeenCalledWith("b.md");
-    expect(editorView().state.doc.toString()).toBe("# second\n");
-    expect(writeFile).not.toHaveBeenCalled();
-  });
-
-  it("saves the pending edit before choosing another folder", async () => {
-    vi.mocked(readFile).mockResolvedValue("start\n");
-    const select = await openFolder(["a.md"]);
-    await chooseFile(select, "a.md");
-
-    const view = editorView();
-    view.dispatch({ changes: { from: view.state.doc.length, insert: "!" } });
-
-    vi.mocked(chooseFolder).mockResolvedValue(folder(["b.md"], 2));
-    button("打开文件夹").click();
-    await settle();
-
-    expect(writeFile).toHaveBeenCalledWith("a.md", "start\n!", 1);
-    expect(chooseFolder).toHaveBeenCalledTimes(2);
-    const saveOrder = vi.mocked(writeFile).mock.invocationCallOrder[0]!;
-    const switchOrder = vi.mocked(chooseFolder).mock.invocationCallOrder[1]!;
-    expect(saveOrder).toBeLessThan(switchOrder);
-    expect([...select.options].map((option) => option.value)).toEqual([
-      "",
-      "b.md",
-    ]);
-  });
-
-  it("waits for an in-flight save before choosing another folder", async () => {
-    vi.useFakeTimers();
-    vi.mocked(readFile).mockResolvedValue("start\n");
-    const select = await openFolder(["a.md"]);
-    await chooseFile(select, "a.md");
-
-    let finishWrite!: () => void;
-    vi.mocked(writeFile).mockImplementation(
-      () =>
-        new Promise<void>((resolve) => {
-          finishWrite = resolve;
-        }),
+    expect(sidebarButton).not.toBeNull();
+    expect(sidebarButton?.getAttribute("aria-label")).toContain("⌃⌘S");
+    const themeButton = host.querySelector<HTMLButtonElement>(
+      'button[aria-label^="切换到"]',
     );
-    const view = editorView();
-    view.dispatch({ changes: { from: view.state.doc.length, insert: "!" } });
-    await vi.advanceTimersByTimeAsync(1000);
-    expect(writeFile).toHaveBeenCalledOnce();
-
-    vi.mocked(chooseFolder).mockResolvedValue(folder(["b.md"], 2));
-    button("打开文件夹").click();
-    await settle();
-    expect(chooseFolder).toHaveBeenCalledTimes(1);
-
-    finishWrite();
-    await settle();
-    expect(chooseFolder).toHaveBeenCalledTimes(2);
-    expect(writeFile).toHaveBeenCalledOnce();
-  });
-
-  it("waits for an in-flight save before reading the next file", async () => {
-    vi.useFakeTimers();
-    vi.mocked(readFile).mockResolvedValueOnce("A\n");
-    const select = await openFolder(["a.md", "b.md"]);
-    await chooseFile(select, "a.md");
-
-    let finishWrite!: () => void;
-    vi.mocked(writeFile).mockImplementation(
-      () =>
-        new Promise<void>((resolve) => {
-          finishWrite = resolve;
-        }),
-    );
-    const view = editorView();
-    view.dispatch({ changes: { from: view.state.doc.length, insert: "!" } });
-    await vi.advanceTimersByTimeAsync(1000);
-    expect(writeFile).toHaveBeenCalledOnce();
-
-    vi.mocked(readFile).mockResolvedValue("B\n");
-    select.value = "b.md";
-    select.dispatchEvent(new Event("change"));
-    await settle();
-    expect(readFile).toHaveBeenCalledTimes(1);
-
-    finishWrite();
-    await settle();
-    expect(readFile).toHaveBeenLastCalledWith("b.md");
-    expect(editorView().state.doc.toString()).toBe("B\n");
-  });
-
-  it("starts a fresh undo history when switching files", async () => {
-    vi.mocked(readFile)
-      .mockResolvedValueOnce("# first\n")
-      .mockResolvedValueOnce("# second\n");
-    const select = await openFolder(["a.md", "b.md"]);
-
-    await chooseFile(select, "a.md");
-    const firstView = editorView();
-    await chooseFile(select, "b.md");
-    const secondView = editorView();
-
-    expect(secondView).not.toBe(firstView);
-    expect(undo(secondView)).toBe(false);
-    expect(secondView.state.doc.toString()).toBe("# second\n");
-    expect(writeFile).not.toHaveBeenCalled();
-  });
-
-  it("keeps the edit and stays on the file when saving fails", async () => {
-    vi.mocked(readFile).mockResolvedValue("start\n");
-    const select = await openFolder(["a.md", "b.md"]);
-    await chooseFile(select, "a.md");
-
-    const view = editorView();
-    view.dispatch({ changes: { from: view.state.doc.length, insert: "!" } });
-
-    vi.mocked(writeFile).mockRejectedValueOnce(new Error("disk full"));
-    await chooseFile(select, "b.md");
-
-    expect(writeFile).toHaveBeenCalledWith("a.md", "start\n!", 1);
-    expect(confirmDiscard).toHaveBeenCalledOnce();
-    expect(readFile).toHaveBeenCalledTimes(1);
-    expect(select.value).toBe("a.md");
-    expect(editorView().state.doc.toString()).toBe("start\n!");
-    expect(host.textContent).toContain("保存失败");
-
-    vi.mocked(writeFile).mockRejectedValue(new Error("still full"));
-    button("打开文件夹").click();
-    await settle();
-    expect(chooseFolder).toHaveBeenCalledTimes(1);
-    expect(host.textContent).toContain("保存失败");
-
-    vi.mocked(writeFile).mockResolvedValue(undefined);
-    vi.mocked(chooseFolder).mockResolvedValue(folder(["c.md"], 2));
-    button("打开文件夹").click();
-    await settle();
-
-    expect(writeFile).toHaveBeenCalledTimes(3);
-    expect(writeFile).toHaveBeenLastCalledWith("a.md", "start\n!", 1);
-    expect(chooseFolder).toHaveBeenCalledTimes(2);
-  });
-
-  it("saves once editing stops for about a second", async () => {
-    vi.useFakeTimers();
-    vi.mocked(readFile).mockResolvedValue("start\n");
-    const select = await openFolder(["note.md"]);
-    await chooseFile(select, "note.md");
-
-    const view = editorView();
-    view.dispatch({ changes: { from: view.state.doc.length, insert: "typed" } });
-    expect(writeFile).not.toHaveBeenCalled();
-
-    await vi.advanceTimersByTimeAsync(999);
-    expect(writeFile).not.toHaveBeenCalled();
-
-    await vi.advanceTimersByTimeAsync(1);
-    expect(writeFile).toHaveBeenCalledOnce();
-    expect(writeFile).toHaveBeenCalledWith("note.md", "start\ntyped", 1);
-    expect(host.textContent).toContain("已保存");
-  });
-
-  it("keeps CRLF line endings and a BOM when saving", async () => {
-    vi.useFakeTimers();
-    vi.mocked(readFile).mockResolvedValue("\uFEFF# CRLF\r\nfirst\r\nsecond");
-    const select = await openFolder(["windows.md"]);
-    await chooseFile(select, "windows.md");
-
-    const view = editorView();
-    view.dispatch({ changes: { from: view.state.doc.length, insert: "!" } });
-    await vi.advanceTimersByTimeAsync(1000);
-
-    expect(writeFile).toHaveBeenCalledWith(
-      "windows.md",
-      "\uFEFF# CRLF\r\nfirst\r\nsecond!",
-      1,
-    );
-  });
-
-  it("does not autosave a file with mixed line endings", async () => {
-    vi.useFakeTimers();
-    vi.mocked(readFile).mockResolvedValue("a\r\nb\nc");
-    const select = await openFolder(["mixed.md", "other.md"]);
-    await chooseFile(select, "mixed.md");
-
-    expect(host.textContent).toContain("换行风格混合，未自动保存");
-
-    const view = editorView();
-    view.dispatch({ changes: { from: view.state.doc.length, insert: "!" } });
-    await vi.advanceTimersByTimeAsync(2000);
-    expect(writeFile).not.toHaveBeenCalled();
-
-    await chooseFile(select, "other.md");
-
-    expect(confirmDiscard).toHaveBeenCalledOnce();
-    expect(readFile).toHaveBeenCalledTimes(1);
-    expect(select.value).toBe("mixed.md");
-    expect(editorView().state.doc.toString()).toBe("a\nb\nc!");
-    expect(host.textContent).toContain("换行风格混合，未自动保存");
-  });
-
-  it("clears the previous file and shows a placeholder after opening a folder", async () => {
-    vi.mocked(readFile).mockResolvedValue("first\n");
-    const select = await openFolder(["a.md"]);
-    await chooseFile(select, "a.md");
-    expect(host.querySelector(".cm-editor")).not.toBeNull();
-
-    vi.mocked(chooseFolder).mockResolvedValue(folder(["b.md"], 2));
-    button("打开文件夹").click();
-    await settle();
-
-    expect(chooseFolder).toHaveBeenCalledTimes(2);
-    expect(host.querySelector(".cm-editor")).toBeNull();
-    const placeholder = host.querySelector<HTMLElement>("[data-placeholder]");
-    expect(placeholder?.textContent).toContain("选择一个 Markdown 文件开始编辑");
-    expect(placeholder?.style.display).not.toBe("none");
-    expect([...select.options].map((option) => option.value)).toEqual([
-      "",
-      "b.md",
-    ]);
-
-    vi.mocked(readFile).mockResolvedValue("second\n");
-    await chooseFile(select, "b.md");
-    expect(editorView().state.doc.toString()).toBe("second\n");
-  });
-
-  it("saves edits typed while the next file is being read", async () => {
-    vi.mocked(readFile).mockResolvedValueOnce("A\n");
-    const select = await openFolder(["a.md", "b.md"]);
-    await chooseFile(select, "a.md");
-
-    let finishRead!: (value: string) => void;
-    vi.mocked(readFile).mockImplementationOnce(
-      () =>
-        new Promise<string>((resolve) => {
-          finishRead = resolve;
-        }),
-    );
-    select.value = "b.md";
-    select.dispatchEvent(new Event("change"));
-    await settle();
-
-    const view = editorView();
-    view.dispatch({ changes: { from: view.state.doc.length, insert: "typed" } });
-    finishRead("B\n");
-    await settle();
-
-    expect(writeFile).toHaveBeenCalledWith("a.md", "A\ntyped", 1);
-    expect(select.value).toBe("b.md");
-    expect(editorView().state.doc.toString()).toBe("B\n");
-  });
-
-  it("discards a file read that finishes after a folder switch", async () => {
-    const select = await openFolder(["a.md"]);
-
-    let finishRead!: (value: string) => void;
-    vi.mocked(readFile).mockImplementationOnce(
-      () =>
-        new Promise<string>((resolve) => {
-          finishRead = resolve;
-        }),
-    );
-    select.value = "a.md";
-    select.dispatchEvent(new Event("change"));
-    await settle();
-
-    vi.mocked(chooseFolder).mockResolvedValue(folder(["z.md"], 2));
-    button("打开文件夹").click();
-    await settle();
-    expect([...select.options].map((option) => option.value)).toEqual([
-      "",
-      "z.md",
-    ]);
-
-    finishRead("OLD FOLDER a.md\n");
-    await settle();
-
-    expect(host.querySelector(".cm-editor")).toBeNull();
-    expect(select.value).toBe("");
-    expect(writeFile).not.toHaveBeenCalled();
-  });
-
-  it("invalidates a selection made while a folder is being opened", async () => {
-    vi.useFakeTimers();
-    vi.mocked(readFile).mockResolvedValueOnce("A\n");
-    const select = await openFolder(["a.md", "b.md"]);
-    await chooseFile(select, "a.md");
-
-    let finishWrite!: () => void;
-    vi.mocked(writeFile).mockImplementation(
-      () =>
-        new Promise<void>((resolve) => {
-          finishWrite = resolve;
-        }),
-    );
-    const view = editorView();
-    view.dispatch({ changes: { from: view.state.doc.length, insert: "!" } });
-    await vi.advanceTimersByTimeAsync(1000);
-    expect(writeFile).toHaveBeenCalledOnce();
-
-    let finishChoose!: (value: WorkspaceFolder) => void;
-    vi.mocked(chooseFolder).mockImplementationOnce(
-      () =>
-        new Promise<WorkspaceFolder>((resolve) => {
-          finishChoose = resolve;
-        }),
-    );
-    button("打开文件夹").click();
-    await settle();
-    // openFolder is still waiting for the save, so chooseFolder has not run.
-    expect(chooseFolder).toHaveBeenCalledTimes(1);
-
-    let finishRead!: (value: string) => void;
-    vi.mocked(readFile).mockImplementationOnce(
-      () =>
-        new Promise<string>((resolve) => {
-          finishRead = resolve;
-        }),
-    );
-    select.value = "b.md";
-    select.dispatchEvent(new Event("change"));
-    await settle();
-
-    finishWrite();
-    await settle();
-    expect(chooseFolder).toHaveBeenCalledTimes(2);
-    expect(readFile).toHaveBeenLastCalledWith("b.md");
-    expect(finishRead).toBeTypeOf("function");
-
-    finishChoose(folder(["b.md"], 2));
-    await settle();
-    finishRead("OLD FOLDER b.md\n");
-    await settle();
-
-    // A regression would leave the old content in an editor bound to the new
-    // generation; edit it so the wrong write would also be observable.
-    const staleEditor = host.querySelector<HTMLElement>(".cm-editor");
-    if (staleEditor) {
-      const staleView = EditorView.findFromDOM(staleEditor);
-      staleView?.dispatch({
-        changes: { from: staleView.state.doc.length, insert: "X" },
-      });
-      await vi.advanceTimersByTimeAsync(1000);
-    }
-
-    const writes = vi.mocked(writeFile).mock.calls;
-    expect(writes.every((call) => call[0] === "a.md" && call[2] === 1)).toBe(
-      true,
-    );
-    expect(host.querySelector(".cm-editor")).toBeNull();
-    expect(select.value).toBe("");
-    expect([...select.options].map((option) => option.value)).toEqual([
-      "",
-      "b.md",
-    ]);
-  });
-
-  it("keeps an in-flight selection when opening a folder is cancelled", async () => {
-    vi.mocked(readFile).mockResolvedValueOnce("A\n");
-    const select = await openFolder(["a.md", "b.md"]);
-    await chooseFile(select, "a.md");
-
-    let finishRead!: (value: string) => void;
-    vi.mocked(readFile).mockImplementationOnce(
-      () =>
-        new Promise<string>((resolve) => {
-          finishRead = resolve;
-        }),
-    );
-    select.value = "b.md";
-    select.dispatchEvent(new Event("change"));
-    await settle();
-
-    vi.mocked(chooseFolder).mockResolvedValueOnce({
-      root: "",
-      files: [],
-      canceled: true,
-      generation: 0,
-    });
-    button("打开文件夹").click();
-    await settle();
-    expect(chooseFolder).toHaveBeenCalledTimes(2);
-
-    finishRead("B\n");
-    await settle();
-
-    expect(select.value).toBe("b.md");
-    expect(editorView().state.doc.toString()).toBe("B\n");
-  });
-
-  it("keeps the newest file when an earlier read finishes last", async () => {
-    const select = await openFolder(["a.md", "b.md"]);
-
-    let finishA!: (value: string) => void;
-    let finishB!: (value: string) => void;
-    vi.mocked(readFile)
-      .mockImplementationOnce(
-        () =>
-          new Promise<string>((resolve) => {
-            finishA = resolve;
-          }),
-      )
-      .mockImplementationOnce(
-        () =>
-          new Promise<string>((resolve) => {
-            finishB = resolve;
-          }),
-      );
-
-    select.value = "a.md";
-    select.dispatchEvent(new Event("change"));
-    await settle();
-    select.value = "b.md";
-    select.dispatchEvent(new Event("change"));
-    await settle();
-    expect(readFile).toHaveBeenCalledTimes(2);
-
-    finishB("B\n");
-    await settle();
-    expect(editorView().state.doc.toString()).toBe("B\n");
-    expect(select.value).toBe("b.md");
-
-    finishA("A\n");
-    await settle();
-    expect(editorView().state.doc.toString()).toBe("B\n");
-    expect(select.value).toBe("b.md");
-    expect(writeFile).not.toHaveBeenCalled();
-  });
-
-  it("does not show a read error from a stale selection", async () => {
-    const select = await openFolder(["a.md"]);
-
-    let failRead!: (error: Error) => void;
-    vi.mocked(readFile).mockImplementationOnce(
-      () =>
-        new Promise<string>((_, reject) => {
-          failRead = reject;
-        }),
-    );
-    select.value = "a.md";
-    select.dispatchEvent(new Event("change"));
-    await settle();
-
-    vi.mocked(chooseFolder).mockResolvedValue(folder(["z.md"], 2));
-    button("打开文件夹").click();
-    await settle();
-
-    failRead(new Error("gone"));
-    await settle();
-
-    expect(host.textContent).not.toContain("读取失败");
-    expect(host.querySelector(".cm-editor")).toBeNull();
-    expect(select.value).toBe("");
-  });
-
-  it("does not save the new file for a stale read", async () => {
-    const select = await openFolder(["a.md"]);
-    let finishOldRead!: (value: string) => void;
-    vi.mocked(readFile).mockImplementationOnce(
-      () =>
-        new Promise<string>((resolve) => {
-          finishOldRead = resolve;
-        }),
-    );
-    select.value = "a.md";
-    select.dispatchEvent(new Event("change"));
-    await settle();
-
-    vi.mocked(chooseFolder).mockResolvedValue(folder(["z.md"], 2));
-    button("打开文件夹").click();
-    await settle();
-    vi.mocked(readFile).mockResolvedValue("Z\n");
-    await chooseFile(select, "z.md");
-
-    const view = editorView();
-    view.dispatch({ changes: { from: view.state.doc.length, insert: "!" } });
-    finishOldRead("OLD FOLDER a.md\n");
-    await settle();
-
-    expect(writeFile).not.toHaveBeenCalled();
-    expect(editorView().state.doc.toString()).toBe("Z\n!");
-    expect(select.value).toBe("z.md");
-  });
-
-  it("does not load a file when a newer selection starts during its save", async () => {
-    vi.mocked(readFile).mockResolvedValueOnce("A\n");
-    const select = await openFolder(["a.md", "b.md", "c.md"]);
-    await chooseFile(select, "a.md");
-
-    let finishB!: (value: string) => void;
-    vi.mocked(readFile).mockImplementationOnce(
-      () =>
-        new Promise<string>((resolve) => {
-          finishB = resolve;
-        }),
-    );
-    select.value = "b.md";
-    select.dispatchEvent(new Event("change"));
-    await settle();
-
-    const view = editorView();
-    view.dispatch({ changes: { from: view.state.doc.length, insert: "!" } });
-    let finishWrite!: () => void;
-    vi.mocked(writeFile).mockImplementation(
-      () =>
-        new Promise<void>((resolve) => {
-          finishWrite = resolve;
-        }),
-    );
-    finishB("B\n");
-    await settle();
-    expect(writeFile).toHaveBeenCalledWith("a.md", "A\n!", 1);
-
-    vi.mocked(readFile).mockImplementationOnce(
-      () => new Promise<string>(() => {}),
-    );
-    select.value = "c.md";
-    select.dispatchEvent(new Event("change"));
-    await settle();
-
-    finishWrite();
-    await settle();
-
-    expect(editorView().state.doc.toString()).toBe("A\n!");
-    expect(select.value).toBe("a.md");
-  });
-
-  it("never writes a failed edit from the old file into the next file", async () => {
-    vi.useFakeTimers();
-    vi.mocked(readFile).mockResolvedValueOnce("A\n");
-    const select = await openFolder(["a.md", "b.md"]);
-    await chooseFile(select, "a.md");
-
-    let finishRead!: (value: string) => void;
-    vi.mocked(readFile).mockImplementationOnce(
-      () =>
-        new Promise<string>((resolve) => {
-          finishRead = resolve;
-        }),
-    );
-    select.value = "b.md";
-    select.dispatchEvent(new Event("change"));
-    await settle();
-
-    vi.mocked(writeFile).mockRejectedValue(new Error("disk full"));
-    const view = editorView();
-    view.dispatch({ changes: { from: view.state.doc.length, insert: "typed" } });
-    await vi.advanceTimersByTimeAsync(1000);
-    expect(writeFile).toHaveBeenCalledWith("a.md", "A\ntyped", 1);
-
-    vi.mocked(confirmDiscard).mockResolvedValue(true);
-    finishRead("B\n");
-    await settle();
-    await vi.advanceTimersByTimeAsync(0);
-    await settle();
-
-    const writes = vi.mocked(writeFile).mock.calls;
-    expect(writes.every((call) => call[0] === "a.md")).toBe(true);
-    expect(confirmDiscard).toHaveBeenCalledOnce();
-    expect(select.value).toBe("b.md");
-    expect(editorView().state.doc.toString()).toBe("B\n");
-  });
-
-  it("continues after the user discards a failed save when switching files", async () => {
-    vi.mocked(readFile)
-      .mockResolvedValueOnce("A\n")
-      .mockResolvedValueOnce("B\n");
-    const select = await openFolder(["a.md", "b.md"]);
-    await chooseFile(select, "a.md");
-
-    const view = editorView();
-    view.dispatch({ changes: { from: view.state.doc.length, insert: "!" } });
-    vi.mocked(writeFile).mockRejectedValueOnce(new Error("disk full"));
-    vi.mocked(confirmDiscard).mockResolvedValue(true);
-
-    await chooseFile(select, "b.md");
-
-    expect(confirmDiscard).toHaveBeenCalledOnce();
-    expect(writeFile).toHaveBeenCalledWith("a.md", "A\n!", 1);
-    expect(readFile).toHaveBeenLastCalledWith("b.md");
-    expect(select.value).toBe("b.md");
-    expect(editorView().state.doc.toString()).toBe("B\n");
-  });
-
-  it("continues after the user discards a failed save when switching folders", async () => {
-    vi.mocked(readFile).mockResolvedValue("A\n");
-    const select = await openFolder(["a.md"]);
-    await chooseFile(select, "a.md");
-
-    const view = editorView();
-    view.dispatch({ changes: { from: view.state.doc.length, insert: "!" } });
-    vi.mocked(writeFile).mockRejectedValueOnce(new Error("disk full"));
-    vi.mocked(confirmDiscard).mockResolvedValue(true);
-    vi.mocked(chooseFolder).mockResolvedValue(folder(["b.md"], 2));
-
-    button("打开文件夹").click();
-    await settle();
-
-    expect(confirmDiscard).toHaveBeenCalledOnce();
-    expect(chooseFolder).toHaveBeenCalledTimes(2);
-    expect([...select.options].map((option) => option.value)).toEqual([
-      "",
-      "b.md",
-    ]);
-    expect(host.querySelector(".cm-editor")).toBeNull();
-  });
-
-  it("clears pending text when the document returns to the loaded text", async () => {
-    vi.mocked(readFile).mockResolvedValue("a\r\nb\nc");
-    const select = await openFolder(["mixed.md", "other.md"]);
-    await chooseFile(select, "mixed.md");
-
-    const view = editorView();
-    view.dispatch({ changes: { from: view.state.doc.length, insert: "!" } });
-    undo(view);
-    expect(view.state.doc.toString()).toBe("a\nb\nc");
-    await nextTick();
-    expect(host.textContent).not.toContain("换行风格混合");
-
-    await workspaceMock.saveBeforeClose!(3);
-    expect(writeFile).not.toHaveBeenCalled();
-    expect(finishClose).toHaveBeenCalledWith(3, true);
-
-    vi.mocked(readFile).mockResolvedValue("B\n");
-    await chooseFile(select, "other.md");
-    expect(confirmDiscard).not.toHaveBeenCalled();
-    expect(editorView().state.doc.toString()).toBe("B\n");
-  });
-
-  it("does not resurrect a failed save after the edit is undone", async () => {
-    vi.useFakeTimers();
-    vi.mocked(readFile).mockResolvedValue("start\n");
-    const select = await openFolder(["a.md"]);
-    await chooseFile(select, "a.md");
-
-    let failWrite!: (error: Error) => void;
-    vi.mocked(writeFile).mockImplementationOnce(
-      () =>
-        new Promise<void>((_, reject) => {
-          failWrite = reject;
-        }),
-    );
-    const view = editorView();
-    view.dispatch({ changes: { from: view.state.doc.length, insert: "!" } });
-    await vi.advanceTimersByTimeAsync(1000);
-    expect(writeFile).toHaveBeenCalledWith("a.md", "start\n!", 1);
-
-    undo(view);
-    expect(view.state.doc.toString()).toBe("start\n");
-    failWrite(new Error("disk full"));
-    await settle();
-
-    await workspaceMock.saveBeforeClose!(10);
-
-    expect(writeFile).toHaveBeenCalledOnce();
-    expect(finishClose).toHaveBeenCalledWith(10, true);
-  });
-
-  it("answers a close request with false when saving fails", async () => {
-    vi.mocked(readFile).mockResolvedValue("A\n");
-    const select = await openFolder(["a.md"]);
-    await chooseFile(select, "a.md");
-
-    const view = editorView();
-    view.dispatch({ changes: { from: view.state.doc.length, insert: "!" } });
-    vi.mocked(writeFile).mockRejectedValueOnce(new Error("disk full"));
-
-    await workspaceMock.saveBeforeClose!(8);
-
-    expect(writeFile).toHaveBeenCalledWith("a.md", "A\n!", 1);
-    expect(finishClose).toHaveBeenCalledWith(8, false);
-    expect(host.textContent).toContain("保存失败");
-  });
-
-  it("answers a close request with false for a mixed-ending file", async () => {
-    vi.mocked(readFile).mockResolvedValue("a\r\nb\nc");
-    const select = await openFolder(["mixed.md"]);
-    await chooseFile(select, "mixed.md");
-
-    const view = editorView();
-    view.dispatch({ changes: { from: view.state.doc.length, insert: "!" } });
-
-    await workspaceMock.saveBeforeClose!(9);
-
-    expect(writeFile).not.toHaveBeenCalled();
-    expect(finishClose).toHaveBeenCalledWith(9, false);
-    expect(host.textContent).toContain("换行风格混合");
-  });
-
-  it("saves pending edits before the window closes", async () => {
-    vi.mocked(readFile).mockResolvedValue("start\n");
-    const select = await openFolder(["a.md"]);
-    await chooseFile(select, "a.md");
-
-    const view = editorView();
-    view.dispatch({ changes: { from: view.state.doc.length, insert: "!" } });
-
-    await workspaceMock.saveBeforeClose!(7);
-
-    expect(writeFile).toHaveBeenCalledWith("a.md", "start\n!", 1);
-    expect(finishClose).toHaveBeenCalledWith(7, true);
+    expect(themeButton).not.toBeNull();
   });
 });

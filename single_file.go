@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 
 	"github.com/egoist/mygo"
@@ -181,6 +182,20 @@ func (s *SingleFileService) offer(path string) {
 	if resolved, err := filepath.EvalSymlinks(clean); err == nil {
 		s.offered[resolved] = true
 	}
+}
+
+// offeredPaths returns the absolute files the system handed to the app. The
+// workspace uses their parent folders to allow opening a recent file's folder
+// without granting the page arbitrary paths.
+func (s *SingleFileService) offeredPaths() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	paths := make([]string, 0, len(s.offered))
+	for path := range s.offered {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	return paths
 }
 
 func (s *SingleFileService) grant(path string) (SingleFile, error) {

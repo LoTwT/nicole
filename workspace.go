@@ -46,6 +46,7 @@ var (
 	errIgnoredFolder   = errors.New("workspace: path is in an ignored folder")
 	errReadOnlyFile    = errors.New("workspace: file is read-only")
 	errDanglingLink    = errors.New("workspace: dangling symbolic link")
+	errFolderNotChosen = errors.New("workspace: folder was not chosen by the user")
 )
 
 // WorkspaceFolder is the result of choosing a folder. Canceled is true when
@@ -68,6 +69,16 @@ type Workspace struct {
 	writes *selfWrites
 
 	close *closeCoordinator
+
+	// pickMu guards lastPicked. The page may only open a folder the user just
+	// chose in the native picker; OpenFolder also accepts recent folders and
+	// the parent folder of a system-provided file.
+	pickMu     sync.Mutex
+	lastPicked string
+	// settings and offeredFiles are optional so tests can build a workspace
+	// without the app's settings store or single-file service.
+	settings     *settingsStore
+	offeredFiles func() []string
 }
 
 // NewWorkspace returns a workspace with no folder open.
@@ -77,6 +88,102 @@ func NewWorkspace() *Workspace {
 		writes: newSelfWrites(),
 		close:  newCloseCoordinator(),
 	}
+}
+
+// useSettings lets OpenFolder accept folders from the recent list. It is set
+// once during startup, before the page can call methods.
+func (w *Workspace) useSettings(store *settingsStore) {
+	w.settings = store
+}
+
+// useOfferedFiles lets OpenFolder accept the folder of a file the system
+// passed to the app. The callback returns the absolute offered paths.
+func (w *Workspace) useOfferedFiles(paths func() []string) {
+	w.offeredFiles = paths
+}
+
+// FolderPick is the result of choosing a folder without switching to it. The
+// page confirms the switch, then calls OpenFolder.
+type FolderPick struct {
+	Path     string `json:"path"`
+	Canceled bool   `json:"canceled"`
+}
+
+// PickFolder shows the native folder picker and returns the chosen folder
+// without changing the workspace. Only the returned path may be passed to
+// OpenFolder, so confirming the switch cannot lose the current workspace.
+func (w *Workspace) PickFolder(ctx context.Context) (FolderPick, error) {
+	paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{
+		Parent:      mygo.CallerWindow(ctx),
+		Title:       "打开文件夹",
+		ButtonLabel: "打开",
+		Directory:   true,
+	})
+	if err != nil {
+		return FolderPick{}, err
+	}
+	if len(paths) == 0 {
+		return FolderPick{Canceled: true}, nil
+	}
+	absolute, err := filepath.Abs(paths[0])
+	if err != nil {
+		return FolderPick{}, err
+	}
+	clean := filepath.Clean(absolute)
+	w.pickMu.Lock()
+	w.lastPicked = clean
+	w.pickMu.Unlock()
+	return FolderPick{Path: clean}, nil
+}
+
+// OpenFolder switches to a folder the user chose in the picker, a recent
+// folder, or the folder of a file the system asked to open. Arbitrary paths
+// are refused so a compromised page cannot browse the disk by opening a root.
+func (w *Workspace) OpenFolder(path string) (WorkspaceFolder, error) {
+	clean := filepath.Clean(path)
+	if !filepath.IsAbs(clean) {
+		return WorkspaceFolder{}, fmt.Errorf("workspace: folder is not absolute: %q", path)
+	}
+	if !w.folderAllowed(clean) {
+		return WorkspaceFolder{}, fmt.Errorf("%w: %q", errFolderNotChosen, path)
+	}
+	w.pickMu.Lock()
+	if w.lastPicked == clean {
+		w.lastPicked = ""
+	}
+	w.pickMu.Unlock()
+	return w.open(clean)
+}
+
+func (w *Workspace) folderAllowed(clean string) bool {
+	w.pickMu.Lock()
+	picked := w.lastPicked
+	w.pickMu.Unlock()
+	if picked != "" && filepath.Clean(picked) == clean {
+		return true
+	}
+	root, _ := w.state.snapshot()
+	if root != "" && filepath.Clean(root) == clean {
+		return true
+	}
+	if w.settings != nil {
+		settings, err := w.settings.get()
+		if err == nil {
+			for _, folder := range settings.RecentFolders {
+				if filepath.Clean(folder) == clean {
+					return true
+				}
+			}
+		}
+	}
+	if w.offeredFiles != nil {
+		for _, file := range w.offeredFiles() {
+			if filepath.Dir(filepath.Clean(file)) == clean {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // discardReason selects the wording of the confirmation dialog.

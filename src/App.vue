@@ -1,6 +1,42 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 
+import {
+  detectLineEndings,
+  normalizeLineEndings,
+  withLineEnding,
+  type LineEnding,
+} from "./app/line-endings";
+import {
+  absoluteBaseName,
+  absoluteParent,
+  displayPath,
+  isInFolder,
+  relativePath,
+} from "./app/paths";
+import {
+  isMac,
+  shortcutText,
+  trashLabel,
+  type AppPlatform,
+} from "./app/platform";
+import {
+  saveStatusPresentation,
+  selectBanner,
+  tabProblem,
+  type SavePhase,
+} from "./app/status";
+import {
+  classifyWatchEvents,
+} from "./app/watch-events";
+import type { TreeNode } from "./app/file-tree";
+import AppBanner from "./components/AppBanner.vue";
+import AppDialog from "./components/AppDialog.vue";
+import AppSidebar from "./components/AppSidebar.vue";
+import EmptyState from "./components/EmptyState.vue";
+import NonMarkdownPlaceholder from "./components/NonMarkdownPlaceholder.vue";
+import StatusBar from "./components/StatusBar.vue";
+import TopBar, { type TopBarTab } from "./components/TopBar.vue";
 import {
   createEditor,
   type EditorHandle,
@@ -8,52 +44,307 @@ import {
 } from "./editor";
 import { createImageInsertion } from "./image-insertion";
 import { resolveImageUrl } from "./image-url";
-import { latestOperation } from "./latest-operation";
-import { SAMPLE_DOCUMENT } from "./sample";
 import { getAppInfo, type AppInfo } from "./services/app";
 import { onWindowFileDrop } from "./services/assets";
+import {
+  listDirectory,
+  openWithDefaultApp,
+  revealEntry,
+  trashEntry,
+} from "./services/files";
 import { onOpenFile, takePendingOpenedFiles } from "./services/open-file";
 import {
   getSettings,
   migrateLegacyTheme,
+  setExpandedFolders,
+  setSidebarWidth,
   setTheme,
+  addRecentFolder,
+  removeRecentFolder,
+  type AppSettings,
   type ThemeSetting,
 } from "./services/settings";
 import {
-  chooseFolder,
-  confirmDiscard,
+  acceptSingleFile,
+  readSingleFile,
+  releaseSingleFile,
+  writeSingleFile,
+} from "./services/single-file";
+import type { WorkspaceFileEvent } from "./services/mygo";
+import {
   finishClose,
   onSaveBeforeClose,
+  openFolder as openFolderAtPath,
+  pickFolder,
   readFile,
   writeFile,
 } from "./services/workspace";
+import { watchWorkspace, type WorkspaceWatcher } from "./services/watch";
+
+const AUTOSAVE_DELAY_MS = 1000;
+const SAVING_DISPLAY_DELAY_MS = 300;
+const NOTICE_DURATION_MS = 3000;
+
+interface WorkspaceState {
+  root: string;
+  generation: number;
+}
+
+interface WorkspaceDocument {
+  kind: "workspace";
+  path: string;
+  name: string;
+}
+
+interface SingleDocument {
+  kind: "single";
+  path: string;
+  name: string;
+}
+
+interface PreviewDocument {
+  kind: "preview";
+  path: string;
+  name: string;
+  size: number;
+  folder: string;
+}
+
+type MarkdownDocument = WorkspaceDocument | SingleDocument;
+type CurrentDocument = MarkdownDocument | PreviewDocument;
+
+interface PendingEdit {
+  kind: "workspace" | "single";
+  path: string;
+  generation: number;
+  text: string;
+  ending: LineEnding;
+}
+
+interface Notice {
+  text: string;
+  tone: "success" | "danger" | "muted";
+}
+
+interface DialogAction {
+  label: string;
+  value: string;
+  primary?: boolean;
+  danger?: boolean;
+  disabled?: boolean;
+  autofocus?: boolean;
+}
+
+interface DialogState {
+  title: string;
+  message: string;
+  details?: string[];
+  actions: DialogAction[];
+}
 
 const editorHost = ref<HTMLElement | null>(null);
-const mode = ref<EditorMode>("live");
-const documentText = ref(SAMPLE_DOCUMENT);
+const sidebar = ref<InstanceType<typeof AppSidebar> | null>(null);
 const appInfo = ref<AppInfo | null>(null);
-const appInfoError = ref(false);
-const files = ref<string[]>([]);
-const currentFile = ref<string | null>(null);
-const hasWorkspace = ref(false);
-const saveStatus = ref("");
-const openedFilePath = ref("");
+const workspace = ref<WorkspaceState | null>(null);
+const currentDocument = ref<CurrentDocument | null>(null);
+const documentText = ref("");
+const originalText = ref("");
+const lineEnding = ref<LineEnding>("\n");
+const mixedLineEndings = ref(false);
+const savePhase = ref<SavePhase>("idle");
+const saveError = ref<string | null>(null);
+const externalState = ref<"none" | "modified" | "deleted">("none");
+const notice = ref<Notice | null>(null);
+const mode = ref<EditorMode>("live");
 
-const EDIT_COMMAND_EVENT = "nicole:edit-command";
-type EditCommand = "undo" | "redo";
+const theme = ref<ThemeSetting>("system");
+const sidebarWidth = ref(252);
+const recentFolders = ref<string[]>([]);
+const missingRecent = ref<string[]>([]);
+const missingLastFolder = ref<string | null>(null);
+const expandedByRoot = ref<Record<string, string[]>>({});
 
-const modes: readonly { id: EditorMode; label: string; hint: string }[] = [
-  { id: "live", label: "实时预览", hint: "光标所在行显示原文" },
-  { id: "immersive", label: "沉浸", hint: "符号隐藏，⌘B 切换加粗" },
-  { id: "source", label: "源码", hint: "始终显示 Markdown 原文" },
-];
-
-// The theme lives in Go's settings store now. "system" follows the page's
-// media query; an explicit light or dark also makes native menus and dialogs
-// follow it through Theme.SetSource.
 const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
 const systemPrefersDark = ref(systemTheme.matches);
-const theme = ref<ThemeSetting>("system");
+
+const viewportWidth = ref(window.innerWidth);
+const isWide = computed(() => viewportWidth.value >= 960);
+const isCompactTopBar = computed(() => viewportWidth.value < 760);
+const sidebarOpen = ref(true);
+const overlaySidebar = ref(false);
+
+const dialog = ref<DialogState | null>(null);
+let dialogResolve: ((value: string) => void) | null = null;
+let dialogOpen = false;
+let folderOperation: Promise<boolean> | null = null;
+
+let editor: EditorHandle | null = null;
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+let savingDisplayTimer: ReturnType<typeof setTimeout> | null = null;
+let noticeTimer: ReturnType<typeof setTimeout> | null = null;
+let saveQueue: Promise<boolean> = Promise.resolve(true);
+let pendingEdit: PendingEdit | null = null;
+let writesInFlight = 0;
+let recentSelfRename:
+  | { oldPath: string; newPath: string; at: number }
+  | null = null;
+let applyingExternal = false;
+let watcher: WorkspaceWatcher | null = null;
+let offSaveBeforeClose: (() => void) | null = null;
+let offOpenFile: (() => void) | null = null;
+let offFileDrop: (() => void) | null = null;
+let openedFilesQueue: Promise<void> = Promise.resolve();
+let appReady = false;
+let pendingOpenSignal = false;
+let externalReadSequence = 0;
+
+const imageInsertion = createImageInsertion({
+  getEditor: () => editor,
+  getFile: () => {
+    const doc = currentDocument.value;
+    return doc?.kind === "workspace" ? doc.path : null;
+  },
+  getGeneration: () => workspace.value?.generation ?? 0,
+  onError: () => showNotice("图片插入失败", "danger"),
+});
+
+const platform = computed<AppPlatform>(() => {
+  const os = appInfo.value?.os;
+  if (os === "darwin") return "macos";
+  if (os === "windows") return "windows";
+  if (os === "linux") return "linux";
+  const guess = navigator.platform.toLowerCase();
+  if (guess.includes("mac")) return "macos";
+  if (guess.includes("win")) return "windows";
+  return "linux";
+});
+const homeDir = computed(() => appInfo.value?.homeDir ?? "");
+const mac = computed(() => isMac(platform.value));
+
+const isDark = computed(() =>
+  theme.value === "system" ? systemPrefersDark.value : theme.value === "dark",
+);
+
+const hasWorkspace = computed(() => workspace.value !== null);
+const currentMarkdown = computed<MarkdownDocument | null>(() => {
+  const doc = currentDocument.value;
+  return doc !== null && doc.kind !== "preview" ? doc : null;
+});
+const currentPreview = computed<PreviewDocument | null>(() => {
+  const doc = currentDocument.value;
+  return doc?.kind === "preview" ? doc : null;
+});
+const isMarkdownOpen = computed(() => currentMarkdown.value !== null);
+
+const sidebarShown = computed(
+  () =>
+    hasWorkspace.value &&
+    (isWide.value ? sidebarOpen.value : overlaySidebar.value),
+);
+const showSidebarToggle = computed(
+  () => hasWorkspace.value && !sidebarShown.value,
+);
+const selectedTreePath = computed(() => {
+  const doc = currentDocument.value;
+  return doc?.kind === "workspace" || doc?.kind === "preview"
+    ? doc.path
+    : null;
+});
+
+const rootName = computed(() =>
+  workspace.value ? absoluteBaseName(workspace.value.root) : "",
+);
+const rootDisplayPath = computed(() =>
+  workspace.value ? displayPath(workspace.value.root, homeDir.value) : "",
+);
+const expandedForRoot = computed(() => {
+  if (!workspace.value) return [];
+  return expandedByRoot.value[workspace.value.root] ?? [];
+});
+
+const saveStatus = computed(() => {
+  if (currentMarkdown.value === null) {
+    return null;
+  }
+  return saveStatusPresentation(savePhase.value, mixedLineEndings.value);
+});
+
+const banner = computed(() => {
+  if (currentMarkdown.value === null) {
+    return null;
+  }
+  return selectBanner({
+    deleted: externalState.value === "deleted",
+    externallyModified: externalState.value === "modified",
+    saveError: saveError.value,
+    mixedLineEndings: mixedLineEndings.value,
+    singleFile: currentMarkdown.value.kind === "single",
+  });
+});
+
+const tab = computed<TopBarTab | null>(() => {
+  const doc = currentDocument.value;
+  if (doc === null) {
+    return null;
+  }
+  const failed = saveError.value !== null;
+  const deleted =
+    doc.kind === "workspace" && externalState.value === "deleted";
+  const problem = tabProblem(deleted, mixedLineEndings.value, failed);
+  let problemLabel = "";
+  if (deleted) {
+    problemLabel = "文件已在磁盘上被删除或移走";
+  } else if (failed) {
+    problemLabel = "保存失败";
+  } else if (mixedLineEndings.value) {
+    problemLabel = "换行风格混合";
+  }
+  let title: string;
+  if (doc.kind === "workspace") {
+    title = `${rootName.value}/${doc.path}`;
+  } else if (doc.kind === "single") {
+    title = doc.path;
+  } else {
+    title = `${rootName.value}/${doc.path}`;
+  }
+  return {
+    name: doc.name,
+    title,
+    problem,
+    problemLabel,
+  };
+});
+
+const startState = computed(
+  () => workspace.value === null && currentDocument.value === null,
+);
+const noFileState = computed(
+  () => workspace.value !== null && currentDocument.value === null,
+);
+
+const dialogActions = computed(() => dialog.value?.actions ?? []);
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function showNotice(
+  text: string,
+  tone: Notice["tone"] = "success",
+  duration = NOTICE_DURATION_MS,
+) {
+  if (noticeTimer !== null) {
+    clearTimeout(noticeTimer);
+    noticeTimer = null;
+  }
+  notice.value = { text, tone };
+  if (duration > 0) {
+    noticeTimer = setTimeout(() => {
+      notice.value = null;
+      noticeTimer = null;
+    }, duration);
+  }
+}
 
 function applyTheme() {
   const dark =
@@ -63,384 +354,32 @@ function applyTheme() {
 
 applyTheme();
 
-const isDark = computed(() =>
-  theme.value === "system" ? systemPrefersDark.value : theme.value === "dark",
-);
-const activeMode = computed(
-  () => modes.find((item) => item.id === mode.value) ?? modes[0]!,
-);
-const themeAction = computed(() =>
-  isDark.value ? "切换到亮色主题" : "切换到暗色主题",
-);
-
-let editor: EditorHandle | null = null;
-
-const AUTOSAVE_DELAY_MS = 1000;
-const MIXED_LINE_ENDINGS_STATUS =
-  "换行风格混合，未自动保存；切换或关闭时可放弃更改";
-type LineEnding = "\n" | "\r\n" | "\r";
-
-interface PendingEdit {
-  path: string;
-  generation: number;
-  text: string;
-}
-
-let saveTimer: ReturnType<typeof setTimeout> | null = null;
-let pendingEdit: PendingEdit | null = null;
-let saveQueue: Promise<boolean> = Promise.resolve(true);
-// CodeMirror normalizes line breaks to "\n". Remember the file's style so a
-// save does not rewrite every CRLF file as LF.
-let lineEnding: LineEnding = "\n";
-let mixedLineEndings = false;
-// The text as it was read or last saved, with CodeMirror's normalized line
-// breaks. Returning to it means there is nothing left to save.
-let originalText = "";
-let workspaceGeneration = 0;
-const imageInsertion = createImageInsertion({
-  getEditor: () => editor,
-  getFile: () => currentFile.value,
-  getGeneration: () => workspaceGeneration,
-  onError: () => {
-    saveStatus.value = "图片插入失败";
-  },
-});
-let offSaveBeforeClose: (() => void) | null = null;
-let offOpenFile: (() => void) | null = null;
-// Reads cannot be cancelled at the IPC layer. Instead, only the newest file
-// selection may apply its result; opening a folder invalidates all reads.
-const fileSelection = latestOperation();
-// Signals and the initial pending read share one queue so a file cannot be
-// shown out of order when the event and the queue overlap.
-let openedFilesQueue: Promise<void> = Promise.resolve();
-let offFileDrop: (() => void) | null = null;
-
-function detectLineEndings(text: string): {
-  ending: LineEnding;
-  mixed: boolean;
-} {
-  const styles = new Set<LineEnding>();
-  for (let index = 0; index < text.length; index++) {
-    if (text[index] === "\r") {
-      if (text[index + 1] === "\n") {
-        styles.add("\r\n");
-        index++;
-      } else {
-        styles.add("\r");
-      }
-    } else if (text[index] === "\n") {
-      styles.add("\n");
-    }
-  }
-  if (styles.size === 0) {
-    return { ending: "\n", mixed: false };
-  }
-  return { ending: [...styles][0]!, mixed: styles.size > 1 };
-}
-
-function normalizeLineEndings(text: string): string {
-  return text.replace(/\r\n?/g, "\n");
-}
-
-function createEditorFor(parent: HTMLElement, doc: string): EditorHandle {
-  return createEditor({
-    parent,
-    doc,
-    mode: mode.value,
-    resolveImage: (src) =>
-      resolveImageUrl(src, currentFile.value, workspaceGeneration),
-    onPasteImage: (ticket) => {
-      imageInsertion.handlePaste(ticket);
-    },
-    onChange: (next) => {
-      documentText.value = next;
-      scheduleSave(next);
-    },
-  });
-}
-
-// A new editor gives every file its own undo history and decorations. It
-// keeps the current mode; the theme lives on the document element.
-function mountEditor(doc: string) {
-  editor?.destroy();
-  editor = null;
-  const host = editorHost.value;
-  if (!host) {
-    documentText.value = doc;
-    return;
-  }
-  host.replaceChildren();
-  documentText.value = doc;
-  editor = createEditorFor(host, doc);
-  editor.focus();
-}
-
-// A folder switch has no file selected yet. Destroying the editor makes the
-// placeholder non-editable instead of leaving the previous file available
-// while edits are silently ignored.
-function clearEditor() {
-  editor?.destroy();
-  editor = null;
-  editorHost.value?.replaceChildren();
-  documentText.value = "";
-}
-
-function scheduleSave(text: string) {
-  const path = currentFile.value;
-  if (path === null) {
-    return;
-  }
-  if (text === originalText) {
-    pendingEdit = null;
-    if (saveTimer !== null) {
-      clearTimeout(saveTimer);
-      saveTimer = null;
-    }
-    saveStatus.value = "";
-    return;
-  }
-  pendingEdit = { path, generation: workspaceGeneration, text };
-  if (mixedLineEndings) {
-    saveStatus.value = MIXED_LINE_ENDINGS_STATUS;
-    if (saveTimer !== null) {
-      clearTimeout(saveTimer);
-      saveTimer = null;
-    }
-    return;
-  }
-  saveStatus.value = "未保存";
-  if (saveTimer !== null) {
-    clearTimeout(saveTimer);
-  }
-  saveTimer = setTimeout(() => {
-    void savePending();
-  }, AUTOSAVE_DELAY_MS);
-}
-
-// Saves all pending edits before a switch. It returns false when the caller
-// must stay on the current file: a failed write keeps the text pending, and a
-// mixed-line-ending file is deliberately never auto-saved. Saves are queued
-// so a switch waits for a write already in flight.
-function savePending(): Promise<boolean> {
-  const next = saveQueue.then(() => savePendingNow());
-  saveQueue = next.then(
-    (saved) => saved,
-    () => false,
-  );
-  return next;
-}
-
-async function savePendingNow(): Promise<boolean> {
-  if (saveTimer !== null) {
-    clearTimeout(saveTimer);
-    saveTimer = null;
-  }
-  for (;;) {
-    const edit = pendingEdit;
-    if (edit === null) {
-      return true;
-    }
-    // The edit belongs to the file and workspace that were active when it was
-    // typed. Never write it under a newer file or generation; abandoning it
-    // requires an explicit confirmation instead.
-    if (
-      edit.path !== currentFile.value ||
-      edit.generation !== workspaceGeneration
-    ) {
-      return false;
-    }
-    if (mixedLineEndings) {
-      saveStatus.value = MIXED_LINE_ENDINGS_STATUS;
-      return false;
-    }
-    pendingEdit = null;
-    saveStatus.value = "保存中…";
-    try {
-      await writeFile(
-        edit.path,
-        withOriginalLineEnding(edit.text),
-        edit.generation,
-      );
-    } catch {
-      if (currentFile.value === edit.path) {
-        if (pendingEdit === null && documentText.value === edit.text) {
-          pendingEdit = edit;
-          saveStatus.value = "保存失败";
-          return false;
-        }
-        // An undo may have restored the loaded text while the failed write
-        // was in flight; there is nothing left to save in that case.
-        if (pendingEdit === null && documentText.value === originalText) {
-          saveStatus.value = "";
-          return true;
-        }
-        saveStatus.value = "保存失败";
-      }
-      return false;
-    }
-    if (currentFile.value === edit.path) {
-      originalText = edit.text;
-      // The editor may have been changed while the write was in flight, even
-      // back to the old text. Treat the on-disk text as the new baseline and
-      // keep the current editor content pending.
-      if (pendingEdit === null && documentText.value !== originalText) {
-        pendingEdit = {
-          path: edit.path,
-          generation: edit.generation,
-          text: documentText.value,
-        };
-      }
-    }
-    if (pendingEdit === null) {
-      if (currentFile.value === edit.path) {
-        saveStatus.value = "已保存";
-      }
-      return true;
-    }
-  }
-}
-
-function withOriginalLineEnding(text: string): string {
-  if (lineEnding === "\n") {
-    return text;
-  }
-  return text.replace(/\r\n?/g, "\n").replace(/\n/g, lineEnding);
-}
-
-function discardPending() {
-  if (saveTimer !== null) {
-    clearTimeout(saveTimer);
-    saveTimer = null;
-  }
-  pendingEdit = null;
-  if (currentFile.value !== null) {
-    mountEditor(originalText);
-    saveStatus.value = "已放弃更改";
-  } else {
-    saveStatus.value = "";
-  }
-}
-
-async function confirmDiscardChanges(): Promise<boolean> {
-  try {
-    return await confirmDiscard();
-  } catch {
-    return false;
-  }
-}
-
-// Returns true when it is safe to leave the current file. A failed save or a
-// mixed-ending file needs an explicit discard confirmation; cancelling keeps
-// the editor and its pending text untouched.
-async function prepareToLeave(): Promise<boolean> {
-  if (await savePending()) {
-    return true;
-  }
-  if (!(await confirmDiscardChanges())) {
-    return false;
-  }
-  discardPending();
-  return true;
-}
-
-async function openFolder() {
-  if (!(await prepareToLeave())) {
-    return;
-  }
-  let folder;
-  try {
-    folder = await chooseFolder();
-  } catch {
-    saveStatus.value = "打开失败";
-    return;
-  }
-  if (folder.canceled) {
-    return;
-  }
-  // Only a folder that will actually replace the workspace invalidates a
-  // selection started while this dialog was open.
-  fileSelection.stop();
-  workspaceGeneration = folder.generation;
-  files.value = folder.files;
-  currentFile.value = null;
-  pendingEdit = null;
-  mixedLineEndings = false;
-  lineEnding = "\n";
-  originalText = "";
-  hasWorkspace.value = true;
-  clearEditor();
-  saveStatus.value = "";
-}
-
-function loadFile(path: string, text: string) {
-  const detected = detectLineEndings(text);
-  lineEnding = detected.ending;
-  mixedLineEndings = detected.mixed;
-  originalText = normalizeLineEndings(text);
-  currentFile.value = path;
-  pendingEdit = null;
-  mountEditor(originalText);
-  saveStatus.value = detected.mixed ? MIXED_LINE_ENDINGS_STATUS : "";
-}
-
-async function selectFile(event: Event) {
-  const select = event.target as HTMLSelectElement;
-  const path = select.value;
-  if (path === "") {
-    return;
-  }
-  const operation = fileSelection.start();
-  if (!(await prepareToLeave())) {
-    select.value = currentFile.value ?? "";
-    return;
-  }
-  let text: string;
-  try {
-    text = await readFile(path);
-  } catch {
-    if (!fileSelection.isCurrent(operation)) {
-      select.value = currentFile.value ?? "";
-      return;
-    }
-    select.value = currentFile.value ?? "";
-    saveStatus.value = "读取失败";
-    return;
-  }
-  if (!fileSelection.isCurrent(operation)) {
-    select.value = currentFile.value ?? "";
-    return;
-  }
-  // The old editor stays editable while the read runs. Save any edit typed in
-  // that window before replacing the document; if it cannot be saved, ask
-  // before discarding it and never carry its text into the newly selected
-  // file.
-  if (!(await prepareToLeave())) {
-    select.value = currentFile.value ?? "";
-    return;
-  }
-  if (!fileSelection.isCurrent(operation)) {
-    select.value = currentFile.value ?? "";
-    return;
-  }
-  loadFile(path, text);
-  select.value = path;
-}
-
-function setMode(next: EditorMode) {
-  mode.value = next;
-  editor?.setMode(next);
-  editor?.focus();
-}
-
-async function toggleTheme() {
-  const next: ThemeSetting = isDark.value ? "light" : "dark";
-  theme.value = next;
+function applySettings(loaded: AppSettings) {
+  theme.value =
+    loaded.theme === "light" || loaded.theme === "dark"
+      ? loaded.theme
+      : "system";
+  sidebarWidth.value = Math.min(400, Math.max(200, loaded.sidebarWidth || 252));
+  recentFolders.value = [...loaded.recentFolders].slice(0, 10);
+  expandedByRoot.value = { ...loaded.expandedFolders };
   applyTheme();
+}
+
+async function loadSettings() {
+  const legacy = localStorage.getItem("nicole-theme");
+  if (legacy !== null) {
+    try {
+      applySettings(await migrateLegacyTheme(legacy));
+      localStorage.removeItem("nicole-theme");
+      return;
+    } catch {
+      // Keep the legacy value for the next launch.
+    }
+  }
   try {
-    await setTheme(next);
+    applySettings(await getSettings());
   } catch {
-    // Keep the choice for this session; the next launch falls back to the
-    // saved setting.
+    // Defaults: system theme, 252 px, no recent folders.
   }
 }
 
@@ -451,50 +390,1014 @@ function handleSystemThemeChange(event: MediaQueryListEvent) {
   }
 }
 
-// The old version kept the theme in localStorage. Move it once, then remove
-// it so Go's settings are the only source.
-async function loadTheme() {
-  const legacy = localStorage.getItem("nicole-theme");
-  if (legacy !== null) {
-    try {
-      applySettings(await migrateLegacyTheme(legacy));
-      localStorage.removeItem("nicole-theme");
-    } catch {
-      // Keep the legacy value so the next launch can try again.
+async function toggleTheme() {
+  const next: ThemeSetting = isDark.value ? "light" : "dark";
+  theme.value = next;
+  applyTheme();
+  try {
+    await setTheme(next);
+  } catch {
+    // Keep the choice for this session.
+  }
+}
+
+function rememberRecent(folder: string) {
+  const next = [folder, ...recentFolders.value.filter((item) => item !== folder)]
+    .slice(0, 10);
+  recentFolders.value = next;
+  missingRecent.value = missingRecent.value.filter((item) => item !== folder);
+  void addRecentFolder(folder).catch(() => {});
+}
+
+async function removeRecent(folder: string) {
+  recentFolders.value = recentFolders.value.filter((item) => item !== folder);
+  if (missingLastFolder.value === folder) {
+    missingLastFolder.value = null;
+  }
+  try {
+    await removeRecentFolder(folder);
+  } catch {
+    // The list stays changed for this session.
+  }
+}
+
+function markMissing(folder: string) {
+  if (!missingRecent.value.includes(folder)) {
+    missingRecent.value = [...missingRecent.value, folder];
+  }
+}
+
+function handleResize() {
+  viewportWidth.value = window.innerWidth;
+  if (!isWide.value) {
+    overlaySidebar.value = false;
+  }
+}
+
+function toggleSidebar() {
+  if (!hasWorkspace.value) {
+    return;
+  }
+  if (isWide.value) {
+    sidebarOpen.value = !sidebarOpen.value;
+  } else {
+    overlaySidebar.value = !overlaySidebar.value;
+  }
+}
+
+function closeOverlaySidebar() {
+  if (!isWide.value) {
+    overlaySidebar.value = false;
+  }
+}
+
+function handleContentPointerDown(event: PointerEvent) {
+  if (!overlaySidebar.value || isWide.value) {
+    return;
+  }
+  if (
+    event.target instanceof Element &&
+    event.target.closest("[data-sidebar-toggle]")
+  ) {
+    return;
+  }
+  overlaySidebar.value = false;
+}
+
+function updateSidebarWidth(width: number) {
+  sidebarWidth.value = width;
+}
+
+function commitSidebarWidth(width: number) {
+  sidebarWidth.value = width;
+  void setSidebarWidth(width).catch(() => {});
+}
+
+function resetSidebarWidth() {
+  commitSidebarWidth(252);
+}
+
+function handleExpandedChange(folders: string[]) {
+  if (!workspace.value) {
+    return;
+  }
+  const root = workspace.value.root;
+  expandedByRoot.value = {
+    ...expandedByRoot.value,
+    [root]: [...folders],
+  };
+  void setExpandedFolders(root, [...folders]).catch(() => {});
+}
+
+function clearSaveTimer() {
+  if (saveTimer !== null) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+}
+
+function clearSavingDisplay() {
+  if (savingDisplayTimer !== null) {
+    clearTimeout(savingDisplayTimer);
+    savingDisplayTimer = null;
+  }
+}
+
+function currentEditForDocument(doc: MarkdownDocument): PendingEdit {
+  return {
+    kind: doc.kind,
+    path: doc.path,
+    generation:
+      doc.kind === "workspace" ? workspace.value?.generation ?? 0 : 0,
+    text: documentText.value,
+    ending: lineEnding.value,
+  };
+}
+
+function scheduleSave(text: string) {
+  documentText.value = text;
+  if (applyingExternal) {
+    return;
+  }
+  const doc = currentMarkdown.value;
+  if (doc === null) {
+    return;
+  }
+  if (text === originalText.value) {
+    pendingEdit = null;
+    clearSaveTimer();
+    if (savePhase.value !== "failed" && savePhase.value !== "saving") {
+      savePhase.value = "saved";
     }
     return;
   }
-  try {
-    applySettings(await getSettings());
-  } catch {
-    // The default is "system".
+  pendingEdit = currentEditForDocument(doc);
+  if (mixedLineEndings.value) {
+    clearSaveTimer();
+    savePhase.value = "mixed";
+    return;
+  }
+  if (externalState.value !== "none") {
+    clearSaveTimer();
+    savePhase.value = saveError.value === null ? "editing" : "failed";
+    return;
+  }
+  savePhase.value = saveError.value === null ? "editing" : "failed";
+  clearSaveTimer();
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    void savePending();
+  }, AUTOSAVE_DELAY_MS);
+}
+
+function savePending(force = false): Promise<boolean> {
+  const next = saveQueue.then(() => savePendingNow(force));
+  saveQueue = next.then(
+    (saved) => saved,
+    () => false,
+  );
+  return next;
+}
+
+async function savePendingNow(force: boolean): Promise<boolean> {
+  clearSaveTimer();
+  const doc = currentMarkdown.value;
+  if (doc === null) {
+    return true;
+  }
+  if (
+    !force &&
+    externalState.value !== "none" &&
+    (pendingEdit !== null || externalState.value === "deleted")
+  ) {
+    return false;
+  }
+  for (;;) {
+    let edit = pendingEdit;
+    if (edit === null && force) {
+      edit = currentEditForDocument(doc);
+    }
+    if (edit === null) {
+      return true;
+    }
+    if (
+      edit.path !== doc.path ||
+      edit.kind !== doc.kind ||
+      edit.generation !==
+        (doc.kind === "workspace" ? workspace.value?.generation ?? 0 : 0)
+    ) {
+      return false;
+    }
+    if (mixedLineEndings.value && !force) {
+      savePhase.value = "mixed";
+      return false;
+    }
+    if (!force && externalState.value !== "none") {
+      savePhase.value = saveError.value === null ? "editing" : "failed";
+      return false;
+    }
+    pendingEdit = null;
+    clearSavingDisplay();
+    writesInFlight += 1;
+    savingDisplayTimer = setTimeout(() => {
+      savingDisplayTimer = null;
+      if (writesInFlight > 0 && savePhase.value !== "failed") {
+        savePhase.value = "saving";
+      }
+    }, SAVING_DISPLAY_DELAY_MS);
+    try {
+      if (edit.kind === "workspace") {
+        await writeFile(
+          edit.path,
+          withLineEnding(edit.text, edit.ending),
+          edit.generation,
+        );
+      } else {
+        await writeSingleFile(
+          edit.path,
+          withLineEnding(edit.text, edit.ending),
+        );
+      }
+    } catch (error) {
+      writesInFlight = Math.max(0, writesInFlight - 1);
+      clearSavingDisplay();
+      if (isCurrentEdit(edit, doc)) {
+        if (pendingEdit === null) {
+          pendingEdit = edit;
+        }
+        saveError.value = errorText(error);
+        savePhase.value = "failed";
+      }
+      return false;
+    }
+    writesInFlight = Math.max(0, writesInFlight - 1);
+    clearSavingDisplay();
+    if (!isCurrentEdit(edit, doc)) {
+      return true;
+    }
+    originalText.value = edit.text;
+    saveError.value = null;
+    if (externalState.value !== "none") {
+      externalState.value = "none";
+    }
+    if (pendingEdit === null && documentText.value !== originalText.value) {
+      pendingEdit = currentEditForDocument(doc);
+    }
+    if (pendingEdit === null) {
+      savePhase.value = "saved";
+      return true;
+    }
+    savePhase.value = "editing";
   }
 }
 
-function applySettings(settings: { theme: string }) {
-  theme.value =
-    settings.theme === "light" || settings.theme === "dark"
-      ? settings.theme
-      : "system";
-  applyTheme();
+function isCurrentEdit(edit: PendingEdit, doc: MarkdownDocument): boolean {
+  const current = currentMarkdown.value;
+  return (
+    current !== null &&
+    current.kind === doc.kind &&
+    current.path === doc.path &&
+    edit.path === doc.path
+  );
 }
 
-function handleOpenedFile(path: string) {
-  openedFilePath.value = path;
+function discardCurrentEdits() {
+  clearSaveTimer();
+  clearSavingDisplay();
+  pendingEdit = null;
+  saveError.value = null;
+  mixedLineEndings.value = false;
+  externalState.value = "none";
+  savePhase.value = "idle";
 }
 
-function receiveOpenedFiles() {
+function documentProblemDetails(): string[] {
+  const doc = currentMarkdown.value;
+  if (doc === null) {
+    return [];
+  }
+  const details: string[] = [];
+  if (externalState.value === "deleted") {
+    details.push(`${doc.name}：文件已在磁盘上被删除或移走`);
+  } else if (externalState.value === "modified") {
+    details.push(`${doc.name}：文件已在 Nicole 之外被修改`);
+  }
+  if (saveError.value !== null) {
+    details.push(`${doc.name}：保存失败`);
+  }
+  if (mixedLineEndings.value) {
+    details.push(`${doc.name}：换行风格混合`);
+  }
+  return details;
+}
+
+function askDialog(state: DialogState): Promise<string> {
+  if (dialogResolve !== null) {
+    resolveDialog("cancel");
+  }
+  dialog.value = state;
+  dialogOpen = true;
+  return new Promise<string>((resolve) => {
+    dialogResolve = resolve;
+  });
+}
+
+function resolveDialog(value: string) {
+  const resolve = dialogResolve;
+  dialogResolve = null;
+  dialogOpen = false;
+  dialog.value = null;
+  resolve?.(value);
+}
+
+function cancelOpenDialog() {
+  if (dialogOpen) {
+    resolveDialog("cancel");
+  }
+}
+
+async function prepareToLeave(): Promise<boolean> {
+  const doc = currentMarkdown.value;
+  if (doc === null) {
+    return true;
+  }
+  // A mixed-ending or previously failed file with no pending text has
+  // nothing to lose; the text was undone back to the loaded version.
+  const requiresConfirmation =
+    externalState.value === "deleted" || pendingEdit !== null;
+  const saved = await savePending();
+  if (saved && !requiresConfirmation) {
+    return true;
+  }
+  const details = documentProblemDetails();
+  const choice = await askDialog({
+    title: "放弃未保存的更改？",
+    message: `继续操作将关闭“${doc.name}”，未保存的内容会丢失。`,
+    details,
+    actions: [
+      { label: "取消", value: "cancel", autofocus: true },
+      {
+        label: "放弃更改并继续",
+        value: "discard",
+        primary: true,
+        danger: true,
+      },
+    ],
+  });
+  if (choice !== "discard") {
+    return false;
+  }
+  discardCurrentEdits();
+  return true;
+}
+
+function clearEditor() {
+  editor?.destroy();
+  editor = null;
+  editorHost.value?.replaceChildren();
+}
+
+function resetDocumentState() {
+  clearEditor();
+  const doc = currentDocument.value;
+  currentDocument.value = null;
+  documentText.value = "";
+  originalText.value = "";
+  pendingEdit = null;
+  mixedLineEndings.value = false;
+  lineEnding.value = "\n";
+  savePhase.value = "idle";
+  saveError.value = null;
+  externalState.value = "none";
+  clearSaveTimer();
+  clearSavingDisplay();
+  if (doc?.kind === "single") {
+    void releaseSingleFile(doc.path).catch(() => {});
+  }
+}
+
+function mountDocument(text: string, focus = true) {
+  const doc = currentMarkdown.value;
+  if (doc === null) {
+    clearEditor();
+    return;
+  }
+  clearEditor();
+  const host = editorHost.value;
+  if (!host) {
+    return;
+  }
+  host.replaceChildren();
+  editor = createEditor({
+    parent: host,
+    doc: text,
+    mode: mode.value,
+    resolveImage: (src) =>
+      doc.kind === "workspace"
+        ? resolveImageUrl(src, doc.path, workspace.value?.generation ?? 0)
+        : null,
+    onPasteImage: (ticket) => imageInsertion.handlePaste(ticket),
+    onChange: scheduleSave,
+  });
+  if (focus) {
+    editor.focus();
+  }
+}
+
+function loadMarkdownDocument(
+  doc: MarkdownDocument,
+  text: string,
+  options: { focus?: boolean } = {},
+) {
+  const detected = detectLineEndings(text);
+  const normalized = normalizeLineEndings(text);
+  currentDocument.value = doc;
+  lineEnding.value = detected.ending;
+  mixedLineEndings.value = detected.mixed;
+  originalText.value = normalized;
+  documentText.value = normalized;
+  pendingEdit = null;
+  saveError.value = null;
+  externalState.value = "none";
+  savePhase.value = detected.mixed ? "mixed" : "saved";
+  mountDocument(normalized, options.focus ?? true);
+}
+
+async function openWorkspaceFile(path: string, name?: string) {
+  if (workspace.value === null) {
+    return;
+  }
+  const current = currentDocument.value;
+  if (current?.kind === "workspace" && current.path === path) {
+    closeOverlaySidebar();
+    editor?.focus();
+    return;
+  }
+  if (!(await prepareToLeave())) {
+    return;
+  }
+  let text: string;
+  try {
+    text = await readFile(path);
+  } catch (error) {
+    showNotice(`读取失败：${errorText(error)}`, "danger");
+    return;
+  }
+  const previous = currentMarkdown.value;
+  loadMarkdownDocument({
+    kind: "workspace",
+    path,
+    name: name ?? absoluteBaseName(path),
+  }, text);
+  if (previous?.kind === "single") {
+    void releaseSingleFile(previous.path).catch(() => {});
+  }
+  closeOverlaySidebar();
+  void sidebar.value?.reveal(path);
+}
+
+async function openPreviewEntry(entry: {
+  path: string;
+  name: string;
+  size: number;
+}) {
+  if (!(await prepareToLeave())) {
+    return;
+  }
+  const root = workspace.value?.root ?? "";
+  const parent = parentOfRelative(entry.path);
+  const folder =
+    parent === "."
+      ? displayPath(root, homeDir.value)
+      : displayPath(`${root}/${parent}`, homeDir.value);
+  const previous = currentDocument.value;
+  currentDocument.value = {
+    kind: "preview",
+    path: entry.path,
+    name: entry.name,
+    size: entry.size,
+    folder,
+  };
+  documentText.value = "";
+  originalText.value = "";
+  pendingEdit = null;
+  savePhase.value = "idle";
+  saveError.value = null;
+  externalState.value = "none";
+  mixedLineEndings.value = false;
+  clearSaveTimer();
+  clearSavingDisplay();
+  clearEditor();
+  if (previous?.kind === "single") {
+    void releaseSingleFile(previous.path).catch(() => {});
+  }
+  closeOverlaySidebar();
+}
+
+function parentOfRelative(path: string): string {
+  const index = path.lastIndexOf("/");
+  return index === -1 ? "." : path.slice(0, index);
+}
+
+async function openTreeEntry(entry: TreeNode) {
+  if (entry.isDir) {
+    return;
+  }
+  if (entry.isMarkdown) {
+    await openWorkspaceFile(entry.path, entry.name);
+  } else {
+    await openPreviewEntry(entry);
+  }
+}
+
+function applyWorkspace(folder: { root: string; generation: number }) {
+  workspace.value = { root: folder.root, generation: folder.generation };
+  missingLastFolder.value = null;
+  rememberRecent(folder.root);
+  const doc = currentDocument.value;
+  if (doc === null || doc.kind === "workspace" || doc.kind === "preview") {
+    resetDocumentState();
+  }
+  startWatch(folder.generation);
+}
+
+async function switchToFolder(path: string): Promise<boolean> {
+  if (workspace.value?.root === path) {
+    closeOverlaySidebar();
+    return true;
+  }
+  const doc = currentDocument.value;
+  const targetName = absoluteBaseName(path);
+  let discard = false;
+
+  if (doc?.kind === "workspace") {
+    const saved = await savePending();
+    const problems = documentProblemDetails();
+    if (!saved) {
+      problems.push("当前文件有未保存的更改");
+    }
+    if (problems.length === 0) {
+      const choice = await askDialog({
+        title: `切换到“${targetName}”`,
+        message: "当前标签页会关闭。切回时需要重新打开文件。",
+        actions: [
+          { label: "取消", value: "cancel", autofocus: true },
+          { label: "切换", value: "switch", primary: true },
+        ],
+      });
+      if (choice !== "switch") {
+        return false;
+      }
+    } else {
+      const choice = await askDialog({
+        title: `切换到“${targetName}”`,
+        message: "当前标签页会关闭，未保存的内容会丢失。",
+        details: problems,
+        actions: [
+          { label: "取消", value: "cancel", autofocus: true },
+          {
+            label: "放弃更改并切换",
+            value: "switch",
+            primary: true,
+            danger: true,
+          },
+        ],
+      });
+      if (choice !== "switch") {
+        return false;
+      }
+      discard = true;
+    }
+  }
+
+  let folder;
+  try {
+    folder = await openFolderAtPath(path);
+  } catch (error) {
+    showNotice(`打开失败：${errorText(error)}`, "danger");
+    return false;
+  }
+  if (discard) {
+    discardCurrentEdits();
+  }
+  applyWorkspace(folder);
+  return true;
+}
+
+async function startFolderOperation(
+  operation: () => Promise<boolean>,
+): Promise<boolean> {
+  if (folderOperation !== null) {
+    return folderOperation;
+  }
+  folderOperation = operation().finally(() => {
+    folderOperation = null;
+  });
+  return folderOperation;
+}
+
+async function chooseFolder() {
+  await startFolderOperation(async () => {
+    let picked;
+    try {
+      picked = await pickFolder();
+    } catch (error) {
+      showNotice(`打开失败：${errorText(error)}`, "danger");
+      return false;
+    }
+    if (picked.canceled) {
+      return false;
+    }
+    return switchToFolder(picked.path);
+  });
+}
+
+async function openRecentFolder(path: string) {
+  await startFolderOperation(() => switchToFolder(path));
+}
+
+async function restoreLastWorkspace() {
+  const last = recentFolders.value[0];
+  if (!last) {
+    return;
+  }
+  try {
+    const folder = await openFolderAtPath(last);
+    applyWorkspace(folder);
+    // Opening the last folder should not move it again; it is already first.
+    recentFolders.value = [
+      folder.root,
+      ...recentFolders.value.filter((item) => item !== folder.root),
+    ].slice(0, 10);
+  } catch {
+    missingLastFolder.value = last;
+    markMissing(last);
+  }
+}
+
+function startWatch(generation: number) {
+  stopWatch();
+  watcher = watchWorkspace(generation, (events) => {
+    void handleWatchEvents(events);
+  });
+  watcher.ready.catch(() => {
+    // A watch that cannot start is not fatal for the editor.
+  });
+  watcher.closed.catch(() => {});
+}
+
+function stopWatch() {
+  watcher?.close();
+  watcher = null;
+}
+
+async function handleWatchEvents(allEvents: readonly WorkspaceFileEvent[]) {
+  if (workspace.value === null) {
+    return;
+  }
+  const now = Date.now();
+  const events = allEvents.filter((event) => {
+    if (
+      event.op === "rename" &&
+      recentSelfRename !== null &&
+      event.oldPath === recentSelfRename.oldPath &&
+      event.path === recentSelfRename.newPath &&
+      now - recentSelfRename.at < 3000
+    ) {
+      recentSelfRename = null;
+      return false;
+    }
+    return true;
+  });
+  if (events.length === 0) {
+    return;
+  }
+  await sidebar.value?.refreshFromEvents(events);
+  const doc = currentDocument.value;
+  if (doc?.kind !== "workspace") {
+    return;
+  }
+  const classification = classifyWatchEvents(events, doc.path, true);
+  if (classification.document === "deleted") {
+    externalState.value = "deleted";
+    clearSaveTimer();
+    return;
+  }
+  if (classification.document === "modified") {
+    if (externalState.value === "deleted") {
+      externalState.value = "none";
+    }
+    await handleExternalModification();
+  }
+}
+
+async function handleExternalModification() {
+  const doc = currentMarkdown.value;
+  if (doc?.kind !== "workspace") {
+    return;
+  }
+  if (externalState.value === "deleted" || externalState.value === "modified") {
+    return;
+  }
+  if (
+    pendingEdit !== null ||
+    saveError.value !== null ||
+    documentText.value !== originalText.value
+  ) {
+    externalState.value = "modified";
+    clearSaveTimer();
+    return;
+  }
+  const sequence = ++externalReadSequence;
+  try {
+    const text = await readFile(doc.path);
+    if (
+      sequence !== externalReadSequence ||
+      currentDocument.value?.kind !== "workspace" ||
+      currentDocument.value.path !== doc.path
+    ) {
+      return;
+    }
+    applyExternalText(text);
+  } catch {
+    if (
+      sequence === externalReadSequence &&
+      currentDocument.value?.kind === "workspace" &&
+      currentDocument.value.path === doc.path
+    ) {
+      externalState.value = "deleted";
+      clearSaveTimer();
+    }
+  }
+}
+
+function applyExternalText(text: string) {
+  const detected = detectLineEndings(text);
+  const normalized = normalizeLineEndings(text);
+  applyingExternal = true;
+  lineEnding.value = detected.ending;
+  mixedLineEndings.value = detected.mixed;
+  originalText.value = normalized;
+  documentText.value = normalized;
+  pendingEdit = null;
+  saveError.value = null;
+  externalState.value = "none";
+  savePhase.value = detected.mixed ? "mixed" : "saved";
+  editor?.replaceDocument(normalized);
+  applyingExternal = false;
+  showNotice("已载入磁盘上的新内容", "success", NOTICE_DURATION_MS);
+}
+
+async function loadDiskVersion() {
+  const doc = currentMarkdown.value;
+  if (doc?.kind !== "workspace") {
+    return;
+  }
+  try {
+    const text = await readFile(doc.path);
+    applyExternalText(text);
+  } catch (error) {
+    showNotice(`读取失败：${errorText(error)}`, "danger");
+  }
+}
+
+function keepMyVersion() {
+  externalState.value = "none";
+  void savePending(true);
+}
+
+async function resaveDeleted() {
+  const saved = await savePending(true);
+  if (saved) {
+    externalState.value = "none";
+    saveError.value = null;
+    savePhase.value = "saved";
+  }
+}
+
+async function handleBannerAction(
+  action: "retry" | "load-disk" | "keep-mine" | "resave" | "close-tab",
+) {
+  switch (action) {
+    case "retry":
+      await savePending(true);
+      break;
+    case "load-disk":
+      await loadDiskVersion();
+      break;
+    case "keep-mine":
+      keepMyVersion();
+      break;
+    case "resave":
+      await resaveDeleted();
+      break;
+    case "close-tab":
+      await closeCurrentTab();
+      break;
+  }
+}
+
+async function closeCurrentTab() {
+  const doc = currentDocument.value;
+  if (doc === null) {
+    return;
+  }
+  if (doc.kind !== "preview") {
+    const problems = documentProblemDetails();
+    const mustConfirm =
+      externalState.value === "deleted" ||
+      mixedLineEndings.value ||
+      saveError.value !== null ||
+      pendingEdit !== null;
+    if (mustConfirm) {
+      if (pendingEdit !== null && saveError.value === null) {
+        await savePending();
+      }
+      const stillMustConfirm =
+        externalState.value === "deleted" ||
+        mixedLineEndings.value ||
+        saveError.value !== null ||
+        pendingEdit !== null;
+      if (stillMustConfirm) {
+        const choice = await askDialog({
+          title: `关闭“${doc.name}”？`,
+          message: "关闭后，这个标签页中未保存的内容会丢失。",
+          details: documentProblemDetails(),
+          actions: [
+            { label: "取消", value: "cancel", autofocus: true },
+            {
+              label: "放弃更改并关闭",
+              value: "close",
+              primary: true,
+              danger: true,
+            },
+          ],
+        });
+        if (choice !== "close") {
+          return;
+        }
+      }
+    }
+  }
+  resetDocumentState();
+}
+
+async function openSingleFile(path: string, name: string) {
+  const current = currentMarkdown.value;
+  if (current?.kind === "single" && current.path === path) {
+    editor?.focus();
+    return;
+  }
+  if (!(await prepareToLeave())) {
+    return;
+  }
+  let file;
+  try {
+    file = await acceptSingleFile(path);
+  } catch (error) {
+    showNotice(`无法打开文件：${errorText(error)}`, "danger");
+    return;
+  }
+  let text: string;
+  try {
+    text = await readSingleFile(file.path);
+  } catch (error) {
+    showNotice(`读取失败：${errorText(error)}`, "danger");
+    return;
+  }
+  const previous = currentMarkdown.value;
+  loadMarkdownDocument(
+    { kind: "single", path: file.path, name: file.name },
+    text,
+  );
+  if (previous?.kind === "single") {
+    void releaseSingleFile(previous.path).catch(() => {});
+  }
+}
+
+async function openPreviewDefault() {
+  const doc = currentPreview.value;
+  if (!doc || !workspace.value) {
+    return;
+  }
+  try {
+    await openWithDefaultApp(doc.path, workspace.value.generation);
+  } catch (error) {
+    showNotice(`打开失败：${errorText(error)}`, "danger");
+  }
+}
+
+async function revealPreview() {
+  const doc = currentPreview.value;
+  if (!doc || !workspace.value) {
+    return;
+  }
+  try {
+    await revealEntry(doc.path, workspace.value.generation);
+  } catch (error) {
+    showNotice(`无法显示：${errorText(error)}`, "danger");
+  }
+}
+
+function canOpenParentFolder(parent: string): boolean {
+  if (parent === "" || parent === "/") {
+    return false;
+  }
+  if (/^[a-zA-Z]:[\\/]?$/.test(parent)) {
+    return false;
+  }
+  if (homeDir.value !== "" && parent === homeDir.value) {
+    return false;
+  }
+  return true;
+}
+
+async function askOpenSingleFile(path: string) {
+  const parent = absoluteParent(path);
+  const name = absoluteBaseName(path);
+  const canOpenFolder = canOpenParentFolder(parent);
+  const choice = await askDialog({
+    title: "这个文件不在已打开的文件夹中",
+    message: "选择只打开这个文件，或把它所在的文件夹作为工作区打开。",
+    details: [path],
+    actions: [
+      {
+        label: "只打开这个文件",
+        value: "single",
+        autofocus: true,
+      },
+      {
+        label: "打开所在文件夹",
+        value: "folder",
+        disabled: !canOpenFolder,
+      },
+      { label: "取消", value: "cancel" },
+    ],
+  });
+  if (choice === "single") {
+    await openSingleFile(path, name);
+    return;
+  }
+  if (choice === "folder" && canOpenFolder) {
+    const opened = await startFolderOperation(() => switchToFolder(parent));
+    if (!opened) {
+      return;
+    }
+    await openPathInWorkspace(path);
+  }
+}
+
+async function openPathInWorkspace(path: string) {
+  const root = workspace.value?.root;
+  if (!root || !isInFolder(root, path)) {
+    await askOpenSingleFile(path);
+    return;
+  }
+  const rel = relativePath(root, path);
+  if (/\.md$/i.test(path)) {
+    await openWorkspaceFile(rel, absoluteBaseName(path));
+    return;
+  }
+  let size = 0;
+  try {
+    const listing = await listDirectory(parentOfRelative(rel));
+    size = listing.entries.find((entry) => entry.path === rel)?.size ?? 0;
+  } catch {
+    // A stale file still opens as an empty preview.
+  }
+  await openPreviewEntry({ path: rel, name: absoluteBaseName(path), size });
+}
+
+async function handleOpenedPath(path: string) {
+  const root = workspace.value?.root;
+  if (root && isInFolder(root, path)) {
+    await openPathInWorkspace(path);
+    return;
+  }
+  const parent = absoluteParent(path);
+  if (recentFolders.value.includes(parent) && parent !== root) {
+    const opened = await startFolderOperation(() => switchToFolder(parent));
+    if (opened) {
+      await openPathInWorkspace(path);
+    }
+    return;
+  }
+  await askOpenSingleFile(path);
+}
+
+async function receiveOpenedFiles() {
   openedFilesQueue = openedFilesQueue
     .then(async () => {
       const paths = await takePendingOpenedFiles();
       const last = paths.at(-1);
-      if (last !== undefined) {
-        handleOpenedFile(last);
+      if (last) {
+        await handleOpenedPath(last);
       }
     })
     .catch(() => {
       // The backend may be absent when only Vite runs.
     });
+  await openedFilesQueue;
 }
 
 function handleEditCommand(event: Event) {
@@ -520,172 +1423,481 @@ function handleEditCommand(event: Event) {
   }
 }
 
-function saveBeforeExit() {
-  void savePending();
+function setMode(next: EditorMode) {
+  mode.value = next;
+  editor?.setMode(next);
+  editor?.focus();
 }
 
-function saveWhenHidden() {
+function activateTab() {
+  closeOverlaySidebar();
+  editor?.focus();
+}
+
+function isTextInput(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+  return (
+    target.tagName === "INPUT" ||
+    target.tagName === "TEXTAREA" ||
+    target.tagName === "SELECT"
+  );
+}
+
+function handleGlobalKeydown(event: KeyboardEvent) {
+  if (event.isComposing || event.keyCode === 229) {
+    return;
+  }
+  if (dialogOpen) {
+    return;
+  }
+  if (event.key === "Escape") {
+    if (dialogOpen) {
+      return;
+    }
+    if (overlaySidebar.value) {
+      event.preventDefault();
+      overlaySidebar.value = false;
+    }
+    return;
+  }
+  if (event.defaultPrevented || isTextInput(event.target)) {
+    return;
+  }
+  const key = event.key.toLowerCase();
+  const macCombo = mac.value && event.ctrlKey && event.metaKey;
+  const otherCombo = !mac.value && event.ctrlKey && event.shiftKey;
+  if (macCombo || otherCombo) {
+    if (key === "s" && macCombo) {
+      event.preventDefault();
+      toggleSidebar();
+      return;
+    }
+    if (key === "e" && otherCombo) {
+      event.preventDefault();
+      toggleSidebar();
+      return;
+    }
+    if (key === "1") {
+      event.preventDefault();
+      setMode("live");
+    } else if (key === "2") {
+      event.preventDefault();
+      setMode("immersive");
+    } else if (key === "3") {
+      event.preventDefault();
+      setMode("source");
+    }
+    return;
+  }
+  const modifier = mac.value ? event.metaKey : event.ctrlKey;
+  if (modifier && !event.shiftKey && key === "o") {
+    event.preventDefault();
+    void chooseFolder();
+    return;
+  }
+  if (modifier && !event.shiftKey && key === "n") {
+    event.preventDefault();
+    void newFile();
+    return;
+  }
+  if (modifier && !event.shiftKey && key === "s") {
+    event.preventDefault();
+    void savePending();
+    return;
+  }
+  if (modifier && !event.shiftKey && key === "w") {
+    event.preventDefault();
+    void closeCurrentTab();
+    return;
+  }
+}
+
+async function newFile() {
+  if (!workspace.value) {
+    return;
+  }
+  if (!sidebarShown.value) {
+    if (isWide.value) {
+      sidebarOpen.value = true;
+    } else {
+      overlaySidebar.value = true;
+    }
+  }
+  await nextTick();
+  const dir =
+    currentMarkdown.value?.kind === "workspace"
+      ? parentOfRelative(currentMarkdown.value.path)
+      : ".";
+  await sidebar.value?.startCreate("create-file", dir);
+}
+
+async function renameCurrentPath(
+  oldPath: string,
+  newPath: string,
+  isDir: boolean,
+) {
+  const doc = currentDocument.value;
+  if (doc?.kind === "workspace") {
+    let updated: string | null = null;
+    if (!isDir && doc.path === oldPath) {
+      updated = newPath;
+    } else if (isDir && (doc.path === oldPath || doc.path.startsWith(`${oldPath}/`))) {
+      updated = `${newPath}${doc.path.slice(oldPath.length)}`;
+    }
+    if (updated !== null) {
+      currentDocument.value = {
+        kind: "workspace",
+        path: updated,
+        name: absoluteBaseName(updated),
+      };
+      recentSelfRename = { oldPath, newPath: updated, at: Date.now() };
+    }
+  }
+  if (doc?.kind === "preview") {
+    let updated: string | null = null;
+    if (!isDir && doc.path === oldPath) {
+      updated = newPath;
+    } else if (isDir && (doc.path === oldPath || doc.path.startsWith(`${oldPath}/`))) {
+      updated = `${newPath}${doc.path.slice(oldPath.length)}`;
+    }
+    if (updated !== null) {
+      const root = workspace.value?.root ?? "";
+      const parent = parentOfRelative(updated);
+      currentDocument.value = {
+        ...doc,
+        path: updated,
+        name: absoluteBaseName(updated),
+        folder:
+          parent === "."
+            ? displayPath(root, homeDir.value)
+            : displayPath(`${root}/${parent}`, homeDir.value),
+      };
+    }
+  }
+  if (pendingEdit !== null && pendingEdit.kind === "workspace") {
+    if (!isDir && pendingEdit.path === oldPath) {
+      pendingEdit.path = newPath;
+    } else if (isDir && (pendingEdit.path === oldPath || pendingEdit.path.startsWith(`${oldPath}/`))) {
+      pendingEdit.path = `${newPath}${pendingEdit.path.slice(oldPath.length)}`;
+    }
+  }
+}
+
+async function requestTrash(entry: TreeNode) {
+  if (!workspace.value) {
+    return;
+  }
+  const generation = workspace.value.generation;
+  if (entry.isDir) {
+    let count: number | null = null;
+    try {
+      count = await countFiles(entry.path);
+    } catch {
+      count = null;
+    }
+    const choice = await askDialog({
+      title: "移到废纸篓？",
+      message:
+        count === null
+          ? `文件夹“${entry.name}”及其中的内容会被移到废纸篓。`
+          : `文件夹“${entry.name}”及其中的 ${count} 个文件会被移到废纸篓。`,
+      actions: [
+        { label: "取消", value: "cancel", autofocus: true },
+        {
+          label: trashLabel(platform.value),
+          value: "trash",
+          primary: true,
+          danger: true,
+        },
+      ],
+    });
+    if (choice !== "trash") {
+      return;
+    }
+  }
+  try {
+    await trashEntry(entry.path, generation);
+  } catch (error) {
+    showNotice(`移到废纸篓失败：${errorText(error)}`, "danger");
+    return;
+  }
+  const doc = currentDocument.value;
+  const removed =
+    doc !== null &&
+    (doc.kind === "workspace" || doc.kind === "preview") &&
+    (doc.path === entry.path ||
+      (entry.isDir && doc.path.startsWith(`${entry.path}/`)));
+  sidebar.value?.removePath(entry.path);
+  if (removed) {
+    resetDocumentState();
+  }
+}
+
+async function countFiles(path: string): Promise<number> {
+  let count = 0;
+  const listing = await listDirectory(path);
+  for (const entry of listing.entries) {
+    if (entry.isDir) {
+      count += await countFiles(entry.path);
+    } else {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+async function handleEntryCreated(path: string, isDir: boolean) {
+  if (isDir) {
+    return;
+  }
+  await openWorkspaceFile(path, absoluteBaseName(path));
+}
+
+async function handleEntryRenamed(
+  oldPath: string,
+  newPath: string,
+  isDir: boolean,
+) {
+  await renameCurrentPath(oldPath, newPath, isDir);
+}
+
+function handleVisibilityChange() {
   if (document.visibilityState === "hidden") {
     void savePending();
   }
 }
 
+function saveBeforeExit() {
+  void savePending();
+}
+
+function handleWindowResize() {
+  handleResize();
+}
+
 onMounted(async () => {
   window.addEventListener("beforeunload", saveBeforeExit);
   window.addEventListener("pagehide", saveBeforeExit);
-  document.addEventListener("visibilitychange", saveWhenHidden);
+  window.addEventListener("resize", handleWindowResize);
+  window.addEventListener("keydown", handleGlobalKeydown);
+  document.addEventListener("visibilitychange", handleVisibilityChange);
   systemTheme.addEventListener("change", handleSystemThemeChange);
-  window.addEventListener(EDIT_COMMAND_EVENT, handleEditCommand);
+  window.addEventListener("nicole:edit-command", handleEditCommand);
   offOpenFile = onOpenFile(() => {
+    if (!appReady) {
+      pendingOpenSignal = true;
+      return;
+    }
     void receiveOpenedFiles();
   });
   offFileDrop = onWindowFileDrop((drop) => {
     imageInsertion.handleDrop(drop);
   });
-  void loadTheme();
-  void receiveOpenedFiles();
   offSaveBeforeClose = onSaveBeforeClose(async (token) => {
+    cancelOpenDialog();
+    await nextTick();
     const saved = await savePending();
     try {
       await finishClose(token, saved);
     } catch {
-      // The window may already be gone; the save result was already shown.
+      // The window may already be gone.
     }
   });
-  mountEditor(SAMPLE_DOCUMENT);
 
-  try {
-    appInfo.value = await getAppInfo();
-  } catch {
-    appInfoError.value = true;
-  }
+  void (async () => {
+    try {
+      appInfo.value = await getAppInfo();
+    } catch {
+      appInfo.value = null;
+    }
+    await loadSettings();
+    await restoreLastWorkspace();
+    appReady = true;
+    if (pendingOpenSignal) {
+      pendingOpenSignal = false;
+    }
+    await receiveOpenedFiles();
+  })();
+
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener("beforeunload", saveBeforeExit);
   window.removeEventListener("pagehide", saveBeforeExit);
-  document.removeEventListener("visibilitychange", saveWhenHidden);
+  window.removeEventListener("resize", handleWindowResize);
+  window.removeEventListener("keydown", handleGlobalKeydown);
+  document.removeEventListener("visibilitychange", handleVisibilityChange);
   systemTheme.removeEventListener("change", handleSystemThemeChange);
-  window.removeEventListener(EDIT_COMMAND_EVENT, handleEditCommand);
+  window.removeEventListener("nicole:edit-command", handleEditCommand);
   offOpenFile?.();
   offOpenFile = null;
   offFileDrop?.();
   offFileDrop = null;
   offSaveBeforeClose?.();
   offSaveBeforeClose = null;
-  if (saveTimer !== null) {
-    clearTimeout(saveTimer);
-    saveTimer = null;
+  stopWatch();
+  clearSaveTimer();
+  clearSavingDisplay();
+  if (noticeTimer !== null) {
+    clearTimeout(noticeTimer);
+    noticeTimer = null;
   }
   void savePending();
-  editor?.destroy();
-  editor = null;
+  clearEditor();
+});
+
+defineExpose({
+  chooseFolder,
+  openWorkspaceFile,
+  handleWatchEvents,
 });
 </script>
 
 <template>
   <div
-    class="flex h-full flex-col bg-[var(--surface-canvas)] text-[var(--text-primary)]"
+    class="relative flex h-full min-h-0 overflow-hidden bg-[var(--surface-canvas)] text-[var(--text-primary)]"
+    :style="{ '--sidebar-width': `${sidebarWidth}px` }"
   >
-    <header
-      class="app-drag flex h-10 shrink-0 items-center gap-4 border-b border-[var(--border-subtle)]"
+    <AppSidebar
+      v-if="sidebarShown && workspace"
+      ref="sidebar"
+      :width="sidebarWidth"
+      :mode="isWide ? 'pinned' : 'overlay'"
+      :platform="platform"
+      :root-name="rootName"
+      :root-path="workspace.root"
+      :root-display-path="rootDisplayPath"
+      :generation="workspace.generation"
+      :selected-path="selectedTreePath"
+      :initial-expanded="expandedForRoot"
+      @hide-sidebar="toggleSidebar"
+      @open-folder="chooseFolder"
+      @width-change="updateSidebarWidth"
+      @width-commit="commitSidebarWidth"
+      @reset-width="resetSidebarWidth"
+      @open-entry="openTreeEntry"
+      @entry-created="handleEntryCreated"
+      @entry-renamed="handleEntryRenamed"
+      @trash-request="requestTrash"
+      @expanded-change="handleExpandedChange"
+      @status="(message) => showNotice(message, 'danger')"
+    />
+
+    <div
+      class="flex min-w-0 flex-1 flex-col"
+      @pointerdown.capture="handleContentPointerDown"
     >
-      <div class="flex min-w-0 items-baseline gap-2">
-        <span class="font-display text-lg font-semibold tracking-tight">
-          Nicole
-        </span>
-        <span class="text-xs text-[var(--text-muted)]">
-          {{ appInfo ? `v${appInfo.version}` : "" }}
-        </span>
+      <TopBar
+        :tab="tab"
+        :mode="mode"
+        :platform="platform"
+        :compact="isCompactTopBar"
+        :sidebar-shown="sidebarShown"
+        :show-sidebar-toggle="showSidebarToggle"
+        :show-open-folder="!hasWorkspace && currentDocument !== null"
+        :outline-enabled="false"
+        :outline-on="false"
+        @close-tab="closeCurrentTab"
+        @activate-tab="activateTab"
+        @set-mode="setMode"
+        @toggle-sidebar="toggleSidebar"
+        @open-folder="chooseFolder"
+      />
+
+      <div class="flex min-h-0 flex-1">
+        <main class="flex min-w-0 flex-1 flex-col">
+          <AppBanner
+            v-if="banner"
+            :banner="banner"
+            @action="handleBannerAction"
+          />
+          <div class="relative min-h-0 flex-1">
+            <EmptyState
+              v-if="startState"
+              mode="start"
+              :recent-folders="recentFolders"
+              :missing-folders="missingRecent"
+              :missing-last-folder="missingLastFolder"
+              :home-dir="homeDir"
+              :platform="platform"
+              @open-folder="chooseFolder"
+              @open-recent="openRecentFolder"
+              @remove-recent="removeRecent"
+              @new-file="newFile"
+            />
+            <EmptyState
+              v-else-if="noFileState"
+              mode="no-file"
+              :recent-folders="recentFolders"
+              :missing-folders="missingRecent"
+              :missing-last-folder="missingLastFolder"
+              :home-dir="homeDir"
+              :platform="platform"
+              @open-folder="chooseFolder"
+              @new-file="newFile"
+            />
+            <NonMarkdownPlaceholder
+              v-else-if="currentPreview"
+              :name="currentPreview.name"
+              :size="currentPreview.size"
+              :folder="currentPreview.folder"
+              :platform="platform"
+              @open-default="openPreviewDefault"
+              @reveal="revealPreview"
+            />
+            <div
+              ref="editorHost"
+              v-show="isMarkdownOpen"
+              class="h-full"
+              aria-label="Markdown 编辑器"
+            ></div>
+          </div>
+        </main>
       </div>
 
-      <button
-        type="button"
-        class="rounded-full border border-[var(--border-subtle)] px-3 py-1.5 text-sm text-[var(--text-secondary)] transition-colors hover:border-[var(--border-default)] hover:text-[var(--text-primary)]"
-        @click="openFolder"
-      >
-        打开文件夹
-      </button>
+      <StatusBar
+        :save-status="saveStatus"
+        :notice="notice?.text ?? null"
+        :notice-tone="notice?.tone"
+        :is-dark="isDark"
+        @toggle-theme="toggleTheme"
+      />
+    </div>
 
-      <select
-        class="max-w-48 rounded-full border border-[var(--border-subtle)] bg-[var(--surface-panel)] px-3 py-1.5 text-sm text-[var(--text-secondary)] disabled:opacity-50"
-        :value="currentFile ?? ''"
-        :disabled="files.length === 0"
-        aria-label="Markdown 文件"
-        @change="selectFile"
+    <AppDialog
+      :open="dialog !== null"
+      :title="dialog?.title ?? ''"
+      @cancel="resolveDialog('cancel')"
+    >
+      <p v-if="dialog?.message" class="m-0">{{ dialog.message }}</p>
+      <ul
+        v-if="dialog?.details?.length"
+        class="mt-2 mb-0 list-disc pl-5 text-[12px]"
       >
-        <option value="" disabled>选择文件</option>
-        <option v-for="file in files" :key="file" :value="file">
-          {{ file }}
-        </option>
-      </select>
-
-      <div
-        class="app-no-drag mx-auto flex rounded-full border border-[var(--border-subtle)] bg-[var(--surface-panel)] p-1"
-        role="group"
-        aria-label="编辑模式"
-      >
+        <li v-for="detail in dialog.details" :key="detail">{{ detail }}</li>
+      </ul>
+      <template #actions>
         <button
-          v-for="item in modes"
-          :key="item.id"
+          v-for="action in dialogActions"
+          :key="action.value"
           type="button"
-          class="rounded-full px-4 py-1.5 text-sm transition-colors"
+          :data-autofocus="action.autofocus ? '' : undefined"
+          :disabled="action.disabled"
+          class="focus-ring rounded-[var(--radius-control)] border px-3 py-1.5 text-[12px] disabled:cursor-default disabled:opacity-50"
           :class="
-            mode === item.id
-              ? 'bg-[var(--accent-primary)] font-medium text-[var(--accent-contrast)] shadow-sm'
-              : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+            action.primary
+              ? action.danger
+                ? 'border-[var(--status-danger-border)] bg-[var(--status-danger-bg)] text-[var(--status-danger-fg)]'
+                : 'border-[var(--accent-primary)] bg-[var(--accent-primary)] text-[var(--accent-contrast)]'
+              : 'border-[var(--border-default)] text-[var(--text-secondary)] hover:bg-[var(--surface-subtle)]'
           "
-          :aria-pressed="mode === item.id"
-          :title="item.hint"
-          @click="setMode(item.id)"
+          @click="resolveDialog(action.value)"
         >
-          {{ item.label }}
+          {{ action.label }}
         </button>
-      </div>
-
-      <button
-        type="button"
-        class="rounded-full border border-[var(--border-subtle)] px-3 py-1.5 text-sm text-[var(--text-secondary)] transition-colors hover:border-[var(--border-default)] hover:text-[var(--text-primary)]"
-        :aria-label="themeAction"
-        :title="themeAction"
-        @click="toggleTheme"
-      >
-        {{ theme === "light" ? "暗色" : "亮色" }}
-      </button>
-    </header>
-
-    <main class="min-h-0 flex-1 overflow-hidden">
-      <div
-        v-show="hasWorkspace && currentFile === null"
-        data-placeholder="choose-file"
-        class="flex h-full items-center justify-center text-sm text-[var(--text-muted)]"
-      >
-        选择一个 Markdown 文件开始编辑
-      </div>
-      <div
-        v-show="!hasWorkspace || currentFile !== null"
-        ref="editorHost"
-        class="h-full"
-        aria-label="Markdown 编辑器"
-      ></div>
-    </main>
-
-    <footer
-      class="flex shrink-0 items-center justify-between gap-4 border-t border-[var(--border-subtle)] px-6 py-2 text-xs text-[var(--text-muted)]"
-    >
-      <span>{{ activeMode.label }} · {{ activeMode.hint }}</span>
-      <span class="flex items-center gap-3">
-        <span v-if="openedFilePath" :title="openedFilePath">
-          已收到文件：{{ openedFilePath }}
-        </span>
-        <span v-if="saveStatus">{{ saveStatus }}</span>
-        <span>{{ documentText.length }} 字符</span>
-        <span v-if="appInfo">
-          {{ appInfo.os }}/{{ appInfo.arch }} · {{ appInfo.goVersion }}
-        </span>
-        <span v-else-if="appInfoError">Go 服务未连接</span>
-        <span v-else>连接 Go…</span>
-      </span>
-    </footer>
+      </template>
+    </AppDialog>
   </div>
 </template>

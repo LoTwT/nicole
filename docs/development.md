@@ -157,6 +157,7 @@ macOS 的签名、通用二进制合成和 DMG 需要 macOS；Windows 安装包�
 | `mygo dev` | 开发版的应用名是 `Nicole Dev`，已与安装版分开；仍建议使用独立目录：`NICOLE_USER_DATA_DIR=$(mktemp -d) GOTOOLCHAIN=auto bun run dev`。 |
 | 直接运行构建出的 `.app` | `NICOLE_USER_DATA_DIR=$(mktemp -d) ./build/darwin-arm64/Nicole.app/Contents/MacOS/Nicole`；不要从 `/Applications` 启动正在使用的 Nicole。 |
 | 用 Launch Services 测试“打开方式” | `open --env NICOLE_USER_DATA_DIR="$(mktemp -d)" -a "$PWD/build/darwin-arm64/Nicole.app" --args`，或 `open --env ... -a ... /tmp/note.md`。 |
+| 内存测量 | `scripts/measure-memory.sh` 默认使用临时目录并自动清理；需要保留数据时传 `--user-data-dir /absolute/path`。 |
 
 单实例锁按应用名和 `NICOLE_USER_DATA_DIR` 的短哈希区分：同一个数据目录只允许一个实例，第二个实例把命令行文件和激活请求交给第一个实例，再退出；不同数据目录可以同时运行，适合并存安装版和隔离测试版。锁只影响进程，不会改变用户看到的窗口或设置。
 
@@ -172,7 +173,7 @@ GOTOOLCHAIN=auto go vet ./...
 GOTOOLCHAIN=auto go test ./...
 ```
 
-Vitest 覆盖三种模式的切换；挂载 `App.vue` 后切换亮暗主题，编辑器 DOM、选区和撤销历史保持不变；沉浸模式的 `Mod-b` 加粗；应用命令（如 `Mod-i`）优先于 `basicSetup` 默认键位；`localStorage` 主题迁移和 `app:open-file` 事件接收；图片 URL 的解析，粘贴、拖入 token 链路，插入凭据的位置映射、组合输入排队和撤销步；`src/services/` 的薄封装。Go 测试覆盖绑定服务、文件树和排除规则、文件操作的路径守卫与 generation、监听自写过滤、单文件授权、设置存储与测试数据隔离、图片协议的路径守卫与 Content-Type、drop token 的一次性和过期、图片保存的文件名、并发写入与原子失败。
+Vitest 覆盖三种模式的切换；挂载 `App.vue` 后切换亮暗主题，编辑器 DOM、选区和撤销历史保持不变；沉浸模式的 `Mod-b` 加粗；应用命令（如 `Mod-i`）优先于 `basicSetup` 默认键位；`localStorage` 主题迁移和 `app:open-file` 事件接收；装订册布局、文件树按需读取与键盘导航、右键菜单调用、状态栏和横幅优先级、外部修改与图片 `create` 事件的区分、单文件打开与替换前确认、文件夹切换的防重入和取消保护、对话框焦点陷阱；图片 URL 的解析，粘贴、拖入 token 链路，插入凭据的位置映射、组合输入排队和撤销步；`src/services/` 的薄封装。Go 测试覆盖绑定服务、文件树和排除规则、文件操作的路径守卫与 generation、监听自写过滤、单文件授权、设置存储与测试数据隔离、图片协议的路径守卫与 Content-Type、drop token 的一次性和过期、图片保存的文件名、并发写入与原子失败。
 
 ### 内存测量
 
@@ -180,6 +181,8 @@ Vitest 覆盖三种模式的切换；挂载 `App.vue` 后切换亮暗主题，�
 GOTOOLCHAIN=auto bun run build -- -skip-dmg
 scripts/measure-memory.sh --budget 120
 ```
+
+脚本通过 `open -n --env NICOLE_USER_DATA_DIR=...` 启动被测 `.app`，默认临时目录并清理；`--user-data-dir` 可以指定保留的绝对路径。窗口状态因此从默认尺寸开始，不读取安装版的设置或窗口状态。
 
 测量约定见[性能预算与测量](specs/performance.md#测量方法)。
 

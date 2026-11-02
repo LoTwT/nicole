@@ -43,7 +43,7 @@ scripts/measure-memory.sh --budget 120
 - `attribution=coalition` 表示 WebKit 进程按 resource coalition 归属；只有这种结果能记为基线。`pid-diff` 是缺少 `python3` 时的退路，可能混入其他应用的进程。
 - `survivor_excluded_mb` 是存活检查中被排除的进程占用；只有 `pid-diff` 模式可能非零，`coalition` 模式始终为 0。
 
-记录基线前退出其他 Nicole 实例。窗口尺寸和屏幕缩放会影响 WebContent 和 GPU 的占用，每次基线都要在[内存基线](../references/memory-baseline.md)中写明；脚本启动的实例与安装版共用用户数据目录（退出时会写窗口状态），这一点目前无法避免。
+记录基线前退出其他 Nicole 实例。窗口尺寸和屏幕缩放会影响 WebContent 和 GPU 的占用，每次基线都要在[内存基线](../references/memory-baseline.md)中写明。脚本默认创建一个临时用户数据目录，通过 `NICOLE_USER_DATA_DIR` 传给被测应用，测量不会读写 `~/Library/Application Support/Nicole/`，窗口也使用默认尺寸；需要复用一个固定目录时传 `--user-data-dir DIR`（绝对路径）。临时目录在脚本退出时删除，传入的目录保留。
 
 脚本依赖 `footprint`，只在 macOS 上可用，**不接入 CI**：runner 的环境数据不代表真实机器。
 
