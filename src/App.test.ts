@@ -179,6 +179,13 @@ async function settle() {
   }
 }
 
+/** Waits for the command palette's clear-before-write announcement delay. */
+async function settlePaletteAnnouncement() {
+  await settle();
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  await settle();
+}
+
 function folder(root: string, generation = 1) {
   return { root, files: [], canceled: false, generation };
 }
@@ -263,6 +270,14 @@ function paletteOptions(): HTMLButtonElement[] {
       '[role="listbox"] [role="option"]',
     ),
   ];
+}
+
+function paletteAnnouncement(): HTMLParagraphElement {
+  const region = document.querySelector<HTMLParagraphElement>(
+    '[role="dialog"] [role="status"][aria-live="polite"]',
+  );
+  if (!region) throw new Error("palette announcement region not found");
+  return region;
 }
 
 function typePalette(value: string) {
@@ -3077,6 +3092,33 @@ describe("command palette", () => {
     await settle();
     expect(paletteInput().value).toBe("a");
     expect(paletteInput().getAttribute("aria-label")).toContain("文件名");
+  });
+
+  it("announces modes switched by palette shortcuts", async () => {
+    await openFile("a.md", "# Heading\n");
+    pressAppShortcut("p");
+    await settle();
+    const region = paletteAnnouncement();
+    await settlePaletteAnnouncement();
+    expect(region.textContent).toBe("");
+
+    pressAppShortcut("P", true);
+    await settlePaletteAnnouncement();
+    expect(region.textContent).toBe("命令模式");
+
+    pressAppShortcut("O", true);
+    await settlePaletteAnnouncement();
+    expect(region.textContent).toBe("标题模式");
+
+    pressAppShortcut("p");
+    await settlePaletteAnnouncement();
+    expect(region.textContent).toBe("文件模式");
+
+    pressAppShortcut("p");
+    await settle();
+    expect(region.textContent).toBe("");
+    await settlePaletteAnnouncement();
+    expect(region.textContent).toBe("文件模式");
   });
 
   it("does not close the tab with the palette open outside the input", async () => {

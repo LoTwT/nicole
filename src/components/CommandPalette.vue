@@ -65,10 +65,21 @@ interface PaletteItem {
   position?: number;
 }
 
+/**
+ * Clearing and writing in the same task can be coalesced into one mutation,
+ * which VoiceOver in WKWebView and Narrator in WebView2 treat as no change and
+ * do not announce. The empty state must be committed before the new text
+ * arrives, so the write waits one short frame; the delay is long enough to
+ * cover a render and layout pass in both WebViews.
+ */
+const MODE_ANNOUNCEMENT_DELAY_MS = 50;
+
 const panel = ref<HTMLElement | null>(null);
 const input = ref<HTMLInputElement | null>(null);
 const mode = ref<CommandPaletteMode>(props.mode);
 const inputValue = ref("");
+const modeAnnouncement = ref("");
+let modeAnnouncementTimer: ReturnType<typeof setTimeout> | null = null;
 const selectedIndex = ref(0);
 const composing = ref(false);
 const compositionStartValue = ref("");
@@ -212,6 +223,22 @@ function focusInput() {
   input.value?.setSelectionRange(length, length);
 }
 
+function clearModeAnnouncement() {
+  if (modeAnnouncementTimer !== null) {
+    clearTimeout(modeAnnouncementTimer);
+    modeAnnouncementTimer = null;
+  }
+  modeAnnouncement.value = "";
+}
+
+function announceMode(next: CommandPaletteMode) {
+  clearModeAnnouncement();
+  modeAnnouncementTimer = setTimeout(() => {
+    modeAnnouncementTimer = null;
+    modeAnnouncement.value = `${paletteModeLabel(next)}模式`;
+  }, MODE_ANNOUNCEMENT_DELAY_MS);
+}
+
 /**
  * In file mode, the first character typed or pasted into an empty query can
  * select another mode. The character is not part of the query.
@@ -226,14 +253,20 @@ function adoptLeadingPrefix(previousValue: string) {
       : null;
   if (next === null) return;
   mode.value = next;
+  announceMode(next);
   inputValue.value = value.slice(1);
   void nextTick(focusInput);
 }
 
 /** Applies a shortcut-selected mode; the query text is preserved. */
 function switchMode(next: CommandPaletteMode) {
-  if (mode.value === next) return;
+  if (mode.value === next) {
+    // The mode is unchanged, but the shortcut still confirms it to the user.
+    announceMode(next);
+    return;
+  }
   mode.value = next;
+  announceMode(next);
   void nextTick(focusInput);
 }
 
@@ -368,6 +401,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  clearModeAnnouncement();
   if (previousFocus?.isConnected) {
     previousFocus.focus();
   }
@@ -422,6 +456,12 @@ watch(mode, (next) => {
         @mousedown="keepPanelFocus"
       >
         <h2 :id="titleId" class="sr-only">{{ paletteModeLabel(mode) }}面板</h2>
+        <p
+          class="sr-only"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >{{ modeAnnouncement }}</p>
         <div
           class="command-palette-input-row flex h-11 shrink-0 items-center gap-2 border-b border-[var(--border-subtle)] px-4"
         >

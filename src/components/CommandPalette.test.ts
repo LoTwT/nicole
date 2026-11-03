@@ -15,6 +15,13 @@ async function settle() {
   }
 }
 
+/** Waits for the deliberate clear-before-write announcement delay. */
+async function settleAnnouncement() {
+  await settle();
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  await settle();
+}
+
 function paletteInput(): HTMLInputElement {
   const input = document.querySelector<HTMLInputElement>('[role="combobox"]');
   if (!input) throw new Error("palette input not found");
@@ -25,6 +32,14 @@ function modeIndicator(): HTMLSpanElement | null {
   return document.querySelector<HTMLSpanElement>(
     '.command-palette-input-row span[aria-hidden="true"]',
   );
+}
+
+function modeAnnouncement(): HTMLParagraphElement {
+  const region = document.querySelector<HTMLParagraphElement>(
+    '[role="dialog"] [role="status"][aria-live="polite"]',
+  );
+  if (!region) throw new Error("mode announcement region not found");
+  return region;
 }
 
 function options(): HTMLButtonElement[] {
@@ -56,6 +71,7 @@ function mountPalette(options: {
   const opener = host.querySelector<HTMLButtonElement>("#opener")!;
   opener.focus();
   const open = ref(true);
+  const palette = ref<InstanceType<typeof CommandPalette> | null>(null);
   const Component = defineComponent({
     setup() {
       return () =>
@@ -63,6 +79,7 @@ function mountPalette(options: {
           h("button", { id: "opener" }, "open"),
           open.value
             ? h(CommandPalette, {
+                ref: palette,
                 mode: options.mode ?? "command",
                 platform: "macos",
                 commands: [
@@ -90,7 +107,7 @@ function mountPalette(options: {
   });
   app = createApp(Component);
   app.mount(host.querySelector("#app")!);
-  return { host, opener, close: () => (open.value = false) };
+  return { host, opener, palette, close: () => (open.value = false) };
 }
 
 afterEach(() => {
@@ -214,6 +231,103 @@ describe("CommandPalette", () => {
     expect(modeIndicator()?.textContent?.trim()).toBe("@");
     expect(input.getAttribute("aria-label")).toContain("标题");
     expect(options()[0]?.textContent).toContain("标题一");
+  });
+
+  it("announces prefix mode switches but not opening the panel", async () => {
+    mountPalette({
+      mode: "file",
+      workspaceOpen: true,
+      hasMarkdown: true,
+      loadFiles: async () => ["a.md"],
+      headings: [{ level: 1, text: "标题一", position: 0, line: 1 }],
+    });
+    await settle();
+    const region = modeAnnouncement();
+    expect(region.getAttribute("aria-live")).toBe("polite");
+    expect(region.getAttribute("aria-atomic")).toBe("true");
+    await settleAnnouncement();
+    expect(region.textContent).toBe("");
+
+    const input = paletteInput();
+    type(input, ">");
+    await settleAnnouncement();
+    expect(region.textContent).toBe("命令模式");
+
+    type(input, "");
+    await settle();
+    input.setSelectionRange(0, 0);
+    input.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Backspace",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settleAnnouncement();
+    expect(region.textContent).toBe("文件模式");
+
+    type(input, "@标题一");
+    await settleAnnouncement();
+    expect(region.textContent).toBe("标题模式");
+    expect(input.value).toBe("标题一");
+
+    type(input, "");
+    await settle();
+    input.setSelectionRange(0, 0);
+    input.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Backspace",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settleAnnouncement();
+    expect(region.textContent).toBe("文件模式");
+
+    type(input, ">加粗");
+    await settleAnnouncement();
+    expect(region.textContent).toBe("命令模式");
+    expect(input.value).toBe("加粗");
+  });
+
+  it("announces shortcut switches and repeats the same mode", async () => {
+    const { palette } = mountPalette({ mode: "file" });
+    await settle();
+    const region = modeAnnouncement();
+    expect(region.textContent).toBe("");
+
+    palette.value?.switchMode("command");
+    await settleAnnouncement();
+    expect(region.textContent).toBe("命令模式");
+
+    palette.value?.switchMode("command");
+    await settle();
+    expect(region.textContent).toBe("");
+    await settleAnnouncement();
+    expect(region.textContent).toBe("命令模式");
+
+    palette.value?.switchMode("heading");
+    await settleAnnouncement();
+    expect(region.textContent).toBe("标题模式");
+
+    palette.value?.switchMode("file");
+    await settleAnnouncement();
+    expect(region.textContent).toBe("文件模式");
+  });
+
+  it("removes the announcement region when the panel closes", async () => {
+    const { palette, close } = mountPalette({ mode: "command" });
+    await settle();
+    palette.value?.switchMode("heading");
+    await settleAnnouncement();
+    expect(modeAnnouncement().textContent).toBe("标题模式");
+
+    close();
+    await settle();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(
+      document.querySelector('[role="status"][aria-live="polite"]'),
+    ).toBeNull();
   });
 
   it("keeps a prefix as text when the query is not empty", async () => {
