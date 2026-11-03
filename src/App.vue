@@ -9,10 +9,7 @@ import {
   shallowRef,
 } from "vue";
 
-import {
-  createTabCommands,
-  matchCommand,
-} from "./app/commands";
+import { buildContextMenu } from "./app/context-menu";
 import {
   absoluteBaseName,
   absoluteParent,
@@ -20,13 +17,9 @@ import {
   isInFolder,
   relativePath,
 } from "./app/paths";
-import {
-  buildContextMenu,
-  isMac,
-  shortcutText,
-  trashLabel,
-  type AppPlatform,
-} from "./app/platform";
+import { trashLabel, type AppPlatform } from "./app/platform";
+import { matchCommand } from "./commands/keybinding";
+import { commandRegistry } from "./commands/registry";
 import {
   detectLineEndings,
   normalizeLineEndings,
@@ -236,7 +229,6 @@ const platform = computed<AppPlatform>(() => {
   return "linux";
 });
 const homeDir = computed(() => appInfo.value?.homeDir ?? "");
-const mac = computed(() => isMac(platform.value));
 
 const isDark = computed(() =>
   theme.value === "system" ? systemPrefersDark.value : theme.value === "dark",
@@ -328,13 +320,6 @@ const noFileState = computed(
 );
 
 const dialogActions = computed(() => dialog.value?.actions ?? []);
-
-const tabCommands = createTabCommands({
-  close: () => closeActiveTab(),
-  reopen: () => reopenClosedTab(),
-  next: () => cycleTab(1),
-  previous: () => cycleTab(-1),
-});
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -2162,54 +2147,47 @@ function handleGlobalKeydown(event: KeyboardEvent) {
   if (event.defaultPrevented || isTextInput(event.target)) {
     return;
   }
-  const command = matchCommand(event, platform.value, tabCommands);
-  if (command !== null) {
-    event.preventDefault();
-    void command.run();
+  const command = matchCommand(event, platform.value, commandRegistry, "app");
+  if (command === null) {
     return;
   }
-  const key = event.key.toLowerCase();
-  const macCombo = mac.value && event.ctrlKey && event.metaKey;
-  const otherCombo = !mac.value && event.ctrlKey && event.shiftKey;
-  if (macCombo || otherCombo) {
-    if (key === "s" && macCombo) {
-      event.preventDefault();
-      toggleSidebar();
-      return;
-    }
-    if (key === "e" && otherCombo) {
-      event.preventDefault();
-      toggleSidebar();
-      return;
-    }
-    if (key === "1") {
-      event.preventDefault();
-      setMode("live");
-    } else if (key === "2") {
-      event.preventDefault();
-      setMode("immersive");
-    } else if (key === "3") {
-      event.preventDefault();
-      setMode("source");
-    }
-    return;
-  }
-  const modifier = mac.value ? event.metaKey : event.ctrlKey;
-  if (modifier && !event.shiftKey && key === "o") {
+  const handled = command.run({
+    view: editor?.view ?? null,
+    platform: platform.value,
+    app: {
+      chooseFolder: () => {
+        void chooseFolder();
+      },
+      newFile: () => {
+        void newFile();
+      },
+      saveCurrent: () => {
+        const tab = currentMarkdown.value;
+        if (tab !== null) {
+          void saveTab(tab.id);
+        }
+      },
+      toggleSidebar,
+      setMode,
+      toggleTheme: () => {
+        void toggleTheme();
+      },
+      closeActiveTab: () => {
+        void closeActiveTab();
+      },
+      reopenClosedTab: () => {
+        void reopenClosedTab();
+      },
+      nextTab: () => {
+        cycleTab(1);
+      },
+      previousTab: () => {
+        cycleTab(-1);
+      },
+    },
+  });
+  if (handled) {
     event.preventDefault();
-    void chooseFolder();
-    return;
-  }
-  if (modifier && !event.shiftKey && key === "n") {
-    event.preventDefault();
-    void newFile();
-    return;
-  }
-  if (modifier && !event.shiftKey && key === "s") {
-    event.preventDefault();
-    if (currentMarkdown.value !== null) {
-      void saveTab(currentMarkdown.value.id);
-    }
   }
 }
 

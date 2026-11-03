@@ -100,6 +100,27 @@ vi.mock("./services/watch", () => ({
   watchWorkspace: mocks.watchWorkspace,
 }));
 
+const slashMocks = vi.hoisted(() => ({ destroy: vi.fn() }));
+
+vi.mock("./editor/slash", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./editor/slash")>();
+  return {
+    ...actual,
+    createSlashMenu: (
+      options: Parameters<typeof actual.createSlashMenu>[0],
+    ) => {
+      const controller = actual.createSlashMenu(options);
+      return {
+        ...controller,
+        destroy() {
+          slashMocks.destroy();
+          controller.destroy();
+        },
+      };
+    },
+  };
+});
+
 const entry = (
   name: string,
   path: string,
@@ -1168,6 +1189,199 @@ describe("theme and accessibility", () => {
     await settle();
     expect(host.querySelector("aside")).toBeNull();
     expect(mocks.writeFile).not.toHaveBeenCalled();
+  });
+
+  it("dispatches open-folder and new-file from the registry", async () => {
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "o",
+        metaKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    expect(mocks.pickFolder).toHaveBeenCalledOnce();
+    expect(mocks.openFolder).toHaveBeenCalledWith("/notes");
+
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "n",
+        metaKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    expect(
+      host.querySelector<HTMLInputElement>('input[aria-label="新建文件"]'),
+    ).not.toBeNull();
+  });
+
+  it("saves immediately with the registry shortcut", async () => {
+    await openFile();
+    replaceEditorText("# Saved now\n");
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "s",
+        metaKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    expect(mocks.writeFile).toHaveBeenCalledWith("a.md", "# Saved now\n", 1);
+  });
+
+  it("switches modes with registry shortcuts", async () => {
+    await openFile();
+    const press = (key: string) =>
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key,
+          ctrlKey: true,
+          metaKey: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+
+    press("2");
+    await settle();
+    expect(
+      buttons("沉浸").find((item) => item.closest("header"))?.getAttribute(
+        "aria-pressed",
+      ),
+    ).toBe("true");
+
+    press("3");
+    await settle();
+    expect(
+      buttons("源码").find((item) => item.closest("header"))?.getAttribute(
+        "aria-pressed",
+      ),
+    ).toBe("true");
+  });
+
+  it("does not run editor shortcuts while the file tree has focus", async () => {
+    await openFile();
+    const row = host.querySelector<HTMLElement>('[data-tree-path="a.md"]');
+    expect(row).not.toBeNull();
+    row!.focus();
+    row!.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "b",
+        code: "KeyB",
+        metaKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    expect(editorView().state.doc.toString()).toBe("# A\n");
+  });
+
+  it("skips unavailable placeholder shortcuts", async () => {
+    await openFile();
+    const search = new KeyboardEvent("keydown", {
+      key: "f",
+      metaKey: true,
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    window.dispatchEvent(search);
+    expect(search.defaultPrevented).toBe(false);
+
+    const outline = new KeyboardEvent("keydown", {
+      key: "o",
+      ctrlKey: true,
+      metaKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    window.dispatchEvent(outline);
+    expect(outline.defaultPrevented).toBe(false);
+  });
+
+  it("ignores Escape during composition when the sidebar is an overlay", async () => {
+    await openFile();
+    const originalWidth = window.innerWidth;
+    try {
+      window.innerWidth = 800;
+      window.dispatchEvent(new Event("resize"));
+      await settle();
+      expect(host.querySelector("aside")).toBeNull();
+
+      host.querySelector<HTMLButtonElement>("[data-sidebar-toggle]")!.click();
+      await settle();
+      expect(host.querySelector("aside")).not.toBeNull();
+
+      const escape = new KeyboardEvent("keydown", {
+        key: "Escape",
+        code: "Escape",
+        isComposing: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      window.dispatchEvent(escape);
+      await settle();
+      expect(host.querySelector("aside")).not.toBeNull();
+      expect(escape.defaultPrevented).toBe(false);
+    } finally {
+      window.innerWidth = originalWidth;
+      window.dispatchEvent(new Event("resize"));
+      await settle();
+    }
+  });
+
+  it("ignores app shortcuts while a dialog is open", async () => {
+    await openFile();
+    mocks.pickFolder.mockResolvedValue({ path: "/second", canceled: false });
+    sidebarButton("切换文件夹").click();
+    await settle();
+    expect(dialog()).not.toBeNull();
+    expect(host.querySelectorAll('[role="tab"]').length).toBe(1);
+
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "w",
+        metaKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    expect(dialog()).not.toBeNull();
+    expect(host.querySelectorAll('[role="tab"]').length).toBe(1);
+    expect(editorView().state.doc.toString()).toBe("# A\n");
+  });
+
+  it("closes only the tab with Ctrl+W on Windows", async () => {
+    app?.unmount();
+    mocks.getAppInfo.mockResolvedValue({
+      version: "0.0.1",
+      os: "win32",
+      arch: "x64",
+      goVersion: "go1.27",
+      homeDir: "C:\\Users\\tester",
+    });
+    app = createApp(App);
+    app.mount(host);
+    await settle();
+    await openFile();
+
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "w",
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    expect(tabElements().length).toBe(0);
+    expect(host.querySelector("aside")).not.toBeNull();
   });
 
   it("runs native Undo through CodeMirror and ignores it during composition", async () => {
@@ -2405,6 +2619,42 @@ describe("review round 3 fixes", () => {
 });
 
 describe("slash menu with tabs", () => {
+  it("destroys the previous slash controller when switching tabs", async () => {
+    await setupWorkspace({ "a.md": "# A\n", "b.md": "# B\n" });
+    await openPath("/notes/a.md");
+    await openPath("/notes/b.md");
+
+    typeSlashAtEnd();
+    await settle();
+    expect(slashMenuElement()).not.toBeNull();
+
+    const destroyedBefore = slashMocks.destroy.mock.calls.length;
+    tabNamed("a.md").click();
+    await settle();
+    expect(slashMenuElement()).toBeNull();
+    expect(slashMocks.destroy.mock.calls.length).toBe(destroyedBefore + 1);
+  });
+
+  it("closes the slash menu when an external change replaces the document", async () => {
+    vi.useFakeTimers();
+    await openFile("a.md", "# A\n");
+    typeSlashAtEnd();
+    await settle();
+    expect(slashMenuElement()).not.toBeNull();
+    // Save the trigger character first so the tab is clean and the external
+    // change takes the automatic replaceDocument path.
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(mocks.writeFile).toHaveBeenCalled();
+
+    openFileText = "# Disk\n";
+    mocks.readFile.mockResolvedValue(openFileText);
+    watchEvents?.([{ op: "write", path: "a.md", isDir: false }]);
+    await settle();
+
+    expect(slashMenuElement()).toBeNull();
+    expect(editorView().state.doc.toString()).toBe("# Disk\n");
+  });
+
   it("closes the slash menu and recreates it when switching tabs", async () => {
     await setupWorkspace({ "a.md": "# A\n", "b.md": "# B\n" });
     await openPath("/notes/a.md");
