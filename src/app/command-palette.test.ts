@@ -4,31 +4,17 @@ import { loadPinyinMatcher } from "../commands/search";
 import {
   filterPaletteFiles,
   filterPaletteHeadings,
-  initialPaletteInput,
   normalizeRecentFiles,
-  parsePaletteInput,
+  paletteModePrefix,
   RECENT_FILES_LIMIT,
   rememberRecentFilePath,
 } from "./command-palette";
 
 describe("command palette modes", () => {
-  it("switches modes from the leading prefix", () => {
-    expect(parsePaletteInput(">加粗")).toEqual({
-      mode: "command",
-      query: "加粗",
-    });
-    expect(parsePaletteInput("@标题")).toEqual({
-      mode: "heading",
-      query: "标题",
-    });
-    expect(parsePaletteInput("文章/笔记.md")).toEqual({
-      mode: "file",
-      query: "文章/笔记.md",
-    });
-    expect(parsePaletteInput(">")).toEqual({ mode: "command", query: "" });
-    expect(initialPaletteInput("command")).toBe(">");
-    expect(initialPaletteInput("heading")).toBe("@");
-    expect(initialPaletteInput("file")).toBe("");
+  it("has a visible marker only outside file mode", () => {
+    expect(paletteModePrefix("command")).toBe(">");
+    expect(paletteModePrefix("heading")).toBe("@");
+    expect(paletteModePrefix("file")).toBeNull();
   });
 });
 

@@ -21,6 +21,12 @@ function paletteInput(): HTMLInputElement {
   return input;
 }
 
+function modeIndicator(): HTMLSpanElement | null {
+  return document.querySelector<HTMLSpanElement>(
+    '.command-palette-input-row span[aria-hidden="true"]',
+  );
+}
+
 function options(): HTMLButtonElement[] {
   return [...document.querySelectorAll<HTMLButtonElement>('[role="option"]')];
 }
@@ -99,7 +105,8 @@ describe("CommandPalette", () => {
     await settle();
 
     const input = paletteInput();
-    expect(input.value).toBe(">");
+    expect(input.value).toBe("");
+    expect(modeIndicator()?.textContent?.trim()).toBe(">");
     expect(input.getAttribute("aria-expanded")).toBe("true");
     expect(input.getAttribute("aria-autocomplete")).toBe("list");
     expect(document.activeElement).toBe(input);
@@ -151,10 +158,12 @@ describe("CommandPalette", () => {
     await settle();
   });
 
-  it("switches modes when the prefix is deleted or rewritten", async () => {
+  it("switches modes from a prefix typed into an empty query", async () => {
     mountPalette({
-      workspaceOpen: false,
+      mode: "file",
+      workspaceOpen: true,
       hasMarkdown: true,
+      loadFiles: async () => ["a.md"],
       headings: [
         { level: 1, text: "标题一", position: 0, line: 1 },
         { level: 2, text: "标题二", position: 10, line: 3 },
@@ -162,23 +171,136 @@ describe("CommandPalette", () => {
     });
     await settle();
     const input = paletteInput();
+    expect(input.value).toBe("");
+    expect(modeIndicator()).toBeNull();
 
     type(input, "lite");
     await settle();
-    expect(paletteInput().getAttribute("aria-label")).toContain("文件名");
-    expect(options().length).toBe(0);
-    expect(document.body.textContent).toContain("先打开一个文件夹");
-
-    type(paletteInput(), "@标题二");
+    expect(input.getAttribute("aria-label")).toContain("文件名");
+    type(input, "lite>");
     await settle();
-    expect(paletteInput().getAttribute("aria-label")).toContain("标题");
-    expect(options()[0]?.textContent).toContain("标题二");
-    expect(options()[0]?.getAttribute("style")).toContain("padding-left: 20px");
+    expect(input.value).toBe("lite>");
+    expect(modeIndicator()).toBeNull();
 
-    type(paletteInput(), ">加粗");
+    type(input, "");
     await settle();
-    expect(paletteInput().value).toBe(">加粗");
+    type(input, ">");
+    await settle();
+    expect(input.value).toBe("");
+    expect(modeIndicator()?.textContent?.trim()).toBe(">");
+    expect(input.getAttribute("aria-label")).toContain("命令");
+
+    type(input, "加粗");
+    await settle();
     expect(options()[0]?.textContent).toContain("加粗");
+
+    type(input, "");
+    await settle();
+    input.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Backspace",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    expect(input.value).toBe("");
+    expect(modeIndicator()).toBeNull();
+    expect(input.getAttribute("aria-label")).toContain("文件名");
+
+    type(input, "@");
+    await settle();
+    expect(input.value).toBe("");
+    expect(modeIndicator()?.textContent?.trim()).toBe("@");
+    expect(input.getAttribute("aria-label")).toContain("标题");
+    expect(options()[0]?.textContent).toContain("标题一");
+  });
+
+  it("adopts a pasted prefix into an empty query", async () => {
+    mountPalette({
+      mode: "file",
+      workspaceOpen: true,
+      loadFiles: async () => ["a.md"],
+    });
+    await settle();
+    const input = paletteInput();
+
+    type(input, ">加粗");
+    await settle();
+    expect(input.value).toBe("加粗");
+    expect(modeIndicator()?.textContent?.trim()).toBe(">");
+    expect(options()[0]?.textContent).toContain("加粗");
+  });
+
+  it("does not switch on Backspace away from the start or with a selection", async () => {
+    mountPalette({ mode: "command" });
+    await settle();
+    const input = paletteInput();
+
+    type(input, "abc");
+    await settle();
+    input.setSelectionRange(1, 1);
+    input.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Backspace",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    expect(modeIndicator()?.textContent?.trim()).toBe(">");
+
+    input.setSelectionRange(0, 2);
+    input.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Backspace",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    expect(modeIndicator()?.textContent?.trim()).toBe(">");
+  });
+
+  it("waits for composition to end before adopting a prefix", async () => {
+    mountPalette({
+      mode: "file",
+      workspaceOpen: true,
+      hasMarkdown: true,
+      loadFiles: async () => ["a.md"],
+      headings: [{ level: 1, text: "标题一", position: 0, line: 1 }],
+    });
+    await settle();
+    const input = paletteInput();
+
+    input.dispatchEvent(
+      new CompositionEvent("compositionstart", { bubbles: true }),
+    );
+    type(input, "@标题一");
+    await settle();
+    expect(modeIndicator()).toBeNull();
+    expect(input.value).toBe("@标题一");
+
+    input.dispatchEvent(
+      new CompositionEvent("compositionend", {
+        bubbles: true,
+        data: "@标题一",
+      }),
+    );
+    await settle();
+    expect(modeIndicator()?.textContent?.trim()).toBe("@");
+    expect(input.value).toBe("标题一");
+    expect(options()[0]?.textContent).toContain("标题一");
+  });
+
+  it("uses no shared focus ring on the palette input", async () => {
+    mountPalette({});
+    await settle();
+    const input = paletteInput();
+
+    expect(document.activeElement).toBe(input);
+    expect(input.classList.contains("focus-ring")).toBe(false);
+    expect(input.classList.contains("command-palette-input")).toBe(true);
   });
 
   it("puts recent files first and opens the selected file", async () => {

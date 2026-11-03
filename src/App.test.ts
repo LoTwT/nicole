@@ -2738,7 +2738,7 @@ describe("command palette", () => {
 
     pressPaletteShortcut("P");
     await settle();
-    expect(paletteInput().value).toBe(">");
+    expect(paletteInput().value).toBe("");
     expect(paletteOptions().some((item) => item.textContent?.includes("加粗"))).toBe(
       true,
     );
@@ -2752,7 +2752,7 @@ describe("command palette", () => {
       paletteOptions().some((item) => item.textContent?.includes("重命名")),
     ).toBe(false);
 
-    typePalette(">jiacu");
+    typePalette("jiacu");
     await vi.waitFor(() =>
       expect(paletteOptions()[0]?.textContent ?? "").toContain("加粗"),
     );
@@ -2902,7 +2902,7 @@ describe("command palette", () => {
     const dispatch = vi.spyOn(view, "dispatch");
     pressPaletteShortcut("O");
     await settle();
-    expect(paletteInput().value).toBe("@");
+    expect(paletteInput().value).toBe("");
     expect(paletteOptions().map((item) => item.textContent)).toEqual([
       expect.stringContaining("One"),
       expect.stringContaining("Two"),
@@ -2939,13 +2939,14 @@ describe("command palette", () => {
     typePalette("@");
     await settle();
     expect(headingMocks.extract).toHaveBeenCalledTimes(1);
+    expect(paletteInput().value).toBe("");
     expect(paletteOptions().map((item) => item.textContent)).toEqual([
       expect.stringContaining("Old"),
     ]);
 
-    typePalette("");
+    pressAppShortcut("p");
     await settle();
-    typePalette("@");
+    pressAppShortcut("O", true);
     await settle();
     expect(headingMocks.extract).toHaveBeenCalledTimes(1);
     expect(paletteOptions().map((item) => item.textContent)).toEqual([
@@ -3001,7 +3002,7 @@ describe("command palette", () => {
 
     pressPaletteShortcut("P");
     await settle();
-    typePalette(">jiacu");
+    typePalette("jiacu");
     await vi.waitFor(() => {
       expect(paletteOptions()[0]?.textContent ?? "").toContain("加粗");
     });
@@ -3038,20 +3039,24 @@ describe("command palette", () => {
     const command = pressAppShortcut("P", true);
     await settle();
     expect(command.defaultPrevented).toBe(true);
-    expect(paletteInput().value).toBe(">a");
+    expect(paletteInput().value).toBe("a");
+    expect(paletteInput().getAttribute("aria-label")).toContain("命令");
 
     pressAppShortcut("O", true);
     await settle();
-    expect(paletteInput().value).toBe("@a");
+    expect(paletteInput().value).toBe("a");
+    expect(paletteInput().getAttribute("aria-label")).toContain("标题");
 
     const file = pressAppShortcut("p");
     await settle();
     expect(file.defaultPrevented).toBe(true);
     expect(paletteInput().value).toBe("a");
+    expect(paletteInput().getAttribute("aria-label")).toContain("文件名");
 
     pressAppShortcut("p");
     await settle();
     expect(paletteInput().value).toBe("a");
+    expect(paletteInput().getAttribute("aria-label")).toContain("文件名");
   });
 
   it("does not close the tab with the palette open outside the input", async () => {

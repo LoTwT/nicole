@@ -9,30 +9,17 @@ export type CommandPaletteMode = "command" | "file" | "heading";
 
 export const RECENT_FILES_LIMIT = 20;
 
-export interface ParsedPaletteInput {
-  mode: CommandPaletteMode;
-  query: string;
-}
-
-/** The prefix at the start of the input selects the panel mode. */
-export function parsePaletteInput(value: string): ParsedPaletteInput {
-  if (value.startsWith(">")) {
-    return { mode: "command", query: value.slice(1) };
-  }
-  if (value.startsWith("@")) {
-    return { mode: "heading", query: value.slice(1) };
-  }
-  return { mode: "file", query: value };
-}
-
-export function initialPaletteInput(mode: CommandPaletteMode): string {
+/** The visible marker at the left of the input; file mode has none. */
+export function paletteModePrefix(
+  mode: CommandPaletteMode,
+): ">" | "@" | null {
   switch (mode) {
     case "command":
       return ">";
     case "heading":
       return "@";
     case "file":
-      return "";
+      return null;
   }
 }
 

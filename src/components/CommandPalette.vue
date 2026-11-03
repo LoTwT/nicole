@@ -14,9 +14,8 @@ import type { AppPlatform } from "../app/platform";
 import {
   filterPaletteFiles,
   filterPaletteHeadings,
-  initialPaletteInput,
   paletteModeLabel,
-  parsePaletteInput,
+  paletteModePrefix,
   type CommandPaletteMode,
 } from "../app/command-palette";
 import {
@@ -68,9 +67,11 @@ interface PaletteItem {
 
 const panel = ref<HTMLElement | null>(null);
 const input = ref<HTMLInputElement | null>(null);
-const inputValue = ref(initialPaletteInput(props.mode));
+const mode = ref<CommandPaletteMode>(props.mode);
+const inputValue = ref("");
 const selectedIndex = ref(0);
 const composing = ref(false);
+const compositionStartValue = ref("");
 const matcher = shallowRef<PinyinMatcher | null>(null);
 const pinyinLoading = ref(false);
 const files = ref<string[]>([]);
@@ -84,9 +85,8 @@ const previousFocus =
     ? document.activeElement
     : null;
 
-const parsed = computed(() => parsePaletteInput(inputValue.value));
-const mode = computed(() => parsed.value.mode);
-const query = computed(() => parsed.value.query);
+const query = computed(() => inputValue.value);
+const modePrefix = computed(() => paletteModePrefix(mode.value));
 
 const commandItems = computed<PaletteItem[]>(() =>
   filterCommands(props.commands, query.value, {
@@ -212,10 +212,28 @@ function focusInput() {
   input.value?.setSelectionRange(length, length);
 }
 
-/** Applies a shortcut-selected mode without losing the typed query. */
+/**
+ * In file mode, the first character typed or pasted into an empty query can
+ * select another mode. The character is not part of the query.
+ */
+function adoptLeadingPrefix(previousValue: string) {
+  if (mode.value !== "file" || previousValue !== "") return;
+  const value = inputValue.value;
+  const next: CommandPaletteMode | null = value.startsWith(">")
+    ? "command"
+    : value.startsWith("@")
+      ? "heading"
+      : null;
+  if (next === null) return;
+  mode.value = next;
+  inputValue.value = value.slice(1);
+  void nextTick(focusInput);
+}
+
+/** Applies a shortcut-selected mode; the query text is preserved. */
 function switchMode(next: CommandPaletteMode) {
   if (mode.value === next) return;
-  inputValue.value = initialPaletteInput(next) + query.value;
+  mode.value = next;
   void nextTick(focusInput);
 }
 
@@ -264,6 +282,17 @@ function handleInputKeydown(event: KeyboardEvent) {
   if (composing.value || event.isComposing || event.keyCode === 229) return;
 
   const key = event.key;
+  if (key === "Backspace" && mode.value !== "file" && query.value === "") {
+    const element = input.value;
+    const start = element?.selectionStart ?? 0;
+    const end = element?.selectionEnd ?? 0;
+    if (start === 0 && end === 0) {
+      event.preventDefault();
+      event.stopPropagation();
+      switchMode("file");
+      return;
+    }
+  }
   if (key === "Escape") {
     event.preventDefault();
     event.stopPropagation();
@@ -292,11 +321,14 @@ function handleInputKeydown(event: KeyboardEvent) {
 
 function handleCompositionStart() {
   composing.value = true;
+  compositionStartValue.value = inputValue.value;
 }
 
 function handleCompositionEnd() {
   composing.value = false;
+  const startValue = compositionStartValue.value;
   void nextTick(() => {
+    adoptLeadingPrefix(startValue);
     if (items.value.length > 0 && selectedIndex.value >= items.value.length) {
       selectedIndex.value = items.value.length - 1;
     }
@@ -342,9 +374,11 @@ onBeforeUnmount(() => {
 });
 
 watch(
-  () => inputValue.value,
-  () => {
+  inputValue,
+  (_value, previous) => {
     selectedIndex.value = 0;
+    if (composing.value) return;
+    adoptLeadingPrefix(previous);
   },
 );
 
@@ -388,15 +422,21 @@ watch(mode, (next) => {
         @mousedown="keepPanelFocus"
       >
         <h2 :id="titleId" class="sr-only">{{ paletteModeLabel(mode) }}面板</h2>
-        <!-- 42px = list p-1 + item px-2 + 22px marker + gap-2. -->
         <div
-          class="flex h-11 shrink-0 items-center border-b border-[var(--border-subtle)] pl-[42px] pr-3"
+          class="command-palette-input-row flex h-11 shrink-0 items-center gap-2 border-b border-[var(--border-subtle)] px-4"
         >
+          <span
+            v-if="modePrefix"
+            class="select-none font-mono text-[13px] leading-none text-[var(--text-muted)]"
+            aria-hidden="true"
+          >
+            {{ modePrefix }}
+          </span>
           <input
             ref="input"
             v-model="inputValue"
             type="text"
-            class="focus-ring h-8 min-w-0 flex-1 appearance-none border-0 bg-transparent px-0 text-[13px] text-[var(--text-primary)] placeholder:text-[var(--text-muted)]"
+            class="command-palette-input h-8 min-w-0 flex-1 appearance-none border-0 bg-transparent px-0 text-[13px] text-[var(--text-primary)] outline-none placeholder:text-[var(--text-muted)]"
             role="combobox"
             aria-autocomplete="list"
             aria-haspopup="listbox"
@@ -497,3 +537,22 @@ watch(mode, (next) => {
     </div>
   </Teleport>
 </template>
+
+<style scoped>
+.command-palette-input:focus,
+.command-palette-input:focus-visible {
+  outline: none;
+}
+
+@media (prefers-contrast: more) {
+  .command-palette-input-row {
+    border-bottom-color: var(--focus-ring-color);
+  }
+}
+
+@media (forced-colors: active) {
+  .command-palette-input-row {
+    border-bottom-color: Highlight;
+  }
+}
+</style>
