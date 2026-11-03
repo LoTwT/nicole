@@ -1463,6 +1463,31 @@ describe("theme and accessibility", () => {
     }
   });
 
+  it("closes the overlay sidebar before showing a dialog", async () => {
+    await openFile();
+    const originalWidth = window.innerWidth;
+    try {
+      window.innerWidth = 800;
+      window.dispatchEvent(new Event("resize"));
+      await settle();
+      host.querySelector<HTMLButtonElement>("[data-sidebar-toggle]")!.click();
+      await settle();
+      const aside = host.querySelector<HTMLElement>("aside");
+      expect(aside).not.toBeNull();
+      expect(aside?.classList.contains("sidebar--overlay")).toBe(true);
+
+      mocks.pickFolder.mockResolvedValue({ path: "/second", canceled: false });
+      sidebarButton("切换文件夹").click();
+      await settle();
+      expect(dialog()).not.toBeNull();
+      expect(host.querySelector("aside")).toBeNull();
+    } finally {
+      window.innerWidth = originalWidth;
+      window.dispatchEvent(new Event("resize"));
+      await settle();
+    }
+  });
+
   it("ignores app shortcuts while a dialog is open", async () => {
     await openFile();
     mocks.pickFolder.mockResolvedValue({ path: "/second", canceled: false });

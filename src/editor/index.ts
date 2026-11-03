@@ -502,8 +502,8 @@ const editorTheme = EditorView.theme({
     cursor: "pointer",
   },
   ".cm-nicole-checkbox-checked": {
-    borderColor: "var(--nicole-checkbox-checked-border, var(--accent-primary))",
-    backgroundColor: "var(--nicole-checkbox-checked-bg, var(--accent-primary))",
+    borderColor: "var(--nicole-checkbox-checked-border, var(--text-accent))",
+    backgroundColor: "var(--nicole-checkbox-checked-bg, var(--text-accent))",
   },
   ".cm-nicole-checkbox-input": {
     appearance: "none",
@@ -529,9 +529,9 @@ const editorTheme = EditorView.theme({
     width: "0.3em",
     height: "0.55em",
     borderRight:
-      "1.5px solid var(--nicole-checkbox-mark, var(--accent-contrast))",
+      "1.5px solid var(--nicole-checkbox-mark, var(--surface-canvas))",
     borderBottom:
-      "1.5px solid var(--nicole-checkbox-mark, var(--accent-contrast))",
+      "1.5px solid var(--nicole-checkbox-mark, var(--surface-canvas))",
     transform: "translateY(-0.08em) rotate(45deg)",
   },
   ".cm-nicole-checkbox-checked .cm-nicole-checkbox-mark": {

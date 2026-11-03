@@ -13,7 +13,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@ayingott/theme": "^0.3.0",
+    "@ayingott/theme": "^0.4.0",
     "@codemirror/commands": "^6.9.0",
     "@codemirror/lang-markdown": "^6.5.2",
     "@codemirror/language": "^6.13.1",

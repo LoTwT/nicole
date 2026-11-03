@@ -697,6 +697,9 @@ function handleExpandedChange(folders: string[]) {
 }
 
 function askDialog(state: DialogState): Promise<string> {
+  // 0.4.0 stacks --z-popover above --z-modal. Close transient popovers before
+  // showing a dialog instead of relying on z-index order.
+  closePalettePopovers();
   if (dialogResolve !== null) {
     resolveDialog("cancel");
   }
@@ -1033,6 +1036,7 @@ async function maybeShowRecoveryDialog() {
       resolveRecoveryClosed = resolve;
     });
     closeCommandPalette();
+    closePalettePopovers();
     recoveryDialog.value = {
       items: listing.items.map(presentRecoveryItem),
       raw: listing.items,
