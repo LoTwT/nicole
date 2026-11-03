@@ -697,9 +697,10 @@ function handleExpandedChange(folders: string[]) {
 }
 
 function askDialog(state: DialogState): Promise<string> {
-  // 0.4.0 stacks --z-popover above --z-modal. Close transient popovers before
-  // showing a dialog instead of relying on z-index order.
-  closePalettePopovers();
+  // 0.4.0 stacks --z-popover above --z-modal. Close only the transient menus;
+  // the floating sidebar stays open underneath the dialog so focus can return
+  // to the control that opened it.
+  closePopoverMenus();
   if (dialogResolve !== null) {
     resolveDialog("cancel");
   }
@@ -1036,7 +1037,7 @@ async function maybeShowRecoveryDialog() {
       resolveRecoveryClosed = resolve;
     });
     closeCommandPalette();
-    closePalettePopovers();
+    closePopoverMenus();
     recoveryDialog.value = {
       items: listing.items.map(presentRecoveryItem),
       raw: listing.items,
@@ -3059,9 +3060,13 @@ function isTextInput(target: EventTarget | null): boolean {
   );
 }
 
-function closePalettePopovers() {
+function closePopoverMenus() {
   slashMenu?.close();
   topBar.value?.closeModeMenu();
+}
+
+function closePalettePopovers() {
+  closePopoverMenus();
   overlaySidebar.value = false;
 }
 
@@ -3799,7 +3804,7 @@ defineExpose({
             :banner="banner"
             @action="handleBannerAction"
           />
-          <div class="relative min-h-0 flex-1">
+          <div class="relative isolate min-h-0 flex-1" data-editor-host>
             <EmptyState
               v-if="startState"
               mode="start"

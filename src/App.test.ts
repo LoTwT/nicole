@@ -1478,7 +1478,7 @@ describe("theme and accessibility", () => {
     }
   });
 
-  it("closes the overlay sidebar before showing a dialog", async () => {
+  it("keeps the overlay sidebar beneath a dialog and restores focus after cancel", async () => {
     await openFile();
     const originalWidth = window.innerWidth;
     try {
@@ -1487,20 +1487,76 @@ describe("theme and accessibility", () => {
       await settle();
       host.querySelector<HTMLButtonElement>("[data-sidebar-toggle]")!.click();
       await settle();
+      const switchFolder = sidebarButton("切换文件夹");
+      switchFolder.focus();
+
+      mocks.pickFolder.mockResolvedValue({ path: "/second", canceled: false });
+      switchFolder.click();
+      await settle();
       const aside = host.querySelector<HTMLElement>("aside");
       expect(aside).not.toBeNull();
       expect(aside?.classList.contains("sidebar--overlay")).toBe(true);
-
-      mocks.pickFolder.mockResolvedValue({ path: "/second", canceled: false });
-      sidebarButton("切换文件夹").click();
-      await settle();
       expect(dialog()).not.toBeNull();
-      expect(host.querySelector("aside")).toBeNull();
+      expect(document.activeElement).toBe(dialogButton("取消"));
+
+      dialogButton("取消").click();
+      await settle();
+      expect(host.querySelector("aside")).toBe(aside);
+      expect(document.activeElement).toBe(switchFolder);
     } finally {
       window.innerWidth = originalWidth;
       window.dispatchEvent(new Event("resize"));
       await settle();
     }
+  });
+
+  it("restores focus to the file tree after cancelling folder deletion", async () => {
+    tree = [entry("old", "old", { isDir: true })];
+    mocks.listDirectory.mockImplementation(async (path: string) => ({
+      path,
+      entries: path === "." ? tree : [],
+    }));
+    await openFolder();
+    const originalWidth = window.innerWidth;
+    try {
+      window.innerWidth = 800;
+      window.dispatchEvent(new Event("resize"));
+      await settle();
+      host.querySelector<HTMLButtonElement>("[data-sidebar-toggle]")!.click();
+      await settle();
+      const row = host.querySelector<HTMLElement>('[data-tree-path="old"]');
+      expect(row).not.toBeNull();
+      row!.focus();
+      row!.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Backspace",
+          code: "Backspace",
+          metaKey: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await settle();
+      expect(dialog()).not.toBeNull();
+      expect(host.querySelector("aside")).not.toBeNull();
+      expect(document.activeElement).toBe(dialogButton("取消"));
+
+      dialogButton("取消").click();
+      await settle();
+      expect(host.querySelector("aside")).not.toBeNull();
+      expect(document.activeElement).toBe(row);
+    } finally {
+      window.innerWidth = originalWidth;
+      window.dispatchEvent(new Event("resize"));
+      await settle();
+    }
+  });
+
+  it("isolates CodeMirror layers inside the editor host", async () => {
+    await openFile();
+    const editorHost = host.querySelector<HTMLElement>("[data-editor-host]");
+    expect(editorHost).not.toBeNull();
+    expect(editorHost?.classList.contains("isolate")).toBe(true);
   });
 
   it("ignores app shortcuts while a dialog is open", async () => {
