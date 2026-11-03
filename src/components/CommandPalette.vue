@@ -388,15 +388,15 @@ watch(mode, (next) => {
         @mousedown="keepPanelFocus"
       >
         <h2 :id="titleId" class="sr-only">{{ paletteModeLabel(mode) }}面板</h2>
+        <!-- 42px = list p-1 + item px-2 + 22px marker + gap-2. -->
         <div
-          class="flex h-11 shrink-0 items-center gap-2 border-b border-[var(--border-subtle)] px-3"
+          class="flex h-11 shrink-0 items-center border-b border-[var(--border-subtle)] pl-[42px] pr-3"
         >
-          <AppIcon name="search" :size="14" class="text-[var(--text-muted)]" />
           <input
             ref="input"
             v-model="inputValue"
             type="text"
-            class="focus-ring h-8 min-w-0 flex-1 appearance-none border-0 bg-transparent px-1 text-[13px] text-[var(--text-primary)] placeholder:text-[var(--text-muted)]"
+            class="focus-ring h-8 min-w-0 flex-1 appearance-none border-0 bg-transparent px-0 text-[13px] text-[var(--text-primary)] placeholder:text-[var(--text-muted)]"
             role="combobox"
             aria-autocomplete="list"
             aria-haspopup="listbox"
@@ -418,9 +418,6 @@ watch(mode, (next) => {
             @compositionstart="handleCompositionStart"
             @compositionend="handleCompositionEnd"
           />
-          <span class="shrink-0 text-[11px] text-[var(--text-muted)]">
-            {{ paletteModeLabel(mode) }}
-          </span>
         </div>
 
         <div
