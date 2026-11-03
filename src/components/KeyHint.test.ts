@@ -11,11 +11,14 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
-function mount(shortcut: string) {
+function mount(
+  shortcut: string,
+  variant?: "keycap" | "plain",
+) {
   document.body.innerHTML = '<div id="app"></div>';
   app = createApp(
     defineComponent({
-      render: () => h(KeyHint, { shortcut }),
+      render: () => h(KeyHint, { shortcut, variant }),
     }),
   );
   app.mount("#app");
@@ -36,6 +39,18 @@ describe("KeyHint", () => {
       expect(key.classList).toContain("leading-none");
       expect(key.classList).toContain("font-sans");
     }
+  });
+
+  it("renders a plain shortcut without keycap chrome", () => {
+    expect(mount("⇧⌘F", "plain")).toHaveLength(0);
+    const hint = document.querySelector<HTMLElement>("#app > span")!;
+    expect(hint.textContent?.trim()).toBe("⇧⌘F");
+    expect(hint.className).toContain("font-sans");
+    expect(hint.className).toContain("text-[11px]");
+    expect(hint.className).toContain("text-[var(--text-muted)]");
+    expect(hint.className).not.toContain("border");
+    expect(hint.className).not.toContain("bg-[");
+    expect(hint.className).not.toContain("shadow-[");
   });
 
   it("uses the Windows and Linux key names from the platform shortcut", () => {

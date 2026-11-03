@@ -3,13 +3,24 @@ import { computed } from "vue";
 
 import { shortcutKeycaps } from "../app/platform";
 
-const props = defineProps<{ shortcut: string }>();
+const props = withDefaults(
+  defineProps<{ shortcut: string; variant?: "keycap" | "plain" }>(),
+  { variant: "keycap" },
+);
 
 const keys = computed(() => shortcutKeycaps(props.shortcut));
 </script>
 
 <template>
   <span
+    v-if="variant === 'plain'"
+    class="shrink-0 font-sans text-[11px] text-[var(--text-muted)]"
+    aria-hidden="true"
+  >
+    {{ shortcut }}
+  </span>
+  <span
+    v-else
     class="inline-flex shrink-0 items-center gap-1 align-middle"
     aria-hidden="true"
   >

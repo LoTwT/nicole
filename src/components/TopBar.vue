@@ -1,5 +1,12 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import {
+  computed,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  watch,
+} from "vue";
 
 import type { EditorMode } from "../editor";
 import {
@@ -10,14 +17,18 @@ import AppIcon from "./AppIcon.vue";
 import KeyHint from "./KeyHint.vue";
 
 export interface TopBarTab {
+  id: number;
   name: string;
+  /** Same-name disambiguation, e.g. the parent folder name. */
+  suffix: string | null;
   title: string;
   problem: "danger" | "warning" | null;
   problemLabel: string;
 }
 
 const props = defineProps<{
-  tab: TopBarTab | null;
+  tabs: readonly TopBarTab[];
+  activeTabId: number | null;
   mode: EditorMode;
   platform: AppPlatform;
   compact: boolean;
@@ -29,8 +40,9 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  "close-tab": [];
-  "activate-tab": [];
+  "close-tab": [id: number];
+  "activate-tab": [id: number];
+  "tab-menu": [id: number, x: number, y: number];
   "set-mode": [mode: EditorMode];
   "toggle-sidebar": [];
   "toggle-outline": [];
@@ -51,6 +63,8 @@ const modes: readonly {
 
 const modeMenuOpen = ref(false);
 const modeArea = ref<HTMLElement | null>(null);
+const tablist = ref<HTMLElement | null>(null);
+let resizeObserver: ResizeObserver | null = null;
 
 const activeMode = computed(
   () => modes.find((item) => item.id === props.mode) ?? modes[0]!,
@@ -84,12 +98,71 @@ function handlePointerDown(event: PointerEvent) {
   modeMenuOpen.value = false;
 }
 
+function tabElements(): HTMLElement[] {
+  return [
+    ...(tablist.value?.querySelectorAll<HTMLElement>('[role="tab"]') ?? []),
+  ];
+}
+
+function scrollActiveTabIntoView() {
+  const active = tabElements().find(
+    (element) => element.dataset.tabId === String(props.activeTabId),
+  );
+  active?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+}
+
+function focusTab(index: number) {
+  const elements = tabElements();
+  if (elements.length === 0) {
+    return;
+  }
+  const next = (index + elements.length) % elements.length;
+  const element = elements[next]!;
+  element.focus();
+  element.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+}
+
+function handleTabKeydown(event: KeyboardEvent, index: number) {
+  if (event.key === "ArrowRight") {
+    event.preventDefault();
+    focusTab(index + 1);
+    return;
+  }
+  if (event.key === "ArrowLeft") {
+    event.preventDefault();
+    focusTab(index - 1);
+    return;
+  }
+  if (
+    (event.key === "Enter" || event.key === " ") &&
+    event.target === event.currentTarget
+  ) {
+    event.preventDefault();
+    emit("activate-tab", props.tabs[index]!.id);
+  }
+}
+
+watch(
+  () => [props.activeTabId, props.tabs.length] as const,
+  async () => {
+    await nextTick();
+    scrollActiveTabIntoView();
+  },
+);
+
 onMounted(() => {
   document.addEventListener("pointerdown", handlePointerDown, true);
+  scrollActiveTabIntoView();
+  if (typeof ResizeObserver !== "undefined" && tablist.value) {
+    resizeObserver = new ResizeObserver(() => scrollActiveTabIntoView());
+    resizeObserver.observe(tablist.value);
+  }
 });
 
 onBeforeUnmount(() => {
   document.removeEventListener("pointerdown", handlePointerDown, true);
+  resizeObserver?.disconnect();
+  resizeObserver = null;
 });
 </script>
 
@@ -122,29 +195,46 @@ onBeforeUnmount(() => {
     </button>
 
     <div
-      class="app-no-drag flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto"
+      ref="tablist"
+      class="app-no-drag flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto overflow-y-hidden"
       role="tablist"
       aria-label="打开的标签页"
     >
       <div
-        v-if="tab"
+        v-for="(tab, index) in tabs"
+        :key="tab.id"
         role="tab"
-        aria-selected="true"
-        tabindex="0"
-        class="group flex h-7 min-w-24 max-w-50 shrink-0 items-center gap-1.5 rounded-[var(--radius-control)] bg-[var(--surface-subtle)] pl-3 pr-1.5 text-[var(--text-primary)]"
+        :aria-selected="tab.id === activeTabId"
+        :data-tab-id="tab.id"
+        :tabindex="tab.id === activeTabId ? 0 : -1"
+        class="group flex h-7 min-w-24 max-w-50 shrink-0 items-center gap-1.5 rounded-[var(--radius-control)] pl-3 pr-1.5"
+        :class="
+          tab.id === activeTabId
+            ? 'bg-[var(--surface-subtle)] text-[var(--text-primary)]'
+            : 'text-[var(--text-muted)] hover:bg-[var(--surface-subtle)]'
+        "
         :title="tab.title"
-        @click="emit('activate-tab')"
-        @auxclick.middle.prevent="emit('close-tab')"
-        @keydown.enter.prevent="emit('activate-tab')"
-        @keydown.space.prevent="emit('activate-tab')"
+        @click="emit('activate-tab', tab.id)"
+        @auxclick.middle.prevent="emit('close-tab', tab.id)"
+        @contextmenu.prevent="
+          emit('tab-menu', tab.id, $event.clientX, $event.clientY)
+        "
+        @keydown="handleTabKeydown($event, index)"
       >
         <span class="min-w-0 flex-1 truncate text-[12px]">{{ tab.name }}</span>
         <span
+          v-if="tab.suffix"
+          class="shrink-0 text-[11px] text-[var(--text-muted)]"
+        >
+          {{ tab.suffix }}
+        </span>
+        <button
           v-if="tab.problem"
-          class="grid size-4 shrink-0 place-items-center"
+          type="button"
+          class="focus-ring grid size-4 shrink-0 place-items-center rounded-[3px] hover:bg-[var(--surface-muted)]"
           :title="tab.problemLabel"
-          :aria-label="tab.problemLabel"
-          role="img"
+          :aria-label="`关闭 ${tab.name}：${tab.problemLabel}`"
+          @click.stop="emit('close-tab', tab.id)"
         >
           <span
             class="size-[7px] rounded-full"
@@ -153,14 +243,17 @@ onBeforeUnmount(() => {
                 ? 'bg-[var(--status-danger-fg)]'
                 : 'bg-[var(--status-warning-fg)]'
             "
+            role="img"
+            :aria-label="tab.problemLabel"
           ></span>
-        </span>
+        </button>
         <button
           v-else
           type="button"
-          class="focus-ring grid size-4 shrink-0 place-items-center rounded-[3px] text-[var(--text-muted)] opacity-0 hover:bg-[var(--surface-muted)] hover:text-[var(--text-primary)] focus-visible:opacity-100 group-hover:opacity-100"
+          class="focus-ring grid size-4 shrink-0 place-items-center rounded-[3px] text-[var(--text-muted)] hover:bg-[var(--surface-muted)] hover:text-[var(--text-primary)] focus-visible:opacity-100 group-hover:opacity-100"
+          :class="tab.id === activeTabId ? 'opacity-100' : 'opacity-0'"
           :aria-label="`关闭 ${tab.name}`"
-          @click.stop="emit('close-tab')"
+          @click.stop="emit('close-tab', tab.id)"
         >
           <AppIcon name="close" :size="12" />
         </button>
@@ -169,7 +262,7 @@ onBeforeUnmount(() => {
 
     <div ref="modeArea" class="app-no-drag relative flex shrink-0 items-center gap-1">
       <div
-        v-if="tab"
+        v-if="tabs.length > 0"
         class="flex gap-0.5 rounded-[var(--radius-control)] border border-[var(--border-subtle)] p-0.5"
         role="group"
         aria-label="编辑模式"

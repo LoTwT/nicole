@@ -162,7 +162,10 @@ defineExpose({
     >
       <AppIcon name="search" :size="13" />
       <span class="flex-1 text-left">搜索工作区</span>
-      <KeyHint :shortcut="shortcutText('search', platform)" />
+      <KeyHint
+        variant="plain"
+        :shortcut="shortcutText('search', platform)"
+      />
     </button>
 
     <FileTree

@@ -1,4 +1,9 @@
 import type { NativeMenuItem } from "../services/mygo";
+import {
+  commandShortcut,
+  TAB_CLOSE_COMMAND,
+  TAB_REOPEN_COMMAND,
+} from "./commands";
 
 export type AppPlatform = "macos" | "windows" | "linux";
 
@@ -96,9 +101,9 @@ export function shortcutText(
     case "open":
       return mac ? "⌘↓" : "Enter";
     case "close-tab":
-      return mac ? "⌘W" : "Ctrl+W";
+      return commandShortcut(TAB_CLOSE_COMMAND, platform);
     case "reopen-tab":
-      return mac ? "⇧⌘T" : "Ctrl+Shift+T";
+      return commandShortcut(TAB_REOPEN_COMMAND, platform);
     case "save":
       return mac ? "⌘S" : "Ctrl+S";
     case "sidebar":
@@ -122,6 +127,12 @@ export interface ContextMenuOptions {
   isMarkdown: boolean;
   /** The tab belongs to the open workspace, so it can be revealed there. */
   inWorkspace: boolean;
+  /** Tab menus: more than one tab is open, so "close others" applies. */
+  hasOtherTabs?: boolean;
+  /** Tab menus: at least one tab sits to the right of the clicked tab. */
+  hasTabsRight?: boolean;
+  /** Tab menus: a closed tab can be reopened. */
+  canReopen?: boolean;
 }
 
 /**
@@ -136,11 +147,11 @@ export function buildContextMenu(
   if (target === "tab") {
     return [
       { id: "close-tab", label: "关闭", accelerator: shortcutText("close-tab", platform) },
-      { id: "close-other-tabs", label: "关闭其他", disabled: true },
-      { id: "close-tabs-right", label: "关闭右侧", disabled: true },
-      { id: "close-all-tabs", label: "关闭全部", disabled: true },
+      { id: "close-other-tabs", label: "关闭其他", disabled: !options.hasOtherTabs },
+      { id: "close-tabs-right", label: "关闭右侧", disabled: !options.hasTabsRight },
+      { id: "close-all-tabs", label: "关闭全部" },
       { id: "", label: "", separator: true },
-      { id: "reopen-tab", label: "重新打开关闭的标签页", accelerator: shortcutText("reopen-tab", platform), disabled: true },
+      { id: "reopen-tab", label: "重新打开关闭的标签页", accelerator: shortcutText("reopen-tab", platform), disabled: !options.canReopen },
       { id: "", label: "", separator: true },
       { id: "reveal-in-tree", label: "在文件树中定位", disabled: !options.inWorkspace },
       { id: "reveal", label: revealLabel(platform) },

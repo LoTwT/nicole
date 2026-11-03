@@ -57,6 +57,12 @@ func main() {
 		log.Fatal(err)
 	}
 	workspace.useSettings(settingsStore)
+	tabsStore, err := startupTabsStore()
+	if err != nil {
+		log.Fatal(err)
+	}
+	workspaceTabs := NewWorkspaceTabs(tabsStore)
+	workspaceTabs.useCurrentRoot(workspace.openRoot)
 	if !generatingClient() {
 		applySavedTheme(settingsStore)
 	}
@@ -95,6 +101,7 @@ func main() {
 		workspace,
 		assets,
 		settings,
+		workspaceTabs,
 		singleFiles,
 		openedFiles,
 		NativeMenu{},

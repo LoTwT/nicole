@@ -8,11 +8,16 @@ import {
 import {
   ChangeSet,
   Compartment,
+  EditorSelection,
   EditorState,
   RangeSetBuilder,
   type Extension,
 } from "@codemirror/state";
-import { redo as historyRedo, undo as historyUndo } from "@codemirror/commands";
+import {
+  historyField,
+  redo as historyRedo,
+  undo as historyUndo,
+} from "@codemirror/commands";
 import {
   Decoration,
   EditorView,
@@ -31,18 +36,22 @@ import type {
   CreateEditorOptions,
   EditorHandle,
   EditorMode,
+  EditorRestoreState,
   ImageResolver,
   InsertionTicket,
   PasteImageHandler,
+  SavedSelection,
 } from "./types";
 
 export type {
   CreateEditorOptions,
   EditorHandle,
   EditorMode,
+  EditorRestoreState,
   ImageResolver,
   InsertionTicket,
   PasteImageHandler,
+  SavedSelection,
 } from "./types";
 
 class BulletWidget extends WidgetType {
@@ -588,6 +597,32 @@ interface TicketState {
   at: number;
 }
 
+function clampedPosition(value: unknown, docLength: number): number {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.max(0, Math.min(docLength, value))
+    : 0;
+}
+
+function selectionFromJSON(
+  selection: SavedSelection | null | undefined,
+  docLength: number,
+): EditorSelection {
+  if (!selection || !Array.isArray(selection.ranges) || selection.ranges.length === 0) {
+    return EditorSelection.single(0);
+  }
+  const ranges = selection.ranges.map((range) =>
+    EditorSelection.range(
+      clampedPosition(range.anchor, docLength),
+      clampedPosition(range.head ?? range.anchor, docLength),
+    ),
+  );
+  const main = Math.min(
+    Math.max(0, Number.isInteger(selection.main) ? selection.main : 0),
+    ranges.length - 1,
+  );
+  return EditorSelection.create(ranges, main);
+}
+
 export function createEditor(options: CreateEditorOptions): EditorHandle {
   const {
     parent,
@@ -595,6 +630,7 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     mode: initialMode = "live",
     platform = runtimePlatform(),
     commands = [],
+    restore,
     resolveImage = defaultResolveImage,
     onPasteImage,
     onChange,
@@ -707,38 +743,88 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     });
   };
 
+  const extensions: Extension[] = [
+    basicSetup,
+    EditorView.lineWrapping,
+    markdown({ base: markdownLanguage }),
+    syntaxHighlighting(highlightStyle),
+    editorTheme,
+    createCommandKeymap(enabledCommands, platform),
+    imageHandlers(onPasteImage, createTicketAt),
+    EditorView.updateListener.of((update) => {
+      if (update.docChanged) {
+        for (const ticket of tickets.values()) {
+          ticket.at = update.changes.mapPos(ticket.at, 1);
+        }
+        onChange?.(update.state.doc.toString());
+      }
+      if (
+        pendingInsertions.length > 0 &&
+        !update.view.compositionStarted &&
+        !update.view.composing
+      ) {
+        scheduleInsertion();
+      }
+    }),
+    modeCompartment.of(modeExtension(mode, resolveImage)),
+  ];
+
+  let initialState: EditorState | null = null;
+  if (restore?.history != null) {
+    try {
+      initialState = EditorState.fromJSON(
+        {
+          doc,
+          selection: selectionFromJSON(restore.selection, doc.length).toJSON(),
+          history: restore.history,
+        },
+        { extensions },
+        { history: historyField },
+      );
+    } catch {
+      // A history entry from a document that changed on disk should not keep
+      // the tab from opening; fall back to the same text without history.
+    }
+  }
   view = new EditorView({
     parent,
-    state: EditorState.create({
-      doc,
-      extensions: [
-        basicSetup,
-        EditorView.lineWrapping,
-        markdown({ base: markdownLanguage }),
-        syntaxHighlighting(highlightStyle),
-        editorTheme,
-        createCommandKeymap(enabledCommands, platform),
-        imageHandlers(onPasteImage, createTicketAt),
-        EditorView.updateListener.of((update) => {
-          if (update.docChanged) {
-            for (const ticket of tickets.values()) {
-              ticket.at = update.changes.mapPos(ticket.at, 1);
-            }
-            onChange?.(update.state.doc.toString());
-          }
-          if (
-            pendingInsertions.length > 0 &&
-            !update.view.compositionStarted &&
-            !update.view.composing
-          ) {
-            scheduleInsertion();
-          }
-        }),
-        modeCompartment.of(modeExtension(mode, resolveImage)),
-      ],
-    }),
+    state:
+      initialState ??
+      EditorState.create({
+        doc,
+        selection: restore?.selection
+          ? selectionFromJSON(restore.selection, doc.length)
+          : undefined,
+        extensions,
+      }),
   });
   view.contentDOM.addEventListener("compositionend", onCompositionEnd);
+
+  if (restore?.scrollTopLine != null) {
+    const lineNumber = restore.scrollTopLine;
+    const offset = restore.scrollTopOffset ?? 0;
+    const targetLine = () =>
+      view.state.doc.line(
+        Math.min(Math.max(1, lineNumber), view.state.doc.lines),
+      );
+    // Set it once for the first paint; the measure pass below corrects it
+    // after the viewport has a real height and line blocks exist.
+    view.scrollDOM.scrollTop = Math.max(
+      0,
+      view.lineBlockAt(targetLine().from).top + offset,
+    );
+    view.requestMeasure({
+      read(current) {
+        const line = current.state.doc.line(
+          Math.min(Math.max(1, lineNumber), current.state.doc.lines),
+        );
+        return current.lineBlockAt(line.from).top + offset;
+      },
+      write(top) {
+        view.scrollDOM.scrollTop = Math.max(0, top);
+      },
+    });
+  }
 
   return {
     get view() {
@@ -773,6 +859,19 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
       return createTicketAt(at);
     },
     insertImages,
+    getRestoreState() {
+      const block = view.lineBlockAtHeight(view.scrollDOM.scrollTop);
+      const line = view.state.doc.lineAt(block.from);
+      const stateJSON = view.state.toJSON({ history: historyField });
+      return {
+        selection: view.state.selection.toJSON() as SavedSelection,
+        history: stateJSON.history ?? null,
+        scrollTopLine: line.number,
+        // Signed: the document's top padding can put the first line below
+        // the viewport top, and restoring must keep that scroll offset.
+        scrollTopOffset: view.scrollDOM.scrollTop - block.top,
+      };
+    },
     focus() {
       view.focus();
     },

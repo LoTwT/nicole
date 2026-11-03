@@ -5,6 +5,24 @@ import type { CommandDefinition } from "../commands/types";
 
 export type EditorMode = "live" | "immersive" | "source";
 
+/** JSON form of EditorSelection, kept here so callers need no CodeMirror type. */
+export interface SavedSelection {
+  ranges: readonly { anchor: number; head?: number }[];
+  main: number;
+}
+
+/**
+ * Everything a background tab keeps besides its text. Selection and history
+ * are CodeMirror's JSON forms; the scroll position is the top visible line and
+ * the pixel offset inside that line.
+ */
+export interface EditorRestoreState {
+  selection: SavedSelection | null;
+  history: unknown;
+  scrollTopLine: number | null;
+  scrollTopOffset: number | null;
+}
+
 /** Resolves a Markdown image URL for rendering; return null to keep the source visible. */
 export type ImageResolver = (src: string) => string | null;
 
@@ -32,6 +50,8 @@ export interface CreateEditorOptions {
    * always included, so editor commands only need to be defined there.
    */
   commands?: readonly CommandDefinition[];
+  /** Restores a background tab's selection, scroll position and undo history. */
+  restore?: EditorRestoreState;
   resolveImage?: ImageResolver;
   onPasteImage?: PasteImageHandler;
   onChange?: (doc: string) => void;
@@ -67,6 +87,11 @@ export interface EditorHandle {
    * interrupt the candidate window. An empty list releases the ticket.
    */
   insertImages(ticket: InsertionTicket, markdown: readonly string[]): void;
+  /**
+   * Captures what a background tab keeps: selection, top visible line with
+   * its pixel offset, and the serialized undo history.
+   */
+  getRestoreState(): EditorRestoreState;
   focus(): void;
   destroy(): void;
 }

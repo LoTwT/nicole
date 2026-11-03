@@ -52,4 +52,11 @@ describe("EmptyState", () => {
       quickOpenRow(mount("windows")).querySelector(".sr-only")?.textContent?.trim(),
     ).toBe("Ctrl+P");
   });
+
+  it("keeps keycaps for the temporary empty-state shortcuts", () => {
+    const row = quickOpenRow(mount("macos"));
+    expect(
+      [...row.querySelectorAll("kbd")].map((key) => key.textContent?.trim()),
+    ).toEqual(["⌘", "P"]);
+  });
 });
