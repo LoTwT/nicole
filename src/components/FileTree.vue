@@ -11,10 +11,10 @@ import {
   type TreeEditState,
   type TreeNode,
 } from "../app/file-tree";
-import {
-  buildContextMenu,
-  type AppPlatform,
-} from "../app/platform";
+import { buildContextMenu } from "../app/context-menu";
+import type { AppPlatform } from "../app/platform";
+import { matchCommand } from "../commands/keybinding";
+import { commandRegistry } from "../commands/registry";
 import { copyText } from "../services/clipboard";
 import {
   createFile,
@@ -480,8 +480,7 @@ async function handleTreeKeydown(event: KeyboardEvent) {
     return;
   }
   const node = focusedNode();
-  const mac = props.platform === "macos";
-  const modifier = mac ? event.metaKey : event.ctrlKey;
+  const modifier = props.platform === "macos" ? event.metaKey : event.ctrlKey;
 
   if (event.key === "ArrowDown" && !modifier) {
     event.preventDefault();
@@ -514,37 +513,35 @@ async function handleTreeKeydown(event: KeyboardEvent) {
     }
     return;
   }
-  if (event.key === "Enter" && node) {
-    event.preventDefault();
-    if (mac) {
-      await startRename(node);
-    } else {
-      await openNode(node);
-    }
+
+  const command = matchCommand(
+    event,
+    props.platform,
+    commandRegistry,
+    "file-tree",
+  );
+  if (command === null) {
     return;
   }
-  if (event.key === "ArrowDown" && mac && event.metaKey && node) {
+  const handled = command.run({
+    view: null,
+    platform: props.platform,
+    fileTree: {
+      focusedNode: node,
+      open: (target) => openNode(target),
+      rename: (target) => startRename(target),
+      trash: (target) => {
+        emit("trash-request", target);
+      },
+      createFolder: (target) =>
+        startCreate(
+          "create-folder",
+          target?.isDir ? target.path : target ? parentPath(target.path) : ".",
+        ),
+    },
+  });
+  if (handled) {
     event.preventDefault();
-    await openNode(node);
-    return;
-  }
-  if (event.key === "F2" && node && !mac) {
-    event.preventDefault();
-    await startRename(node);
-    return;
-  }
-  if (
-    (node && mac && event.metaKey && event.key === "Backspace") ||
-    (node && !mac && event.key === "Delete")
-  ) {
-    event.preventDefault();
-    emit("trash-request", node);
-    return;
-  }
-  if (modifier && event.shiftKey && event.key.toLowerCase() === "n") {
-    event.preventDefault();
-    const dir = node?.isDir ? node.path : node ? parentPath(node.path) : ".";
-    await startCreate("create-folder", dir);
   }
 }
 

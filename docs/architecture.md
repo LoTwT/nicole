@@ -38,14 +38,15 @@ src/
   image-url.ts            把 Markdown 图片 URL 解析成自定义协议地址
   image-insertion.ts      粘贴、拖入图片与编辑器插入凭据的接线
   app/                    界面状态与纯逻辑辅助
+    context-menu.ts       文件树、根目录和标签页右键菜单，快捷键取自注册表
     file-tree.ts          文件树节点、排序、展开与增量合并
     line-endings.ts       换行风格检测与写回
     paths.ts              工作区相对路径、主目录缩写
-    platform.ts           平台判断、快捷键文字/键帽拆分与右键菜单项
+    platform.ts           平台判断、平台文字与快捷键键帽拆分
     status.ts             保存状态、横幅优先级和标签页圆点
     tabs.ts               标签页模型、同名区分、关闭问题与后台快照映射
-    commands.ts           标签页命令的 id、标题、键位与执行函数
     watch-events.ts       监听事件与已打开文档、文件树刷新范围的对应
+  commands/               唯一命令注册表、格式/应用命令、键位匹配与格式化、拼音搜索
   components/             界面组件
     AppSidebar.vue        侧栏外壳、宽度拖动、底部切换文件夹/主题/设置入口
     FileTree.vue          按需读取的文件树、右键菜单、行内新建与重命名
@@ -105,7 +106,7 @@ Go（main.go）
 - `main.go` 还注册 MyGo 的 `updater.Plugin`，绑定工作区、图片、设置、单文件、打开方式和原生菜单服务，注册图片协议并设置应用菜单；文件监听由 `Workspace.Watch` 在页面调用时开始。更新源、版本注入和发布流程见[发布与自动更新](release.md)。
 - `src/services/` 是生成的 `mygo.ts` 客户端上的薄封装，不承载业务逻辑。`app.ts` 只把 `Application.Info` 包装成 `getAppInfo`；`workspace.ts` 包装 `Workspace` 的 Markdown 方法、`PickFolder`/`OpenFolder` 和关窗保存事件；`files.ts`、`settings.ts`、`single-file.ts`、`menu.ts`、`open-file.ts` 和 `watch.ts` 分别包装对应服务；`clipboard.ts` 只负责复制界面文字。封装不拼接路径，也不缓存文件内容。
 - `src/app/` 只放不依赖 Vue 组件实例的界面逻辑，`src/components/` 只负责渲染和交互事件；`App.vue` 负责把这些模块与 `services/` 接起来，不直接调用 MyGo。
-- `src/commands/` 保存唯一命令注册表、格式与插入命令、键位显示和拼音搜索/最近使用逻辑；只依赖 CodeMirror 和 `src/app/platform.ts`，不依赖 Vue 或 MyGo。`src/editor/slash.ts` 负责 slash 触发、查询和菜单状态，`src/components/SlashMenu.vue` 只负责渲染和定位。
+- `src/commands/` 保存唯一命令注册表、格式与插入命令、应用与文件树命令、键位匹配和显示、拼音搜索/最近使用逻辑；只依赖 CodeMirror、`src/app/platform.ts`，以及类型层面的 `src/app/file-tree.ts`，不依赖 Vue 或 MyGo。`src/editor/slash.ts` 负责 slash 触发、查询和菜单状态，`src/components/SlashMenu.vue` 只负责渲染和定位；`src/app/context-menu.ts` 组装右键菜单并从注册表读取快捷键。
 - `createEditor` 的接口为：
 
   ```ts
@@ -123,9 +124,13 @@ Go（main.go）
     dispatch(...specs: TransactionSpec[]): void;
   }
 
+  type CommandScope = "editor" | "app" | "file-tree";
+
   interface CommandContext {
-    view: CommandTarget | null; // 应用命令不依赖编辑器
+    view: CommandTarget | null; // 应用和文件树命令不依赖编辑器
     platform: AppPlatform;
+    app?: AppCommandActions;    // App.vue 提供的打开、保存、切标签等动作
+    fileTree?: FileTreeCommandContext; // 焦点节点与打开、重命名、删除、新建动作
   }
 
   interface CommandDefinition {
@@ -133,11 +138,12 @@ Go（main.go）
     label: string;
     pinyin?: string;        // 额外拼音和英文别名
     icon?: string;          // 供格式工具栏使用
-    group: "inline" | "paragraph" | "block" | "insert";
-    scope: "editor" | "app";
+    group: "inline" | "paragraph" | "block" | "insert" | "app";
+    scope: CommandScope;
     glyph?: string;         // slash 菜单 22px 示意
     keys?: readonly CommandKeyBinding[];
     inSlashMenu?: boolean;
+    available?: boolean;    // false 时只保留定义和键位显示，不参与分发
     run: (context: CommandContext) => boolean;
   }
 
@@ -157,7 +163,7 @@ Go（main.go）
   `EditorHandle` 提供 `view`、`mode`、`setMode`、`replaceDocument`、`undo`、`redo`、`containsPoint`、`createInsertionTicket`、`insertImages`、`getRestoreState`、`focus` 和 `destroy`。`getRestoreState` 序列化选区、`historyField`、顶部行号和行内像素偏移；后台标签页销毁视图时只保留这份状态和文本。`replaceDocument` 把磁盘上的新文本作为一次差异修改应用，映射选区并把可见区域顶部保持在原行。`undo()` / `redo()` 在输入法组合期间返回 `false`，不执行历史；`containsPoint(x, y)` 按视口坐标判断落点是否在编辑器内；`createInsertionTicket(x, y)` 按视口坐标创建插入凭据，坐标不在编辑区内时返回 null；`insertImages(ticket, markdown)` 在一个事务里插入文本，因此是一个撤销步。编辑器持续对凭据做位置映射，中文输入法组合期间先排队，组合结束后再插入；多条排队插入逐条处理，前一条插入会映射后一条的位置。`onPasteImage` 只把粘贴事件交给应用层，保存图片和生成 Markdown 由 `src/image-insertion.ts` 经 `src/services/assets.ts` 完成；编辑区不接触 MyGo。三种模式通过同一个 `Compartment` 重配置，`EditorView` 实例不变。编辑器命令的键位由注册表生成，统一通过 `Prec.highest` 注册，组合输入期间返回 `false` 交给输入法。
 
 - 编辑器主题直接读取 CSS 变量；界面切换亮暗时只改 `<html>` 上的 `.dark`，不重建编辑器（见[主题与字体](specs/theming.md#编辑器主题)）。
-- 命令注册表只有一份，各入口共用，见 [Slash 命令](specs/slash-commands.md#命令注册表)。`formatCommandShortcut` 把注册表键位转成平台显示文本；`createCommandKeymap` 统一生成 `Prec.highest` 键位表。`pinyin-pro` 只在第一次打开 slash 菜单时动态加载，最近使用记录存放在 `localStorage`。格式命令把事务标为 `input.format` 并用 `isolateHistory` 隔离撤销步；slash 执行把删除查询和命令产生的事务合并成一个事务。
+- 命令注册表只有一份，各入口共用，见 [Slash 命令](specs/slash-commands.md#命令注册表)。`formatCommandShortcut` 把注册表键位转成平台显示文本，悬停提示、`KeyHint`、右键菜单和测试都使用这一条路径；`createCommandKeymap` 统一生成编辑器命令的 `Prec.highest` 键位表。`src/commands/keybinding.ts` 用 `w3c-keyname`、`event.code` 和 `keyCode` 回退把按键匹配到注册表，`App.vue` 分发 `scope: "app"` 的命令，`FileTree.vue` 只在文件树有焦点时分发 `scope: "file-tree"` 的命令；`available: false` 的占位命令不参与分发。`pinyin-pro` 只在第一次打开 slash 菜单时动态加载，最近使用记录存放在 `localStorage`。格式命令把事务标为 `input.format` 并用 `isolateHistory` 隔离撤销步；slash 执行把删除查询和命令产生的事务合并成一个事务。
 - 编辑模式的设计和限制见[编辑模式](specs/editor-modes.md)。
 
 ## IPC 用法

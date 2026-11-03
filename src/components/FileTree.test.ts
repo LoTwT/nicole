@@ -76,14 +76,17 @@ async function settle() {
   }
 }
 
-function mountTree(initialExpanded: string[] = []) {
+function mountTree(
+  initialExpanded: string[] = [],
+  platform: "macos" | "windows" | "linux" = "macos",
+) {
   const props = reactive({
     rootName: "notes",
     rootPath: "/tmp/notes",
     rootDisplayPath: "~/notes",
     generation: 3,
     selectedPath: null as string | null,
-    platform: "macos" as const,
+    platform,
     initialExpanded,
   });
   events = {
@@ -330,5 +333,135 @@ describe("FileTree", () => {
     );
     await settle();
     expect(mocks.listDirectory).toHaveBeenCalledWith("notes");
+  });
+
+  it("dispatches macOS file-tree shortcuts from the registry", async () => {
+    mountTree();
+    await settle();
+
+    row("a.md").focus();
+    row("a.md").dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "ArrowDown",
+        code: "ArrowDown",
+        metaKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    expect(events.open).toHaveBeenCalledWith(
+      expect.objectContaining({ path: "a.md" }),
+    );
+
+    row("a.md").focus();
+    row("a.md").dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Backspace",
+        code: "Backspace",
+        metaKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    expect(events.trash).toHaveBeenCalledWith(
+      expect.objectContaining({ path: "a.md" }),
+    );
+
+    row("a.md").focus();
+    row("a.md").dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Enter",
+        code: "Enter",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    expect(
+      host.querySelector<HTMLInputElement>('input[aria-label="重命名"]'),
+    ).not.toBeNull();
+  });
+
+  it("creates a folder with the file-tree shortcut", async () => {
+    mountTree();
+    await settle();
+
+    row("a.md").focus();
+    row("a.md").dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "n",
+        code: "KeyN",
+        metaKey: true,
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    const input = host.querySelector<HTMLInputElement>(
+      'input[aria-label="新建文件夹"]',
+    );
+    expect(input).not.toBeNull();
+    input!.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+    );
+    await settle();
+    expect(mocks.createFolder).toHaveBeenCalledWith(
+      ".",
+      "未命名文件夹",
+      3,
+    );
+  });
+
+  it("uses Enter, F2 and Delete on Windows", async () => {
+    mountTree([], "windows");
+    await settle();
+
+    row("a.md").focus();
+    row("a.md").dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Enter",
+        code: "Enter",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    expect(events.open).toHaveBeenCalledWith(
+      expect.objectContaining({ path: "a.md" }),
+    );
+
+    row("a.md").focus();
+    row("a.md").dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "F2",
+        code: "F2",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    expect(
+      host.querySelector<HTMLInputElement>('input[aria-label="重命名"]'),
+    ).not.toBeNull();
+
+    const input = host.querySelector<HTMLInputElement>(
+      'input[aria-label="重命名"]',
+    )!;
+    input.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    );
+    await settle();
+    row("notes").focus();
+    row("notes").dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Delete",
+        code: "Delete",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    expect(events.trash).toHaveBeenCalledWith(
+      expect.objectContaining({ path: "notes" }),
+    );
   });
 });

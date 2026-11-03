@@ -1,11 +1,12 @@
 import type { EditorState, TransactionSpec } from "@codemirror/state";
 
+import type { TreeNode } from "../app/file-tree";
 import type { AppPlatform } from "../app/platform";
 
-export type CommandScope = "editor" | "app";
+export type CommandScope = "editor" | "app" | "file-tree";
 
-/** Toolbar grouping; commands without a toolbar use `insert`. */
-export type CommandGroup = "inline" | "paragraph" | "block" | "insert";
+/** Toolbar grouping; commands without a toolbar use `insert`, app commands use `app`. */
+export type CommandGroup = "inline" | "paragraph" | "block" | "insert" | "app";
 
 export interface CommandKeyBinding {
   /** CodeMirror key binding used when no platform-specific key is given. */
@@ -25,10 +26,44 @@ export interface CommandTarget {
   dispatch(...specs: TransactionSpec[]): void;
 }
 
+export type CommandEditorMode = "live" | "immersive" | "source";
+
+/**
+ * Application actions supplied by `App.vue`. Keeping them in the context
+ * lets the static registry own the command definitions while reactive state
+ * stays in the component.
+ */
+export interface AppCommandActions {
+  chooseFolder(): void | Promise<void>;
+  newFile(): void | Promise<void>;
+  saveCurrent(): void | Promise<void>;
+  toggleSidebar(): void | Promise<void>;
+  setMode(mode: CommandEditorMode): void | Promise<void>;
+  toggleTheme(): void | Promise<void>;
+  closeActiveTab(): void | Promise<void>;
+  reopenClosedTab(): void | Promise<void>;
+  nextTab(): void | Promise<void>;
+  previousTab(): void | Promise<void>;
+}
+
+/** The focused tree row and the actions a file-tree command can run. */
+export interface FileTreeCommandContext {
+  focusedNode: TreeNode | null;
+  open(node: TreeNode): void | Promise<void>;
+  rename(node: TreeNode): void | Promise<void>;
+  trash(node: TreeNode): void | Promise<void>;
+  /** Creates a folder next to the focused node; `null` means the root. */
+  createFolder(node: TreeNode | null): void | Promise<void>;
+}
+
 export interface CommandContext {
   /** Null when an application command is invoked outside an editor. */
   view: CommandTarget | null;
   platform: AppPlatform;
+  /** Present when `App.vue` dispatches an app command. */
+  app?: AppCommandActions;
+  /** Present when `FileTree.vue` dispatches a file-tree command. */
+  fileTree?: FileTreeCommandContext;
 }
 
 export interface CommandDefinition {
@@ -47,5 +82,11 @@ export interface CommandDefinition {
   keys?: readonly CommandKeyBinding[];
   /** Commands shown by the slash menu; shortcuts do not imply this. */
   inSlashMenu?: boolean;
+  /**
+   * False while the feature behind the command is not implemented. The
+   * command stays registered so its shortcut has one definition, but key
+   * dispatch and future menus skip it. Defaults to true.
+   */
+  available?: boolean;
   run: (context: CommandContext) => boolean;
 }
