@@ -60,11 +60,38 @@ export const appCommands: readonly CommandDefinition[] = [
   {
     id: "nav.quick-open",
     label: "快速打开文件",
+    pinyin: "quick open file",
     group: "app",
     scope: "app",
     keys: [{ key: "Mod-p" }],
-    available: false,
-    run: () => false,
+    run: ({ app }) => {
+      void app?.openCommandPalette("file");
+      return app !== undefined;
+    },
+  },
+  {
+    id: "nav.command-palette",
+    label: "命令面板",
+    pinyin: "command palette",
+    group: "app",
+    scope: "app",
+    keys: [{ key: "Shift-Mod-p" }],
+    run: ({ app }) => {
+      void app?.openCommandPalette("command");
+      return app !== undefined;
+    },
+  },
+  {
+    id: "nav.goto-heading",
+    label: "转到标题",
+    pinyin: "goto heading outline",
+    group: "app",
+    scope: "app",
+    keys: [{ key: "Shift-Mod-o" }],
+    run: ({ app }) => {
+      void app?.openCommandPalette("heading");
+      return app !== undefined;
+    },
   },
   {
     id: "nav.search",

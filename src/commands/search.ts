@@ -83,6 +83,11 @@ function normalize(value: string): string {
   return value.toLowerCase().replace(/[\s_-]+/g, "");
 }
 
+/** Shared normalization for command, file and heading palette searches. */
+export function normalizeSearchText(value: string): string {
+  return normalize(value);
+}
+
 function isSubsequence(value: string, query: string): boolean {
   let cursor = 0;
   for (const character of value) {
@@ -98,6 +103,29 @@ function rank(value: string, query: string, base: number): number | null {
   if (value.includes(query)) return base + 1;
   if (isSubsequence(value, query)) return base + 2;
   return null;
+}
+
+/**
+ * Ranks one text against an already-normalized query. Direct text matches
+ * score before full pinyin and initials, matching the slash menu ordering.
+ */
+export function textMatchRank(
+  text: string,
+  normalizedQuery: string,
+  matcher: PinyinMatcher | null,
+  base = 0,
+): number | null {
+  if (!normalizedQuery) return base;
+  const value = normalize(text);
+  const ranks = [rank(value, normalizedQuery, base)];
+  if (matcher) {
+    ranks.push(
+      rank(normalize(matcher.full(text)), normalizedQuery, base + 2),
+      rank(normalize(matcher.initials(text)), normalizedQuery, base + 4),
+    );
+  }
+  const matches = ranks.filter((item): item is number => item !== null);
+  return matches.length === 0 ? null : Math.min(...matches);
 }
 
 function matchRank(

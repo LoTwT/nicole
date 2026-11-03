@@ -60,6 +60,8 @@ const COMMAND_BY_ROW: Readonly<Record<string, string | readonly string[]>> = {
   "立即保存": "app.save",
   "设置": "app.settings",
   "快速打开文件": "nav.quick-open",
+  "命令面板": "nav.command-palette",
+  "转到标题": "nav.goto-heading",
   "全文搜索": "nav.search",
   "显示或隐藏侧栏": "nav.toggle-sidebar",
   "显示或隐藏大纲": "nav.toggle-outline",
@@ -92,8 +94,6 @@ const COMMAND_BY_ROW: Readonly<Record<string, string | readonly string[]>> = {
 
 /** Rows whose commands are deliberately outside this registry PR. */
 const EXCLUDED_ROWS: Readonly<Record<string, string>> = {
-  "命令面板": "PR7b-2 实现命令面板",
-  "转到标题": "PR7b-2 实现命令面板",
   "查找": "PR9 实现 Nicole 查找栏",
   "查找并替换": "PR9 实现 Nicole 查找栏",
   "下一个匹配": "PR9 实现 Nicole 查找栏",
@@ -152,6 +152,9 @@ describe("command registry", () => {
     expect(new Set(ids).size).toBe(ids.length);
     expect(getCommand("format.bold")?.label).toBe("加粗");
     expect(getCommand("format.bold")?.keys).toEqual([{ key: "Mod-b" }]);
+    expect(isCommandAvailable(getCommand("nav.quick-open")!)).toBe(true);
+    expect(isCommandAvailable(getCommand("nav.command-palette")!)).toBe(true);
+    expect(isCommandAvailable(getCommand("nav.goto-heading")!)).toBe(true);
   });
 
   it("separates slash commands from toolbar-only commands", () => {
@@ -214,7 +217,7 @@ describe("command registry", () => {
   });
 
   it("registers unavailable placeholders without dispatching them", () => {
-    for (const id of ["app.settings", "nav.quick-open", "nav.search", "nav.toggle-outline"]) {
+    for (const id of ["app.settings", "nav.search", "nav.toggle-outline"]) {
       const command = getCommand(id);
       expect(command, id).toBeDefined();
       expect(isCommandAvailable(command!), id).toBe(false);

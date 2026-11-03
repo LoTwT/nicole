@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { EditorSelection } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
 import {
   computed,
   markRaw,
@@ -9,6 +11,11 @@ import {
   shallowRef,
 } from "vue";
 
+import {
+  normalizeRecentFiles,
+  rememberRecentFilePath,
+  type CommandPaletteMode,
+} from "./app/command-palette";
 import { buildContextMenu } from "./app/context-menu";
 import {
   absoluteBaseName,
@@ -19,7 +26,16 @@ import {
 } from "./app/paths";
 import { trashLabel, type AppPlatform } from "./app/platform";
 import { matchCommand } from "./commands/keybinding";
-import { commandRegistry } from "./commands/registry";
+import {
+  commandRegistry,
+  getCommand,
+  isCommandAvailable,
+} from "./commands/registry";
+import {
+  readRecentCommandIds,
+  rememberRecentCommandId,
+} from "./commands/search";
+import type { CommandContext } from "./commands/types";
 import {
   detectLineEndings,
   normalizeLineEndings,
@@ -47,6 +63,7 @@ import type { TreeNode } from "./app/file-tree";
 import AppBanner from "./components/AppBanner.vue";
 import AppDialog from "./components/AppDialog.vue";
 import AppSidebar from "./components/AppSidebar.vue";
+import CommandPalette from "./components/CommandPalette.vue";
 import EmptyState from "./components/EmptyState.vue";
 import NonMarkdownPlaceholder from "./components/NonMarkdownPlaceholder.vue";
 import SlashMenu from "./components/SlashMenu.vue";
@@ -59,6 +76,7 @@ import {
   type EditorRestoreState,
   type SavedSelection,
 } from "./editor";
+import { extractHeadings, type DocumentHeading } from "./editor/headings";
 import {
   createSlashMenu,
   type SlashMenuController,
@@ -103,6 +121,7 @@ import {
 import type { WorkspaceFileEvent } from "./services/mygo";
 import {
   finishClose,
+  listFiles,
   onSaveBeforeClose,
   openFolder as openFolderAtPath,
   pickFolder,
@@ -148,8 +167,18 @@ interface ClosedTab {
   name: string;
 }
 
+interface PaletteSession {
+  mode: CommandPaletteMode;
+  tabId: number | null;
+  selection: SavedSelection | null;
+  headings: DocumentHeading[];
+  recentFiles: string[];
+  recentCommandIds: string[];
+}
+
 const editorHost = ref<HTMLElement | null>(null);
 const sidebar = ref<InstanceType<typeof AppSidebar> | null>(null);
+const topBar = ref<InstanceType<typeof TopBar> | null>(null);
 const appInfo = ref<AppInfo | null>(null);
 const workspace = ref<WorkspaceState | null>(null);
 const tabs = ref<TabModel[]>([]);
@@ -164,6 +193,8 @@ const recentFolders = ref<string[]>([]);
 const missingRecent = ref<string[]>([]);
 const missingLastFolder = ref<string | null>(null);
 const expandedByRoot = ref<Record<string, string[]>>({});
+const recentFilesByRoot = ref<Record<string, string[]>>({});
+const paletteSession = shallowRef<PaletteSession | null>(null);
 
 const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
 const systemPrefersDark = ref(systemTheme.matches);
@@ -247,6 +278,15 @@ const currentPreview = computed<TabModel | null>(() => {
   return tab?.kind === "preview" ? tab : null;
 });
 const isMarkdownOpen = computed(() => currentMarkdown.value !== null);
+
+const paletteCommands = computed(() =>
+  commandRegistry.filter(
+    (command) =>
+      isCommandAvailable(command) &&
+      (command.scope === "app" ||
+        (command.scope === "editor" && isMarkdownOpen.value && editor !== null)),
+  ),
+);
 
 const sidebarShown = computed(
   () =>
@@ -485,6 +525,39 @@ async function removeRecent(folder: string) {
   } catch {
     // The list stays changed for this session.
   }
+}
+
+function recentFilesForRoot(root: string): string[] {
+  return recentFilesByRoot.value[root] ?? [];
+}
+
+function rememberRecentWorkspaceFile(root: string, path: string) {
+  if (!/\.md$/i.test(path)) {
+    return;
+  }
+  const current = recentFilesForRoot(root);
+  const next = rememberRecentFilePath(current, path);
+  if (
+    next.length === current.length &&
+    next.every((item, index) => item === current[index])
+  ) {
+    return;
+  }
+  recentFilesByRoot.value = {
+    ...recentFilesByRoot.value,
+    [root]: next,
+  };
+  schedulePersistTabs();
+}
+
+function setRecentFilesForRoot(
+  root: string,
+  files: readonly string[] | undefined,
+) {
+  recentFilesByRoot.value = {
+    ...recentFilesByRoot.value,
+    [root]: normalizeRecentFiles(files),
+  };
 }
 
 function markMissing(folder: string) {
@@ -966,6 +1039,9 @@ async function activateTab(id: number, focus = true) {
     return;
   }
   if (activeTabId.value === id) {
+    if (target.kind === "workspace" && workspace.value !== null) {
+      rememberRecentWorkspaceFile(workspace.value.root, target.path);
+    }
     closeOverlaySidebar();
     if (focus) {
       editor?.focus();
@@ -976,6 +1052,9 @@ async function activateTab(id: number, focus = true) {
   activeTabId.value = id;
   if (target.kind === "workspace" || target.kind === "preview") {
     lastWorkspaceActivePath = target.path;
+  }
+  if (target.kind === "workspace" && workspace.value !== null) {
+    rememberRecentWorkspaceFile(workspace.value.root, target.path);
   }
   await mountActive(focus);
   closeOverlaySidebar();
@@ -1137,6 +1216,7 @@ async function restoreTabsForRoot(
   if (!isCurrentWorkspace(root, generation)) {
     return null;
   }
+  setRecentFilesForRoot(root, stored.recentFiles);
   const restored: TabModel[] = [];
   const seen = new Set<string>();
   for (const item of stored.tabs) {
@@ -1279,6 +1359,9 @@ async function applyWorkspace(folder: {
       activeTabId.value = active?.id ?? null;
       if (active !== null && active.kind !== "single") {
         lastWorkspaceActivePath = active.path;
+      }
+      if (active?.kind === "workspace") {
+        rememberRecentWorkspaceFile(context.root, active.path);
       }
       await mountActive(true);
     } else if (keepSingle && lastWorkspaceActivePath === null) {
@@ -1452,6 +1535,21 @@ function renameTabPaths(oldPath: string, newPath: string, isDir: boolean) {
     );
     if (updated !== null) {
       lastWorkspaceActivePath = updated;
+    }
+  }
+  const root = workspace.value?.root;
+  if (root !== undefined) {
+    const current = recentFilesForRoot(root);
+    const next = normalizeRecentFiles(
+      current.map(
+        (path) => remapTabPath(path, oldPath, newPath, isDir) ?? path,
+      ),
+    );
+    if (next.some((path, index) => path !== current[index])) {
+      recentFilesByRoot.value = {
+        ...recentFilesByRoot.value,
+        [root]: next,
+      };
     }
   }
 }
@@ -1757,6 +1855,9 @@ async function closeTabsById(
       activeTabId.value = next.id;
       if (next.kind !== "single") {
         lastWorkspaceActivePath = next.path;
+      }
+      if (next.kind === "workspace" && workspace.value !== null) {
+        rememberRecentWorkspaceFile(workspace.value.root, next.path);
       }
       await mountActive(true);
     }
@@ -2130,29 +2231,75 @@ function isTextInput(target: EventTarget | null): boolean {
   );
 }
 
-function handleGlobalKeydown(event: KeyboardEvent) {
-  if (event.isComposing || event.keyCode === 229) {
+function closePalettePopovers() {
+  slashMenu?.close();
+  topBar.value?.closeModeMenu();
+  overlaySidebar.value = false;
+}
+
+function openCommandPalette(mode: CommandPaletteMode) {
+  if (
+    dialogOpen ||
+    paletteSession.value !== null ||
+    document.querySelector('[role="dialog"][aria-modal="true"]') !== null
+  ) {
     return;
   }
-  if (dialogOpen) {
-    return;
+  closePalettePopovers();
+  const tab = currentMarkdown.value;
+  const activeEditor = tab !== null ? editor : null;
+  paletteSession.value = {
+    mode,
+    tabId: tab?.id ?? null,
+    selection:
+      activeEditor === null
+        ? null
+        : (activeEditor.view.state.selection.toJSON() as SavedSelection),
+    headings:
+      activeEditor === null ? [] : extractHeadings(activeEditor.view.state),
+    recentFiles: [...recentFilesForRoot(workspace.value?.root ?? "")],
+    recentCommandIds: readRecentCommandIds(),
+  };
+}
+
+function closeCommandPalette() {
+  paletteSession.value = null;
+}
+
+function restorePaletteEditor(session: PaletteSession) {
+  if (
+    session.tabId === null ||
+    activeTabId.value !== session.tabId ||
+    editor === null
+  ) {
+    return null;
   }
-  if (event.key === "Escape") {
-    if (overlaySidebar.value) {
-      event.preventDefault();
-      overlaySidebar.value = false;
+  const view = editor.view;
+  view.focus();
+  if (session.selection !== null) {
+    const length = view.state.doc.length;
+    const clamp = (position: number) =>
+      Math.max(0, Math.min(length, Math.trunc(position)));
+    const ranges = session.selection.ranges.map((range) =>
+      EditorSelection.range(
+        clamp(range.anchor),
+        clamp(range.head ?? range.anchor),
+      ),
+    );
+    if (ranges.length > 0) {
+      const main = Math.max(
+        0,
+        Math.min(ranges.length - 1, session.selection.main),
+      );
+      view.dispatch({ selection: EditorSelection.create(ranges, main) });
     }
-    return;
   }
-  if (event.defaultPrevented || isTextInput(event.target)) {
-    return;
-  }
-  const command = matchCommand(event, platform.value, commandRegistry, "app");
-  if (command === null) {
-    return;
-  }
-  const handled = command.run({
-    view: editor?.view ?? null,
+  return view;
+}
+
+function commandContext(view: CommandContext["view"]): CommandContext {
+  return {
+    view,
     platform: platform.value,
     app: {
       chooseFolder: () => {
@@ -2184,8 +2331,91 @@ function handleGlobalKeydown(event: KeyboardEvent) {
       previousTab: () => {
         cycleTab(-1);
       },
+      openCommandPalette,
     },
+  };
+}
+
+async function runPaletteCommand(id: string) {
+  const session = paletteSession.value;
+  if (session === null) return;
+  closeCommandPalette();
+  await nextTick();
+  const command = getCommand(id);
+  if (command === undefined || !isCommandAvailable(command)) {
+    return;
+  }
+  if (command.scope === "file-tree") {
+    return;
+  }
+  const view =
+    command.scope === "editor" ? restorePaletteEditor(session) : null;
+  if (command.scope === "editor" && view === null) {
+    return;
+  }
+  const handled = command.run(commandContext(view));
+  if (handled) {
+    rememberRecentCommandId(command.id);
+  }
+}
+
+async function openPaletteFile(path: string) {
+  closeCommandPalette();
+  await nextTick();
+  if (workspace.value === null) return;
+  await openWorkspaceFile(path, absoluteBaseName(path));
+}
+
+async function jumpToPaletteHeading(position: number) {
+  const session = paletteSession.value;
+  if (session === null) return;
+  closeCommandPalette();
+  await nextTick();
+  if (
+    session.tabId === null ||
+    activeTabId.value !== session.tabId ||
+    editor === null
+  ) {
+    return;
+  }
+  const view = editor.view;
+  const at = Math.max(0, Math.min(view.state.doc.length, position));
+  view.dispatch({
+    selection: { anchor: at },
+    effects: EditorView.scrollIntoView(at, { y: "start" }),
   });
+  view.focus();
+}
+
+function handleGlobalKeydown(event: KeyboardEvent) {
+  if (event.isComposing || event.keyCode === 229) {
+    return;
+  }
+  if (dialogOpen) {
+    return;
+  }
+  if (paletteSession.value !== null) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeCommandPalette();
+    }
+    return;
+  }
+  if (event.key === "Escape") {
+    if (overlaySidebar.value) {
+      event.preventDefault();
+      overlaySidebar.value = false;
+    }
+    return;
+  }
+  if (event.defaultPrevented || isTextInput(event.target)) {
+    return;
+  }
+  const command = matchCommand(event, platform.value, commandRegistry, "app");
+  if (command === null) {
+    return;
+  }
+  const handled = command.run(commandContext(editor?.view ?? null));
   if (handled) {
     event.preventDefault();
   }
@@ -2319,7 +2549,11 @@ async function handleEntryCreated(path: string, isDir: boolean) {
   await openWorkspaceFile(path, absoluteBaseName(path));
 }
 
-function storedTabsPayload(): { tabs: StoredTab[]; active: string } {
+function storedTabsPayload(): {
+  tabs: StoredTab[];
+  active: string;
+  recentFiles: string[];
+} {
   const workspaceTabs = tabs.value.filter((tab) => tab.kind !== "single");
   const activePath =
     lastWorkspaceActivePath !== null &&
@@ -2343,7 +2577,11 @@ function storedTabsPayload(): { tabs: StoredTab[]; active: string } {
       scrollTopOffset: snapshot?.scrollTopOffset ?? undefined,
     };
   });
-  return { tabs: stored, active: activePath };
+  return {
+    tabs: stored,
+    active: activePath,
+    recentFiles: recentFilesForRoot(workspace.value?.root ?? ""),
+  };
 }
 
 function cancelPersistTimer() {
@@ -2364,7 +2602,12 @@ async function persistTabsNow(): Promise<void> {
   }
   const payload = storedTabsPayload();
   try {
-    await saveTabsForRoot(current.root, payload.tabs, payload.active);
+    await saveTabsForRoot(
+      current.root,
+      payload.tabs,
+      payload.active,
+      payload.recentFiles,
+    );
   } catch {
     // Remembering tabs is best effort; editing must keep working.
   }
@@ -2572,6 +2815,7 @@ defineExpose({
   chooseFolder,
   openWorkspaceFile,
   openSingleFile,
+  openCommandPalette,
   handleWatchEvents,
 });
 </script>
@@ -2615,6 +2859,7 @@ defineExpose({
       @pointerdown.capture="handleContentPointerDown"
     >
       <TopBar
+        ref="topBar"
         :tabs="topBarTabs"
         :active-tab-id="activeTabId"
         :mode="mode"
@@ -2696,6 +2941,23 @@ defineExpose({
       :state="slashState"
       @select="executeSlashCommand"
       @highlight="highlightSlashCommand"
+    />
+
+    <CommandPalette
+      v-if="paletteSession"
+      :mode="paletteSession.mode"
+      :platform="platform"
+      :commands="paletteCommands"
+      :workspace-open="hasWorkspace"
+      :recent-files="paletteSession.recentFiles"
+      :recent-command-ids="paletteSession.recentCommandIds"
+      :headings="paletteSession.headings"
+      :has-markdown="isMarkdownOpen"
+      :load-files="listFiles"
+      @close="closeCommandPalette"
+      @run-command="runPaletteCommand"
+      @open-file="openPaletteFile"
+      @jump-heading="jumpToPaletteHeading"
     />
 
     <AppDialog

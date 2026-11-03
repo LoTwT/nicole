@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   getAppInfo: vi.fn(),
   pickFolder: vi.fn(),
   openFolder: vi.fn(),
+  listFiles: vi.fn(),
   readFile: vi.fn(),
   writeFile: vi.fn(),
   onSaveBeforeClose: vi.fn(),
@@ -49,6 +50,7 @@ vi.mock("./services/app", () => ({ getAppInfo: mocks.getAppInfo }));
 vi.mock("./services/workspace", () => ({
   pickFolder: mocks.pickFolder,
   openFolder: mocks.openFolder,
+  listFiles: mocks.listFiles,
   readFile: mocks.readFile,
   writeFile: mocks.writeFile,
   onSaveBeforeClose: mocks.onSaveBeforeClose,
@@ -221,6 +223,40 @@ function slashMenuElement(): HTMLElement | null {
   );
 }
 
+function paletteInput(): HTMLInputElement {
+  const input = document.querySelector<HTMLInputElement>(
+    '[role="combobox"][aria-label^="命令面板"]',
+  );
+  if (!input) throw new Error("command palette input not found");
+  return input;
+}
+
+function paletteOptions(): HTMLButtonElement[] {
+  return [
+    ...document.querySelectorAll<HTMLButtonElement>(
+      '[role="listbox"] [role="option"]',
+    ),
+  ];
+}
+
+function typePalette(value: string) {
+  const input = paletteInput();
+  input.value = value;
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function pressPaletteShortcut(key: string) {
+  window.dispatchEvent(
+    new KeyboardEvent("keydown", {
+      key,
+      metaKey: true,
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    }),
+  );
+}
+
 async function openFolder(files = tree, generation = 1) {
   mocks.pickFolder.mockResolvedValue({ path: "/notes", canceled: false });
   mocks.openFolder.mockResolvedValue(folder("/notes", generation));
@@ -304,6 +340,7 @@ beforeEach(() => {
   mocks.pickFolder.mockResolvedValue({ path: "/notes", canceled: false });
   mocks.openFolder.mockResolvedValue(folder("/notes"));
   mocks.readFile.mockImplementation(async () => openFileText);
+  mocks.listFiles.mockResolvedValue([]);
   mocks.writeFile.mockResolvedValue(undefined);
   mocks.listDirectory.mockImplementation(async (path: string) => ({
     path,
@@ -1436,6 +1473,7 @@ async function setupWorkspace(
   root = "/notes",
 ): Promise<void> {
   tree = Object.keys(files).map((path) => entry(path.split("/").at(-1)!, path));
+  mocks.listFiles.mockResolvedValue(Object.keys(files));
   mocks.readFile.mockImplementation(async (path: string) => files[path] ?? "");
   mocks.listDirectory.mockImplementation(async (path: string) => ({
     path,
@@ -2615,6 +2653,187 @@ describe("review round 3 fixes", () => {
     expect(tabNamed("c.md").getAttribute("aria-selected")).toBe("true");
     expect(tabNamed("a.md").getAttribute("aria-selected")).not.toBe("true");
     expect(editorView().state.doc.toString()).toBe("# C\n");
+  });
+});
+
+describe("command palette", () => {
+  it("runs a pinyin command against the saved selection and remembers it", async () => {
+    await openFile("a.md", "Alpha selection here\n");
+    const view = editorView();
+    const start = view.state.doc.toString().indexOf("selection");
+    view.focus();
+    view.dispatch({ selection: { anchor: start, head: start + "selection".length } });
+    await settle();
+
+    pressPaletteShortcut("P");
+    await settle();
+    expect(paletteInput().value).toBe(">");
+    expect(paletteOptions().some((item) => item.textContent?.includes("加粗"))).toBe(
+      true,
+    );
+    expect(paletteOptions().some((item) => item.textContent?.includes("设置"))).toBe(
+      false,
+    );
+    expect(
+      paletteOptions().some((item) => item.textContent?.includes("全文搜索")),
+    ).toBe(false);
+    expect(
+      paletteOptions().some((item) => item.textContent?.includes("重命名")),
+    ).toBe(false);
+
+    typePalette(">jiacu");
+    await vi.waitFor(() =>
+      expect(paletteOptions()[0]?.textContent ?? "").toContain("加粗"),
+    );
+    paletteInput().dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Enter",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+
+    expect(editorView().state.doc.toString()).toBe(
+      "Alpha **selection** here\n",
+    );
+    expect(localStorage.getItem("nicole:commands:recent")).toContain(
+      "format.bold",
+    );
+
+    pressPaletteShortcut("P");
+    await settle();
+    expect(paletteOptions()[0]?.textContent ?? "").toContain("加粗");
+  });
+
+  it("does not offer editor commands without a Markdown tab", async () => {
+    await settle();
+    pressPaletteShortcut("P");
+    await settle();
+    expect(paletteOptions().some((item) => item.textContent?.includes("打开文件夹"))).toBe(
+      true,
+    );
+    expect(paletteOptions().some((item) => item.textContent?.includes("加粗"))).toBe(
+      false,
+    );
+  });
+
+  it("lists markdown files with recent ones first and reuses an open tab", async () => {
+    await setupWorkspace({
+      "a.md": "# A\n",
+      "b.md": "# B\n",
+      "notes/c.md": "# C\n",
+    });
+    await openPath("/notes/b.md");
+    await openPath("/notes/a.md");
+    tabNamed("b.md");
+    await settle();
+
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "p",
+        metaKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    expect(paletteInput().value).toBe("");
+    expect(mocks.listFiles).toHaveBeenCalled();
+    const labels = paletteOptions().map((item) =>
+      item.querySelector(".truncate")?.textContent,
+    );
+    expect(labels).toEqual(["a.md", "b.md", "c.md"]);
+
+    const bOption = paletteOptions().find((item) =>
+      item.textContent?.includes("b.md"),
+    );
+    bOption!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await settle();
+    expect(tabElements().length).toBe(2);
+    expect(tabNamed("b.md").getAttribute("aria-selected")).toBe("true");
+
+    await vi.waitFor(() => {
+      const latest = mocks.saveWorkspaceTabs.mock.calls.at(-1);
+      expect(latest?.[0]).toBe("/notes");
+      expect(latest?.[3]).toEqual(["b.md", "a.md"]);
+    });
+  });
+
+  it("lists headings by level and jumps to the selected line", async () => {
+    const text = "# One\n\n## Two\n\n### Three\n";
+    await openFile("a.md", text);
+    pressPaletteShortcut("O");
+    await settle();
+    expect(paletteInput().value).toBe("@");
+    expect(paletteOptions().map((item) => item.textContent)).toEqual([
+      expect.stringContaining("One"),
+      expect.stringContaining("Two"),
+      expect.stringContaining("Three"),
+    ]);
+    expect(paletteOptions()[1]?.getAttribute("style")).toContain(
+      "padding-left: 20px",
+    );
+
+    paletteOptions()[1]!.dispatchEvent(
+      new MouseEvent("click", { bubbles: true }),
+    );
+    await settle();
+    expect(editorView().state.selection.main.head).toBe(text.indexOf("## Two"));
+    expect(
+      editorView().dom.contains(document.activeElement),
+    ).toBe(true);
+  });
+
+  it("closes popovers when opened and consumes Escape itself", async () => {
+    await openFile();
+    typeSlashAtEnd();
+    await settle();
+    expect(slashMenuElement()).not.toBeNull();
+
+    pressPaletteShortcut("P");
+    await settle();
+    expect(slashMenuElement()).toBeNull();
+    expect(paletteInput()).not.toBeNull();
+
+    paletteInput().dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    expect(
+      document.querySelector('[role="combobox"][aria-label^="命令面板"]'),
+    ).toBeNull();
+    expect(editorView().state.doc.toString()).toBe("# A\n/");
+  });
+
+  it("closes the compact mode menu before opening the palette", async () => {
+    const originalWidth = window.innerWidth;
+    try {
+      await openFile();
+      window.innerWidth = 700;
+      window.dispatchEvent(new Event("resize"));
+      await settle();
+      const modeButton = host.querySelector<HTMLButtonElement>(
+        'button[aria-haspopup="menu"]',
+      );
+      expect(modeButton).not.toBeNull();
+      modeButton!.click();
+      await settle();
+      expect(host.querySelector('[role="menu"]')).not.toBeNull();
+
+      pressPaletteShortcut("P");
+      await settle();
+      expect(host.querySelector('[role="menu"]')).toBeNull();
+      expect(paletteInput()).not.toBeNull();
+    } finally {
+      window.innerWidth = originalWidth;
+      window.dispatchEvent(new Event("resize"));
+      await settle();
+    }
   });
 });
 

@@ -78,6 +78,10 @@ function chooseMode(next: EditorMode) {
   emit("set-mode", next);
 }
 
+function closeModeMenu() {
+  modeMenuOpen.value = false;
+}
+
 function handleModeKeydown(event: KeyboardEvent) {
   if (event.key === "Escape" && modeMenuOpen.value) {
     event.preventDefault();
@@ -162,6 +166,8 @@ onBeforeUnmount(() => {
   resizeObserver?.disconnect();
   resizeObserver = null;
 });
+
+defineExpose({ closeModeMenu });
 </script>
 
 <template>

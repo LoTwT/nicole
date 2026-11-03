@@ -39,6 +39,7 @@
 - 支持拼音模糊搜索，使用 `pinyin-pro`；第一次打开 slash 菜单时才动态加载，不进入空载内存。
 - 匹配命令标题、标签拼音、拼音首字母和注册表里的英文别名。
 - 最近用过的命令排在前面；记录保存在 WebView 的 `localStorage`（键 `nicole:commands:recent`），不写进工作区，最多保留 8 条。
+- 命令面板文件模式的最近文件按根目录保存，位置和上限见[标签页存储](workspace.md#标签页存储)；它和命令的最近记录互不共用。
 - 可以全程用键盘操作。
 
 ## 命令注册表
@@ -53,7 +54,7 @@
 | 快捷键 | 命令对应的键盘操作，可以有多个键位，每个键位可以按平台分别给出（对应 CodeMirror `KeyBinding` 的 `key`、`mac`、`win`、`linux`）；默认键位见[界面与交互](ui.md#快捷键) |
 | 图标与分组 | 供以后的格式工具栏使用；分组为行内、段落、内容块、插入类或应用类 |
 | 作用域与菜单 | `scope` 为 `editor`、`app` 或 `file-tree`：编辑器命令从上下文读取 `EditorView`，应用命令由 `App.vue` 分发，文件树命令只在文件树有焦点时执行并从上下文取焦点节点；`inSlashMenu` 决定是否出现在 slash 菜单 |
-| 是否可用 | `available` 默认为真；未实现功能的命令以 `available: false` 登记占位，快捷键仍可显示，但不参与按键分发，slash 菜单和以后的面板也不列出 |
+| 是否可用 | `available` 默认为真；未实现功能的命令以 `available: false` 登记占位，快捷键仍可显示，但不参与按键分发，slash 菜单和命令面板也不列出 |
 | 执行函数 | 实际插入文本或执行操作；接收命令上下文，编辑器命令从中读取当前 `EditorView`，应用和文件树命令从中读取动作与焦点节点 |
 
 Slash 菜单、快捷键、命令面板、格式工具栏和右键菜单都从这一份注册表读取，命令只注册一次。它们在界面上的位置和行为见[界面与交互](ui.md)。
@@ -62,13 +63,14 @@ Slash 菜单、快捷键、命令面板、格式工具栏和右键菜单都从�
 
 Slash 命令的作用只是插入 Markdown 文本，所以和编辑模式无关，三种模式都能使用（除非在设置中关闭）。插入之后的编辑体验才与模式有关，例如表格组件在沉浸模式下的交互，见[编辑模式](editor-modes.md)。
 
-## 当前实现（PR7a、PR7b-1）
+## 当前实现（PR7a、PR7b-1、PR7b-2）
 
 - 注册表在 `src/commands/registry.ts`，命令定义和格式、插入、应用与文件树命令都在 `src/commands/`；键位显示函数也在这里，slash 菜单、`KeyHint`、悬停提示和右键菜单共用同一份转换结果。
 - 编辑器命令由 `createEditor` 统一注册为 CodeMirror keymap，并使用 `Prec.highest` 覆盖 `basicSetup` 的同名键位（例如 ⌘I）。应用命令由 `App.vue` 的窗口 `keydown` 分发，文件树命令只在文件树有焦点时由 `FileTree.vue` 分发；两者都使用 `src/commands/keybinding.ts` 的匹配器，不在组件里另写键位。
 - 匹配器先按字符精确匹配全部命令；只有字符没有命中、事件带命令修饰键时，才进入物理键回退。回退使用 `event.code` 和 `keyCode` 表，支持 ⇧⌘[ / ⇧⌘] 在 US 布局报告 `{`/`}`、非 US 布局和 AZERTY 数字行；但事件已产生单个 ASCII 字符时不会按物理位置推出字母，避免 AZERTY ⌘Z、Dvorak ⌘, / ⌘B 误触其他命令。非 ASCII 输入（例如西里尔字母）仍可按物理位置匹配。Windows 和 Linux 的 Ctrl+Alt 不会被当成 Ctrl 快捷键。
-- `available: false` 的占位命令（设置、快速打开、全文搜索、大纲）保留键位以便界面显示，但匹配器跳过它们；slash 菜单也只列出可用命令。
+- `available: false` 的占位命令（设置、全文搜索、大纲）保留键位以便界面显示，但匹配器跳过它们；slash 菜单和命令面板也只列出可用命令。
 - slash 菜单的触发、查询、最近使用和按键归属在 `src/editor/slash.ts`，渲染和定位在 `src/components/SlashMenu.vue`。菜单宽 260px、最多 8 项，锚定光标下方并在空间不足时翻到上方，窗口内保留 8px。
 - 执行命令时删除触发字符和查询后运行命令，删除查询和执行命令合并为一个撤销步；Esc、光标离开、出现空白和没有匹配项都只关闭菜单，不删除正文。组合输入期间 Enter、↑、↓、Esc 交给输入法，空白或无匹配也要等组合结束后再关闭。代码块、frontmatter 和 HTML 块内不触发。
 - 格式命令的事务使用 `input.format` 并通过 `isolateHistory` 与之前的输入分开。
-- 用户模板 `.nicole/snippets/`、按编辑模式开关和命令面板尚未实现；它们分别在后续模板、设置和命令面板的 PR 中完成。
+- 命令面板的三入口和三种模式在 `src/components/CommandPalette.vue`，模式解析、文件排序和最近文件记录在 `src/app/command-palette.ts`。命令模式过滤可用且当前可执行的注册表命令，编辑器命令在没有活动 Markdown 编辑器时不出现；执行后写入 `nicole:commands:recent`。面板和 slash 菜单共用 `loadPinyinMatcher()` 与 `filterCommands()`，`pinyin-pro` 仍只在第一次打开任一面板时加载。
+- 用户模板 `.nicole/snippets/` 和按编辑模式开关尚未实现；它们分别在后续模板和设置的 PR 中完成。
