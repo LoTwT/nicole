@@ -15,6 +15,7 @@ export function saveWorkspaceTabs(
   root: string,
   tabs: StoredTab[],
   active: string,
+  recentFiles: string[],
 ): Promise<void> {
-  return WorkspaceTabs.save(root, tabs, active);
+  return WorkspaceTabs.save(root, tabs, active, recentFiles);
 }

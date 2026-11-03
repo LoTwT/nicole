@@ -206,10 +206,11 @@ export interface StoredTab {
   scrollTopOffset?: number;
 }
 
-/** StoredTabs is one workspace root's remembered tab layout. */
+/** StoredTabs is one workspace root's remembered tab layout and recent files. */
 export interface StoredTabs {
   tabs: StoredTab[];
   active?: string;
+  recentFiles?: string[];
 }
 
 /**
@@ -485,11 +486,11 @@ export const WorkspaceTabs = {
     return call("WorkspaceTabs.Get", root);
   },
   /**
-   * Save replaces the remembered layout for root. An empty layout deletes the
-   * record so old roots do not accumulate.
+   * Save replaces the remembered layout and recent files for root. An empty
+   * record deletes the root so old roots do not accumulate.
    */
-  save(root: string, tabs: StoredTab[], active: string): Promise<void> {
-    return call("WorkspaceTabs.Save", root, tabs, active);
+  save(root: string, tabs: StoredTab[], active: string, recentFiles: string[]): Promise<void> {
+    return call("WorkspaceTabs.Save", root, tabs, active, recentFiles);
   },
 } as const;
 

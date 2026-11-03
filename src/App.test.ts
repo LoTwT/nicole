@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   getAppInfo: vi.fn(),
   pickFolder: vi.fn(),
   openFolder: vi.fn(),
+  listFiles: vi.fn(),
   readFile: vi.fn(),
   writeFile: vi.fn(),
   onSaveBeforeClose: vi.fn(),
@@ -54,6 +55,7 @@ vi.mock("./services/app", () => ({ getAppInfo: mocks.getAppInfo }));
 vi.mock("./services/workspace", () => ({
   pickFolder: mocks.pickFolder,
   openFolder: mocks.openFolder,
+  listFiles: mocks.listFiles,
   readFile: mocks.readFile,
   writeFile: mocks.writeFile,
   onSaveBeforeClose: mocks.onSaveBeforeClose,
@@ -113,6 +115,20 @@ vi.mock("./services/watch", () => ({
 }));
 
 const slashMocks = vi.hoisted(() => ({ destroy: vi.fn() }));
+const headingMocks = vi.hoisted(() => ({
+  extract: vi.fn(),
+}));
+
+vi.mock("./editor/headings", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./editor/headings")>();
+  headingMocks.extract.mockImplementation(actual.extractHeadingsWithStatus);
+  return {
+    ...actual,
+    extractHeadingsWithStatus: (
+      ...args: Parameters<typeof actual.extractHeadingsWithStatus>
+    ) => headingMocks.extract(...args),
+  };
+});
 
 vi.mock("./editor/slash", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./editor/slash")>();
@@ -233,6 +249,44 @@ function slashMenuElement(): HTMLElement | null {
   );
 }
 
+function paletteInput(): HTMLInputElement {
+  const input = document.querySelector<HTMLInputElement>(
+    '[role="combobox"][aria-label^="命令面板"]',
+  );
+  if (!input) throw new Error("command palette input not found");
+  return input;
+}
+
+function paletteOptions(): HTMLButtonElement[] {
+  return [
+    ...document.querySelectorAll<HTMLButtonElement>(
+      '[role="listbox"] [role="option"]',
+    ),
+  ];
+}
+
+function typePalette(value: string) {
+  const input = paletteInput();
+  input.value = value;
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function pressAppShortcut(key: string, shift = false) {
+  const event = new KeyboardEvent("keydown", {
+    key,
+    metaKey: true,
+    shiftKey: shift,
+    bubbles: true,
+    cancelable: true,
+  });
+  window.dispatchEvent(event);
+  return event;
+}
+
+function pressPaletteShortcut(key: string) {
+  return pressAppShortcut(key, true);
+}
+
 async function openFolder(files = tree, generation = 1) {
   mocks.pickFolder.mockResolvedValue({ path: "/notes", canceled: false });
   mocks.openFolder.mockResolvedValue(folder("/notes", generation));
@@ -316,6 +370,7 @@ beforeEach(() => {
   mocks.pickFolder.mockResolvedValue({ path: "/notes", canceled: false });
   mocks.openFolder.mockResolvedValue(folder("/notes"));
   mocks.readFile.mockImplementation(async () => openFileText);
+  mocks.listFiles.mockResolvedValue([]);
   mocks.writeFile.mockResolvedValue(undefined);
   mocks.listDirectory.mockImplementation(async (path: string) => ({
     path,
@@ -955,6 +1010,59 @@ describe("renames", () => {
       "notes/notes2/a.md",
     );
   });
+  it("prunes deleted and non-markdown renamed files from recent files", async () => {
+    await setupWorkspace({
+      "a.md": "# A\n",
+      "b.md": "# B\n",
+      "notes/c.md": "# C\n",
+      "notes-old/a.md": "# Old A\n",
+    });
+    await openPath("/notes/a.md");
+    await openPath("/notes/b.md");
+    await openPath("/notes/notes/c.md");
+    await openPath("/notes/notes-old/a.md");
+    await vi.waitFor(() => {
+      expect(mocks.saveWorkspaceTabs.mock.calls.at(-1)?.[3]).toEqual([
+        "notes-old/a.md",
+        "notes/c.md",
+        "b.md",
+        "a.md",
+      ]);
+    });
+
+    watchEvents?.([{ op: "remove", path: "notes", isDir: true }]);
+    await settle();
+    await vi.waitFor(() => {
+      expect(mocks.saveWorkspaceTabs.mock.calls.at(-1)?.[3]).toEqual([
+        "notes-old/a.md",
+        "b.md",
+        "a.md",
+      ]);
+    });
+
+    watchEvents?.([
+      { op: "rename", oldPath: "a.md", path: "a.txt", isDir: false },
+    ]);
+    await settle();
+    await vi.waitFor(() => {
+      expect(mocks.saveWorkspaceTabs.mock.calls.at(-1)?.[3]).toEqual([
+        "notes-old/a.md",
+        "b.md",
+      ]);
+    });
+
+    watchEvents?.([
+      { op: "rename", oldPath: "b.md", path: "d.md", isDir: false },
+    ]);
+    await settle();
+    await vi.waitFor(() => {
+      expect(mocks.saveWorkspaceTabs.mock.calls.at(-1)?.[3]).toEqual([
+        "notes-old/a.md",
+        "d.md",
+      ]);
+    });
+  });
+
   it("clears the expected rename when RenameEntry fails", async () => {
     tree = [
       entry("notes", "notes", { isDir: true }),
@@ -1456,6 +1564,7 @@ async function setupWorkspace(
   root = "/notes",
 ): Promise<void> {
   tree = Object.keys(files).map((path) => entry(path.split("/").at(-1)!, path));
+  mocks.listFiles.mockResolvedValue(Object.keys(files));
   mocks.readFile.mockImplementation(async (path: string) => files[path] ?? "");
   mocks.listDirectory.mockImplementation(async (path: string) => ({
     path,
@@ -2638,6 +2747,421 @@ describe("review round 3 fixes", () => {
   });
 });
 
+describe("command palette", () => {
+  it("runs a pinyin command against the saved selection and remembers it", async () => {
+    await openFile("a.md", "Alpha selection here\n");
+    const view = editorView();
+    const start = view.state.doc.toString().indexOf("selection");
+    view.focus();
+    view.dispatch({ selection: { anchor: start, head: start + "selection".length } });
+    await settle();
+
+    pressPaletteShortcut("P");
+    await settle();
+    expect(paletteInput().value).toBe("");
+    expect(paletteOptions().some((item) => item.textContent?.includes("加粗"))).toBe(
+      true,
+    );
+    expect(paletteOptions().some((item) => item.textContent?.includes("设置"))).toBe(
+      false,
+    );
+    expect(
+      paletteOptions().some((item) => item.textContent?.includes("全文搜索")),
+    ).toBe(false);
+    expect(
+      paletteOptions().some((item) => item.textContent?.includes("重命名")),
+    ).toBe(false);
+
+    typePalette("jiacu");
+    await vi.waitFor(() =>
+      expect(paletteOptions()[0]?.textContent ?? "").toContain("加粗"),
+    );
+    // The palette must restore the selection captured on open instead of
+    // trusting whatever position the editor had while the input held focus.
+    editorView().dispatch({ selection: { anchor: 0 } });
+    paletteInput().dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Enter",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+
+    expect(editorView().state.doc.toString()).toBe(
+      "Alpha **selection** here\n",
+    );
+    expect(localStorage.getItem("nicole:commands:recent")).toContain(
+      "format.bold",
+    );
+
+    pressPaletteShortcut("P");
+    await settle();
+    expect(paletteOptions()[0]?.textContent ?? "").toContain("加粗");
+  });
+
+  it("does not offer editor commands without a Markdown tab", async () => {
+    await settle();
+    pressPaletteShortcut("P");
+    await settle();
+    expect(paletteOptions().some((item) => item.textContent?.includes("打开文件夹"))).toBe(
+      true,
+    );
+    expect(paletteOptions().some((item) => item.textContent?.includes("加粗"))).toBe(
+      false,
+    );
+  });
+
+  it("lists markdown files with recent ones first and reuses an open tab", async () => {
+    await setupWorkspace({
+      "a.md": "# A\n",
+      "b.md": "# B\n",
+      "notes/c.md": "# C\n",
+    });
+    await openPath("/notes/b.md");
+    await openPath("/notes/a.md");
+    tabNamed("b.md");
+    await settle();
+
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "p",
+        metaKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    expect(paletteInput().value).toBe("");
+    expect(mocks.listFiles).toHaveBeenCalled();
+    const labels = paletteOptions().map((item) =>
+      item.querySelector(".truncate")?.textContent,
+    );
+    expect(labels).toEqual(["a.md", "b.md", "c.md"]);
+
+    const bOption = paletteOptions().find((item) =>
+      item.textContent?.includes("b.md"),
+    );
+    bOption!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await settle();
+    expect(tabElements().length).toBe(2);
+    expect(tabNamed("b.md").getAttribute("aria-selected")).toBe("true");
+
+    await vi.waitFor(() => {
+      const latest = mocks.saveWorkspaceTabs.mock.calls.at(-1);
+      expect(latest?.[0]).toBe("/notes");
+      expect(latest?.[3]).toEqual(["b.md", "a.md"]);
+    });
+  });
+
+  it("restores the recent file order from tabs.json after switching roots", async () => {
+    const stored = new Map<
+      string,
+      {
+        tabs: import("./services/tabs").StoredTab[];
+        active: string;
+        recentFiles?: string[];
+      }
+    >();
+    mocks.getWorkspaceTabs.mockImplementation(
+      async (root: string) => stored.get(root) ?? { tabs: [], active: "" },
+    );
+    mocks.saveWorkspaceTabs.mockImplementation(
+      async (
+        root: string,
+        tabs: import("./services/tabs").StoredTab[],
+        active: string,
+        recentFiles: string[],
+      ) => {
+        stored.set(root, { tabs, active, recentFiles });
+      },
+    );
+    await setupWorkspace({
+      "a.md": "# A\n",
+      "b.md": "# B\n",
+      "c.md": "# C\n",
+    });
+    mocks.openFolder.mockImplementation(async (path: string) =>
+      folder(path, path === "/notes" ? 1 : 2),
+    );
+    await openPath("/notes/a.md");
+    await openPath("/notes/b.md");
+    await vi.waitFor(() => {
+      expect(mocks.saveWorkspaceTabs.mock.calls.at(-1)?.[3]).toEqual([
+        "b.md",
+        "a.md",
+      ]);
+    });
+
+    mocks.pickFolder.mockResolvedValue({ path: "/second", canceled: false });
+    sidebarButton("切换文件夹").click();
+    await settle();
+    dialogButton("切换").click();
+    await settle();
+    expect(stored.get("/notes")?.recentFiles).toEqual(["b.md", "a.md"]);
+
+    mocks.pickFolder.mockResolvedValue({ path: "/notes", canceled: false });
+    sidebarButton("切换文件夹").click();
+    await settle();
+    dialogButton("切换").click();
+    await settle();
+
+    pressAppShortcut("p");
+    await settle();
+    const labels = paletteOptions().map((item) =>
+      item.querySelector(".truncate")?.textContent,
+    );
+    expect(labels).toEqual(["b.md", "a.md", "c.md"]);
+  });
+
+  it("lists headings by level and jumps to the selected line", async () => {
+    const text = "# One\n\n## Two\n\n### Three\n";
+    await openFile("a.md", text);
+    const view = editorView();
+    const scroll = vi.spyOn(EditorView, "scrollIntoView");
+    const dispatch = vi.spyOn(view, "dispatch");
+    pressPaletteShortcut("O");
+    await settle();
+    expect(paletteInput().value).toBe("");
+    expect(paletteOptions().map((item) => item.textContent)).toEqual([
+      expect.stringContaining("One"),
+      expect.stringContaining("Two"),
+      expect.stringContaining("Three"),
+    ]);
+    expect(paletteOptions()[1]?.getAttribute("style")).toContain(
+      "padding-left: 20px",
+    );
+
+    paletteOptions()[1]!.dispatchEvent(
+      new MouseEvent("click", { bubbles: true }),
+    );
+    await settle();
+    expect(editorView().state.selection.main.head).toBe(text.indexOf("## Two"));
+    expect(scroll).toHaveBeenCalledWith(text.indexOf("## Two"), {
+      y: "start",
+    });
+    const scrollEffect = scroll.mock.results[0]?.value;
+    expect(
+      dispatch.mock.calls.some(([spec]) => spec?.effects === scrollEffect),
+    ).toBe(true);
+    expect(
+      editorView().dom.contains(document.activeElement),
+    ).toBe(true);
+  });
+
+  it("extracts headings on the first heading mode and caches them", async () => {
+    await openFile("a.md", "# Old\n");
+    pressAppShortcut("p");
+    await settle();
+    expect(paletteInput().value).toBe("");
+    expect(headingMocks.extract).not.toHaveBeenCalled();
+
+    typePalette("@");
+    await settle();
+    expect(headingMocks.extract).toHaveBeenCalledTimes(1);
+    expect(paletteInput().value).toBe("");
+    expect(paletteOptions().map((item) => item.textContent)).toEqual([
+      expect.stringContaining("Old"),
+    ]);
+
+    pressAppShortcut("p");
+    await settle();
+    pressAppShortcut("O", true);
+    await settle();
+    expect(headingMocks.extract).toHaveBeenCalledTimes(1);
+    expect(paletteOptions().map((item) => item.textContent)).toEqual([
+      expect.stringContaining("Old"),
+    ]);
+  });
+
+  it("closes the palette when an external load changes the active document", async () => {
+    await openFile("a.md", "# One\n\n## Two\n");
+    pressPaletteShortcut("O");
+    await settle();
+    expect(paletteInput()).not.toBeNull();
+
+    mocks.readFile.mockResolvedValue(
+      "Intro paragraph\n\n# One\n\n## Two\n",
+    );
+    watchEvents?.([{ op: "write", path: "a.md", isDir: false }]);
+    await settle();
+    await vi.waitFor(() => {
+      expect(
+        document.querySelector(
+          '[role="combobox"][aria-label^="命令面板"]',
+        ),
+      ).toBeNull();
+    });
+  });
+
+  it("does not jump to a heading position after an external change", async () => {
+    const text = "# One\n\n## Two\n";
+    await openFile("a.md", text);
+    pressPaletteShortcut("O");
+    await settle();
+    const two = paletteOptions().find((item) =>
+      item.textContent?.includes("Two"),
+    );
+    if (!two) throw new Error("heading option not found");
+
+    const updated = `Intro paragraph\n\n${text}`;
+    replaceEditorText(updated);
+    const headAfterChange = editorView().state.selection.main.head;
+    two.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await settle();
+
+    expect(editorView().state.doc.toString()).toBe(updated);
+    expect(editorView().state.selection.main.head).toBe(headAfterChange);
+  });
+
+  it("does not run an editor command against stale selection positions", async () => {
+    await openFile("a.md", "abc def\n");
+    const view = editorView();
+    view.dispatch({ selection: { anchor: 4, head: 7 } });
+    await settle();
+
+    pressPaletteShortcut("P");
+    await settle();
+    typePalette("jiacu");
+    await vi.waitFor(() => {
+      expect(paletteOptions()[0]?.textContent ?? "").toContain("加粗");
+    });
+    const bold = paletteOptions()[0]!;
+
+    const updated = "XXXX abc def\n";
+    replaceEditorText(updated);
+    bold.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await settle();
+
+    expect(editorView().state.doc.toString()).toBe(updated);
+  });
+
+  it("reports a partial heading extraction", async () => {
+    await openFile("a.md", "# A\n");
+    headingMocks.extract.mockReturnValueOnce({
+      headings: [{ level: 1, text: "A", position: 0, line: 1 }],
+      complete: false,
+    });
+    pressPaletteShortcut("O");
+    await settle();
+    expect(document.body.textContent).toContain(
+      "文档较大，部分标题尚未解析",
+    );
+  });
+
+  it("switches modes with shortcuts while keeping the query", async () => {
+    await openFile("a.md", "# Heading\n");
+    pressAppShortcut("p");
+    await settle();
+    typePalette("a");
+    await settle();
+
+    const command = pressAppShortcut("P", true);
+    await settle();
+    expect(command.defaultPrevented).toBe(true);
+    expect(paletteInput().value).toBe("a");
+    expect(paletteInput().getAttribute("aria-label")).toContain("命令");
+
+    pressAppShortcut("O", true);
+    await settle();
+    expect(paletteInput().value).toBe("a");
+    expect(paletteInput().getAttribute("aria-label")).toContain("标题");
+
+    const file = pressAppShortcut("p");
+    await settle();
+    expect(file.defaultPrevented).toBe(true);
+    expect(paletteInput().value).toBe("a");
+    expect(paletteInput().getAttribute("aria-label")).toContain("文件名");
+
+    pressAppShortcut("p");
+    await settle();
+    expect(paletteInput().value).toBe("a");
+    expect(paletteInput().getAttribute("aria-label")).toContain("文件名");
+  });
+
+  it("does not close the tab with the palette open outside the input", async () => {
+    await openFile();
+    pressAppShortcut("p");
+    await settle();
+    (document.activeElement as HTMLElement | null)?.blur();
+    expect(document.activeElement).toBe(document.body);
+
+    pressAppShortcut("w");
+    await settle();
+    expect(tabElements().length).toBe(1);
+    expect(paletteInput()).not.toBeNull();
+  });
+
+  it("does not open the palette while a modal dialog is showing", async () => {
+    await openFile();
+    mocks.pickFolder.mockResolvedValue({ path: "/second", canceled: false });
+    sidebarButton("切换文件夹").click();
+    await settle();
+    expect(dialog()).not.toBeNull();
+
+    pressAppShortcut("p");
+    pressAppShortcut("P", true);
+    pressAppShortcut("O", true);
+    await settle();
+
+    expect(dialog()).not.toBeNull();
+    expect(
+      document.querySelector('[role="combobox"][aria-label^="命令面板"]'),
+    ).toBeNull();
+  });
+
+  it("closes popovers when opened and consumes Escape itself", async () => {
+    await openFile();
+    typeSlashAtEnd();
+    await settle();
+    expect(slashMenuElement()).not.toBeNull();
+
+    pressPaletteShortcut("P");
+    await settle();
+    expect(slashMenuElement()).toBeNull();
+    expect(paletteInput()).not.toBeNull();
+
+    paletteInput().dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    expect(
+      document.querySelector('[role="combobox"][aria-label^="命令面板"]'),
+    ).toBeNull();
+    expect(editorView().state.doc.toString()).toBe("# A\n/");
+  });
+
+  it("closes the compact mode menu before opening the palette", async () => {
+    const originalWidth = window.innerWidth;
+    try {
+      await openFile();
+      window.innerWidth = 700;
+      window.dispatchEvent(new Event("resize"));
+      await settle();
+      const modeButton = host.querySelector<HTMLButtonElement>(
+        'button[aria-haspopup="menu"]',
+      );
+      expect(modeButton).not.toBeNull();
+      modeButton!.click();
+      await settle();
+      expect(host.querySelector('[role="menu"]')).not.toBeNull();
+
+      pressPaletteShortcut("P");
+      await settle();
+      expect(host.querySelector('[role="menu"]')).toBeNull();
+      expect(paletteInput()).not.toBeNull();
+    } finally {
+      window.innerWidth = originalWidth;
+      window.dispatchEvent(new Event("resize"));
+      await settle();
+    }
+  });
+});
+
 describe("slash menu with tabs", () => {
   it("destroys the previous slash controller when switching tabs", async () => {
     await setupWorkspace({ "a.md": "# A\n", "b.md": "# B\n" });
@@ -2827,6 +3351,108 @@ describe("crash recovery", () => {
     expect(dialog()).not.toBeNull();
   });
 
+  it("does not open the palette behind the recovery dialog", async () => {
+    await mountWithRecovery([recoveryItem()]);
+    expect(dialog()?.textContent).toContain("发现未保存的内容");
+
+    const press = (init: KeyboardEventInit) => {
+      const event = new KeyboardEvent("keydown", {
+        bubbles: true,
+        cancelable: true,
+        ...init,
+      });
+      window.dispatchEvent(event);
+      return event;
+    };
+    const quickOpen = press({ key: "p", metaKey: true });
+    const command = press({ key: "P", metaKey: true, shiftKey: true });
+    const heading = press({ key: "O", metaKey: true, shiftKey: true });
+    await settle();
+
+    expect(quickOpen.defaultPrevented).toBe(false);
+    expect(command.defaultPrevented).toBe(false);
+    expect(heading.defaultPrevented).toBe(false);
+    expect(dialog()?.textContent).toContain("发现未保存的内容");
+    expect(
+      document.querySelector('[role="combobox"][aria-label^="命令面板"]'),
+    ).toBeNull();
+  });
+
+  it("closes the palette when the recovery dialog appears", async () => {
+    await mountAppWithApi();
+    pressPaletteShortcut("P");
+    await settle();
+    expect(
+      document.querySelector('[role="combobox"][aria-label^="命令面板"]'),
+    ).not.toBeNull();
+
+    mocks.pickFolder.mockResolvedValue({ path: "/notes", canceled: false });
+    mocks.openFolder.mockResolvedValue(folder("/notes"));
+    mocks.listRecovery.mockResolvedValue({
+      items: [recoveryItem()],
+      otherFolders: 0,
+    });
+    await exposedApp!.value.chooseFolder();
+    await settle();
+
+    expect(dialog()?.textContent).toContain("发现未保存的内容");
+    expect(
+      document.querySelector('[role="combobox"][aria-label^="命令面板"]'),
+    ).toBeNull();
+  });
+
+  it("does not open the palette while recovery is being listed", async () => {
+    mocks.getSettings.mockResolvedValue({
+      theme: "system",
+      sidebarWidth: 252,
+      recentFolders: ["/notes"],
+      expandedFolders: {},
+    });
+    mocks.openFolder.mockResolvedValue(folder("/notes"));
+    const pending = deferred<{
+      items: import("./services/mygo").RecoveryItem[];
+      otherFolders: number;
+    }>();
+    mocks.listRecovery.mockReturnValue(pending.promise);
+
+    await mountAppWithApi();
+    exposedApp!.value.openCommandPalette("command");
+    await settle();
+    expect(
+      document.querySelector('[role="combobox"][aria-label^="命令面板"]'),
+    ).toBeNull();
+
+    pending.resolve({ items: [], otherFolders: 0 });
+    await settle();
+  });
+
+  it("does not open the palette directly while the recovery dialog is shown", async () => {
+    await mountAppWithApi();
+    mocks.pickFolder.mockResolvedValue({ path: "/notes", canceled: false });
+    mocks.openFolder.mockResolvedValue(folder("/notes"));
+    mocks.listRecovery.mockResolvedValue({
+      items: [recoveryItem()],
+      otherFolders: 0,
+    });
+    await exposedApp!.value.chooseFolder();
+    await settle();
+    expect(dialog()).not.toBeNull();
+
+    // The modal DOM guard already blocks this path; hide it for one call so
+    // the explicit recovery-state guard is exercised on its own.
+    const querySelector = vi
+      .spyOn(document, "querySelector")
+      .mockReturnValue(null);
+    exposedApp!.value.openCommandPalette("command");
+    querySelector.mockRestore();
+    await settle();
+
+    expect(dialog()).not.toBeNull();
+    expect(
+      document.querySelector('[role="combobox"][aria-label^="命令面板"]'),
+    ).toBeNull();
+  });
+
   it("marks changed and missing copies instead of a word difference", async () => {
     await mountWithRecovery([
       recoveryItem({
@@ -2947,6 +3573,8 @@ describe("crash recovery", () => {
     expect(dialog()).toBeNull();
     expect(host.textContent).toContain("这是恢复的内容");
     expect(mocks.writeFile).not.toHaveBeenCalled();
+    expect(mocks.discardRecovery).not.toHaveBeenCalled();
+    expect(mocks.restoreRecoverySingleFile).not.toHaveBeenCalled();
   });
 
   it("discards only the listed copies", async () => {

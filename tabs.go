@@ -17,6 +17,7 @@ const (
 	tabsFileName = "tabs.json"
 
 	maxStoredTabs       = 200
+	maxRecentFiles      = 20
 	maxSelectionBytes   = 1 << 20
 	maxTabSnapshotBytes = 8 << 20
 	tabKindMarkdown     = "markdown"
@@ -42,10 +43,11 @@ type StoredTab struct {
 	ScrollTopOffset float64         `json:"scrollTopOffset,omitempty"`
 }
 
-// StoredTabs is one workspace root's remembered tab layout.
+// StoredTabs is one workspace root's remembered tab layout and recent files.
 type StoredTabs struct {
-	Tabs   []StoredTab `json:"tabs"`
-	Active string      `json:"active,omitempty"`
+	Tabs        []StoredTab `json:"tabs"`
+	Active      string      `json:"active,omitempty"`
+	RecentFiles []string    `json:"recentFiles,omitempty"`
 }
 
 // WorkspaceTabs serves the remembered tabs of the open root. It is bound to
@@ -74,14 +76,14 @@ func (t *WorkspaceTabs) Get(root string) (StoredTabs, error) {
 	return t.store.get(root)
 }
 
-// Save replaces the remembered layout for root. An empty layout deletes the
-// record so old roots do not accumulate.
-func (t *WorkspaceTabs) Save(root string, tabs []StoredTab, active string) error {
+// Save replaces the remembered layout and recent files for root. An empty
+// record deletes the root so old roots do not accumulate.
+func (t *WorkspaceTabs) Save(root string, tabs []StoredTab, active string, recentFiles []string) error {
 	root, err := t.validRoot(root)
 	if err != nil {
 		return err
 	}
-	return t.store.save(root, sanitizeStoredTabs(tabs, active))
+	return t.store.save(root, sanitizeStoredTabs(tabs, active, recentFiles))
 }
 
 func (t *WorkspaceTabs) validRoot(root string) (string, error) {
@@ -137,8 +139,11 @@ func (s *tabsStore) get(root string) (StoredTabs, error) {
 		return StoredTabs{}, err
 	}
 	state, ok := file.Roots[root]
-	if !ok || state.Tabs == nil {
+	if !ok {
 		return StoredTabs{Tabs: []StoredTab{}}, nil
+	}
+	if state.Tabs == nil {
+		state.Tabs = []StoredTab{}
 	}
 	return state, nil
 }
@@ -150,7 +155,7 @@ func (s *tabsStore) save(root string, state StoredTabs) error {
 	if err != nil {
 		return err
 	}
-	if len(state.Tabs) == 0 {
+	if len(state.Tabs) == 0 && len(state.RecentFiles) == 0 {
 		delete(file.Roots, root)
 	} else {
 		file.Roots[root] = state
@@ -201,7 +206,7 @@ func (s *tabsStore) writeLocked(file tabsFile) error {
 // sanitizeStoredTabs keeps the layout usable while refusing paths that could
 // look like an authorization claim. Invalid entries are dropped rather than
 // failing the whole save, so one malformed selection cannot lose every tab.
-func sanitizeStoredTabs(tabs []StoredTab, active string) StoredTabs {
+func sanitizeStoredTabs(tabs []StoredTab, active string, recentFiles []string) StoredTabs {
 	kept := make([]StoredTab, 0, min(len(tabs), maxStoredTabs))
 	seen := make(map[string]bool, len(tabs))
 	snapshotBudget := maxTabSnapshotBytes
@@ -246,7 +251,31 @@ func sanitizeStoredTabs(tabs []StoredTab, active string) StoredTabs {
 			break
 		}
 	}
-	return StoredTabs{Tabs: kept, Active: nextActive}
+	return StoredTabs{
+		Tabs:        kept,
+		Active:      nextActive,
+		RecentFiles: sanitizeRecentFiles(recentFiles),
+	}
+}
+
+func sanitizeRecentFiles(paths []string) []string {
+	var kept []string
+	seen := make(map[string]bool, len(paths))
+	for _, value := range paths {
+		if len(kept) == maxRecentFiles {
+			break
+		}
+		if !validStoredTabPath(value) {
+			continue
+		}
+		clean := path.Clean(value)
+		if seen[clean] {
+			continue
+		}
+		seen[clean] = true
+		kept = append(kept, clean)
+	}
+	return kept
 }
 
 func validStoredTabPath(value string) bool {

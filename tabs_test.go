@@ -48,7 +48,7 @@ func TestTabsRoundTrip(t *testing.T) {
 		},
 		{Kind: tabKindPreview, Path: "assets/cover.png", Size: 2048},
 	}
-	if err := service.Save(root, tabs, "assets/cover.png"); err != nil {
+	if err := service.Save(root, tabs, "assets/cover.png", []string{"essay/README.md"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -71,6 +71,9 @@ func TestTabsRoundTrip(t *testing.T) {
 	if got.Tabs[1].Size != 2048 {
 		t.Errorf("preview size = %d, want 2048", got.Tabs[1].Size)
 	}
+	if !reflect.DeepEqual(got.RecentFiles, []string{"essay/README.md"}) {
+		t.Errorf("RecentFiles = %v, want the saved path", got.RecentFiles)
+	}
 
 	data, err := os.ReadFile(filePath)
 	if err != nil {
@@ -92,7 +95,7 @@ func TestTabsRejectsOtherRoots(t *testing.T) {
 	if _, err := service.Get(other); !errors.Is(err, errTabsRootNotCurrent) {
 		t.Errorf("Get(other) = %v, want errTabsRootNotCurrent", err)
 	}
-	if err := service.Save(other, nil, ""); !errors.Is(err, errTabsRootNotCurrent) {
+	if err := service.Save(other, nil, "", nil); !errors.Is(err, errTabsRootNotCurrent) {
 		t.Errorf("Save(other) = %v, want errTabsRootNotCurrent", err)
 	}
 	if _, err := service.Get("relative"); !errors.Is(err, errInvalidTabsRootPath) {
@@ -107,10 +110,10 @@ func TestTabsRejectsOtherRoots(t *testing.T) {
 
 func TestTabsEmptyLayoutDeletesRecord(t *testing.T) {
 	service, root, filePath := newTestTabs(t)
-	if err := service.Save(root, []StoredTab{{Kind: tabKindMarkdown, Path: "a.md"}}, "a.md"); err != nil {
+	if err := service.Save(root, []StoredTab{{Kind: tabKindMarkdown, Path: "a.md"}}, "a.md", nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.Save(root, nil, ""); err != nil {
+	if err := service.Save(root, nil, "", nil); err != nil {
 		t.Fatal(err)
 	}
 	got, err := service.Get(root)
@@ -142,7 +145,7 @@ func TestTabsSanitizesLayout(t *testing.T) {
 		{Kind: tabKindMarkdown, Path: "a.md"},
 		{Kind: tabKindPreview, Path: "cover.png", Size: -2, ScrollTopLine: -9},
 	}
-	if err := service.Save(root, input, "missing.md"); err != nil {
+	if err := service.Save(root, input, "missing.md", nil); err != nil {
 		t.Fatal(err)
 	}
 	got, err := service.Get(root)
@@ -166,6 +169,49 @@ func TestTabsSanitizesLayout(t *testing.T) {
 	}
 }
 
+func TestTabsSanitizesRecentFiles(t *testing.T) {
+	service, root, filePath := newTestTabs(t)
+	recent := []string{
+		"a.md",
+		"../outside.md",
+		"/absolute.md",
+		`dir\file.md`,
+		"dir/./file.md",
+		"a.md",
+	}
+	for index := 0; index < maxRecentFiles+3; index++ {
+		recent = append(recent, "note-"+string(rune('a'+index))+".md")
+	}
+	if err := service.Save(root, nil, "", recent); err != nil {
+		t.Fatal(err)
+	}
+	got, err := service.Get(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Tabs) != 0 {
+		t.Errorf("Tabs = %v, want none", got.Tabs)
+	}
+	if len(got.RecentFiles) != maxRecentFiles {
+		t.Fatalf("len(RecentFiles) = %d, want %d", len(got.RecentFiles), maxRecentFiles)
+	}
+	if got.RecentFiles[0] != "a.md" || got.RecentFiles[1] != "note-a.md" {
+		t.Errorf("RecentFiles = %v, want the valid paths in input order", got.RecentFiles)
+	}
+	for _, path := range got.RecentFiles {
+		if !validStoredTabPath(path) {
+			t.Errorf("invalid recent path survived: %q", path)
+		}
+	}
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "recentFiles") {
+		t.Errorf("tabs.json does not contain recentFiles: %s", data)
+	}
+}
+
 func TestTabsDropsOversizedSnapshots(t *testing.T) {
 	service, root, _ := newTestTabs(t)
 	bigSelection := json.RawMessage(`"` + strings.Repeat("x", maxSelectionBytes) + `"`)
@@ -173,7 +219,7 @@ func TestTabsDropsOversizedSnapshots(t *testing.T) {
 		Kind:      tabKindMarkdown,
 		Path:      "big.md",
 		Selection: bigSelection,
-	}}, "big.md"); err != nil {
+	}}, "big.md", nil); err != nil {
 		t.Fatal(err)
 	}
 	got, err := service.Get(root)
@@ -207,7 +253,7 @@ func TestTabsBacksUpCorruptFile(t *testing.T) {
 	if data, err := os.ReadFile(matches[0]); err != nil || string(data) != "{broken" {
 		t.Errorf("backup content = %q, %v", data, err)
 	}
-	if err := service.Save(root, []StoredTab{{Kind: tabKindMarkdown, Path: "a.md"}}, "a.md"); err != nil {
+	if err := service.Save(root, []StoredTab{{Kind: tabKindMarkdown, Path: "a.md"}}, "a.md", nil); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -220,7 +266,7 @@ func TestTabsConcurrentSaves(t *testing.T) {
 		go func(index int) {
 			defer group.Done()
 			path := "note-" + string(rune('a'+index)) + ".md"
-			if err := service.Save(root, []StoredTab{{Kind: tabKindMarkdown, Path: path}}, path); err != nil {
+			if err := service.Save(root, []StoredTab{{Kind: tabKindMarkdown, Path: path}}, path, nil); err != nil {
 				t.Errorf("Save(%d): %v", index, err)
 			}
 		}(index)
@@ -233,7 +279,11 @@ func TestTabsConcurrentSaves(t *testing.T) {
 
 func TestTabsNullTabsReadAsEmpty(t *testing.T) {
 	service, root, filePath := newTestTabs(t)
-	data := `{"roots":{"` + root + `":{"tabs":null,"active":"a.md"}}}` + "\n"
+	rootKey, err := json.Marshal(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := `{"roots":{` + string(rootKey) + `:{"tabs":null,"active":"a.md","recentFiles":["a.md"]}}}` + "\n"
 	if err := os.WriteFile(filePath, []byte(data), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -243,5 +293,8 @@ func TestTabsNullTabsReadAsEmpty(t *testing.T) {
 	}
 	if got.Tabs == nil || len(got.Tabs) != 0 {
 		t.Errorf("Tabs = %#v, want a non-nil empty slice", got.Tabs)
+	}
+	if !reflect.DeepEqual(got.RecentFiles, []string{"a.md"}) {
+		t.Errorf("RecentFiles = %v, want the stored path", got.RecentFiles)
 	}
 }

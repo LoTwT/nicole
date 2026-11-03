@@ -1,5 +1,6 @@
 import type { EditorState, TransactionSpec } from "@codemirror/state";
 
+import type { CommandPaletteMode } from "../app/command-palette";
 import type { TreeNode } from "../app/file-tree";
 import type { AppPlatform } from "../app/platform";
 
@@ -44,6 +45,7 @@ export interface AppCommandActions {
   reopenClosedTab(): void | Promise<void>;
   nextTab(): void | Promise<void>;
   previousTab(): void | Promise<void>;
+  openCommandPalette(mode: CommandPaletteMode): void | Promise<void>;
 }
 
 /** The focused tree row and the actions a file-tree command can run. */

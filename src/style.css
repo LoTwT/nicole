@@ -78,6 +78,18 @@ body {
   position: relative;
 }
 
+.command-palette-scrim::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--surface-canvas);
+  opacity: 0.45;
+}
+
+.command-palette-scrim > * {
+  position: relative;
+}
+
 /* A 6px hit area around the sidebar's right edge; the divider itself is 1px. */
 .sidebar-resizer {
   position: absolute;

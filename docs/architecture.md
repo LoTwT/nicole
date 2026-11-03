@@ -38,6 +38,7 @@ src/
   image-url.ts            把 Markdown 图片 URL 解析成自定义协议地址
   image-insertion.ts      粘贴、拖入图片与编辑器插入凭据的接线
   app/                    界面状态与纯逻辑辅助
+    command-palette.ts    命令面板模式、文件/标题筛选与最近文件列表
     context-menu.ts       文件树、根目录和标签页右键菜单，快捷键取自注册表
     file-tree.ts          文件树节点、排序、展开与增量合并
     line-endings.ts       换行风格检测与写回
@@ -57,6 +58,7 @@ src/
     StatusBar.vue         保存状态与临时提示
     AppBanner.vue         外部修改、删除、保存失败和恢复内容横幅
     AppDialog.vue         模态对话框、焦点陷阱与焦点恢复
+    CommandPalette.vue    命令、文件和标题三种模式的命令面板
     RecoveryDialog.vue    崩溃恢复列表与三个选择
     EmptyState.vue        开始写作、无文件和最近文件夹
     NonMarkdownPlaceholder.vue  非 Markdown 文件的占位页
@@ -65,6 +67,7 @@ src/
     KeyHint.vue           按平台拆分的快捷键键帽
   editor/                 纯 TypeScript，不依赖 Vue 和 MyGo
     index.ts              createEditor、三种模式、widgets、核心命令、图片插入
+    headings.ts           Lezer 语法树的 ATX/Setext 标题提取，供命令面板与大纲复用
     types.ts              对外类型
   services/               MyGo 边界
     mygo.ts               生成的类型化客户端
@@ -111,7 +114,7 @@ Go（main.go）
 - `main.go` 还注册 MyGo 的 `updater.Plugin`，绑定工作区、图片、设置、单文件、打开方式和原生菜单服务，注册图片协议并设置应用菜单；文件监听由 `Workspace.Watch` 在页面调用时开始。更新源、版本注入和发布流程见[发布与自动更新](release.md)。
 - `src/services/` 是生成的 `mygo.ts` 客户端上的薄封装，不承载业务逻辑。`app.ts` 只把 `Application.Info` 包装成 `getAppInfo`；`workspace.ts` 包装 `Workspace` 的 Markdown 方法、`PickFolder`/`OpenFolder` 和关窗保存事件；`files.ts`、`settings.ts`、`single-file.ts`、`menu.ts`、`open-file.ts` 和 `watch.ts` 分别包装对应服务；`clipboard.ts` 只负责复制界面文字。封装不拼接路径，也不缓存文件内容。
 - `src/app/` 只放不依赖 Vue 组件实例的界面逻辑，`src/components/` 只负责渲染和交互事件；`App.vue` 负责把这些模块与 `services/` 接起来，不直接调用 MyGo。
-- `src/commands/` 保存唯一命令注册表、格式与插入命令、应用与文件树命令、键位匹配和显示、拼音搜索/最近使用逻辑；只依赖 CodeMirror、`src/app/platform.ts`，以及类型层面的 `src/app/file-tree.ts`，不依赖 Vue 或 MyGo。`src/editor/slash.ts` 负责 slash 触发、查询和菜单状态，`src/components/SlashMenu.vue` 只负责渲染和定位；`src/app/context-menu.ts` 组装右键菜单并从注册表读取快捷键。
+- `src/commands/` 保存唯一命令注册表、格式与插入命令、应用与文件树命令、键位匹配和显示、拼音搜索/最近使用逻辑；只依赖 CodeMirror、`src/app/platform.ts`，以及类型层面的 `src/app/file-tree.ts`，不依赖 Vue 或 MyGo。`src/editor/slash.ts` 负责 slash 触发、查询和菜单状态，`src/components/SlashMenu.vue` 只负责渲染和定位；`src/app/context-menu.ts` 组装右键菜单并从注册表读取快捷键。`src/app/command-palette.ts` 处理面板模式标识、文件与标题排序；`src/editor/headings.ts` 从 Lezer 树提取标题；`src/components/CommandPalette.vue` 只负责渲染和键盘交互。
 - `createEditor` 的接口为：
 
   ```ts
@@ -168,7 +171,7 @@ Go（main.go）
   `EditorHandle` 提供 `view`、`mode`、`setMode`、`replaceDocument`、`undo`、`redo`、`containsPoint`、`createInsertionTicket`、`insertImages`、`getRestoreState`、`focus` 和 `destroy`。`getRestoreState` 序列化选区、`historyField`、顶部行号和行内像素偏移；后台标签页销毁视图时只保留这份状态和文本。`replaceDocument` 把磁盘上的新文本作为一次差异修改应用，映射选区并把可见区域顶部保持在原行。`undo()` / `redo()` 在输入法组合期间返回 `false`，不执行历史；`containsPoint(x, y)` 按视口坐标判断落点是否在编辑器内；`createInsertionTicket(x, y)` 按视口坐标创建插入凭据，坐标不在编辑区内时返回 null；`insertImages(ticket, markdown)` 在一个事务里插入文本，因此是一个撤销步。编辑器持续对凭据做位置映射，中文输入法组合期间先排队，组合结束后再插入；多条排队插入逐条处理，前一条插入会映射后一条的位置。`onPasteImage` 只把粘贴事件交给应用层，保存图片和生成 Markdown 由 `src/image-insertion.ts` 经 `src/services/assets.ts` 完成；编辑区不接触 MyGo。三种模式通过同一个 `Compartment` 重配置，`EditorView` 实例不变。编辑器命令的键位由注册表生成，统一通过 `Prec.highest` 注册，组合输入期间返回 `false` 交给输入法。
 
 - 编辑器主题直接读取 CSS 变量；界面切换亮暗时只改 `<html>` 上的 `.dark`，不重建编辑器（见[主题与字体](specs/theming.md#编辑器主题)）。
-- 命令注册表只有一份，各入口共用，见 [Slash 命令](specs/slash-commands.md#命令注册表)。`formatCommandShortcut` 把注册表键位转成平台显示文本，悬停提示、`KeyHint`、右键菜单和测试都使用这一条路径；`createCommandKeymap` 统一生成编辑器命令的 `Prec.highest` 键位表。`src/commands/keybinding.ts` 先按字符匹配，再用 `w3c-keyname`、`event.code` 和 `keyCode` 做受限的物理键回退（ASCII 字符不按物理字母回退），`App.vue` 分发 `scope: "app"` 的命令，`FileTree.vue` 只在文件树有焦点时分发 `scope: "file-tree"` 的命令；`available: false` 的占位命令不参与分发。`pinyin-pro` 只在第一次打开 slash 菜单时动态加载，最近使用记录存放在 `localStorage`。格式命令把事务标为 `input.format` 并用 `isolateHistory` 隔离撤销步；slash 执行把删除查询和命令产生的事务合并成一个事务。
+- 命令注册表只有一份，各入口共用，见 [Slash 命令](specs/slash-commands.md#命令注册表)。`formatCommandShortcut` 把注册表键位转成平台显示文本，悬停提示、`KeyHint`、命令面板、右键菜单和测试都使用这一条路径；`createCommandKeymap` 统一生成编辑器命令的 `Prec.highest` 键位表。`src/commands/keybinding.ts` 先按字符匹配，再用 `w3c-keyname`、`event.code` 和 `keyCode` 做受限的物理键回退（ASCII 字符不按物理字母回退），`App.vue` 分发 `scope: "app"` 的命令，`FileTree.vue` 只在文件树有焦点时分发 `scope: "file-tree"` 的命令；`available: false` 的占位命令不参与分发。`pinyin-pro` 只在第一次打开 slash 菜单或命令面板时动态加载，命令最近使用记录存放在 `localStorage`。格式命令把事务标为 `input.format` 并用 `isolateHistory` 隔离撤销步；slash 执行把删除查询和命令产生的事务合并成一个事务。命令面板执行编辑器命令前恢复打开面板时记录的选区，文件模式的最近文件随 `tabs.json` 保存。
 - 编辑模式的设计和限制见[编辑模式](specs/editor-modes.md)。
 
 ## IPC 用法
@@ -183,7 +186,7 @@ Go（main.go）
 - `SingleFileService` 提供 `ChooseSingleFile`、`AcceptSingleFile`、`DismissOfferedFile`、`ReadSingleFile`、`WriteSingleFile`、`RevealSingleFile` 和 `ReleaseSingleFile`；授权按解析后的绝对路径保存，只有对话框选择或 `App.OnOpenFile` 提供的文件才能被接受。打开系统文件的父目录是一次性授权：`OpenFolder` 成功后 Go 消耗对应提供项，取消时页面调用 `DismissOfferedFile`。`OpenedFiles` 暂存系统传入的路径；`app:open-file` 只通知“有新文件”，页面收到信号后调用 `TakePendingOpenedFiles` 一次取走队列，既覆盖启动时到达的文件，也不会重复交付同一个文件。
 - `Recovery` 提供 `Save(copy, generation)`、`List(generation)`、`Delete(id, generation)`、`Discard(ids, generation)` 和 `RestoreSingleFile(id)`。工作区副本只接受当前根和 generation；单文件副本写入时核对 `SingleFileService` 的授权。副本请求可带 `baselineUnconfirmed`，此时 Go 不记录也不沿用磁盘哈希。`List` 由 Go 读磁盘并返回 `diskState`、`text` 和 `diskText`，页面不自行读盘；`changed`/`missing` 的结果是列表时的快照，用户在对话框里做出选择前页面会重新 `List`。格式、上限和恢复规则见[工作区与文件](specs/workspace.md#崩溃恢复)。
 - `Settings` 提供 `Get`、`MigrateLegacyTheme`、`SetTheme`、`SetSidebarWidth`、`SetExpandedFolders`、`AddRecentFolder` 和 `RemoveRecentFolder`；`AddRecentFolder` 只接受当前已打开的根目录，最近列表由 `Workspace.open` 写入；`SetTheme` 同时调用 `mygo.Theme.SetSource` 同步原生外观。
-- `WorkspaceTabs` 提供 `Get(root)` 和 `Save(root, tabs, active)`，只接受当前打开的根目录；标签路径是相对路径，只用于显示和恢复，不构成文件授权。格式和限制见[工作区与文件](specs/workspace.md#标签页存储)。
+- `WorkspaceTabs` 提供 `Get(root)` 和 `Save(root, tabs, active, recentFiles)`，只接受当前打开的根目录；标签和最近文件路径都是相对路径，只用于显示和恢复，不构成文件授权。格式和限制见[工作区与文件](specs/workspace.md#标签页存储)。
 - `NativeMenu.PopupNativeMenu` 在调用窗口的页面坐标显示原生菜单，返回选中项 ID 或空字符串；页面最多传 64 项，ID 唯一。正文的 WebView 右键菜单由 `Page.OnContextMenu` 裁剪，见[安全](#安全)。
 - 搜索通过 Channel 流式返回结果（见[工作区与文件](specs/workspace.md#搜索)）。
 - `Assets` 提供 `PasteImage(docPath, generation)` 和 `ImportImages(docPath, generation, dropToken)`，返回保存后的工作区相对路径和 Markdown。粘贴时 Go 先读剪贴板里的本地文件列表；列表非空时只导入其中的图片，没有图片就返回“剪贴板没有图片”，只有列表为空时才读 PNG 位图；拖入时 Go 从 `Window.OnFileDrop` 保存的路径中按一次性 token 取文件。页面不再传拖入路径，图片字节也不经过 IPC（见[工作区与文件](specs/workspace.md#图片)）。
