@@ -257,6 +257,20 @@ describe("CommandPalette", () => {
     expect(document.activeElement).toBe(input);
   });
 
+  it("leaves mousedown on the input to the browser for caret placement", async () => {
+    mountPalette({});
+    await settle();
+    const input = paletteInput();
+
+    const mousedown = new MouseEvent("mousedown", {
+      bubbles: true,
+      cancelable: true,
+    });
+    input.dispatchEvent(mousedown);
+
+    expect(mousedown.defaultPrevented).toBe(false);
+  });
+
   it("closes on Escape and restores focus to the opener", async () => {
     const onClose = vi.fn();
     const { opener } = mountPalette({ onClose });

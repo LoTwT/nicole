@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { EditorSelection } from "@codemirror/state";
+import { EditorSelection, type Text } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import {
   computed,
@@ -174,6 +174,7 @@ interface ClosedTab {
 interface PaletteSession {
   mode: CommandPaletteMode;
   tabId: number | null;
+  doc: Text | null;
   selection: SavedSelection | null;
   headings: DocumentHeading[];
   headingsLoaded: boolean;
@@ -706,6 +707,18 @@ function handleEditorChange(tabId: number, text: string) {
   const tab = findTab(tabId);
   if (tab === null) {
     return;
+  }
+  if (paletteSession.value !== null) {
+    // The editor cannot be typed into while the palette has focus, so any
+    // document change here came from outside it. Close after the current
+    // task; a click already being handled still reaches the stale-session
+    // checks below. Do not close a newer palette opened after this change.
+    const sessionAtChange = paletteSession.value;
+    queueMicrotask(() => {
+      if (paletteSession.value === sessionAtChange) {
+        closeCommandPalette();
+      }
+    });
   }
   tab.text = text;
   if (applyingExternal) {
@@ -2299,6 +2312,7 @@ function openCommandPalette(mode: CommandPaletteMode) {
   paletteSession.value = {
     mode,
     tabId: tab?.id ?? null,
+    doc: activeEditor?.view.state.doc ?? null,
     selection:
       activeEditor === null
         ? null
@@ -2367,6 +2381,11 @@ function restorePaletteEditor(session: PaletteSession) {
     return null;
   }
   const view = editor.view;
+  // Positions captured when the panel opened are stale if the document was
+  // replaced or edited externally. Do not write them into the new document.
+  if (session.doc === null || view.state.doc !== session.doc) {
+    return null;
+  }
   view.focus();
   if (session.selection !== null) {
     const length = view.state.doc.length;
@@ -2471,6 +2490,9 @@ async function jumpToPaletteHeading(position: number) {
     return;
   }
   const view = editor.view;
+  if (session.doc === null || view.state.doc !== session.doc) {
+    return;
+  }
   const at = Math.max(0, Math.min(view.state.doc.length, position));
   view.dispatch({
     selection: { anchor: at },

@@ -56,13 +56,20 @@ function atxText(state: EditorState, node: HeadingNode): string {
 }
 
 /**
- * Setext headings span their content line and the underline. The node starts
- * at the content, after any blockquote or list prefix, so read that first
- * line instead of the raw line text.
+ * Setext headings span their content lines and the underline. The node starts
+ * at the first content character, after any blockquote or list prefix, so
+ * read up to the HeaderMark and strip per-line container markers from the
+ * remaining lines.
  */
 function setextText(state: EditorState, node: HeadingNode): string {
-  const line = state.doc.lineAt(node.from);
-  return state.doc.sliceString(node.from, line.to).trim();
+  const underline = headerMarks(node)[0];
+  const end = underline?.from ?? node.to;
+  return state.doc
+    .sliceString(node.from, end)
+    .split("\n")
+    .map((line) => line.replace(/^(?:[ \t]*>[ \t]?)+/, "").trim())
+    .join(" ")
+    .trim();
 }
 
 /**

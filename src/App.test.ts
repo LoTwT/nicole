@@ -995,12 +995,15 @@ describe("renames", () => {
       "a.md": "# A\n",
       "b.md": "# B\n",
       "notes/c.md": "# C\n",
+      "notes-old/a.md": "# Old A\n",
     });
     await openPath("/notes/a.md");
     await openPath("/notes/b.md");
     await openPath("/notes/notes/c.md");
+    await openPath("/notes/notes-old/a.md");
     await vi.waitFor(() => {
       expect(mocks.saveWorkspaceTabs.mock.calls.at(-1)?.[3]).toEqual([
+        "notes-old/a.md",
         "notes/c.md",
         "b.md",
         "a.md",
@@ -1011,6 +1014,7 @@ describe("renames", () => {
     await settle();
     await vi.waitFor(() => {
       expect(mocks.saveWorkspaceTabs.mock.calls.at(-1)?.[3]).toEqual([
+        "notes-old/a.md",
         "b.md",
         "a.md",
       ]);
@@ -1021,7 +1025,10 @@ describe("renames", () => {
     ]);
     await settle();
     await vi.waitFor(() => {
-      expect(mocks.saveWorkspaceTabs.mock.calls.at(-1)?.[3]).toEqual(["b.md"]);
+      expect(mocks.saveWorkspaceTabs.mock.calls.at(-1)?.[3]).toEqual([
+        "notes-old/a.md",
+        "b.md",
+      ]);
     });
 
     watchEvents?.([
@@ -1029,7 +1036,10 @@ describe("renames", () => {
     ]);
     await settle();
     await vi.waitFor(() => {
-      expect(mocks.saveWorkspaceTabs.mock.calls.at(-1)?.[3]).toEqual(["d.md"]);
+      expect(mocks.saveWorkspaceTabs.mock.calls.at(-1)?.[3]).toEqual([
+        "notes-old/a.md",
+        "d.md",
+      ]);
     });
   });
 
@@ -2926,23 +2936,83 @@ describe("command palette", () => {
     expect(paletteInput().value).toBe("");
     expect(headingMocks.extract).not.toHaveBeenCalled();
 
-    replaceEditorText("# New\n");
     typePalette("@");
     await settle();
     expect(headingMocks.extract).toHaveBeenCalledTimes(1);
     expect(paletteOptions().map((item) => item.textContent)).toEqual([
-      expect.stringContaining("New"),
+      expect.stringContaining("Old"),
     ]);
 
     typePalette("");
     await settle();
-    replaceEditorText("# Newer\n");
     typePalette("@");
     await settle();
     expect(headingMocks.extract).toHaveBeenCalledTimes(1);
     expect(paletteOptions().map((item) => item.textContent)).toEqual([
-      expect.stringContaining("New"),
+      expect.stringContaining("Old"),
     ]);
+  });
+
+  it("closes the palette when an external load changes the active document", async () => {
+    await openFile("a.md", "# One\n\n## Two\n");
+    pressPaletteShortcut("O");
+    await settle();
+    expect(paletteInput()).not.toBeNull();
+
+    mocks.readFile.mockResolvedValue(
+      "Intro paragraph\n\n# One\n\n## Two\n",
+    );
+    watchEvents?.([{ op: "write", path: "a.md", isDir: false }]);
+    await settle();
+    await vi.waitFor(() => {
+      expect(
+        document.querySelector(
+          '[role="combobox"][aria-label^="命令面板"]',
+        ),
+      ).toBeNull();
+    });
+  });
+
+  it("does not jump to a heading position after an external change", async () => {
+    const text = "# One\n\n## Two\n";
+    await openFile("a.md", text);
+    pressPaletteShortcut("O");
+    await settle();
+    const two = paletteOptions().find((item) =>
+      item.textContent?.includes("Two"),
+    );
+    if (!two) throw new Error("heading option not found");
+
+    const updated = `Intro paragraph\n\n${text}`;
+    replaceEditorText(updated);
+    const headAfterChange = editorView().state.selection.main.head;
+    two.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await settle();
+
+    expect(editorView().state.doc.toString()).toBe(updated);
+    expect(editorView().state.selection.main.head).toBe(headAfterChange);
+  });
+
+  it("does not run an editor command against stale selection positions", async () => {
+    await openFile("a.md", "abc def\n");
+    const view = editorView();
+    view.dispatch({ selection: { anchor: 4, head: 7 } });
+    await settle();
+
+    pressPaletteShortcut("P");
+    await settle();
+    typePalette(">jiacu");
+    await vi.waitFor(() => {
+      expect(paletteOptions()[0]?.textContent ?? "").toContain("加粗");
+    });
+    const bold = paletteOptions()[0]!;
+
+    const updated = "XXXX abc def\n";
+    replaceEditorText(updated);
+    bold.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await settle();
+
+    expect(editorView().state.doc.toString()).toBe(updated);
   });
 
   it("reports a partial heading extraction", async () => {

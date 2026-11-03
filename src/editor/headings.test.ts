@@ -71,9 +71,49 @@ describe("extractHeadings", () => {
     ]);
   });
 
+  it("joins multi-line Setext headings and removes container prefixes", () => {
+    const doc = [
+      "Line one",
+      "line two",
+      "===",
+      "",
+      "> Quote one",
+      "> quote two",
+      "> ---",
+      "",
+      "- List one",
+      "  list two",
+      "  ---",
+    ].join("\n");
+
+    expect(extractHeadings(state(doc))).toEqual([
+      { level: 1, text: "Line one line two", position: 0, line: 1 },
+      {
+        level: 2,
+        text: "Quote one quote two",
+        position: doc.indexOf("> Quote one"),
+        line: 5,
+      },
+      {
+        level: 2,
+        text: "List one list two",
+        position: doc.indexOf("- List one"),
+        line: 9,
+      },
+    ]);
+  });
+
   it("reports a complete extraction for a parsed document", () => {
     const result = extractHeadingsWithStatus(state("# Title\n"));
     expect(result.complete).toBe(true);
     expect(result.headings).toHaveLength(1);
+  });
+
+  it("reports an incomplete extraction at the deadline", () => {
+    const result = extractHeadingsWithStatus(
+      state("# Heading\n\n".repeat(20000)),
+      0,
+    );
+    expect(result.complete).toBe(false);
   });
 });
