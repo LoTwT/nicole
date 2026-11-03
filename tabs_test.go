@@ -279,7 +279,11 @@ func TestTabsConcurrentSaves(t *testing.T) {
 
 func TestTabsNullTabsReadAsEmpty(t *testing.T) {
 	service, root, filePath := newTestTabs(t)
-	data := `{"roots":{"` + root + `":{"tabs":null,"active":"a.md","recentFiles":["a.md"]}}}` + "\n"
+	rootKey, err := json.Marshal(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := `{"roots":{` + string(rootKey) + `:{"tabs":null,"active":"a.md","recentFiles":["a.md"]}}}` + "\n"
 	if err := os.WriteFile(filePath, []byte(data), 0o644); err != nil {
 		t.Fatal(err)
 	}
