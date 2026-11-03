@@ -68,6 +68,11 @@ type WorkspaceFolder struct {
 type Workspace struct {
 	state  *workspaceState
 	writes *selfWrites
+	hashes *diskHashes
+	// openSingleFiles reports the single-file tabs that still hold a grant.
+	// Their hashes must survive a workspace switch even when they live below
+	// the old root.
+	openSingleFiles func() []string
 
 	close *closeCoordinator
 
@@ -106,10 +111,30 @@ func (w *Workspace) useOfferedFiles(paths func() []string, takeFolder func(strin
 	w.takeOfferedFolder = takeFolder
 }
 
+// useDiskHashes lets reads and writes remember the SHA-256 of the content
+// Nicole last saw, so a recovery copy can record the disk version it started
+// from without reading the file again. It is set once during startup.
+func (w *Workspace) useDiskHashes(hashes *diskHashes) {
+	w.hashes = hashes
+}
+
+// useOpenSingleFiles lets a workspace switch keep the recorded hashes of
+// single-file tabs that remain open.
+func (w *Workspace) useOpenSingleFiles(paths func() []string) {
+	w.openSingleFiles = paths
+}
+
 // openRoot reports the open workspace root for Settings.AddRecentFolder.
 func (w *Workspace) openRoot() string {
 	root, _ := w.state.snapshot()
 	return root
+}
+
+// openGeneration reports the generation of the open workspace. Recovery
+// copies use it so a late write cannot land in another folder.
+func (w *Workspace) openGeneration() int {
+	_, generation := w.state.snapshot()
+	return generation
 }
 
 // FolderPick is the result of choosing a folder without switching to it. The
@@ -366,7 +391,15 @@ func (w *Workspace) open(root string) (WorkspaceFolder, error) {
 		return WorkspaceFolder{}, err
 	}
 	removeTempFiles(rootFS)
+	previousRoot, _ := w.state.snapshot()
 	generation := w.state.replace(resolved)
+	if previousRoot != "" && previousRoot != resolved {
+		var keep []string
+		if w.openSingleFiles != nil {
+			keep = w.openSingleFiles()
+		}
+		w.hashes.clearUnder(previousRoot, keep)
+	}
 	if w.settings != nil {
 		// Failing to remember a folder must not prevent the user from
 		// working in it; the recent list is best effort.
@@ -531,7 +564,23 @@ func (w *Workspace) ReadFile(rel string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	w.recordDiskHash(root, rel, target, data)
 	return string(data), nil
+}
+
+// recordDiskHash remembers the bytes Nicole read or wrote for both the path
+// the page named and the file a symlink resolves to. Recovery copies ask for
+// the named path, while writes land on the resolved target.
+func (w *Workspace) recordDiskHash(root, requested, target string, data []byte) {
+	if w.hashes == nil {
+		return
+	}
+	targetPath := filepath.Join(root, filepath.FromSlash(target))
+	w.hashes.record(targetPath, data)
+	requestedPath := filepath.Join(root, filepath.FromSlash(requested))
+	if requestedPath != targetPath {
+		w.hashes.record(requestedPath, data)
+	}
 }
 
 // WriteFile replaces a Markdown file in the open folder with content.
@@ -572,6 +621,7 @@ func (w *Workspace) WriteFile(rel, content string, generation int) error {
 			w.writes.forget(target)
 			return err
 		}
+		w.recordDiskHash(root, rel, target, []byte(content))
 		return nil
 	}
 	if !errors.Is(err, fs.ErrNotExist) {
@@ -588,6 +638,7 @@ func (w *Workspace) WriteFile(rel, content string, generation int) error {
 		w.writes.forget(target)
 		return err
 	}
+	w.recordDiskHash(root, rel, target, []byte(content))
 	return nil
 }
 

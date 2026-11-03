@@ -37,6 +37,12 @@ import {
 } from "./commands/search";
 import type { CommandContext } from "./commands/types";
 import {
+  createRecoveryTimers,
+  formatRecoveryTime,
+  type RecoveryDialogItem,
+} from "./app/recovery";
+import { describeWordDifference } from "./app/word-count";
+import {
   detectLineEndings,
   normalizeLineEndings,
   withLineEnding,
@@ -62,6 +68,7 @@ import { classifyWatchEvents } from "./app/watch-events";
 import type { TreeNode } from "./app/file-tree";
 import AppBanner from "./components/AppBanner.vue";
 import AppDialog from "./components/AppDialog.vue";
+import RecoveryDialog from "./components/RecoveryDialog.vue";
 import AppSidebar from "./components/AppSidebar.vue";
 import CommandPalette from "./components/CommandPalette.vue";
 import EmptyState from "./components/EmptyState.vue";
@@ -117,6 +124,15 @@ import {
   revealSingleFile,
   writeSingleFile,
 } from "./services/single-file";
+import {
+  deleteRecovery,
+  discardRecovery,
+  listRecovery,
+  restoreRecoverySingleFile,
+  saveRecovery,
+  type RecoveryCopy,
+  type RecoveryItem,
+} from "./services/recovery";
 import {
   getWorkspaceTabs,
   saveWorkspaceTabs as saveTabsForRoot,
@@ -183,6 +199,19 @@ interface PaletteSession {
   recentCommandIds: string[];
 }
 
+interface RecoveryDialogState {
+  items: RecoveryDialogItem[];
+  raw: RecoveryItem[];
+  otherFolders: number;
+}
+
+interface RecoveryWriteState {
+  written: string | null;
+  writtenBaselineUnconfirmed: boolean | null;
+  writing: boolean;
+  queued: boolean;
+}
+
 const editorHost = ref<HTMLElement | null>(null);
 const sidebar = ref<InstanceType<typeof AppSidebar> | null>(null);
 const topBar = ref<InstanceType<typeof TopBar> | null>(null);
@@ -214,9 +243,11 @@ const sidebarOpen = ref(true);
 const overlaySidebar = ref(false);
 
 const dialog = ref<DialogState | null>(null);
+const recoveryDialog = ref<RecoveryDialogState | null>(null);
 let dialogResolve: ((value: string) => void) | null = null;
 let dialogOpen = false;
 let folderOperation: Promise<boolean> | null = null;
+let recoveryChecking = false;
 
 let editor: EditorHandle | null = null;
 let mountSequence = 0;
@@ -237,6 +268,13 @@ const saveTimers = new Map<number, ReturnType<typeof setTimeout>>();
 const savingTimers = new Map<number, ReturnType<typeof setTimeout>>();
 const writesInFlight = new Map<number, number>();
 const externalReadSequence = new Map<number, number>();
+const recoveryWrites = new Map<number, RecoveryWriteState>();
+const recoveryEpoch = new Map<number, number>();
+const pendingRecoveryOperations = new Set<Promise<unknown>>();
+const recoveryTicker = createRecoveryTimers((id) => onRecoveryDue(id));
+let recoveryClosed: Promise<void> | null = null;
+let resolveRecoveryClosed: (() => void) | null = null;
+let recoveryApplying = false;
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
 
 let watcher: WorkspaceWatcher | null = null;
@@ -342,6 +380,7 @@ const banner = computed(() => {
     saveErrorDetail: tab.saveErrorDetail,
     mixedLineEndings: tab.mixedLineEndings,
     singleFile: tab.kind === "single",
+    restored: tab.restored,
   });
 });
 
@@ -698,9 +737,573 @@ function clearSavingDisplay(id: number) {
   }
 }
 
+function recoveryKindFor(tab: TabModel): "workspace" | "single" | null {
+  if (tab.kind === "workspace") {
+    return "workspace";
+  }
+  if (tab.kind === "single") {
+    return "single";
+  }
+  return null;
+}
+
+/**
+ * A clean tab normally needs no copy, because its text is still on disk. An
+ * externally deleted file is the exception: the only remaining copy of the
+ * content lives in the tab until the user saves or closes it.
+ */
+function needsRecoveryCopy(tab: TabModel): boolean {
+  return (
+    recoveryKindFor(tab) !== null &&
+    (isDirty(tab) || tab.externalState === "deleted")
+  );
+}
+
+function recoveryPayload(tab: TabModel): RecoveryCopy | null {
+  const kind = recoveryKindFor(tab);
+  if (kind === null) {
+    return null;
+  }
+  const root = kind === "workspace" ? workspace.value?.root ?? "" : "";
+  if (kind === "workspace" && root === "") {
+    return null;
+  }
+  return {
+    kind,
+    root,
+    path: tab.path,
+    lineEnding: tab.lineEnding,
+    text: tab.text,
+    baselineUnconfirmed: tab.externalState !== "none" || tab.restored,
+  };
+}
+
+/**
+ * Tracks recovery writes and deletes so the close handshake can wait for them
+ * before telling Go the window is ready to close.
+ */
+function trackRecovery<T>(promise: Promise<T>): Promise<T> {
+  pendingRecoveryOperations.add(promise);
+  void promise
+    .finally(() => {
+      pendingRecoveryOperations.delete(promise);
+    })
+    .catch(() => {});
+  return promise;
+}
+
+async function waitForRecoveryOperations(timeoutMs: number): Promise<void> {
+  if (timeoutMs <= 0) {
+    return;
+  }
+  const deadline = Date.now() + timeoutMs;
+  while (pendingRecoveryOperations.size > 0) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      return;
+    }
+    const pending = [...pendingRecoveryOperations];
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    try {
+      await Promise.race([
+        Promise.allSettled(pending).then(() => undefined),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, remaining);
+        }),
+      ]);
+    } finally {
+      if (timer !== null) {
+        clearTimeout(timer);
+      }
+    }
+  }
+}
+
+function tabInRecoveryDialog(tab: TabModel): boolean {
+  const state = recoveryDialog.value;
+  if (state === null) {
+    return false;
+  }
+  if (tab.kind === "workspace") {
+    const root = workspace.value?.root ?? "";
+    return state.raw.some(
+      (item) =>
+        item.kind === "workspace" && item.root === root && item.path === tab.path,
+    );
+  }
+  if (tab.kind === "single") {
+    return state.raw.some(
+      (item) => item.kind === "single" && sameFilePath(item.path, tab.path),
+    );
+  }
+  return false;
+}
+
+function rescheduleDirtyTabs() {
+  for (const tab of tabs.value) {
+    if (
+      tab.kind === "preview" ||
+      !isDirty(tab) ||
+      tab.restored ||
+      tab.externalState !== "none" ||
+      tab.mixedLineEndings ||
+      tab.savePhase !== "editing" ||
+      saveTimers.has(tab.id)
+    ) {
+      continue;
+    }
+    scheduleAutosave(tab.id);
+  }
+}
+
+function closeRecoveryDialog() {
+  recoveryDialog.value = null;
+  const resolve = resolveRecoveryClosed;
+  resolveRecoveryClosed = null;
+  recoveryClosed = null;
+  resolve?.();
+  rescheduleDirtyTabs();
+}
+
+/** Called every five seconds by the per-tab copy timer after the first copy. */
+function onRecoveryDue(tabId: number): boolean {
+  const tab = findTab(tabId);
+  if (tab === null || !needsRecoveryCopy(tab)) {
+    return false;
+  }
+  writeRecoveryCopy(tabId);
+  return true;
+}
+
+function startRecoveryTimer(tabId: number) {
+  recoveryTicker.start(tabId);
+}
+
+function deleteRecoveryForTab(tab: TabModel) {
+  const id = tab.recoveryId;
+  tab.recoveryId = null;
+  if (id === null) {
+    return;
+  }
+  void trackRecovery(
+    deleteRecovery(id, tab.kind === "workspace" ? tab.generation : 0),
+  ).catch((error) => {
+    console.warn("recovery: could not remove copy", error);
+  });
+}
+
+/**
+ * Stops the copy timer for a tab and removes its copy. It is used when the
+ * text returns to the disk baseline, a tab closes, or a dialog discards the
+ * changes. An in-flight write deletes its own result when it finds the tab
+ * clean or gone.
+ */
+function forgetRecoveryForTab(tab: TabModel) {
+  recoveryTicker.stop(tab.id);
+  recoveryWrites.delete(tab.id);
+  recoveryEpoch.set(tab.id, (recoveryEpoch.get(tab.id) ?? 0) + 1);
+  deleteRecoveryForTab(tab);
+}
+
+function writeRecoveryCopy(tabId: number) {
+  const tab = findTab(tabId);
+  if (tab === null || !needsRecoveryCopy(tab)) {
+    return;
+  }
+  const payload = recoveryPayload(tab);
+  if (payload === null) {
+    return;
+  }
+  let state = recoveryWrites.get(tabId);
+  if (state === undefined) {
+    state = {
+      written: null,
+      writtenBaselineUnconfirmed: null,
+      writing: false,
+      queued: false,
+    };
+    recoveryWrites.set(tabId, state);
+  }
+  if (state.writing) {
+    state.queued = true;
+    return;
+  }
+  const baselineUnconfirmed = payload.baselineUnconfirmed === true;
+  if (
+    state.written === payload.text &&
+    state.writtenBaselineUnconfirmed === baselineUnconfirmed
+  ) {
+    return;
+  }
+  state.writing = true;
+  const captured = { ...payload };
+  const generation = tab.kind === "workspace" ? tab.generation : 0;
+  const epoch = recoveryEpoch.get(tabId) ?? 0;
+  void trackRecovery(saveRecovery(captured, generation))
+    .then((id) => {
+      const current = findTab(tabId);
+      if (
+        (recoveryEpoch.get(tabId) ?? 0) !== epoch ||
+        current === null ||
+        current.kind !== tab.kind ||
+        current.path !== captured.path ||
+        !needsRecoveryCopy(current)
+      ) {
+        if (current === null || current.recoveryId !== id) {
+          void trackRecovery(deleteRecovery(id, generation)).catch(() => {});
+        }
+        return;
+      }
+      current.recoveryId = id;
+      const currentState = recoveryWrites.get(tabId);
+      if (currentState !== undefined) {
+        currentState.written = captured.text;
+        currentState.writtenBaselineUnconfirmed =
+          captured.baselineUnconfirmed === true;
+      }
+    })
+    .catch((error) => {
+      // A failed copy only goes to the log; the editor keeps working.
+      console.warn("recovery: could not write copy", error);
+    })
+    .finally(() => {
+      const currentState = recoveryWrites.get(tabId);
+      if (currentState === undefined) {
+        return;
+      }
+      currentState.writing = false;
+      const current = findTab(tabId);
+      if (currentState.queued && current !== null && isDirty(current)) {
+        currentState.queued = false;
+        writeRecoveryCopy(tabId);
+      } else {
+        currentState.queued = false;
+      }
+    });
+}
+
+function writeAllRecoveryCopies() {
+  for (const tab of tabs.value) {
+    if (needsRecoveryCopy(tab)) {
+      writeRecoveryCopy(tab.id);
+    }
+  }
+}
+
+function presentRecoveryItem(item: RecoveryItem): RecoveryDialogItem {
+  let note: string;
+  if (!item.restorable) {
+    note = item.reason ? `无法恢复（${item.reason}）` : "无法恢复";
+  } else if (item.diskState === "changed") {
+    note = "磁盘上的文件已更改";
+  } else if (item.diskState === "missing") {
+    note = "文件已不存在";
+  } else {
+    note = describeWordDifference(item.text, item.diskText);
+  }
+  return {
+    id: item.id,
+    name: item.name,
+    location: item.path,
+    time: formatRecoveryTime(item.savedAt),
+    note,
+    unable: !item.restorable,
+  };
+}
+
+function recoveryGeneration(): number {
+  return workspace.value?.generation ?? 0;
+}
+
+async function maybeShowRecoveryDialog() {
+  if (recoveryChecking || recoveryDialog.value !== null) {
+    return;
+  }
+  recoveryChecking = true;
+  const generation = recoveryGeneration();
+  try {
+    const listing = await listRecovery(generation);
+    if (recoveryGeneration() !== generation) {
+      return;
+    }
+    if (listing.items.length === 0) {
+      return;
+    }
+    recoveryClosed = new Promise<void>((resolve) => {
+      resolveRecoveryClosed = resolve;
+    });
+    closeCommandPalette();
+    recoveryDialog.value = {
+      items: listing.items.map(presentRecoveryItem),
+      raw: listing.items,
+      otherFolders: listing.otherFolders,
+    };
+  } catch (error) {
+    console.warn("recovery: could not list copies", error);
+  } finally {
+    recoveryChecking = false;
+  }
+}
+
+async function discardRecoveryCopies() {
+  const state = recoveryDialog.value;
+  if (state === null || recoveryApplying) {
+    return;
+  }
+  recoveryApplying = true;
+  try {
+    await trackRecovery(
+      discardRecovery(
+        state.raw.map((item) => item.id),
+        recoveryGeneration(),
+      ),
+    );
+    closeRecoveryDialog();
+  } catch (error) {
+    showNotice(`无法丢弃恢复内容：${errorText(error)}`, "danger");
+  } finally {
+    recoveryApplying = false;
+  }
+}
+
+function asLineEnding(value: string): LineEnding {
+  return value === "\r\n" || value === "\r" ? value : "\n";
+}
+
+/**
+ * Puts recovered text into a tab without writing anything. The copy id stays
+ * attached so saving, loading the disk version or closing the tab removes it.
+ */
+function setRecoveredContent(
+  tab: TabModel,
+  item: RecoveryItem,
+  mode: "review" | "restore",
+  existing: boolean,
+) {
+  clearTabSaveTimer(tab.id);
+  clearSavingDisplay(tab.id);
+  recoveryTicker.stop(tab.id);
+  recoveryWrites.delete(tab.id);
+  recoveryEpoch.set(tab.id, (recoveryEpoch.get(tab.id) ?? 0) + 1);
+
+  const text = normalizeLineEndings(item.text);
+  // The copy on disk already has this text. Remember it so a later
+  // save-before-close pass does not rewrite the copy and lose its diskHash.
+  recoveryWrites.set(tab.id, {
+    written: text,
+    // A review copy was written before the page could confirm a baseline, so
+    // an untouched tab does not need an identical rewrite on close. Any edit
+    // or external state change compares against the actual current flag.
+    writtenBaselineUnconfirmed: mode === "review",
+    writing: false,
+    queued: false,
+  });
+
+  // An existing tab may have received a newer disk baseline from the watcher
+  // while the dialog was open. Never replace it with the older List snapshot.
+  const itemDiskText =
+    item.diskState === "missing" ? "" : normalizeLineEndings(item.diskText);
+  const diskText = existing ? tab.originalText : itemDiskText;
+  let diskState: "same" | "changed" | "missing";
+  if (!existing) {
+    diskState =
+      item.diskState === "missing"
+        ? "missing"
+        : item.diskState === "same"
+          ? "same"
+          : "changed";
+  } else if (item.diskState === "missing") {
+    diskState = "missing";
+  } else if (itemDiskText === diskText) {
+    diskState = item.diskState === "same" ? "same" : "changed";
+  } else if (tab.externalState === "none" && !isDirty(tab)) {
+    // The tab's baseline is current disk content, newer than the snapshot.
+    diskState = text === diskText ? "same" : "changed";
+  } else {
+    diskState = "changed";
+  }
+  const detected = existing
+    ? { ending: tab.lineEnding, mixed: tab.mixedLineEndings }
+    : item.diskState === "missing"
+      ? { ending: asLineEnding(item.lineEnding), mixed: false }
+      : detectLineEndings(item.diskText);
+
+  const active = tab.id === activeTabId.value;
+  if (active) {
+    applyingExternal = true;
+  }
+  tab.text = text;
+  tab.originalText = diskText;
+  tab.lineEnding = detected.ending;
+  tab.mixedLineEndings = detected.mixed;
+  tab.saveError = null;
+  tab.saveErrorDetail = null;
+  tab.externalState =
+    diskState === "missing"
+      ? "deleted"
+      : diskState === "changed"
+        ? "modified"
+        : "none";
+  tab.revision += 1;
+  tab.restored = mode === "review";
+  tab.savePhase = tab.restored
+    ? "paused"
+    : detected.mixed
+      ? "mixed"
+      : "editing";
+  tab.recoveryId = item.id;
+  if (!active) {
+    tab.snapshot = null;
+  }
+  if (active && editor !== null) {
+    editor.replaceDocument(text);
+  }
+  applyingExternal = false;
+}
+
+/**
+ * Opens one recovered document. With mode "review" it stays paused behind the
+ * recovery banner; with "restore" unchanged disk content is queued for the
+ * normal autosave. Returns null when the item cannot be used, typically a
+ * single-file path that no longer resolves safely.
+ */
+async function applyRecoveryItem(
+  item: RecoveryItem,
+  mode: "review" | "restore",
+): Promise<TabModel | null> {
+  if (!item.restorable) {
+    return null;
+  }
+  if (item.kind === "workspace") {
+    const current = workspace.value;
+    if (current === null || current.root !== item.root) {
+      return null;
+    }
+    const existing = findOpenTabForWorkspacePathIn(
+      tabs.value,
+      current.root,
+      item.path,
+    );
+    if (existing !== undefined) {
+      if (isDirty(existing) && existing.recoveryId === null) {
+        return null;
+      }
+      setRecoveredContent(existing, item, mode, true);
+      await activateTab(existing.id, false);
+      return existing;
+    }
+    const tab = makeMarkdownTab(
+      "workspace",
+      item.path,
+      item.name,
+      item.text,
+      { generation: current.generation },
+    );
+    setRecoveredContent(tab, item, mode, false);
+    insertTab(tab);
+    await activateTab(tab.id, false);
+    return tab;
+  }
+
+  try {
+    await restoreRecoverySingleFile(item.id);
+  } catch {
+    return null;
+  }
+  const existing = tabs.value.find(
+    (tab) => tab.kind === "single" && sameFilePath(tab.path, item.path),
+  );
+  if (existing !== undefined) {
+    if (isDirty(existing) && existing.recoveryId === null) {
+      return null;
+    }
+    setRecoveredContent(existing, item, mode, true);
+    await activateTab(existing.id, false);
+    return existing;
+  }
+  const tab = makeMarkdownTab("single", item.path, item.name, item.text);
+  setRecoveredContent(tab, item, mode, false);
+  insertTab(tab);
+  await activateTab(tab.id, false);
+  return tab;
+}
+
+async function finishRecovery(mode: "review" | "restore") {
+  const state = recoveryDialog.value;
+  if (state === null || recoveryApplying) {
+    return;
+  }
+  recoveryApplying = true;
+  const generation = recoveryGeneration();
+  const autosave: number[] = [];
+  const skipped: string[] = [];
+  try {
+    // The dialog can stay open for a long time. Re-read the disk state so a
+    // sync client or `git pull` cannot be mistaken for the version the user
+    // saw when the dialog opened.
+    let listing;
+    try {
+      listing = await listRecovery(generation);
+    } catch (error) {
+      showNotice(`无法确认恢复内容：${errorText(error)}`, "danger");
+      return;
+    }
+    if (recoveryGeneration() !== generation) {
+      return;
+    }
+    const latest = new Map(listing.items.map((item) => [item.id, item]));
+    for (const original of state.raw) {
+      const item = latest.get(original.id);
+      if (item === undefined) {
+        skipped.push(original.name);
+        continue;
+      }
+      const tab = await applyRecoveryItem(item, mode);
+      if (tab === null) {
+        skipped.push(item.name);
+        continue;
+      }
+      if (mode === "restore" && item.diskState === "same") {
+        autosave.push(tab.id);
+      }
+    }
+  } finally {
+    recoveryApplying = false;
+  }
+  closeRecoveryDialog();
+  for (const id of autosave) {
+    const tab = findTab(id);
+    if (tab !== null && isDirty(tab) && !tab.restored) {
+      scheduleAutosave(id);
+    }
+  }
+  if (skipped.length > 0) {
+    showNotice(`有 ${skipped.length} 个文件无法恢复`, "danger");
+  }
+  await nextTick();
+  editor?.focus();
+}
+
 function markExternalState(tab: TabModel, next: "none" | "modified" | "deleted") {
   tab.externalState = next;
   tab.revision += 1;
+  if (next !== "none") {
+    writeRecoveryCopy(tab.id);
+    if (next === "deleted") {
+      startRecoveryTimer(tab.id);
+    }
+  }
+}
+
+function scheduleAutosave(tabId: number) {
+  clearTabSaveTimer(tabId);
+  saveTimers.set(
+    tabId,
+    setTimeout(() => {
+      saveTimers.delete(tabId);
+      void saveTab(tabId);
+    }, AUTOSAVE_DELAY_MS),
+  );
 }
 
 function handleEditorChange(tabId: number, text: string) {
@@ -726,25 +1329,32 @@ function handleEditorChange(tabId: number, text: string) {
   }
   if (tab.text === tab.originalText) {
     clearTabSaveTimer(tabId);
+    if (tab.externalState === "deleted") {
+      // The disk baseline is gone; the tab is the only remaining copy.
+      writeRecoveryCopy(tabId);
+    } else {
+      forgetRecoveryForTab(tab);
+      tab.restored = false;
+    }
     if (tab.savePhase !== "failed" && tab.savePhase !== "saving") {
       tab.savePhase = "saved";
     }
     return;
   }
+  startRecoveryTimer(tabId);
   if (tab.mixedLineEndings) {
     clearTabSaveTimer(tabId);
     tab.savePhase = "mixed";
+    writeRecoveryCopy(tabId);
+    return;
+  }
+  if (tab.restored) {
+    clearTabSaveTimer(tabId);
+    tab.savePhase = "paused";
     return;
   }
   tab.savePhase = tab.saveError === null ? "editing" : "failed";
-  clearTabSaveTimer(tabId);
-  saveTimers.set(
-    tabId,
-    setTimeout(() => {
-      saveTimers.delete(tabId);
-      void saveTab(tabId);
-    }, AUTOSAVE_DELAY_MS),
-  );
+  scheduleAutosave(tabId);
 }
 
 function saveTab(
@@ -755,6 +1365,11 @@ function saveTab(
   const tab = findTab(tabId);
   if (tab === null) {
     return Promise.resolve(true);
+  }
+  // Only the files listed in the recovery dialog are frozen until the user
+  // chooses. Other tabs, such as a dirty single file, keep autosaving.
+  if (recoveryDialog.value !== null && tabInRecoveryDialog(tab)) {
+    return Promise.resolve(false);
   }
   const revision = revisionAtRequest ?? tab.revision;
   const next = saveQueue.then(() => saveTabNow(tabId, force, revision));
@@ -800,6 +1415,10 @@ async function saveTabNow(
   }
   if (force && tab.revision !== revisionAtRequest) {
     return stopForcedSave(tabId);
+  }
+  if (!force && tab.restored) {
+    tab.savePhase = "paused";
+    return false;
   }
   if (
     !force &&
@@ -857,6 +1476,7 @@ async function saveTabNow(
         current.saveError = saveFailureMessage(raw);
         current.saveErrorDetail = raw;
         current.savePhase = "failed";
+        writeRecoveryCopy(tabId);
       }
       return false;
     }
@@ -884,6 +1504,8 @@ async function saveTabNow(
     }
     if (current.text === current.originalText) {
       current.savePhase = "saved";
+      current.restored = false;
+      forgetRecoveryForTab(current);
       return true;
     }
     current.savePhase = "editing";
@@ -902,6 +1524,7 @@ function stopForcedSave(tabId: number): false {
   }
   if (tab !== null) {
     tab.savePhase = "paused";
+    writeRecoveryCopy(tabId);
   }
   return false;
 }
@@ -948,6 +1571,8 @@ function makeMarkdownTab(
     saveErrorDetail: null,
     externalState: "none",
     revision: 0,
+    restored: false,
+    recoveryId: null,
     generation:
       kind === "workspace"
         ? options.generation ?? workspace.value?.generation ?? 0
@@ -984,6 +1609,8 @@ function makePreviewTab(
     saveErrorDetail: null,
     externalState: "none",
     revision: 0,
+    restored: false,
+    recoveryId: null,
     generation: options.generation ?? workspace.value?.generation ?? 0,
     previewSize: size,
     previewFolder: previewFolderFor(path),
@@ -1450,6 +2077,11 @@ async function switchToFolder(path: string): Promise<boolean> {
     if (choice !== "switch") {
       return false;
     }
+    // The user agreed to discard what could not be saved; the copies for
+    // those documents must not outlive this switch.
+    for (const tab of closingTabs) {
+      forgetRecoveryForTab(tab);
+    }
     await persistTabsNow();
   }
 
@@ -1460,7 +2092,11 @@ async function switchToFolder(path: string): Promise<boolean> {
     showNotice(`打开失败：${errorText(error)}`, "danger");
     return false;
   }
-  return applyWorkspace(folder);
+  const applied = await applyWorkspace(folder);
+  if (applied) {
+    await maybeShowRecoveryDialog();
+  }
+  return applied;
 }
 
 async function startFolderOperation(
@@ -1561,10 +2197,19 @@ function renameTabPaths(oldPath: string, newPath: string, isDir: boolean) {
     if (updated === null) {
       continue;
     }
+    const markdown = tab.kind === "workspace";
+    if (markdown) {
+      // The copy is keyed by path. Move it together with the tab, and let Go
+      // fail closed for the new path until it reads or writes that file.
+      forgetRecoveryForTab(tab);
+    }
     tab.path = updated;
     tab.name = absoluteBaseName(updated);
     if (tab.kind === "preview") {
       tab.previewFolder = previewFolderFor(updated);
+    }
+    if (markdown && needsRecoveryCopy(tab)) {
+      writeRecoveryCopy(tab.id);
     }
   }
   if (lastWorkspaceActivePath !== null) {
@@ -1742,6 +2387,8 @@ function applyExternalText(tab: TabModel, text: string) {
   tab.saveErrorDetail = null;
   tab.externalState = "none";
   tab.savePhase = detected.mixed ? "mixed" : "saved";
+  tab.restored = false;
+  forgetRecoveryForTab(tab);
   if (active && editor !== null) {
     editor.replaceDocument(normalized);
   }
@@ -1753,7 +2400,31 @@ function applyExternalText(tab: TabModel, text: string) {
 
 async function loadDiskVersion() {
   const tab = currentMarkdown.value;
-  if (tab?.kind !== "workspace") {
+  if (tab === null) {
+    return;
+  }
+  if (tab.kind === "single") {
+    let text: string;
+    try {
+      text = await readSingleFile(tab.path);
+    } catch (error) {
+      showNotice(`读取失败：${errorText(error)}`, "danger");
+      return;
+    }
+    const current = findTab(tab.id);
+    if (
+      current === null ||
+      current.kind !== "single" ||
+      current.path !== tab.path
+    ) {
+      return;
+    }
+    applyExternalText(current, text);
+    current.restored = false;
+    forgetRecoveryForTab(current);
+    return;
+  }
+  if (tab.kind !== "workspace") {
     return;
   }
   try {
@@ -1769,6 +2440,8 @@ async function loadDiskVersion() {
       return;
     }
     applyExternalText(current, text);
+    current.restored = false;
+    forgetRecoveryForTab(current);
   } catch (error) {
     const current = findTab(tab.id);
     if (
@@ -1790,6 +2463,84 @@ function keepMyVersion() {
   }
   const revision = tab.revision;
   tab.externalState = "none";
+  tab.restored = false;
+  void saveTab(tab.id, true, revision);
+}
+
+async function latestRecoveryItem(
+  id: string,
+  generation: number,
+): Promise<RecoveryItem | null> {
+  const listing = await listRecovery(generation);
+  return listing.items.find((item) => item.id === id) ?? null;
+}
+
+/** Updates only the disk baseline and external state; the text stays put. */
+function applyRecoveryDiskChange(tab: TabModel, item: RecoveryItem) {
+  clearTabSaveTimer(tab.id);
+  clearSavingDisplay(tab.id);
+  recoveryTicker.stop(tab.id);
+  const missing = item.diskState === "missing";
+  const detected = missing
+    ? { ending: tab.lineEnding, mixed: false }
+    : detectLineEndings(item.diskText);
+  tab.originalText = missing ? "" : normalizeLineEndings(item.diskText);
+  tab.lineEnding = detected.ending;
+  tab.mixedLineEndings = detected.mixed;
+  tab.externalState = missing ? "deleted" : "modified";
+  tab.restored = false;
+  tab.revision += 1;
+  tab.savePhase = detected.mixed ? "mixed" : "editing";
+}
+
+async function keepRestoredContent() {
+  const tab = currentMarkdown.value;
+  if (tab === null) {
+    return;
+  }
+  const revision = tab.revision;
+  const recoveryId = tab.recoveryId;
+  if (recoveryId !== null) {
+    const generation = recoveryGeneration();
+    let item: RecoveryItem | null;
+    try {
+      item = await latestRecoveryItem(recoveryId, generation);
+    } catch (error) {
+      showNotice(`无法确认磁盘状态：${errorText(error)}`, "danger");
+      return;
+    }
+    const current = findTab(tab.id);
+    if (current === null || current.recoveryId !== recoveryId) {
+      return;
+    }
+    if (current.revision !== revision || current.externalState !== "none") {
+      // A watcher update landed while List was running. Its revision bump
+      // makes the force save fail, but do not keep offering a stale decision.
+      current.restored = false;
+      return;
+    }
+    if (item !== null) {
+      if (!item.restorable) {
+        applyRecoveryDiskChange(current, item);
+        return;
+      }
+      if (item.diskState === "missing") {
+        applyRecoveryDiskChange(current, item);
+        return;
+      }
+      // The page may have rewritten this copy without a disk hash after an
+      // edit, so List reports "changed" even when the disk text is unchanged.
+      // originalText is the baseline the user saw when reviewing the copy.
+      if (normalizeLineEndings(item.diskText) !== current.originalText) {
+        applyRecoveryDiskChange(current, item);
+        return;
+      }
+    }
+  }
+  tab.restored = false;
+  if (tab.savePhase === "paused") {
+    tab.savePhase = tab.saveError === null ? "editing" : "failed";
+  }
   void saveTab(tab.id, true, revision);
 }
 
@@ -1803,7 +2554,14 @@ async function resaveDeleted() {
 }
 
 async function handleBannerAction(
-  action: "retry" | "load-disk" | "keep-mine" | "resave" | "close-tab",
+  action:
+    | "retry"
+    | "load-disk"
+    | "keep-mine"
+    | "resave"
+    | "close-tab"
+    | "keep-restored"
+    | "use-disk",
 ) {
   switch (action) {
     case "retry":
@@ -1814,8 +2572,14 @@ async function handleBannerAction(
     case "load-disk":
       await loadDiskVersion();
       break;
+    case "use-disk":
+      await loadDiskVersion();
+      break;
     case "keep-mine":
       keepMyVersion();
+      break;
+    case "keep-restored":
+      keepRestoredContent();
       break;
     case "resave":
       await resaveDeleted();
@@ -1883,6 +2647,7 @@ async function closeTabsById(
     if (!closing.has(tab.id)) continue;
     clearTabSaveTimer(tab.id);
     clearSavingDisplay(tab.id);
+    forgetRecoveryForTab(tab);
     if (tab.kind === "single") {
       void releaseSingleFile(tab.path).catch(() => {});
     } else if (record) {
@@ -2217,6 +2982,15 @@ async function handleOpenedPath(path: string) {
 async function receiveOpenedFiles() {
   openedFilesQueue = openedFilesQueue
     .then(async () => {
+      // The recovery decision comes first; otherwise askOpenSingleFile could
+      // stack another modal on top of it.
+      while (recoveryDialog.value !== null) {
+        const wait = recoveryClosed;
+        if (wait === null) {
+          return;
+        }
+        await wait;
+      }
       const paths = await takePendingOpenedFiles();
       const last = paths.at(-1);
       if (last) {
@@ -2299,6 +3073,8 @@ function extractPaletteHeadings(): HeadingExtraction {
 function openCommandPalette(mode: CommandPaletteMode) {
   if (
     dialogOpen ||
+    recoveryDialog.value !== null ||
+    recoveryChecking ||
     paletteSession.value !== null ||
     document.querySelector('[role="dialog"][aria-modal="true"]') !== null
   ) {
@@ -2505,7 +3281,7 @@ function handleGlobalKeydown(event: KeyboardEvent) {
   if (event.isComposing || event.keyCode === 229) {
     return;
   }
-  if (dialogOpen) {
+  if (dialogOpen || recoveryDialog.value !== null) {
     return;
   }
   if (paletteSession.value !== null) {
@@ -2840,12 +3616,14 @@ async function openTabMenu(id: number, x: number, y: number) {
 
 function handleVisibilityChange() {
   if (document.visibilityState === "hidden") {
+    writeAllRecoveryCopies();
     void saveAllTabs();
     void persistTabsNow();
   }
 }
 
 function saveBeforeExit() {
+  writeAllRecoveryCopies();
   void saveAllTabs();
   void persistTabsNow();
 }
@@ -2873,10 +3651,19 @@ onMounted(async () => {
     imageInsertion.handleDrop(drop);
   });
   offSaveBeforeClose = onSaveBeforeClose(async (token) => {
+    const started = Date.now();
     cancelOpenDialog();
+    writeAllRecoveryCopies();
     await nextTick();
     const saved = await saveAllTabs();
     await persistTabsNow();
+    // Give the copy writes and deletes a short window to finish, while
+    // keeping room inside Go's five-second close timeout.
+    const remaining = Math.max(
+      0,
+      Math.min(1000, 5000 - (Date.now() - started) - 100),
+    );
+    await waitForRecoveryOperations(remaining);
     try {
       await finishClose(token, saved);
     } catch {
@@ -2892,6 +3679,7 @@ onMounted(async () => {
     }
     await loadSettings();
     await restoreLastWorkspace();
+    await maybeShowRecoveryDialog();
     appReady = true;
     if (pendingOpenSignal) {
       pendingOpenSignal = false;
@@ -2916,12 +3704,14 @@ onBeforeUnmount(() => {
   offSaveBeforeClose = null;
   stopWatch();
   cancelPersistTimer();
+  writeAllRecoveryCopies();
   for (const id of [...saveTimers.keys()]) {
     clearTabSaveTimer(id);
   }
   for (const id of [...savingTimers.keys()]) {
     clearSavingDisplay(id);
   }
+  recoveryTicker.stopAll();
   if (noticeTimer !== null) {
     clearTimeout(noticeTimer);
     noticeTimer = null;
@@ -3081,6 +3871,15 @@ defineExpose({
       @run-command="runPaletteCommand"
       @open-file="openPaletteFile"
       @jump-heading="jumpToPaletteHeading"
+    />
+
+    <RecoveryDialog
+      :open="recoveryDialog !== null"
+      :items="recoveryDialog?.items ?? []"
+      :other-folders="recoveryDialog?.otherFolders ?? 0"
+      @discard="discardRecoveryCopies"
+      @review="finishRecovery('review')"
+      @restore="finishRecovery('restore')"
     />
 
     <AppDialog

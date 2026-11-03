@@ -28,6 +28,8 @@ const labels: Record<Banner["actions"][number], string> = {
   "keep-mine": "保留我的版本",
   resave: "重新保存",
   "close-tab": "关闭标签页",
+  "keep-restored": "保留恢复内容",
+  "use-disk": "使用磁盘版本",
 };
 </script>
 

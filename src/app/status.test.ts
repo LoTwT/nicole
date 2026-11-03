@@ -102,3 +102,41 @@ describe("save status", () => {
     expect(tabProblem(false, true, false)).toBe("warning");
   });
 });
+
+describe("restored banner", () => {
+  it("offers keeping or loading the recovered content", () => {
+    const banner = selectBanner({
+      deleted: false,
+      externallyModified: false,
+      saveError: null,
+      mixedLineEndings: false,
+      singleFile: false,
+      restored: true,
+    });
+    expect(banner?.kind).toBe("restored");
+    expect(banner?.actions).toEqual(["keep-restored", "use-disk"]);
+  });
+
+  it("lets external and failure banners win", () => {
+    expect(
+      selectBanner({
+        deleted: false,
+        externallyModified: true,
+        saveError: null,
+        mixedLineEndings: false,
+        singleFile: false,
+        restored: true,
+      })?.kind,
+    ).toBe("external-modified");
+    expect(
+      selectBanner({
+        deleted: false,
+        externallyModified: false,
+        saveError: "保存失败",
+        mixedLineEndings: false,
+        singleFile: false,
+        restored: true,
+      })?.kind,
+    ).toBe("save-failed");
+  });
+});

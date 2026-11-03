@@ -22,7 +22,15 @@ export interface Banner {
   kind: BannerKind;
   message: string;
   tone: "danger" | "warning" | "info";
-  actions: readonly ("retry" | "load-disk" | "keep-mine" | "resave" | "close-tab")[];
+  actions: readonly (
+    | "retry"
+    | "load-disk"
+    | "keep-mine"
+    | "resave"
+    | "close-tab"
+    | "keep-restored"
+    | "use-disk"
+  )[];
   /** Raw backend detail; shown as a tooltip, not as the banner text. */
   detail?: string;
 }
@@ -115,7 +123,7 @@ export function selectBanner(input: BannerInput): Banner | null {
       kind: "restored",
       tone: "warning",
       message: "这是恢复的内容",
-      actions: [],
+      actions: ["keep-restored", "use-disk"],
     };
   }
   if (input.mixedLineEndings) {
