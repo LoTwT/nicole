@@ -25,9 +25,11 @@ const (
 	// One copy and the whole recovery folder are bounded so a forgotten
 	// session cannot fill the disk. Replacing a path does not count its own
 	// old copy against the folder limit.
-	maxRecoveryFileBytes  = 8 << 20
-	maxRecoveryTotalBytes = 64 << 20
-	maxCorruptBackups     = 20
+	maxRecoveryFileBytes    = 8 << 20
+	maxRecoveryTotalBytes   = 64 << 20
+	maxCorruptBackups       = 20
+	corruptBackupMarker     = ".corrupt-"
+	corruptBackupTimeLayout = "20060102T150405.000000000Z"
 
 	recoveryKindWorkspace = "workspace"
 	recoveryKindSingle    = "single"
@@ -647,7 +649,7 @@ func (s *recoveryStore) save(id string, data []byte) error {
 		}
 		// Corrupt backups are forensic evidence, not active copies; they
 		// must not consume the folder's quota forever.
-		if strings.Contains(entry.Name(), ".corrupt-") {
+		if strings.Contains(entry.Name(), corruptBackupMarker) {
 			continue
 		}
 		total += int(info.Size())
@@ -732,7 +734,7 @@ func (s *recoveryStore) list() ([]storedRecovery, error) {
 			continue
 		}
 		name := item.Name()
-		if strings.Contains(name, ".corrupt-") {
+		if strings.Contains(name, corruptBackupMarker) {
 			continue
 		}
 		if !strings.HasSuffix(name, ".json") {
@@ -757,7 +759,7 @@ func (s *recoveryStore) list() ([]storedRecovery, error) {
 }
 
 func (s *recoveryStore) backupCorruptLocked(filePath string) error {
-	backup := filePath + ".corrupt-" + time.Now().UTC().Format("20060102T150405.000000000Z")
+	backup := filePath + corruptBackupMarker + time.Now().UTC().Format(corruptBackupTimeLayout)
 	if err := os.Rename(filePath, backup); err != nil {
 		return fmt.Errorf("rename to %s: %w", backup, err)
 	}
@@ -765,25 +767,53 @@ func (s *recoveryStore) backupCorruptLocked(filePath string) error {
 	return nil
 }
 
-// pruneCorruptLocked keeps only the newest backups. Their names contain a
-// sortable UTC timestamp, so name order is age order.
+type corruptBackup struct {
+	name string
+	at   time.Time
+}
+
+func corruptBackupTime(entry fs.DirEntry) time.Time {
+	name := entry.Name()
+	if index := strings.LastIndex(name, corruptBackupMarker); index >= 0 {
+		stamp := name[index+len(corruptBackupMarker):]
+		if at, err := time.Parse(corruptBackupTimeLayout, stamp); err == nil {
+			return at
+		}
+	}
+	info, err := entry.Info()
+	if err != nil {
+		return time.Time{}
+	}
+	return info.ModTime()
+}
+
+// pruneCorruptLocked keeps only the newest backups. Names start with the copy
+// id, so the timestamp suffix or mtime decides age, not the whole file name.
 func (s *recoveryStore) pruneCorruptLocked() {
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
 		return
 	}
-	backups := make([]string, 0)
+	backups := make([]corruptBackup, 0)
 	for _, entry := range entries {
-		if !entry.IsDir() && strings.Contains(entry.Name(), ".corrupt-") {
-			backups = append(backups, entry.Name())
+		if !entry.IsDir() && strings.Contains(entry.Name(), corruptBackupMarker) {
+			backups = append(backups, corruptBackup{
+				name: entry.Name(),
+				at:   corruptBackupTime(entry),
+			})
 		}
 	}
 	if len(backups) <= maxCorruptBackups {
 		return
 	}
-	sort.Strings(backups)
-	for _, name := range backups[:len(backups)-maxCorruptBackups] {
-		_ = os.Remove(filepath.Join(s.dir, name))
+	sort.Slice(backups, func(i, j int) bool {
+		if backups[i].at.Equal(backups[j].at) {
+			return backups[i].name < backups[j].name
+		}
+		return backups[i].at.Before(backups[j].at)
+	})
+	for _, backup := range backups[:len(backups)-maxCorruptBackups] {
+		_ = os.Remove(filepath.Join(s.dir, backup.name))
 	}
 }
 

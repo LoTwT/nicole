@@ -179,6 +179,7 @@ interface RecoveryDialogState {
 
 interface RecoveryWriteState {
   written: string | null;
+  writtenBaselineUnconfirmed: boolean | null;
   writing: boolean;
   queued: boolean;
 }
@@ -828,14 +829,23 @@ function writeRecoveryCopy(tabId: number) {
   }
   let state = recoveryWrites.get(tabId);
   if (state === undefined) {
-    state = { written: null, writing: false, queued: false };
+    state = {
+      written: null,
+      writtenBaselineUnconfirmed: null,
+      writing: false,
+      queued: false,
+    };
     recoveryWrites.set(tabId, state);
   }
   if (state.writing) {
     state.queued = true;
     return;
   }
-  if (state.written === payload.text) {
+  const baselineUnconfirmed = payload.baselineUnconfirmed === true;
+  if (
+    state.written === payload.text &&
+    state.writtenBaselineUnconfirmed === baselineUnconfirmed
+  ) {
     return;
   }
   state.writing = true;
@@ -861,6 +871,8 @@ function writeRecoveryCopy(tabId: number) {
       const currentState = recoveryWrites.get(tabId);
       if (currentState !== undefined) {
         currentState.written = captured.text;
+        currentState.writtenBaselineUnconfirmed =
+          captured.baselineUnconfirmed === true;
       }
     })
     .catch((error) => {
@@ -989,7 +1001,15 @@ function setRecoveredContent(
   const text = normalizeLineEndings(item.text);
   // The copy on disk already has this text. Remember it so a later
   // save-before-close pass does not rewrite the copy and lose its diskHash.
-  recoveryWrites.set(tab.id, { written: text, writing: false, queued: false });
+  recoveryWrites.set(tab.id, {
+    written: text,
+    // A review copy was written before the page could confirm a baseline, so
+    // an untouched tab does not need an identical rewrite on close. Any edit
+    // or external state change compares against the actual current flag.
+    writtenBaselineUnconfirmed: mode === "review",
+    writing: false,
+    queued: false,
+  });
 
   // An existing tab may have received a newer disk baseline from the watcher
   // while the dialog was open. Never replace it with the older List snapshot.
@@ -2357,14 +2377,18 @@ async function keepRestoredContent() {
     if (current === null || current.recoveryId !== tab.recoveryId) {
       return;
     }
-    if (item !== null && item.diskState !== "same") {
-      applyRecoveryDiskChange(current, item);
-      return;
-    }
-    if (current.externalState !== "none") {
-      // A watcher update landed while the decision was being checked.
-      current.restored = false;
-      return;
+    if (item !== null) {
+      if (item.diskState === "missing") {
+        applyRecoveryDiskChange(current, item);
+        return;
+      }
+      // The page may have rewritten this copy without a disk hash after an
+      // edit, so List reports "changed" even when the disk text is unchanged.
+      // originalText is the baseline the user saw when reviewing the copy.
+      if (normalizeLineEndings(item.diskText) !== current.originalText) {
+        applyRecoveryDiskChange(current, item);
+        return;
+      }
     }
   }
   const revision = tab.revision;

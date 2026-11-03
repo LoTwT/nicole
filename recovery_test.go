@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -402,6 +403,60 @@ func TestRecoveryCorruptFileIsRenamed(t *testing.T) {
 	}
 	if corrupt != 2 {
 		t.Errorf("corrupt backups = %d, want 2 (entries: %v)", corrupt, entries)
+	}
+}
+
+func TestRecoveryPruneKeepsNewestCorruptBackupsAndValidCopies(t *testing.T) {
+	workspace, _, recovery := newTestRecovery(t, t.TempDir())
+	root := workspace.openRoot()
+	generation := workspace.openGeneration()
+	validID := saveTestCopy(t, recovery, RecoveryCopy{
+		Kind: recoveryKindWorkspace, Root: root, Path: "valid.md",
+		LineEnding: "\n", Text: "valid\n",
+	}, generation)
+	store := recovery.store
+	dir := store.dir
+	validPath := store.filePath(validID)
+	unrelatedPath := filepath.Join(dir, "notes.txt")
+	if err := os.WriteFile(unrelatedPath, []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	oldTime := base.Add(-time.Hour)
+	for _, path := range []string{validPath, unrelatedPath} {
+		if err := os.Chtimes(path, oldTime, oldTime); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < maxCorruptBackups+5; i++ {
+		// Names sort oldest-first, timestamps newest-first, so ordering by the
+		// whole file name would discard the newest backups.
+		at := base.Add(time.Duration(maxCorruptBackups+4-i) * time.Minute)
+		name := fmt.Sprintf("backup-%02d.json%s%s", i, corruptBackupMarker, at.Format(corruptBackupTimeLayout))
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store.pruneCorruptLocked()
+
+	for i := 0; i < maxCorruptBackups+5; i++ {
+		at := base.Add(time.Duration(maxCorruptBackups+4-i) * time.Minute)
+		name := fmt.Sprintf("backup-%02d.json%s%s", i, corruptBackupMarker, at.Format(corruptBackupTimeLayout))
+		_, err := os.Stat(filepath.Join(dir, name))
+		wantKept := i < maxCorruptBackups
+		if wantKept && err != nil {
+			t.Errorf("newest backup %s was removed: %v", name, err)
+		}
+		if !wantKept && !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("old backup %s was not removed: %v", name, err)
+		}
+	}
+	if _, err := store.get(validID); err != nil {
+		t.Errorf("valid recovery copy was removed or damaged: %v", err)
+	}
+	if _, err := os.Stat(unrelatedPath); err != nil {
+		t.Errorf("non-corrupt file was removed: %v", err)
 	}
 }
 

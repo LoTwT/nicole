@@ -2856,6 +2856,112 @@ describe("crash recovery", () => {
     expect(mocks.writeFile).not.toHaveBeenCalled();
   });
 
+  it("writes reviewed edits when List only reports a lost baseline hash", async () => {
+    vi.useFakeTimers();
+    await mountWithRecovery([recoveryItem()]);
+    dialogButton("逐个查看").click();
+    await settle();
+    replaceEditorText("# A\nmore!\n");
+    await vi.advanceTimersByTimeAsync(2000);
+    await settle();
+    expect(mocks.saveRecovery).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "# A\nmore!\n",
+        baselineUnconfirmed: true,
+      }),
+      1,
+    );
+
+    // Editing rewrote the copy without a disk hash, so List cannot say "same"
+    // even though the file still holds the baseline the review started from.
+    mocks.listRecovery.mockResolvedValue({
+      items: [
+        recoveryItem({
+          text: "# A\nmore!\n",
+          diskText: "# A\n",
+          diskState: "changed",
+        }),
+      ],
+      otherFolders: 0,
+    });
+    button("保留恢复内容").click();
+    await settle();
+    expect(host.textContent).not.toContain(
+      "此文件已在 Nicole 之外被修改",
+    );
+    expect(mocks.writeFile).toHaveBeenCalledWith(
+      "a.md",
+      "# A\nmore!\n",
+      1,
+    );
+  });
+
+  it("reports a real disk change after editing a reviewed copy", async () => {
+    vi.useFakeTimers();
+    await mountWithRecovery([recoveryItem()]);
+    dialogButton("逐个查看").click();
+    await settle();
+    replaceEditorText("# A\nmore!\n");
+    await vi.advanceTimersByTimeAsync(2000);
+    await settle();
+
+    mocks.listRecovery.mockResolvedValue({
+      items: [
+        recoveryItem({
+          text: "# A\nmore!\n",
+          diskText: "# Disk\n",
+          diskState: "changed",
+        }),
+      ],
+      otherFolders: 0,
+    });
+    button("保留恢复内容").click();
+    await settle();
+    expect(host.textContent).toContain(
+      "此文件已在 Nicole 之外被修改",
+    );
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+  });
+
+  it("does not restore from the old list when rechecking fails", async () => {
+    vi.useFakeTimers();
+    await mountWithRecovery([recoveryItem()]);
+    mocks.listRecovery.mockRejectedValueOnce(new Error("unavailable"));
+
+    dialogButton("全部恢复").click();
+    await settle();
+    expect(host.textContent).toContain("无法确认恢复内容");
+    expect(dialog()).not.toBeNull();
+
+    await vi.advanceTimersByTimeAsync(3000);
+    await settle();
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+  });
+
+  it("rewrites a copy when only the baseline flag changes", async () => {
+    vi.useFakeTimers();
+    await openFile();
+    mocks.writeFile.mockImplementation(() => new Promise<void>(() => {}));
+    replaceEditorText("# A\nchanged\n");
+    await vi.advanceTimersByTimeAsync(2000);
+    await settle();
+    expect(mocks.saveRecovery).toHaveBeenCalledWith(
+      expect.objectContaining({ baselineUnconfirmed: false }),
+      1,
+    );
+
+    mocks.saveRecovery.mockClear();
+    watchEvents?.([{ op: "remove", path: "a.md", isDir: false }]);
+    await settle();
+    expect(mocks.saveRecovery).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "# A\nchanged\n",
+        baselineUnconfirmed: true,
+      }),
+      1,
+    );
+  });
+
   it("moves a dirty tab's copy when its path changes", async () => {
     vi.useFakeTimers();
     await openFile();

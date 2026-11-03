@@ -199,7 +199,7 @@ Go 的 `Workspace` 服务通过 `mygo.Bind` 暴露，前端经 `src/services/wor
 
 ## 崩溃恢复
 
-Go 在 `PathUserData/recovery/` 保存未保存内容的副本；界面流程见[界面与交互](ui.md#崩溃恢复)。前端在模型变脏（`text !== originalText`）的那一刻开始计时：2 秒后写第一份，之后每 5 秒检查一次，文本相对上一份副本有变化才写。计时不随按键重置，与自动保存的 1 秒计时互不影响。每个模型一个计时器。
+Go 在 `PathUserData/recovery/` 保存未保存内容的副本；界面流程见[界面与交互](ui.md#崩溃恢复)。前端在模型变脏（`text !== originalText`）的那一刻开始计时：2 秒后写第一份，之后每 5 秒检查一次，文本或 `baselineUnconfirmed` 相对上一份副本有变化才写。计时不随按键重置，与自动保存的 1 秒计时互不影响。每个模型一个计时器。
 
 立即写副本的情况：保存失败、换行风格混合、因外部修改或删除暂停自动保存、强制保存被叫停进入 `paused`。页面隐藏、`pagehide`、`beforeunload` 和 `workspace:save-before-close` 到达时，先对所有需要副本的模型写副本，再保存；两者都 fire-and-forget，不互相等待。
 
@@ -212,7 +212,7 @@ Go 在 `PathUserData/recovery/` 保存未保存内容的副本；界面流程见
 - `diskHash` 是“Nicole 最后一次读或写该文件时内容的 SHA-256”。`ReadFile`、`WriteFile`、`ReadSingleFile`、`WriteSingleFile` 成功时由 Go 按绝对路径记在内存，只记哈希，不缓存内容；写副本时取这条记录，不重新读磁盘。没有记录时留空，恢复时按已更改处理（fail closed）。同一路径已有副本时，新副本在没有内存记录的情况下沿用旧副本的 `diskHash`，避免重复写副本把已知的磁盘基线降级为未知。
 - 页面在副本请求里标记 `baselineUnconfirmed`：标签处于外部修改/删除状态，或恢复内容尚未被用户接受时为真。此时 Go 置空 `diskHash`，也不从旧副本回填。只有用户确认过磁盘基线后（例如自动载入磁盘内容、“保留我的版本”或“载入磁盘版本”成功），副本的基线才会前进，避免第二次崩溃把未确认的磁盘内容判成 `same` 后自动覆盖。
 - 切换根目录时清掉旧根的记录，但仍打开的单文件标签的哈希保留；列表读取、恢复检查和 `RestoreSingleFile` 对父目录变成符号链接等情况使用同一套拒绝规则。
-- 每次写入替换该路径的旧副本；复用 `settings.json` 和 `tabs.json` 的原子替换模式。JSON 用不转义 HTML 字符的编码器写入，避免普通 Markdown 膨胀。无法解析或字段不合法的文件改名为 `<名>.corrupt-<UTC 时间>` 后跳过，其余副本继续列出；损坏备份只保留最近 20 个。
+- 每次写入替换该路径的旧副本；复用 `settings.json` 和 `tabs.json` 的原子替换模式。JSON 用不转义 HTML 字符的编码器写入，避免普通 Markdown 膨胀。无法解析或字段不合法的文件改名为 `<名>.corrupt-<UTC 时间>` 后跳过，其余副本继续列出；损坏备份按文件名中的 UTC 时间戳（无法解析时按 mtime）排序，只保留最近 20 个，且只清理 `.corrupt-*` 文件。
 - 单个副本的 JSON 文件最多 8MB；写入端先序列化再按 JSON 字节数检查，读取端使用同一上限。`recovery/` 总量最多 64MB，统计时不计 `.corrupt-*` 备份。超过上限时拒绝新副本，不淘汰其他文件的副本；替换同一路径时旧文件不计入上限。
 - 工作区副本的 `Save`、`Delete`、`Discard` 和 `List` 必须带 `generation` 且与当前根一致，规则与 `WriteFile` 相同。单文件副本不受 generation 限制，但写入时必须通过 `grantedPath` 核对当前授权。
 
@@ -226,7 +226,7 @@ Go 在 `PathUserData/recovery/` 保存未保存内容的副本；界面流程见
 | `changed` | 哈希不同，或没有 `diskHash` | 副本为 `text`，磁盘内容为 `originalText`，`externalState = modified`，不自动保存，显示外部修改横幅 |
 | `missing` | 文件不存在 | 副本为 `text`，`externalState = deleted`，显示删除横幅；重新保存在原路径重建文件 |
 
-`List` 同时返回 `text` 和 `diskText`（缺失时为空），供页面计算字数差；`changed` 时页面用 `diskText` 作为 `originalText`。页面不自己比较磁盘内容。`List` 的结果是打开对话框时的快照；用户点击“全部恢复”“逐个查看”或“保留恢复内容”时，页面重新调用 `List`，以最新的 `diskState` 和 `diskText` 为准。对话框打开期间磁盘再次变化时，不自动写回，转为外部修改或删除状态；已有标签的基线比快照新时，不用旧 `diskText` 覆盖它。
+`List` 同时返回 `text` 和 `diskText`（缺失时为空），供页面计算字数差；`changed` 时页面用 `diskText` 作为 `originalText`。页面不自行读取磁盘，只比较 Go 返回的 `diskText`。`List` 的结果是打开对话框时的快照；用户点击“全部恢复”“逐个查看”或“保留恢复内容”时，页面重新调用 `List`，以最新的 `diskState` 和 `diskText` 为准。保留恢复内容时不能只看 `diskState`：副本可能因审阅期间编辑重写而丢失 `diskHash`；`missing` 仍转删除，否则只有 `diskText` 与标签 `originalText` 相同时才强制保存，不同就转外部修改。对话框打开期间磁盘再次变化时，不自动写回，转为外部修改或删除状态；已有标签的基线比快照新时，不用旧 `diskText` 覆盖它。
 
 ### 单文件副本
 
