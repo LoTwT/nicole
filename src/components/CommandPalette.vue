@@ -38,12 +38,14 @@ const props = defineProps<{
   recentFiles: readonly string[];
   recentCommandIds: readonly string[];
   headings: readonly DocumentHeading[];
+  headingsTruncated: boolean;
   hasMarkdown: boolean;
   loadFiles: () => Promise<string[]>;
 }>();
 
 const emit = defineEmits<{
   close: [];
+  "mode-change": [mode: CommandPaletteMode];
   "run-command": [id: string];
   "open-file": [path: string];
   "jump-heading": [position: number];
@@ -58,6 +60,7 @@ interface PaletteItem {
   icon: "file-text" | null;
   level: number;
   shortcut: string | null;
+  placeholder?: boolean;
   commandId?: string;
   path?: string;
   position?: number;
@@ -127,7 +130,8 @@ const headingItems = computed<PaletteItem[]>(() =>
     (heading) => ({
       key: `heading:${heading.position}`,
       kind: "heading",
-      label: heading.text || "未命名标题",
+      label: heading.text || "空标题",
+      placeholder: heading.text === "",
       detail: "",
       glyph: `H${heading.level}`,
       icon: null,
@@ -184,7 +188,12 @@ const emptyMessage = computed(() => {
   }
 });
 
-const showEmpty = computed(() => items.value.length === 0 && !composing.value);
+const showEmpty = computed(
+  () =>
+    items.value.length === 0 &&
+    !composing.value &&
+    !(mode.value === "heading" && props.headingsTruncated),
+);
 
 const inputLabel = computed(() => {
   switch (mode.value) {
@@ -202,6 +211,21 @@ function focusInput() {
   const length = inputValue.value.length;
   input.value?.setSelectionRange(length, length);
 }
+
+/** Applies a shortcut-selected mode without losing the typed query. */
+function switchMode(next: CommandPaletteMode) {
+  if (mode.value === next) return;
+  inputValue.value = initialPaletteInput(next) + query.value;
+  void nextTick(focusInput);
+}
+
+function keepPanelFocus(event: MouseEvent) {
+  if (event.target === input.value) return;
+  event.preventDefault();
+  input.value?.focus();
+}
+
+defineExpose({ switchMode });
 
 async function scrollSelectedIntoView() {
   await nextTick();
@@ -341,6 +365,10 @@ watch(
     selectedIndex.value = 0;
   },
 );
+
+watch(mode, (next) => {
+  emit("mode-change", next);
+});
 </script>
 
 <template>
@@ -357,6 +385,7 @@ watch(
         role="dialog"
         aria-modal="true"
         :aria-labelledby="titleId"
+        @mousedown="keepPanelFocus"
       >
         <h2 :id="titleId" class="sr-only">{{ paletteModeLabel(mode) }}面板</h2>
         <div
@@ -439,7 +468,12 @@ watch(
               {{ item.glyph }}
             </span>
             <span class="min-w-0 flex-1">
-              <span class="block truncate">{{ item.label }}</span>
+              <span
+                class="block truncate"
+                :class="{ 'text-[var(--text-muted)]': item.placeholder }"
+              >
+                {{ item.label }}
+              </span>
               <span
                 v-if="item.detail"
                 class="block truncate text-[11px] text-[var(--text-muted)]"
@@ -449,6 +483,12 @@ watch(
             </span>
             <KeyHint v-if="item.shortcut" :shortcut="item.shortcut" />
           </button>
+          <p
+            v-if="mode === 'heading' && headingsTruncated"
+            class="m-0 px-3 py-2 text-center text-[12px] text-[var(--text-muted)]"
+          >
+            文档较大，部分标题尚未解析
+          </p>
           <p
             v-if="showEmpty"
             class="m-0 px-3 py-5 text-center text-[12px] text-[var(--text-muted)]"

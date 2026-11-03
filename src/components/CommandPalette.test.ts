@@ -34,6 +34,7 @@ function mountPalette(options: {
   mode?: CommandPaletteMode;
   workspaceOpen?: boolean;
   headings?: DocumentHeading[];
+  headingsTruncated?: boolean;
   recentFiles?: string[];
   recentCommandIds?: string[];
   loadFiles?: () => Promise<string[]>;
@@ -66,6 +67,7 @@ function mountPalette(options: {
                 recentFiles: options.recentFiles ?? [],
                 recentCommandIds: options.recentCommandIds ?? [],
                 headings: options.headings ?? [],
+                headingsTruncated: options.headingsTruncated ?? false,
                 hasMarkdown: options.hasMarkdown ?? false,
                 loadFiles: options.loadFiles ?? (async () => []),
                 onClose: () => {
@@ -217,6 +219,42 @@ describe("CommandPalette", () => {
     );
     expect(document.activeElement).toBe(input);
     expect(document.body.textContent).toContain("当前没有打开的 Markdown 文件");
+  });
+
+  it("marks empty headings and reports a partial extraction", async () => {
+    mountPalette({
+      mode: "heading",
+      hasMarkdown: true,
+      headings: [{ level: 1, text: "", position: 0, line: 1 }],
+      headingsTruncated: true,
+    });
+    await settle();
+
+    const option = options()[0]!;
+    expect(option.textContent).toContain("空标题");
+    expect(option.querySelector(".block.truncate")?.className).toContain(
+      "text-[var(--text-muted)]",
+    );
+    expect(document.body.textContent).toContain(
+      "文档较大，部分标题尚未解析",
+    );
+  });
+
+  it("keeps focus in the input when the panel background is pressed", async () => {
+    mountPalette({});
+    await settle();
+    const input = paletteInput();
+    const panel = document.querySelector<HTMLElement>('[role="dialog"]')!;
+
+    const mousedown = new MouseEvent("mousedown", {
+      bubbles: true,
+      cancelable: true,
+    });
+    panel.dispatchEvent(mousedown);
+    await settle();
+
+    expect(mousedown.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(input);
   });
 
   it("closes on Escape and restores focus to the opener", async () => {

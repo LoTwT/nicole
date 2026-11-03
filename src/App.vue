@@ -76,7 +76,11 @@ import {
   type EditorRestoreState,
   type SavedSelection,
 } from "./editor";
-import { extractHeadings, type DocumentHeading } from "./editor/headings";
+import {
+  extractHeadingsWithStatus,
+  type DocumentHeading,
+  type HeadingExtraction,
+} from "./editor/headings";
 import {
   createSlashMenu,
   type SlashMenuController,
@@ -172,6 +176,8 @@ interface PaletteSession {
   tabId: number | null;
   selection: SavedSelection | null;
   headings: DocumentHeading[];
+  headingsLoaded: boolean;
+  headingsTruncated: boolean;
   recentFiles: string[];
   recentCommandIds: string[];
 }
@@ -179,6 +185,7 @@ interface PaletteSession {
 const editorHost = ref<HTMLElement | null>(null);
 const sidebar = ref<InstanceType<typeof AppSidebar> | null>(null);
 const topBar = ref<InstanceType<typeof TopBar> | null>(null);
+const palette = ref<InstanceType<typeof CommandPalette> | null>(null);
 const appInfo = ref<AppInfo | null>(null);
 const workspace = ref<WorkspaceState | null>(null);
 const tabs = ref<TabModel[]>([]);
@@ -541,6 +548,27 @@ function rememberRecentWorkspaceFile(root: string, path: string) {
     next.length === current.length &&
     next.every((item, index) => item === current[index])
   ) {
+    return;
+  }
+  recentFilesByRoot.value = {
+    ...recentFilesByRoot.value,
+    [root]: next,
+  };
+  schedulePersistTabs();
+}
+
+/**
+ * Drops a removed file from the recent list. A removed folder also drops
+ * every recent file below it, because those paths no longer exist.
+ */
+function forgetRecentWorkspacePath(path: string, isDir: boolean) {
+  const root = workspace.value?.root;
+  if (root === undefined) return;
+  const current = recentFilesForRoot(root);
+  const next = current.filter((item) =>
+    isDir ? item !== path && !item.startsWith(`${path}/`) : item !== path,
+  );
+  if (next.length === current.length) {
     return;
   }
   recentFilesByRoot.value = {
@@ -1541,11 +1569,18 @@ function renameTabPaths(oldPath: string, newPath: string, isDir: boolean) {
   if (root !== undefined) {
     const current = recentFilesForRoot(root);
     const next = normalizeRecentFiles(
-      current.map(
-        (path) => remapTabPath(path, oldPath, newPath, isDir) ?? path,
-      ),
+      current.flatMap((path) => {
+        const updated = remapTabPath(path, oldPath, newPath, isDir);
+        if (updated === null) {
+          return [path];
+        }
+        return /\.md$/i.test(updated) ? [updated] : [];
+      }),
     );
-    if (next.some((path, index) => path !== current[index])) {
+    if (
+      next.length !== current.length ||
+      next.some((path, index) => path !== current[index])
+    ) {
       recentFilesByRoot.value = {
         ...recentFilesByRoot.value,
         [root]: next,
@@ -1580,6 +1615,8 @@ async function handleWatchEvents(allEvents: readonly WorkspaceFileEvent[]) {
   for (const event of events) {
     if (event.op === "rename" && event.oldPath && event.oldPath !== event.path) {
       renameTabPaths(event.oldPath, event.path, event.isDir);
+    } else if (event.op === "remove" && event.path) {
+      forgetRecentWorkspacePath(event.path, event.isDir);
     }
   }
 
@@ -2237,6 +2274,15 @@ function closePalettePopovers() {
   overlaySidebar.value = false;
 }
 
+function extractPaletteHeadings(): HeadingExtraction {
+  const tab = currentMarkdown.value;
+  const activeEditor = tab !== null ? editor : null;
+  if (activeEditor === null) {
+    return { headings: [], complete: true };
+  }
+  return extractHeadingsWithStatus(activeEditor.view.state);
+}
+
 function openCommandPalette(mode: CommandPaletteMode) {
   if (
     dialogOpen ||
@@ -2248,6 +2294,8 @@ function openCommandPalette(mode: CommandPaletteMode) {
   closePalettePopovers();
   const tab = currentMarkdown.value;
   const activeEditor = tab !== null ? editor : null;
+  const headingResult =
+    mode === "heading" ? extractPaletteHeadings() : null;
   paletteSession.value = {
     mode,
     tabId: tab?.id ?? null,
@@ -2255,12 +2303,56 @@ function openCommandPalette(mode: CommandPaletteMode) {
       activeEditor === null
         ? null
         : (activeEditor.view.state.selection.toJSON() as SavedSelection),
-    headings:
-      activeEditor === null ? [] : extractHeadings(activeEditor.view.state),
+    headings: headingResult?.headings ?? [],
+    headingsLoaded: mode === "heading" || activeEditor === null,
+    headingsTruncated:
+      headingResult !== null && headingResult.complete === false,
     recentFiles: [...recentFilesForRoot(workspace.value?.root ?? "")],
     recentCommandIds: readRecentCommandIds(),
   };
 }
+
+/**
+ * Headings are extracted only when the panel first enters heading mode. That
+ * keeps opening the command and file modes from blocking on a large document,
+ * and the result stays cached for this panel session.
+ */
+function handlePaletteModeChange(mode: CommandPaletteMode) {
+  const session = paletteSession.value;
+  if (session === null) return;
+  const switched =
+    session.mode === mode ? session : { ...session, mode };
+  if (mode !== "heading" || session.headingsLoaded) {
+    if (switched !== session) {
+      paletteSession.value = switched;
+    }
+    return;
+  }
+  const result = extractPaletteHeadings();
+  paletteSession.value = {
+    ...switched,
+    headings: result.headings,
+    headingsLoaded: true,
+    headingsTruncated: !result.complete,
+  };
+}
+
+function paletteModeForShortcut(
+  event: KeyboardEvent,
+): CommandPaletteMode | null {
+  const command = matchCommand(event, platform.value, commandRegistry, "app");
+  switch (command?.id) {
+    case "nav.quick-open":
+      return "file";
+    case "nav.command-palette":
+      return "command";
+    case "nav.goto-heading":
+      return "heading";
+    default:
+      return null;
+  }
+}
+
 
 function closeCommandPalette() {
   paletteSession.value = null;
@@ -2398,6 +2490,12 @@ function handleGlobalKeydown(event: KeyboardEvent) {
     if (event.key === "Escape") {
       event.preventDefault();
       closeCommandPalette();
+      return;
+    }
+    const nextMode = paletteModeForShortcut(event);
+    if (nextMode !== null) {
+      event.preventDefault();
+      palette.value?.switchMode(nextMode);
     }
     return;
   }
@@ -2945,6 +3043,7 @@ defineExpose({
 
     <CommandPalette
       v-if="paletteSession"
+      ref="palette"
       :mode="paletteSession.mode"
       :platform="platform"
       :commands="paletteCommands"
@@ -2952,9 +3051,11 @@ defineExpose({
       :recent-files="paletteSession.recentFiles"
       :recent-command-ids="paletteSession.recentCommandIds"
       :headings="paletteSession.headings"
+      :headings-truncated="paletteSession.headingsTruncated"
       :has-markdown="isMarkdownOpen"
       :load-files="listFiles"
       @close="closeCommandPalette"
+      @mode-change="handlePaletteModeChange"
       @run-command="runPaletteCommand"
       @open-file="openPaletteFile"
       @jump-heading="jumpToPaletteHeading"

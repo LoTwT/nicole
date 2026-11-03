@@ -103,6 +103,20 @@ vi.mock("./services/watch", () => ({
 }));
 
 const slashMocks = vi.hoisted(() => ({ destroy: vi.fn() }));
+const headingMocks = vi.hoisted(() => ({
+  extract: vi.fn(),
+}));
+
+vi.mock("./editor/headings", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./editor/headings")>();
+  headingMocks.extract.mockImplementation(actual.extractHeadingsWithStatus);
+  return {
+    ...actual,
+    extractHeadingsWithStatus: (
+      ...args: Parameters<typeof actual.extractHeadingsWithStatus>
+    ) => headingMocks.extract(...args),
+  };
+});
 
 vi.mock("./editor/slash", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./editor/slash")>();
@@ -245,16 +259,20 @@ function typePalette(value: string) {
   input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
+function pressAppShortcut(key: string, shift = false) {
+  const event = new KeyboardEvent("keydown", {
+    key,
+    metaKey: true,
+    shiftKey: shift,
+    bubbles: true,
+    cancelable: true,
+  });
+  window.dispatchEvent(event);
+  return event;
+}
+
 function pressPaletteShortcut(key: string) {
-  window.dispatchEvent(
-    new KeyboardEvent("keydown", {
-      key,
-      metaKey: true,
-      shiftKey: true,
-      bubbles: true,
-      cancelable: true,
-    }),
-  );
+  return pressAppShortcut(key, true);
 }
 
 async function openFolder(files = tree, generation = 1) {
@@ -972,6 +990,49 @@ describe("renames", () => {
       "notes/notes2/a.md",
     );
   });
+  it("prunes deleted and non-markdown renamed files from recent files", async () => {
+    await setupWorkspace({
+      "a.md": "# A\n",
+      "b.md": "# B\n",
+      "notes/c.md": "# C\n",
+    });
+    await openPath("/notes/a.md");
+    await openPath("/notes/b.md");
+    await openPath("/notes/notes/c.md");
+    await vi.waitFor(() => {
+      expect(mocks.saveWorkspaceTabs.mock.calls.at(-1)?.[3]).toEqual([
+        "notes/c.md",
+        "b.md",
+        "a.md",
+      ]);
+    });
+
+    watchEvents?.([{ op: "remove", path: "notes", isDir: true }]);
+    await settle();
+    await vi.waitFor(() => {
+      expect(mocks.saveWorkspaceTabs.mock.calls.at(-1)?.[3]).toEqual([
+        "b.md",
+        "a.md",
+      ]);
+    });
+
+    watchEvents?.([
+      { op: "rename", oldPath: "a.md", path: "a.txt", isDir: false },
+    ]);
+    await settle();
+    await vi.waitFor(() => {
+      expect(mocks.saveWorkspaceTabs.mock.calls.at(-1)?.[3]).toEqual(["b.md"]);
+    });
+
+    watchEvents?.([
+      { op: "rename", oldPath: "b.md", path: "d.md", isDir: false },
+    ]);
+    await settle();
+    await vi.waitFor(() => {
+      expect(mocks.saveWorkspaceTabs.mock.calls.at(-1)?.[3]).toEqual(["d.md"]);
+    });
+  });
+
   it("clears the expected rename when RenameEntry fails", async () => {
     tree = [
       entry("notes", "notes", { isDir: true }),
@@ -2763,9 +2824,72 @@ describe("command palette", () => {
     });
   });
 
+  it("restores the recent file order from tabs.json after switching roots", async () => {
+    const stored = new Map<
+      string,
+      {
+        tabs: import("./services/tabs").StoredTab[];
+        active: string;
+        recentFiles?: string[];
+      }
+    >();
+    mocks.getWorkspaceTabs.mockImplementation(
+      async (root: string) => stored.get(root) ?? { tabs: [], active: "" },
+    );
+    mocks.saveWorkspaceTabs.mockImplementation(
+      async (
+        root: string,
+        tabs: import("./services/tabs").StoredTab[],
+        active: string,
+        recentFiles: string[],
+      ) => {
+        stored.set(root, { tabs, active, recentFiles });
+      },
+    );
+    await setupWorkspace({
+      "a.md": "# A\n",
+      "b.md": "# B\n",
+      "c.md": "# C\n",
+    });
+    mocks.openFolder.mockImplementation(async (path: string) =>
+      folder(path, path === "/notes" ? 1 : 2),
+    );
+    await openPath("/notes/a.md");
+    await openPath("/notes/b.md");
+    await vi.waitFor(() => {
+      expect(mocks.saveWorkspaceTabs.mock.calls.at(-1)?.[3]).toEqual([
+        "b.md",
+        "a.md",
+      ]);
+    });
+
+    mocks.pickFolder.mockResolvedValue({ path: "/second", canceled: false });
+    sidebarButton("切换文件夹").click();
+    await settle();
+    dialogButton("切换").click();
+    await settle();
+    expect(stored.get("/notes")?.recentFiles).toEqual(["b.md", "a.md"]);
+
+    mocks.pickFolder.mockResolvedValue({ path: "/notes", canceled: false });
+    sidebarButton("切换文件夹").click();
+    await settle();
+    dialogButton("切换").click();
+    await settle();
+
+    pressAppShortcut("p");
+    await settle();
+    const labels = paletteOptions().map((item) =>
+      item.querySelector(".truncate")?.textContent,
+    );
+    expect(labels).toEqual(["b.md", "a.md", "c.md"]);
+  });
+
   it("lists headings by level and jumps to the selected line", async () => {
     const text = "# One\n\n## Two\n\n### Three\n";
     await openFile("a.md", text);
+    const view = editorView();
+    const scroll = vi.spyOn(EditorView, "scrollIntoView");
+    const dispatch = vi.spyOn(view, "dispatch");
     pressPaletteShortcut("O");
     await settle();
     expect(paletteInput().value).toBe("@");
@@ -2783,9 +2907,112 @@ describe("command palette", () => {
     );
     await settle();
     expect(editorView().state.selection.main.head).toBe(text.indexOf("## Two"));
+    expect(scroll).toHaveBeenCalledWith(text.indexOf("## Two"), {
+      y: "start",
+    });
+    const scrollEffect = scroll.mock.results[0]?.value;
+    expect(
+      dispatch.mock.calls.some(([spec]) => spec?.effects === scrollEffect),
+    ).toBe(true);
     expect(
       editorView().dom.contains(document.activeElement),
     ).toBe(true);
+  });
+
+  it("extracts headings on the first heading mode and caches them", async () => {
+    await openFile("a.md", "# Old\n");
+    pressAppShortcut("p");
+    await settle();
+    expect(paletteInput().value).toBe("");
+    expect(headingMocks.extract).not.toHaveBeenCalled();
+
+    replaceEditorText("# New\n");
+    typePalette("@");
+    await settle();
+    expect(headingMocks.extract).toHaveBeenCalledTimes(1);
+    expect(paletteOptions().map((item) => item.textContent)).toEqual([
+      expect.stringContaining("New"),
+    ]);
+
+    typePalette("");
+    await settle();
+    replaceEditorText("# Newer\n");
+    typePalette("@");
+    await settle();
+    expect(headingMocks.extract).toHaveBeenCalledTimes(1);
+    expect(paletteOptions().map((item) => item.textContent)).toEqual([
+      expect.stringContaining("New"),
+    ]);
+  });
+
+  it("reports a partial heading extraction", async () => {
+    await openFile("a.md", "# A\n");
+    headingMocks.extract.mockReturnValueOnce({
+      headings: [{ level: 1, text: "A", position: 0, line: 1 }],
+      complete: false,
+    });
+    pressPaletteShortcut("O");
+    await settle();
+    expect(document.body.textContent).toContain(
+      "文档较大，部分标题尚未解析",
+    );
+  });
+
+  it("switches modes with shortcuts while keeping the query", async () => {
+    await openFile("a.md", "# Heading\n");
+    pressAppShortcut("p");
+    await settle();
+    typePalette("a");
+    await settle();
+
+    const command = pressAppShortcut("P", true);
+    await settle();
+    expect(command.defaultPrevented).toBe(true);
+    expect(paletteInput().value).toBe(">a");
+
+    pressAppShortcut("O", true);
+    await settle();
+    expect(paletteInput().value).toBe("@a");
+
+    const file = pressAppShortcut("p");
+    await settle();
+    expect(file.defaultPrevented).toBe(true);
+    expect(paletteInput().value).toBe("a");
+
+    pressAppShortcut("p");
+    await settle();
+    expect(paletteInput().value).toBe("a");
+  });
+
+  it("does not close the tab with the palette open outside the input", async () => {
+    await openFile();
+    pressAppShortcut("p");
+    await settle();
+    (document.activeElement as HTMLElement | null)?.blur();
+    expect(document.activeElement).toBe(document.body);
+
+    pressAppShortcut("w");
+    await settle();
+    expect(tabElements().length).toBe(1);
+    expect(paletteInput()).not.toBeNull();
+  });
+
+  it("does not open the palette while a modal dialog is showing", async () => {
+    await openFile();
+    mocks.pickFolder.mockResolvedValue({ path: "/second", canceled: false });
+    sidebarButton("切换文件夹").click();
+    await settle();
+    expect(dialog()).not.toBeNull();
+
+    pressAppShortcut("p");
+    pressAppShortcut("P", true);
+    pressAppShortcut("O", true);
+    await settle();
+
+    expect(dialog()).not.toBeNull();
+    expect(
+      document.querySelector('[role="combobox"][aria-label^="命令面板"]'),
+    ).toBeNull();
   });
 
   it("closes popovers when opened and consumes Escape itself", async () => {

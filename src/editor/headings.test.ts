@@ -2,7 +2,7 @@ import { markdown } from "@codemirror/lang-markdown";
 import { EditorState } from "@codemirror/state";
 import { describe, expect, it } from "vitest";
 
-import { extractHeadings } from "./headings";
+import { extractHeadings, extractHeadingsWithStatus } from "./headings";
 
 function state(doc: string): EditorState {
   return EditorState.create({ doc, extensions: [markdown()] });
@@ -39,5 +39,41 @@ describe("extractHeadings", () => {
     expect(extractHeadings(state(doc))).toEqual([
       { level: 2, text: "Real", position: 0, line: 1 },
     ]);
+  });
+
+  it("removes quote and list prefixes, including from Setext headings", () => {
+    const doc = [
+      "> # Quote ##",
+      "",
+      "- # Item",
+      "",
+      "# #",
+      "",
+      "> Setext",
+      "> ------",
+    ].join("\n");
+
+    expect(extractHeadings(state(doc))).toEqual([
+      { level: 1, text: "Quote", position: 0, line: 1 },
+      {
+        level: 1,
+        text: "Item",
+        position: doc.indexOf("- # Item"),
+        line: 3,
+      },
+      { level: 1, text: "", position: doc.indexOf("# #"), line: 5 },
+      {
+        level: 2,
+        text: "Setext",
+        position: doc.indexOf("> Setext"),
+        line: 7,
+      },
+    ]);
+  });
+
+  it("reports a complete extraction for a parsed document", () => {
+    const result = extractHeadingsWithStatus(state("# Title\n"));
+    expect(result.complete).toBe(true);
+    expect(result.headings).toHaveLength(1);
   });
 });
