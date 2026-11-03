@@ -2,7 +2,8 @@
 import { computed } from "vue";
 
 import { displayPath } from "../app/paths";
-import { isMac, shortcutText, type AppPlatform } from "../app/platform";
+import type { AppPlatform } from "../app/platform";
+import { commandShortcut } from "../commands/registry";
 import AppIcon from "./AppIcon.vue";
 import KeyHint from "./KeyHint.vue";
 
@@ -24,11 +25,13 @@ const emit = defineEmits<{
 
 const missing = computed(() => new Set(props.missingFolders));
 const openFolderKey = computed(() =>
-  shortcutText("open-folder", props.platform),
+  commandShortcut("app.open-folder", props.platform),
 );
-const newFileKey = computed(() => shortcutText("new-file", props.platform));
+const newFileKey = computed(() =>
+  commandShortcut("app.new-file", props.platform),
+);
 const quickOpenKey = computed(() =>
-  isMac(props.platform) ? "⌘P" : "Ctrl+P",
+  commandShortcut("nav.quick-open", props.platform),
 );
 
 function folderName(path: string): string {

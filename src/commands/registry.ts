@@ -1,12 +1,16 @@
 import { isMac, type AppPlatform } from "../app/platform";
+import { appCommands } from "./app";
 import { formatCommands } from "./format";
 import type { CommandDefinition, CommandKeyBinding } from "./types";
 
 /**
- * The only command registry. Slash commands, keymaps, the command palette and
- * the formatting toolbar read from this list.
+ * The only command registry. Slash commands, keymaps, context menus, hints and
+ * the future command palette and formatting toolbar read from this list.
  */
-export const commandRegistry: readonly CommandDefinition[] = [...formatCommands];
+export const commandRegistry: readonly CommandDefinition[] = [
+  ...formatCommands,
+  ...appCommands,
+];
 
 const byId = new Map(commandRegistry.map((command) => [command.id, command]));
 
@@ -14,9 +18,17 @@ export function getCommand(id: string): CommandDefinition | undefined {
   return byId.get(id);
 }
 
+/** Commands that are implemented and dispatchable; placeholders are skipped. */
+export function isCommandAvailable(command: CommandDefinition): boolean {
+  return command.available !== false;
+}
+
 export function slashCommands(): readonly CommandDefinition[] {
   return commandRegistry.filter(
-    (command) => command.scope === "editor" && command.inSlashMenu,
+    (command) =>
+      command.scope === "editor" &&
+      command.inSlashMenu &&
+      isCommandAvailable(command),
   );
 }
 
@@ -131,4 +143,13 @@ export function formatCommandShortcut(
     if (text) return text;
   }
   return null;
+}
+
+/**
+ * Shortcut text for an entry in the registry. Callers use this instead of
+ * spelling keys themselves, so hints, menus and tests share one formatter.
+ */
+export function commandShortcut(id: string, platform: AppPlatform): string {
+  const command = byId.get(id);
+  return command ? (formatCommandShortcut(command, platform) ?? "") : "";
 }

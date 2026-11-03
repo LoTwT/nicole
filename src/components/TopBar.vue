@@ -9,10 +9,8 @@ import {
 } from "vue";
 
 import type { EditorMode } from "../editor";
-import {
-  shortcutText,
-  type AppPlatform,
-} from "../app/platform";
+import type { AppPlatform } from "../app/platform";
+import { commandShortcut } from "../commands/registry";
 import AppIcon from "./AppIcon.vue";
 import KeyHint from "./KeyHint.vue";
 
@@ -53,12 +51,12 @@ const modes: readonly {
   id: EditorMode;
   label: string;
   full: string;
-  command: "mode-live" | "mode-immersive" | "mode-source";
+  command: "mode.live" | "mode.immersive" | "mode.source";
   icon: "live" | "immersive" | "source";
 }[] = [
-  { id: "live", label: "预览", full: "实时预览", command: "mode-live", icon: "live" },
-  { id: "immersive", label: "沉浸", full: "沉浸", command: "mode-immersive", icon: "immersive" },
-  { id: "source", label: "源码", full: "源码", command: "mode-source", icon: "source" },
+  { id: "live", label: "预览", full: "实时预览", command: "mode.live", icon: "live" },
+  { id: "immersive", label: "沉浸", full: "沉浸", command: "mode.immersive", icon: "immersive" },
+  { id: "source", label: "源码", full: "源码", command: "mode.source", icon: "source" },
 ];
 
 const modeMenuOpen = ref(false);
@@ -72,7 +70,7 @@ const activeMode = computed(
 
 function modeTitle(id: EditorMode): string {
   const item = modes.find((entry) => entry.id === id) ?? modes[0]!;
-  return `${item.full} ${shortcutText(item.command, props.platform)}`;
+  return `${item.full} ${commandShortcut(item.command, props.platform)}`;
 }
 
 function chooseMode(next: EditorMode) {
@@ -177,8 +175,8 @@ onBeforeUnmount(() => {
       type="button"
       data-sidebar-toggle
       class="app-no-drag focus-ring grid size-7 shrink-0 place-items-center rounded-[var(--radius-control)] text-[var(--text-muted)] hover:bg-[var(--surface-subtle)] hover:text-[var(--text-primary)]"
-      :aria-label="`显示侧栏 ${shortcutText('sidebar', platform)}`"
-      :title="`显示侧栏 ${shortcutText('sidebar', platform)}`"
+      :aria-label="`显示侧栏 ${commandShortcut('nav.toggle-sidebar', platform)}`"
+      :title="`显示侧栏 ${commandShortcut('nav.toggle-sidebar', platform)}`"
       @click="emit('toggle-sidebar')"
     >
       <AppIcon name="sidebar" />
@@ -290,13 +288,13 @@ onBeforeUnmount(() => {
               type="button"
               role="menuitemradio"
               :aria-checked="mode === item.id"
-              :aria-label="`${item.full} ${shortcutText(item.command, platform)}`"
+              :aria-label="`${item.full} ${commandShortcut(item.command, platform)}`"
               class="focus-ring flex w-full items-center gap-2 rounded-[var(--radius-control)] px-2 py-1.5 text-left hover:bg-[var(--surface-subtle)]"
               @click="chooseMode(item.id)"
             >
               <AppIcon :name="item.icon" :size="14" />
               <span class="flex-1">{{ item.full }}</span>
-              <KeyHint :shortcut="shortcutText(item.command, platform)" />
+              <KeyHint :shortcut="commandShortcut(item.command, platform)" />
             </button>
           </div>
         </div>
@@ -321,11 +319,11 @@ onBeforeUnmount(() => {
         class="focus-ring grid size-7 shrink-0 place-items-center rounded-[var(--radius-control)] text-[var(--text-muted)] disabled:cursor-default disabled:opacity-40"
         :class="{ 'bg-[var(--surface-subtle)] text-[var(--text-primary)]': outlineOn }"
         :disabled="!outlineEnabled"
-        :aria-label="`显示或隐藏大纲 ${shortcutText('outline', platform)}`"
+        :aria-label="`显示或隐藏大纲 ${commandShortcut('nav.toggle-outline', platform)}`"
         :aria-pressed="outlineOn"
         :title="
           outlineEnabled
-            ? `显示或隐藏大纲 ${shortcutText('outline', platform)}`
+            ? `显示或隐藏大纲 ${commandShortcut('nav.toggle-outline', platform)}`
             : '大纲将在后续版本提供'
         "
         @click="emit('toggle-outline')"

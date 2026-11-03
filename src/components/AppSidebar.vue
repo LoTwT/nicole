@@ -2,10 +2,8 @@
 import { computed, onBeforeUnmount, ref } from "vue";
 
 import type { TreeEditState, TreeNode } from "../app/file-tree";
-import {
-  shortcutText,
-  type AppPlatform,
-} from "../app/platform";
+import type { AppPlatform } from "../app/platform";
+import { commandShortcut } from "../commands/registry";
 import type { WorkspaceFileEvent } from "../services/mygo";
 import AppIcon from "./AppIcon.vue";
 import FileTree from "./FileTree.vue";
@@ -56,7 +54,7 @@ const asideStyle = computed(() => ({
 }));
 
 const sidebarShortcut = computed(() =>
-  shortcutText("sidebar", props.platform),
+  commandShortcut("nav.toggle-sidebar", props.platform),
 );
 const themeAction = computed(() =>
   props.isDark ? "切换到亮色主题" : "切换到暗色主题",
@@ -156,15 +154,15 @@ defineExpose({
       type="button"
       class="focus-ring mx-2.5 mb-2 flex shrink-0 items-center gap-1.5 rounded-[var(--radius-control)] bg-[var(--surface-subtle)] px-2 py-1.5 text-[12px] text-[var(--text-muted)] disabled:cursor-default"
       disabled
-      :title="`搜索工作区 ${shortcutText('search', platform)}，将在后续版本提供`"
-      :aria-label="`搜索工作区 ${shortcutText('search', platform)}，将在后续版本提供`"
+      :title="`搜索工作区 ${commandShortcut('nav.search', platform)}，将在后续版本提供`"
+      :aria-label="`搜索工作区 ${commandShortcut('nav.search', platform)}，将在后续版本提供`"
       @click="emit('search-all')"
     >
       <AppIcon name="search" :size="13" />
       <span class="flex-1 text-left">搜索工作区</span>
       <KeyHint
         variant="plain"
-        :shortcut="shortcutText('search', platform)"
+        :shortcut="commandShortcut('nav.search', platform)"
       />
     </button>
 
@@ -199,8 +197,8 @@ defineExpose({
       <button
         type="button"
         class="focus-ring grid size-6 place-items-center rounded-[var(--radius-control)] text-[var(--text-muted)] hover:bg-[var(--surface-subtle)] hover:text-[var(--text-primary)]"
-        :aria-label="`切换文件夹 ${shortcutText('open-folder', platform)}`"
-        :title="`切换文件夹 ${shortcutText('open-folder', platform)}`"
+        :aria-label="`切换文件夹 ${commandShortcut('app.open-folder', platform)}`"
+        :title="`切换文件夹 ${commandShortcut('app.open-folder', platform)}`"
         @click="emit('open-folder')"
       >
         <AppIcon name="folder-open" :size="14" />
