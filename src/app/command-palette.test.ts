@@ -60,9 +60,9 @@ describe("command palette files", () => {
     expect(next).toHaveLength(RECENT_FILES_LIMIT);
     expect(next[0]).toBe("note-5.md");
     expect(next.filter((path) => path === "note-5.md")).toHaveLength(1);
-    expect(
-      rememberRecentFilePath(next, "new.md").at(-1),
-    ).toBe(`note-${RECENT_FILES_LIMIT - 2}.md`);
+    const appended = rememberRecentFilePath(next, "new.md");
+    expect(appended).toHaveLength(RECENT_FILES_LIMIT);
+    expect(appended.at(-1)).toBe(`note-${RECENT_FILES_LIMIT - 2}.md`);
   });
 
   it("drops invalid and duplicate stored paths", () => {

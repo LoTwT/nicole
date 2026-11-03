@@ -2685,6 +2685,9 @@ describe("command palette", () => {
     await vi.waitFor(() =>
       expect(paletteOptions()[0]?.textContent ?? "").toContain("加粗"),
     );
+    // The palette must restore the selection captured on open instead of
+    // trusting whatever position the editor had while the input held focus.
+    editorView().dispatch({ selection: { anchor: 0 } });
     paletteInput().dispatchEvent(
       new KeyboardEvent("keydown", {
         key: "Enter",
