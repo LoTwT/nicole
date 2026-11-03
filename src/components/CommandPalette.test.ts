@@ -216,6 +216,32 @@ describe("CommandPalette", () => {
     expect(options()[0]?.textContent).toContain("标题一");
   });
 
+  it("keeps a prefix as text when the query is not empty", async () => {
+    mountPalette({
+      mode: "file",
+      workspaceOpen: true,
+      loadFiles: async () => ["a.md"],
+    });
+    await settle();
+    const input = paletteInput();
+
+    type(input, "abc");
+    await settle();
+    input.setSelectionRange(0, 0);
+    type(input, ">abc");
+    await settle();
+    expect(input.value).toBe(">abc");
+    expect(modeIndicator()).toBeNull();
+    expect(input.getAttribute("aria-label")).toContain("文件名");
+
+    input.setSelectionRange(0, 0);
+    type(input, "@abc");
+    await settle();
+    expect(input.value).toBe("@abc");
+    expect(modeIndicator()).toBeNull();
+    expect(input.getAttribute("aria-label")).toContain("文件名");
+  });
+
   it("adopts a pasted prefix into an empty query", async () => {
     mountPalette({
       mode: "file",
@@ -232,7 +258,7 @@ describe("CommandPalette", () => {
     expect(options()[0]?.textContent).toContain("加粗");
   });
 
-  it("does not switch on Backspace away from the start or with a selection", async () => {
+  it("does not switch on Backspace when the query is not empty", async () => {
     mountPalette({ mode: "command" });
     await settle();
     const input = paletteInput();

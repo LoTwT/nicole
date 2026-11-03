@@ -3401,6 +3401,58 @@ describe("crash recovery", () => {
     ).toBeNull();
   });
 
+  it("does not open the palette while recovery is being listed", async () => {
+    mocks.getSettings.mockResolvedValue({
+      theme: "system",
+      sidebarWidth: 252,
+      recentFolders: ["/notes"],
+      expandedFolders: {},
+    });
+    mocks.openFolder.mockResolvedValue(folder("/notes"));
+    const pending = deferred<{
+      items: import("./services/mygo").RecoveryItem[];
+      otherFolders: number;
+    }>();
+    mocks.listRecovery.mockReturnValue(pending.promise);
+
+    await mountAppWithApi();
+    exposedApp!.value.openCommandPalette("command");
+    await settle();
+    expect(
+      document.querySelector('[role="combobox"][aria-label^="命令面板"]'),
+    ).toBeNull();
+
+    pending.resolve({ items: [], otherFolders: 0 });
+    await settle();
+  });
+
+  it("does not open the palette directly while the recovery dialog is shown", async () => {
+    await mountAppWithApi();
+    mocks.pickFolder.mockResolvedValue({ path: "/notes", canceled: false });
+    mocks.openFolder.mockResolvedValue(folder("/notes"));
+    mocks.listRecovery.mockResolvedValue({
+      items: [recoveryItem()],
+      otherFolders: 0,
+    });
+    await exposedApp!.value.chooseFolder();
+    await settle();
+    expect(dialog()).not.toBeNull();
+
+    // The modal DOM guard already blocks this path; hide it for one call so
+    // the explicit recovery-state guard is exercised on its own.
+    const querySelector = vi
+      .spyOn(document, "querySelector")
+      .mockReturnValue(null);
+    exposedApp!.value.openCommandPalette("command");
+    querySelector.mockRestore();
+    await settle();
+
+    expect(dialog()).not.toBeNull();
+    expect(
+      document.querySelector('[role="combobox"][aria-label^="命令面板"]'),
+    ).toBeNull();
+  });
+
   it("marks changed and missing copies instead of a word difference", async () => {
     await mountWithRecovery([
       recoveryItem({
