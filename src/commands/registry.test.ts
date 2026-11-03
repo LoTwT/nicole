@@ -113,6 +113,39 @@ function bindingTexts(
     .filter((text): text is string => text !== null);
 }
 
+/** Expands the document's `⌘1–⌘3` / `Ctrl+1–Ctrl+3` shorthand. */
+function expandRange(text: string): string[] {
+  const match = /^(.*?)(\d)\s*[–-]\s*(.*?)(\d)$/.exec(text);
+  if (!match) return [text];
+  const [, prefix, startText, suffix, endText] = match;
+  const start = Number(startText);
+  const end = Number(endText);
+  if (prefix !== suffix || start > end || end - start > 10) return [text];
+  return Array.from(
+    { length: end - start + 1 },
+    (_value, index) => `${prefix}${start + index}`,
+  );
+}
+
+/** Shortcut alternatives in one table cell (`、` and `或` separate them). */
+function cellShortcuts(cell: string): string[] {
+  return cell
+    .split(/\s*(?:、|或)\s*/)
+    .map((text) => text.trim())
+    .filter(Boolean)
+    .flatMap(expandRange);
+}
+
+function expectSameShortcuts(
+  actual: readonly string[],
+  cell: string,
+  label: string,
+) {
+  expect([...new Set(actual)].sort(), label).toEqual(
+    [...new Set(cellShortcuts(cell))].sort(),
+  );
+}
+
 describe("command registry", () => {
   it("has one unique entry per command", () => {
     const ids = commandRegistry.map((command) => command.id);
@@ -132,6 +165,18 @@ describe("command registry", () => {
   it("matches every implemented ui.md shortcut row", () => {
     const rows = shortcutRows(uiMarkdown);
     expect(rows.length).toBeGreaterThan(30);
+    const tableRows = new Set(rows.map((row) => row.command));
+
+    for (const key of Object.keys(COMMAND_BY_ROW)) {
+      expect(tableRows.has(key), `mapped row missing from ui.md: ${key}`).toBe(
+        true,
+      );
+    }
+    for (const key of Object.keys(EXCLUDED_ROWS)) {
+      expect(tableRows.has(key), `excluded row missing from ui.md: ${key}`).toBe(
+        true,
+      );
+    }
 
     for (const row of rows) {
       const mapped = COMMAND_BY_ROW[row.command];
@@ -144,35 +189,27 @@ describe("command registry", () => {
       }
 
       const ids = Array.isArray(mapped) ? mapped : [mapped];
-      if (row.command.startsWith("标题 1–3")) {
-        // The document uses a range for the three heading commands.
-        expect(ids.map((id) => commandShortcut(id, "macos"))).toEqual([
-          "⌘1",
-          "⌘2",
-          "⌘3",
-        ]);
-        expect(ids.map((id) => commandShortcut(id, "windows"))).toEqual([
-          "Ctrl+1",
-          "Ctrl+2",
-          "Ctrl+3",
-        ]);
-        expect(row.macos).toBe("⌘1–⌘3");
-        expect(row.windows).toBe("Ctrl+1–Ctrl+3");
-        continue;
-      }
-
-      for (const id of ids) {
+      const commands = ids.map((id) => {
         const command = getCommand(id);
         expect(command, id).toBeDefined();
-        for (const platform of ["macos", "windows", "linux"] as const) {
-          const texts = bindingTexts(command!, platform);
-          expect(texts.length, `${id} ${platform}`).toBeGreaterThan(0);
-          const cell = platform === "macos" ? row.macos : row.windows;
-          for (const text of texts) {
-            expect(cell, `${row.command} ${platform} ${id}`).toContain(text);
-          }
-        }
-      }
+        return command!;
+      });
+
+      expectSameShortcuts(
+        commands.flatMap((command) => bindingTexts(command, "macos")),
+        row.macos,
+        `${row.command} macOS`,
+      );
+      expectSameShortcuts(
+        commands.flatMap((command) => bindingTexts(command, "windows")),
+        row.windows,
+        `${row.command} Windows`,
+      );
+      expectSameShortcuts(
+        commands.flatMap((command) => bindingTexts(command, "linux")),
+        row.windows,
+        `${row.command} Linux`,
+      );
     }
   });
 

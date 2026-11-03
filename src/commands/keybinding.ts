@@ -133,17 +133,21 @@ function characterKey(event: KeyboardEvent): string {
  * Physical-key fallbacks for layouts where `key` is not the US label of the
  * pressed key. CodeMirror only takes this path after the character lookup
  * fails, for events with a command modifier, and when the physical key differs
- * from the character. We also avoid deriving letters from a physical key when
- * the event already produced a printable ASCII character: on Dvorak, ⌘, and
- * ⌘B would otherwise map to the QWERTY labels of those physical keys (w/n).
- * Non-ASCII input such as Cyrillic can still fall back to the letter position.
+ * from the character.
+ *
+ * Differences from CodeMirror: printable ASCII input uses only `keyCode`
+ * (assumed to follow the layout) and never `event.code`, so Dvorak ⌘+ and
+ * ⇧⌘? cannot borrow the QWERTY bracket labels. Non-ASCII input, `Dead` and
+ * `Unidentified` also use `event.code`, which CodeMirror ignores; this keeps
+ * Cyrillic ⌘W working from the physical letter position. Pairs from the
+ * `shift` table are considered only when Shift is held, and a candidate equal
+ * to the produced character is skipped.
  */
 function physicalKeys(event: KeyboardEvent): Set<string> {
   const keys = new Set<string>();
   const character = characterKey(event);
-  // A single printable ASCII character means the layout already told us what
-  // this key produces. Punctuation and digits may still use physical fallback
-  // for shifted values; letters may not.
+  // Single printable ASCII characters already identify the produced key.
+  // Letters may not be derived from the physical position in that case.
   const allowLetters = !(
     character.length === 1 && character.charCodeAt(0) < 0x80
   );
@@ -154,7 +158,9 @@ function physicalKeys(event: KeyboardEvent): Set<string> {
     if (key !== character) keys.add(key);
   };
 
-  add(keyFromCode(event.code));
+  // `event.code` is physical, so it is only safe when the layout did not
+  // produce a printable ASCII character of its own.
+  if (allowLetters) add(keyFromCode(event.code));
   // keyCode is the same physical-key fallback CodeMirror uses.
   const fromKeyCode = event.keyCode;
   if (fromKeyCode) {

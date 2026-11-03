@@ -11,10 +11,11 @@ interface KeyOptions {
   alt?: boolean;
   shift?: boolean;
   code?: string;
+  keyCode?: number;
 }
 
 function key(key: string, options: KeyOptions = {}): KeyboardEvent {
-  return new KeyboardEvent("keydown", {
+  const event = new KeyboardEvent("keydown", {
     key,
     code: options.code ?? "",
     metaKey: options.meta ?? false,
@@ -22,6 +23,10 @@ function key(key: string, options: KeyOptions = {}): KeyboardEvent {
     altKey: options.alt ?? false,
     shiftKey: options.shift ?? false,
   });
+  if (options.keyCode !== undefined) {
+    Object.defineProperty(event, "keyCode", { value: options.keyCode });
+  }
+  return event;
 }
 
 function binding(id: string) {
@@ -44,16 +49,37 @@ describe("keyboard matcher", () => {
   });
 
   it("matches shift-bracket shortcuts from the physical key", () => {
-    expect(idFor(key("}", { meta: true, shift: true, code: "BracketRight" }))).toBe(
-      "tab.next",
-    );
-    expect(idFor(key("{", { meta: true, shift: true, code: "BracketLeft" }))).toBe(
-      "tab.previous",
-    );
-    // Non-US layouts report a different character for the same physical key.
-    expect(idFor(key("+", { meta: true, shift: true, code: "BracketRight" }))).toBe(
-      "tab.next",
-    );
+    expect(
+      idFor(
+        key("}", {
+          meta: true,
+          shift: true,
+          code: "BracketRight",
+          keyCode: 221,
+        }),
+      ),
+    ).toBe("tab.next");
+    expect(
+      idFor(
+        key("{", {
+          meta: true,
+          shift: true,
+          code: "BracketLeft",
+          keyCode: 219,
+        }),
+      ),
+    ).toBe("tab.previous");
+    // Non-US layouts report a different character for the same keyCode.
+    expect(
+      idFor(
+        key("+", {
+          meta: true,
+          shift: true,
+          code: "BracketRight",
+          keyCode: 221,
+        }),
+      ),
+    ).toBe("tab.next");
     expect(
       matchesKeyBinding(
         key("}", { meta: true, shift: true }),
@@ -83,22 +109,105 @@ describe("keyboard matcher", () => {
   });
 
   it("falls back to physical letters for non-ASCII characters", () => {
-    expect(idFor(key("ц", { meta: true, code: "KeyW" }))).toBe("tab.close");
+    expect(idFor(key("ц", { meta: true, code: "KeyW", keyCode: 87 }))).toBe(
+      "tab.close",
+    );
     expect(
-      idFor(key("ц", { ctrl: true, code: "KeyW" }), "windows"),
+      idFor(key("ц", { ctrl: true, code: "KeyW", keyCode: 87 }), "windows"),
     ).toBe("tab.close");
   });
 
   it("keeps physical fallback for shifted punctuation and digits", () => {
     expect(
-      idFor(key("}", { meta: true, shift: true, code: "BracketRight" })),
+      idFor(
+        key("}", {
+          meta: true,
+          shift: true,
+          code: "BracketRight",
+          keyCode: 221,
+        }),
+      ),
     ).toBe("tab.next");
     expect(
-      idFor(key("!", { ctrl: true, shift: true, code: "Digit1" }), "windows"),
+      idFor(
+        key("!", {
+          ctrl: true,
+          shift: true,
+          code: "Digit1",
+          keyCode: 49,
+        }),
+        "windows",
+      ),
     ).toBe("mode.live");
     expect(
-      idFor(key("&", { ctrl: true, shift: true, code: "Digit1" }), "windows"),
+      idFor(
+        key("&", {
+          ctrl: true,
+          shift: true,
+          code: "Digit1",
+          keyCode: 49,
+        }),
+        "windows",
+      ),
     ).toBe("mode.live");
+    expect(
+      idFor(
+        key("1", {
+          ctrl: true,
+          shift: true,
+          code: "Digit1",
+          keyCode: 49,
+        }),
+        "windows",
+      ),
+    ).toBe("mode.live");
+  });
+
+  it("does not borrow QWERTY punctuation labels for ASCII input", () => {
+    // Dvorak: + and ? sit on the QWERTY bracket keys, but their keyCodes
+    // follow the produced characters.
+    expect(
+      idFor(
+        key("+", {
+          meta: true,
+          shift: true,
+          code: "BracketRight",
+          keyCode: 187,
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      idFor(
+        key("?", {
+          meta: true,
+          shift: true,
+          code: "BracketLeft",
+          keyCode: 191,
+        }),
+      ),
+    ).toBeNull();
+    // German: * may be Shift+8, not the US bracket key.
+    expect(
+      idFor(
+        key("*", {
+          meta: true,
+          shift: true,
+          code: "BracketRight",
+          keyCode: 56,
+        }),
+      ),
+    ).toBeNull();
+    // The real Dvorak "[" reports keyCode 219 and still opens the shortcut.
+    expect(
+      idFor(
+        key("[", {
+          meta: true,
+          shift: true,
+          code: "Minus",
+          keyCode: 219,
+        }),
+      ),
+    ).toBe("tab.previous");
   });
 
   it("prefers a character match over a physical fallback regardless of order", () => {
@@ -119,6 +228,7 @@ describe("keyboard matcher", () => {
       ctrl: true,
       shift: true,
       code: "Digit1",
+      keyCode: 49,
     });
     expect(
       matchCommand(event, "windows", [physical, character], "app")?.id,
