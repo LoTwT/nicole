@@ -730,6 +730,44 @@ func TestRecoverySingleMissingFileWithSymlinkedParentIsUnrestorable(t *testing.T
 	}
 }
 
+func TestRecoverySingleUnreadableFileIsUnrestorable(t *testing.T) {
+	_, singleFiles, recovery := newTestRecovery(t, "")
+	path := filepath.Join(t.TempDir(), "note.md")
+	mustWriteFile(t, path, []byte("text\n"))
+	file, err := singleFiles.grant(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saveTestCopy(t, recovery, RecoveryCopy{
+		Kind: recoveryKindSingle, Path: file.Path, LineEnding: "\n", Text: "changed\n",
+	}, 0)
+	if err := os.Chmod(file.Path, 0); err != nil {
+		t.Skipf("cannot remove read permission: %v", err)
+	}
+	defer os.Chmod(file.Path, 0o644)
+	if _, err := os.ReadFile(file.Path); err == nil {
+		t.Skip("permissions are not enforced for this user")
+	}
+
+	listing, err := recovery.List(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listing.Items) != 1 {
+		t.Fatalf("List() = %+v, want one item", listing.Items)
+	}
+	item := listing.Items[0]
+	if item.Restorable {
+		t.Errorf("unreadable single file is restorable: %+v", item)
+	}
+	if item.Reason == "" {
+		t.Errorf("unreadable single file has no reason: %+v", item)
+	}
+	if item.DiskState != recoveryStateChanged {
+		t.Errorf("unreadable single file state = %q, want changed", item.DiskState)
+	}
+}
+
 func TestRecoveryKeepsOpenSingleFileHashesAcrossRootSwitch(t *testing.T) {
 	hashes := newDiskHashes()
 	first := t.TempDir()

@@ -226,14 +226,14 @@ Go 在 `PathUserData/recovery/` 保存未保存内容的副本；界面流程见
 | `changed` | 哈希不同，或没有 `diskHash` | 副本为 `text`，磁盘内容为 `originalText`，`externalState = modified`，不自动保存，显示外部修改横幅 |
 | `missing` | 文件不存在 | 副本为 `text`，`externalState = deleted`，显示删除横幅；重新保存在原路径重建文件 |
 
-`List` 同时返回 `text` 和 `diskText`（缺失时为空），供页面计算字数差；`changed` 时页面用 `diskText` 作为 `originalText`。页面不自行读取磁盘，只比较 Go 返回的 `diskText`。`List` 的结果是打开对话框时的快照；用户点击“全部恢复”“逐个查看”或“保留恢复内容”时，页面重新调用 `List`，以最新的 `diskState` 和 `diskText` 为准。保留恢复内容时不能只看 `diskState`：副本可能因审阅期间编辑重写而丢失 `diskHash`；`missing` 仍转删除，否则只有 `diskText` 与标签 `originalText` 相同时才强制保存，不同就转外部修改。对话框打开期间磁盘再次变化时，不自动写回，转为外部修改或删除状态；已有标签的基线比快照新时，不用旧 `diskText` 覆盖它。
+`List` 同时返回 `text` 和 `diskText`（缺失时为空），供页面计算字数差；`changed` 时页面用 `diskText` 作为 `originalText`。页面不自行读取磁盘，只比较 Go 返回的 `diskText`。`List` 的结果是打开对话框时的快照；用户点击“全部恢复”“逐个查看”或“保留恢复内容”时，页面重新调用 `List`，以最新的 `diskState` 和 `diskText` 为准。保留恢复内容时不能只看 `diskState`：副本可能因审阅期间编辑重写而丢失 `diskHash`；等待 `List` 期间标签的 revision 或外部状态变化时放弃强制保存；不可恢复的副本不写盘，`missing` 转删除，否则只有 `diskText` 与标签 `originalText` 相同时才强制保存，不同就转外部修改。对话框打开期间磁盘再次变化时，不自动写回，转为外部修改或删除状态；已有标签的基线比快照新时，不用旧 `diskText` 覆盖它。
 
 ### 单文件副本
 
 工作区外的单文件也写副本，并受三条约束：
 
 1. Go 在写单文件副本时核对路径当前已授权（`grantedPath`），否则拒绝；`recovery/` 中只可能出现曾被授权的路径。
-2. 副本保存解析符号链接后的绝对路径。恢复时 Go 再检查路径：文件不存在时仍允许授权，以便在原路径重建（与 `WriteSingleFile` 一致）；指向目录、非 `.md`、已成为符号链接，或文件缺失但父目录已变成符号链接、路径已改变时拒绝。列表的“无法恢复”标注与 `RestoreSingleFile` 使用同一套检查。
+2. 副本保存解析符号链接后的绝对路径。恢复时 Go 再检查路径：文件不存在时仍允许授权，以便在原路径重建（与 `WriteSingleFile` 一致）；指向目录、非 `.md`、已成为符号链接，或文件缺失但父目录已变成符号链接、路径已改变时拒绝。列表的“无法恢复”标注与 `RestoreSingleFile` 共用这套路径检查；列表还会读取内容，读盘失败时同样标为“无法恢复”。
 3. 重新授权只能通过“恢复某条副本”触发；同一进程内一条副本只能恢复一次，副本随恢复后的保存、放弃或丢弃删除。页面没有按路径授权的入口。
 
 这条例外让单文件授权可以经恢复副本跨重启延续一次；代价和安全边界见[架构](../architecture.md#安全)。

@@ -488,7 +488,7 @@ func (r *Recovery) singleDiskState(entry storedRecovery) (string, string, bool, 
 	}
 	data, err := os.ReadFile(filepath.Clean(entry.Path))
 	if err != nil {
-		return "", recoveryStateChanged, true, ""
+		return "", recoveryStateChanged, false, "无法读取文件"
 	}
 	return string(data), recoveryDiskState(entry, string(data), true), true, ""
 }

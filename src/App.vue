@@ -2364,20 +2364,32 @@ async function keepRestoredContent() {
   if (tab === null) {
     return;
   }
-  if (tab.recoveryId !== null) {
+  const revision = tab.revision;
+  const recoveryId = tab.recoveryId;
+  if (recoveryId !== null) {
     const generation = recoveryGeneration();
     let item: RecoveryItem | null;
     try {
-      item = await latestRecoveryItem(tab.recoveryId, generation);
+      item = await latestRecoveryItem(recoveryId, generation);
     } catch (error) {
       showNotice(`无法确认磁盘状态：${errorText(error)}`, "danger");
       return;
     }
     const current = findTab(tab.id);
-    if (current === null || current.recoveryId !== tab.recoveryId) {
+    if (current === null || current.recoveryId !== recoveryId) {
+      return;
+    }
+    if (current.revision !== revision || current.externalState !== "none") {
+      // A watcher update landed while List was running. Its revision bump
+      // makes the force save fail, but do not keep offering a stale decision.
+      current.restored = false;
       return;
     }
     if (item !== null) {
+      if (!item.restorable) {
+        applyRecoveryDiskChange(current, item);
+        return;
+      }
       if (item.diskState === "missing") {
         applyRecoveryDiskChange(current, item);
         return;
@@ -2391,7 +2403,6 @@ async function keepRestoredContent() {
       }
     }
   }
-  const revision = tab.revision;
   tab.restored = false;
   if (tab.savePhase === "paused") {
     tab.savePhase = tab.saveError === null ? "editing" : "failed";

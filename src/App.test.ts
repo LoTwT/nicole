@@ -2923,6 +2923,60 @@ describe("crash recovery", () => {
     expect(mocks.writeFile).not.toHaveBeenCalled();
   });
 
+  it("does not save over a watcher update while rechecking restored content", async () => {
+    await mountWithRecovery([recoveryItem()]);
+    dialogButton("逐个查看").click();
+    await settle();
+
+    const pending = deferred<{
+      items: import("./services/mygo").RecoveryItem[];
+      otherFolders: number;
+    }>();
+    mocks.listRecovery.mockReturnValueOnce(pending.promise);
+    button("保留恢复内容").click();
+    await settle();
+
+    watchEvents?.([{ op: "write", path: "a.md", isDir: false }]);
+    await settle();
+    pending.resolve({
+      items: [recoveryItem({ diskState: "changed" })],
+      otherFolders: 0,
+    });
+    await settle();
+
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+    expect(host.textContent).toContain(
+      "此文件已在 Nicole 之外被修改",
+    );
+  });
+
+  it("does not write when rechecking makes the copy unrestorable", async () => {
+    await mountWithRecovery([
+      recoveryItem({ text: "# A\nmore\n", diskText: "" }),
+    ]);
+    dialogButton("逐个查看").click();
+    await settle();
+
+    mocks.listRecovery.mockResolvedValue({
+      items: [
+        recoveryItem({
+          text: "# A\nmore\n",
+          diskText: "",
+          diskState: "changed",
+          restorable: false,
+          reason: "无法读取文件",
+        }),
+      ],
+      otherFolders: 0,
+    });
+    button("保留恢复内容").click();
+    await settle();
+    expect(host.textContent).toContain(
+      "此文件已在 Nicole 之外被修改",
+    );
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+  });
+
   it("does not restore from the old list when rechecking fails", async () => {
     vi.useFakeTimers();
     await mountWithRecovery([recoveryItem()]);
