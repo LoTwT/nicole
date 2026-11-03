@@ -427,7 +427,7 @@ watch(mode, (next) => {
         >
           <span
             v-if="modePrefix"
-            class="select-none font-mono text-[13px] leading-none text-[var(--text-muted)]"
+            class="flex h-8 w-4 shrink-0 -translate-y-px select-none items-center justify-center text-[14px] font-medium text-[var(--text-muted)]"
             aria-hidden="true"
           >
             {{ modePrefix }}
