@@ -179,10 +179,10 @@ async function settle() {
   }
 }
 
-/** Waits for the command palette's clear-before-write announcement delay. */
+/** Advances the command palette's clear-before-write announcement delay. */
 async function settlePaletteAnnouncement() {
   await settle();
-  await new Promise((resolve) => setTimeout(resolve, 60));
+  await vi.advanceTimersByTimeAsync(50);
   await settle();
 }
 
@@ -3099,6 +3099,7 @@ describe("command palette", () => {
     pressAppShortcut("p");
     await settle();
     const region = paletteAnnouncement();
+    vi.useFakeTimers();
     await settlePaletteAnnouncement();
     expect(region.textContent).toBe("");
 

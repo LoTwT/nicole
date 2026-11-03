@@ -15,10 +15,10 @@ async function settle() {
   }
 }
 
-/** Waits for the deliberate clear-before-write announcement delay. */
+/** Advances the deliberate clear-before-write announcement delay. */
 async function settleAnnouncement() {
   await settle();
-  await new Promise((resolve) => setTimeout(resolve, 60));
+  await vi.advanceTimersByTimeAsync(50);
   await settle();
 }
 
@@ -40,6 +40,28 @@ function modeAnnouncement(): HTMLParagraphElement {
   );
   if (!region) throw new Error("mode announcement region not found");
   return region;
+}
+
+/** Records every non-empty value written into the announcement region. */
+function recordAnnouncementWrites(region: HTMLElement): string[] {
+  const writes: string[] = [];
+  const observer = new MutationObserver((records) => {
+    for (const record of records) {
+      const text =
+        record.type === "characterData"
+          ? record.target.textContent
+          : [...record.addedNodes]
+              .map((node) => node.textContent ?? "")
+              .join("");
+      if (text) writes.push(text);
+    }
+  });
+  observer.observe(region, {
+    childList: true,
+    characterData: true,
+    subtree: true,
+  });
+  return writes;
 }
 
 function options(): HTMLButtonElement[] {
@@ -113,6 +135,7 @@ function mountPalette(options: {
 afterEach(() => {
   app?.unmount();
   app = null;
+  vi.useRealTimers();
   document.body.innerHTML = "";
 });
 
@@ -234,6 +257,7 @@ describe("CommandPalette", () => {
   });
 
   it("announces prefix mode switches but not opening the panel", async () => {
+    vi.useFakeTimers();
     mountPalette({
       mode: "file",
       workspaceOpen: true,
@@ -291,6 +315,7 @@ describe("CommandPalette", () => {
   });
 
   it("announces shortcut switches and repeats the same mode", async () => {
+    vi.useFakeTimers();
     const { palette } = mountPalette({ mode: "file" });
     await settle();
     const region = modeAnnouncement();
@@ -315,7 +340,26 @@ describe("CommandPalette", () => {
     expect(region.textContent).toBe("文件模式");
   });
 
+  it("writes only the last mode when switches happen within the delay", async () => {
+    vi.useFakeTimers();
+    const { palette } = mountPalette({ mode: "file" });
+    await settle();
+    const region = modeAnnouncement();
+    const writes = recordAnnouncementWrites(region);
+
+    palette.value?.switchMode("command");
+    await settle();
+    palette.value?.switchMode("heading");
+    await settle();
+    await vi.advanceTimersByTimeAsync(50);
+    await settle();
+
+    expect(writes).toEqual(["标题模式"]);
+    expect(region.textContent).toBe("标题模式");
+  });
+
   it("removes the announcement region when the panel closes", async () => {
+    vi.useFakeTimers();
     const { palette, close } = mountPalette({ mode: "command" });
     await settle();
     palette.value?.switchMode("heading");

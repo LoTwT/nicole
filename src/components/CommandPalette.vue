@@ -69,8 +69,9 @@ interface PaletteItem {
  * Clearing and writing in the same task can be coalesced into one mutation,
  * which VoiceOver in WKWebView and Narrator in WebView2 treat as no change and
  * do not announce. The empty state must be committed before the new text
- * arrives, so the write waits one short frame; the delay is long enough to
- * cover a render and layout pass in both WebViews.
+ * arrives, so the write waits a short delay in a separate task, which crosses
+ * a render pass in both WebViews. Whether 50 ms is enough has not been verified
+ * with VoiceOver or Narrator on real hardware.
  */
 const MODE_ANNOUNCEMENT_DELAY_MS = 50;
 
