@@ -24,7 +24,7 @@ function key(key: string, options: KeyOptions = {}): KeyboardEvent {
   });
 }
 
-function binding(id: string, platform: AppPlatform) {
+function binding(id: string) {
   const command = getCommand(id);
   if (!command?.keys?.[0]) throw new Error(`missing binding ${id}`);
   return command.keys[0]!;
@@ -57,10 +57,100 @@ describe("keyboard matcher", () => {
     expect(
       matchesKeyBinding(
         key("}", { meta: true, shift: true }),
-        binding("tab.next", "macos"),
+        binding("tab.next"),
         "macos",
       ),
     ).toBe(false);
+  });
+
+  it("does not derive letters from a physical key for ASCII input", () => {
+    // AZERTY: the key labeled Z is at the QWERTY W position.
+    expect(idFor(key("z", { meta: true, code: "KeyW" }))).toBeNull();
+    // Dvorak: comma is at the QWERTY W position; B is at N.
+    expect(idFor(key(",", { meta: true, code: "KeyW" }))).toBeNull();
+    expect(idFor(key("b", { meta: true, code: "KeyN" }))).toBeNull();
+    // Dvorak: period is at the QWERTY E position.
+    expect(
+      idFor(key(".", { ctrl: true, shift: true, code: "KeyE" }), "windows"),
+    ).toBeNull();
+    expect(
+      matchesKeyBinding(
+        key("z", { meta: true, code: "KeyW" }),
+        binding("tab.close"),
+        "macos",
+      ),
+    ).toBe(false);
+  });
+
+  it("falls back to physical letters for non-ASCII characters", () => {
+    expect(idFor(key("ц", { meta: true, code: "KeyW" }))).toBe("tab.close");
+    expect(
+      idFor(key("ц", { ctrl: true, code: "KeyW" }), "windows"),
+    ).toBe("tab.close");
+  });
+
+  it("keeps physical fallback for shifted punctuation and digits", () => {
+    expect(
+      idFor(key("}", { meta: true, shift: true, code: "BracketRight" })),
+    ).toBe("tab.next");
+    expect(
+      idFor(key("!", { ctrl: true, shift: true, code: "Digit1" }), "windows"),
+    ).toBe("mode.live");
+    expect(
+      idFor(key("&", { ctrl: true, shift: true, code: "Digit1" }), "windows"),
+    ).toBe("mode.live");
+  });
+
+  it("prefers a character match over a physical fallback regardless of order", () => {
+    const physical: CommandDefinition = {
+      id: "test.physical",
+      label: "物理",
+      group: "app",
+      scope: "app",
+      keys: [{ key: "Ctrl-Shift-1" }],
+      run: vi.fn(() => true),
+    };
+    const character: CommandDefinition = {
+      ...physical,
+      id: "test.character",
+      keys: [{ key: "Ctrl-Shift-!" }],
+    };
+    const event = key("!", {
+      ctrl: true,
+      shift: true,
+      code: "Digit1",
+    });
+    expect(
+      matchCommand(event, "windows", [physical, character], "app")?.id,
+    ).toBe("test.character");
+    expect(matchCommand(event, "windows", [physical], "app")?.id).toBe(
+      "test.physical",
+    );
+  });
+
+  it("ignores keys owned by an input method", () => {
+    expect(
+      matchCommand(
+        key("w", { meta: true, code: "KeyW" }),
+        "macos",
+        commandRegistry,
+        "app",
+      )?.id,
+    ).toBe("tab.close");
+
+    const composing = new KeyboardEvent("keydown", {
+      key: "w",
+      code: "KeyW",
+      metaKey: true,
+      isComposing: true,
+    });
+    expect(
+      matchCommand(composing, "macos", commandRegistry, "app"),
+    ).toBeNull();
+
+    const legacy = key("w", { meta: true, code: "KeyW" });
+    Object.defineProperty(legacy, "keyCode", { value: 229 });
+    expect(matchCommand(legacy, "macos", commandRegistry, "app")).toBeNull();
   });
 
   it("matches page and tab keys on Windows and Linux", () => {

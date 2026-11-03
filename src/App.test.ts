@@ -1304,6 +1304,59 @@ describe("theme and accessibility", () => {
     expect(outline.defaultPrevented).toBe(false);
   });
 
+  it("ignores Escape during composition when the sidebar is an overlay", async () => {
+    await openFile();
+    const originalWidth = window.innerWidth;
+    try {
+      window.innerWidth = 800;
+      window.dispatchEvent(new Event("resize"));
+      await settle();
+      expect(host.querySelector("aside")).toBeNull();
+
+      host.querySelector<HTMLButtonElement>("[data-sidebar-toggle]")!.click();
+      await settle();
+      expect(host.querySelector("aside")).not.toBeNull();
+
+      const escape = new KeyboardEvent("keydown", {
+        key: "Escape",
+        code: "Escape",
+        isComposing: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      window.dispatchEvent(escape);
+      await settle();
+      expect(host.querySelector("aside")).not.toBeNull();
+      expect(escape.defaultPrevented).toBe(false);
+    } finally {
+      window.innerWidth = originalWidth;
+      window.dispatchEvent(new Event("resize"));
+      await settle();
+    }
+  });
+
+  it("ignores app shortcuts while a dialog is open", async () => {
+    await openFile();
+    mocks.pickFolder.mockResolvedValue({ path: "/second", canceled: false });
+    sidebarButton("切换文件夹").click();
+    await settle();
+    expect(dialog()).not.toBeNull();
+    expect(host.querySelectorAll('[role="tab"]').length).toBe(1);
+
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "w",
+        metaKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    expect(dialog()).not.toBeNull();
+    expect(host.querySelectorAll('[role="tab"]').length).toBe(1);
+    expect(editorView().state.doc.toString()).toBe("# A\n");
+  });
+
   it("closes only the tab with Ctrl+W on Windows", async () => {
     app?.unmount();
     mocks.getAppInfo.mockResolvedValue({

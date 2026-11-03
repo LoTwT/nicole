@@ -66,7 +66,7 @@ Slash 命令的作用只是插入 Markdown 文本，所以和编辑模式无关�
 
 - 注册表在 `src/commands/registry.ts`，命令定义和格式、插入、应用与文件树命令都在 `src/commands/`；键位显示函数也在这里，slash 菜单、`KeyHint`、悬停提示和右键菜单共用同一份转换结果。
 - 编辑器命令由 `createEditor` 统一注册为 CodeMirror keymap，并使用 `Prec.highest` 覆盖 `basicSetup` 的同名键位（例如 ⌘I）。应用命令由 `App.vue` 的窗口 `keydown` 分发，文件树命令只在文件树有焦点时由 `FileTree.vue` 分发；两者都使用 `src/commands/keybinding.ts` 的匹配器，不在组件里另写键位。
-- 匹配器把注册表的 CodeMirror 键名按平台解析为修饰键和基础键，再用 `w3c-keyname` 和物理键码（`event.code`、`keyCode` 回退）匹配事件。因此 ⇧⌘[ / ⇧⌘] 在 US 布局报告 `{`/`}` 时仍匹配，非 US 布局按物理键位也能触发；Windows 和 Linux 的 Ctrl+Alt 不会被当成 Ctrl 快捷键。
+- 匹配器先按字符精确匹配全部命令；只有字符没有命中、事件带命令修饰键时，才进入物理键回退。回退使用 `event.code` 和 `keyCode` 表，支持 ⇧⌘[ / ⇧⌘] 在 US 布局报告 `{`/`}`、非 US 布局和 AZERTY 数字行；但事件已产生单个 ASCII 字符时不会按物理位置推出字母，避免 AZERTY ⌘Z、Dvorak ⌘, / ⌘B 误触其他命令。非 ASCII 输入（例如西里尔字母）仍可按物理位置匹配。Windows 和 Linux 的 Ctrl+Alt 不会被当成 Ctrl 快捷键。
 - `available: false` 的占位命令（设置、快速打开、全文搜索、大纲）保留键位以便界面显示，但匹配器跳过它们；slash 菜单也只列出可用命令。
 - slash 菜单的触发、查询、最近使用和按键归属在 `src/editor/slash.ts`，渲染和定位在 `src/components/SlashMenu.vue`。菜单宽 260px、最多 8 项，锚定光标下方并在空间不足时翻到上方，窗口内保留 8px。
 - 执行命令时删除触发字符和查询后运行命令，删除查询和执行命令合并为一个撤销步；Esc、光标离开、出现空白和没有匹配项都只关闭菜单，不删除正文。组合输入期间 Enter、↑、↓、Esc 交给输入法，空白或无匹配也要等组合结束后再关闭。代码块、frontmatter 和 HTML 块内不触发。

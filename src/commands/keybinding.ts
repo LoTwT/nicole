@@ -124,22 +124,89 @@ function keyFromCode(code: string): string | null {
   return CODE_KEYS[code] ?? null;
 }
 
-function eventKeyNames(event: KeyboardEvent): Set<string> {
-  const names = new Set<string>();
+/** The key as produced by the layout, after `keyName` normalization. */
+function characterKey(event: KeyboardEvent): string {
+  return canonicalKeyName(keyName(event));
+}
+
+/**
+ * Physical-key fallbacks for layouts where `key` is not the US label of the
+ * pressed key. CodeMirror only takes this path after the character lookup
+ * fails, for events with a command modifier, and when the physical key differs
+ * from the character. We also avoid deriving letters from a physical key when
+ * the event already produced a printable ASCII character: on Dvorak, ⌘, and
+ * ⌘B would otherwise map to the QWERTY labels of those physical keys (w/n).
+ * Non-ASCII input such as Cyrillic can still fall back to the letter position.
+ */
+function physicalKeys(event: KeyboardEvent): Set<string> {
+  const keys = new Set<string>();
+  const character = characterKey(event);
+  // A single printable ASCII character means the layout already told us what
+  // this key produces. Punctuation and digits may still use physical fallback
+  // for shifted values; letters may not.
+  const allowLetters = !(
+    character.length === 1 && character.charCodeAt(0) < 0x80
+  );
   const add = (name: string | null | undefined) => {
-    if (name) names.add(canonicalKeyName(name));
+    if (!name) return;
+    const key = canonicalKeyName(name);
+    if (!allowLetters && /^[a-z]$/.test(key)) return;
+    if (key !== character) keys.add(key);
   };
 
-  add(keyName(event));
   add(keyFromCode(event.code));
-  // keyCode is a physical-key fallback for layouts where `key` differs from
-  // the US layout. CodeMirror uses the same tables for its own keymaps.
+  // keyCode is the same physical-key fallback CodeMirror uses.
   const fromKeyCode = event.keyCode;
   if (fromKeyCode) {
     add(base[fromKeyCode]);
     if (event.shiftKey) add(shift[fromKeyCode]);
   }
-  return names;
+  return keys;
+}
+
+function allowsPhysicalFallback(
+  event: KeyboardEvent,
+  platform: AppPlatform,
+): boolean {
+  if (!(event.altKey || event.ctrlKey || event.metaKey)) return false;
+  // Ctrl+Alt is AltGr on some Windows/Linux layouts.
+  if (platform !== "macos" && event.ctrlKey && event.altKey) return false;
+  // Option-only combinations type characters on macOS.
+  if (platform === "macos" && event.altKey && !event.ctrlKey && !event.metaKey) {
+    return false;
+  }
+  return true;
+}
+
+function modifiersMatch(
+  event: KeyboardEvent,
+  parsed: ParsedKeyBinding,
+): boolean {
+  return (
+    event.metaKey === parsed.meta &&
+    event.ctrlKey === parsed.ctrl &&
+    event.altKey === parsed.alt &&
+    event.shiftKey === parsed.shift
+  );
+}
+
+/** Matches the character part of a binding without any physical fallback. */
+function matchesCharacter(
+  event: KeyboardEvent,
+  parsed: ParsedKeyBinding,
+): boolean {
+  return modifiersMatch(event, parsed) && characterKey(event) === parsed.key;
+}
+
+/** Matches one binding through the physical fallback for this platform. */
+function matchesPhysicalKey(
+  event: KeyboardEvent,
+  parsed: ParsedKeyBinding,
+  platform: AppPlatform,
+): boolean {
+  if (!modifiersMatch(event, parsed)) return false;
+  if (!allowsPhysicalFallback(event, platform)) return false;
+  return physicalKeys(event).has(parsed.key);
 }
 
 /** Whether one CodeMirror-style binding matches this keyboard event. */
@@ -150,21 +217,17 @@ export function matchesKeyBinding(
 ): boolean {
   const parsed = parseKeyBinding(binding, platform);
   if (!parsed) return false;
-  if (
-    event.metaKey !== parsed.meta ||
-    event.ctrlKey !== parsed.ctrl ||
-    event.altKey !== parsed.alt ||
-    event.shiftKey !== parsed.shift
-  ) {
-    return false;
-  }
-  return eventKeyNames(event).has(parsed.key);
+  return (
+    matchesCharacter(event, parsed) || matchesPhysicalKey(event, parsed, platform)
+  );
 }
 
 /**
- * Finds the available command in `scope` bound to this event. Placeholders
- * (`available: false`) never run, but their bindings stay in the registry for
- * display and for the feature that will implement them.
+ * Finds the available command in `scope` bound to this event. The search is
+ * two-pass so a character match always wins over a physical-key fallback,
+ * regardless of registry order. Placeholders (`available: false`) never run,
+ * but their bindings stay in the registry for display and for the feature that
+ * will implement them.
  */
 export function matchCommand(
   event: KeyboardEvent,
@@ -172,11 +235,24 @@ export function matchCommand(
   commands: readonly CommandDefinition[],
   scope: CommandScope,
 ): CommandDefinition | null {
+  // The IME owns every key while composing. Components also guard this, but
+  // keeping the check here makes every registry consumer safe by default.
+  if (event.isComposing || event.keyCode === 229) return null;
+
+  const candidates: { command: CommandDefinition; parsed: ParsedKeyBinding }[] =
+    [];
   for (const command of commands) {
     if (command.scope !== scope || !isCommandAvailable(command)) continue;
     for (const binding of command.keys ?? []) {
-      if (matchesKeyBinding(event, binding, platform)) return command;
+      const parsed = parseKeyBinding(binding, platform);
+      if (parsed) candidates.push({ command, parsed });
     }
+  }
+  for (const { command, parsed } of candidates) {
+    if (matchesCharacter(event, parsed)) return command;
+  }
+  for (const { command, parsed } of candidates) {
+    if (matchesPhysicalKey(event, parsed, platform)) return command;
   }
   return null;
 }

@@ -464,4 +464,93 @@ describe("FileTree", () => {
       expect.objectContaining({ path: "notes" }),
     );
   });
+
+  it("keeps Delete and arrow keys inside the Windows rename input", async () => {
+    mountTree([], "windows");
+    await settle();
+    row("a.md").focus();
+    row("a.md").dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "F2",
+        code: "F2",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    const input = host.querySelector<HTMLInputElement>(
+      'input[aria-label="重命名"]',
+    )!;
+    expect(document.activeElement).toBe(input);
+
+    const remove = new KeyboardEvent("keydown", {
+      key: "Delete",
+      code: "Delete",
+      bubbles: true,
+      cancelable: true,
+    });
+    input.dispatchEvent(remove);
+    await settle();
+    expect(events.trash).not.toHaveBeenCalled();
+    expect(remove.defaultPrevented).toBe(false);
+
+    const down = new KeyboardEvent("keydown", {
+      key: "ArrowDown",
+      code: "ArrowDown",
+      bubbles: true,
+      cancelable: true,
+    });
+    input.dispatchEvent(down);
+    await settle();
+    expect(document.activeElement).toBe(input);
+    expect(down.defaultPrevented).toBe(false);
+  });
+
+  it("keeps Cmd+Backspace inside the macOS rename input", async () => {
+    mountTree();
+    await settle();
+    row("a.md").focus();
+    row("a.md").dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Enter",
+        code: "Enter",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    const input = host.querySelector<HTMLInputElement>(
+      'input[aria-label="重命名"]',
+    )!;
+    expect(document.activeElement).toBe(input);
+
+    const remove = new KeyboardEvent("keydown", {
+      key: "Backspace",
+      code: "Backspace",
+      metaKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    input.dispatchEvent(remove);
+    await settle();
+    expect(events.trash).not.toHaveBeenCalled();
+    expect(remove.defaultPrevented).toBe(false);
+  });
+
+  it("ignores tree navigation during input-method composition", async () => {
+    mountTree();
+    await settle();
+    row("notes").focus();
+    const event = new KeyboardEvent("keydown", {
+      key: "ArrowDown",
+      code: "ArrowDown",
+      isComposing: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    row("notes").dispatchEvent(event);
+    await settle();
+    expect(document.activeElement?.textContent).toContain("notes");
+    expect(event.defaultPrevented).toBe(false);
+  });
 });

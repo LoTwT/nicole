@@ -146,6 +146,19 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * The inline name editor handles Enter/Escape itself; every other key must
+ * stay inside the input instead of reaching tree navigation or commands.
+ */
+function isTextEntryTarget(target: EventTarget | null): boolean {
+  return (
+    target instanceof HTMLElement &&
+    (target.tagName === "INPUT" ||
+      target.tagName === "TEXTAREA" ||
+      target.isContentEditable)
+  );
+}
+
 function persistExpanded() {
   emit("expanded-change", collectExpanded(nodes.value));
 }
@@ -477,6 +490,9 @@ async function refreshFromEvents(events: readonly WorkspaceFileEvent[]) {
 
 async function handleTreeKeydown(event: KeyboardEvent) {
   if (event.isComposing || event.keyCode === 229) {
+    return;
+  }
+  if (isTextEntryTarget(event.target)) {
     return;
   }
   const node = focusedNode();
