@@ -47,6 +47,7 @@ type SingleFileService struct {
 	mu      sync.Mutex
 	grants  map[string]singleFileGrant
 	offered map[string]bool
+	hashes  *diskHashes
 }
 
 // NewSingleFileService returns a service with no grants.
@@ -55,6 +56,12 @@ func NewSingleFileService() *SingleFileService {
 		grants:  map[string]singleFileGrant{},
 		offered: map[string]bool{},
 	}
+}
+
+// useDiskHashes lets the service remember what it last read or wrote so a
+// recovery copy can record the disk version without another read.
+func (s *SingleFileService) useDiskHashes(hashes *diskHashes) {
+	s.hashes = hashes
 }
 
 // ChooseSingleFile shows a Markdown file picker and grants the choice. The
@@ -128,6 +135,7 @@ func (s *SingleFileService) ReadSingleFile(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	s.hashes.record(granted, data)
 	return string(data), nil
 }
 
@@ -153,7 +161,11 @@ func (s *SingleFileService) WriteSingleFile(path, content string) error {
 	}
 	// A granted file deleted outside Nicole keeps its authorization: saving
 	// again recreates it at the same path, as an open workspace file does.
-	return writeFileAtomicAbs(granted, []byte(content))
+	if err := writeFileAtomicAbs(granted, []byte(content)); err != nil {
+		return err
+	}
+	s.hashes.record(granted, []byte(content))
+	return nil
 }
 
 // RevealSingleFile shows a granted file in the desktop's file manager. It
@@ -255,6 +267,28 @@ func (s *SingleFileService) grant(path string) (SingleFile, error) {
 	s.grants[file.Path] = singleFileGrant{path: file.Path}
 	s.mu.Unlock()
 	return file, nil
+}
+
+// grantedPaths reports the canonical paths of all active grants. The workspace
+// uses it to preserve their disk hashes when another root is opened.
+func (s *SingleFileService) grantedPaths() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	paths := make([]string, 0, len(s.grants))
+	for path := range s.grants {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	return paths
+}
+
+// grantRecovered grants a canonical path that Recovery already checked. It is
+// deliberately not exported beyond the package and never accepts a path the
+// page supplied without a recovery entry behind it.
+func (s *SingleFileService) grantRecovered(path string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.grants[path] = singleFileGrant{path: path}
 }
 
 // grantedPath returns the canonical path of an existing grant. A path that

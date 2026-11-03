@@ -29,6 +29,8 @@ function model(overrides: Partial<TabModel> = {}): TabModel {
     externalState: "none",
     revision: 0,
     generation: 1,
+    restored: false,
+    recoveryId: null,
     snapshot: null,
     ...overrides,
   };

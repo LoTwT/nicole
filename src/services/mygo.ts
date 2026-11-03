@@ -110,6 +110,57 @@ export interface NativeMenuRequest {
 }
 
 /**
+ * RecoveryCopy is what the page asks Go to write for one dirty document. The
+ * page owns the text; Go fills savedAt and diskHash so the record reflects what
+ * Nicole last knew about the file.
+ */
+export interface RecoveryCopy {
+  kind: string;
+  root: string;
+  path: string;
+  lineEnding: string;
+  text: string;
+  /**
+   * BaselineUnconfirmed means the page has not accepted the disk version as
+   * the tab's baseline (for example, an external modification is pending).
+   * Such a copy must not record or inherit a disk hash, so a later restart
+   * cannot mistake an unconfirmed disk version for the copy's baseline.
+   */
+  baselineUnconfirmed?: boolean;
+}
+
+/**
+ * RecoveryItem is one copy listed for the page. DiskState is decided by Go
+ * from the diskHash recorded when the copy was written; the page never
+ * compares files itself. DiskText is the current disk content, empty when the
+ * file is missing or cannot be read.
+ */
+export interface RecoveryItem {
+  id: string;
+  kind: string;
+  root: string;
+  path: string;
+  name: string;
+  savedAt: string;
+  lineEnding: string;
+  text: string;
+  diskText: string;
+  diskState: string;
+  restorable: boolean;
+  reason?: string;
+}
+
+/**
+ * RecoveryListing is the current workspace's copies plus the number of other
+ * workspace roots that also have copies. Their contents are not returned so a
+ * folder the user has not opened yet stays untouched.
+ */
+export interface RecoveryListing {
+  items: RecoveryItem[];
+  otherFolders: number;
+}
+
+/**
  * SavedImage is an image added to the workspace. Path is relative to the
  * workspace root; Markdown is the image syntax relative to the document that
  * asked for it.
@@ -495,6 +546,56 @@ export const SingleFileService = {
    */
   writeSingleFile(path: string, content: string): Promise<void> {
     return call("SingleFileService.WriteSingleFile", path, content);
+  },
+} as const;
+
+/**
+ * Recovery writes, lists and removes unsaved-content copies. Workspace copies
+ * are only accepted for the open root and generation; single-file copies only
+ * for a path the user has authorized. Restoring a single-file copy grants that
+ * exact path again, which is the only exception to grants living in memory.
+ */
+export const Recovery = {
+  /**
+   * Delete removes one copy by id. Workspace copies may only be deleted while
+   * their root is open and generation matches, so a late page cannot remove
+   * another folder's copy; single-file copies are not tied to a workspace.
+   */
+  delete(id: string, generation: number): Promise<void> {
+    return call("Recovery.Delete", id, generation);
+  },
+  /**
+   * Discard removes exactly the listed copies after the user chooses to throw
+   * the recovered content away. Entries that vanish between listing and this call
+   * are ignored.
+   */
+  discard(ids: string[], generation: number): Promise<void> {
+    return call("Recovery.Discard", ids, generation);
+  },
+  /**
+   * List returns the copies of the open workspace and of single files, with
+   * each document's current disk state. Copies belonging to other workspace
+   * roots are only counted, never read into the page.
+   */
+  list(generation: number): Promise<RecoveryListing> {
+    return call("Recovery.List", generation);
+  },
+  /**
+   * RestoreSingleFile checks a single-file copy again and grants its canonical
+   * path to the page. This is the only way a grant survives a restart. A copy can
+   * only be restored once per process; rejecting an unknown id means the page
+   * cannot authorize a path of its own choosing.
+   */
+  restoreSingleFile(id: string): Promise<SingleFile> {
+    return call("Recovery.RestoreSingleFile", id);
+  },
+  /**
+   * Save writes or replaces the copy of one dirty document and returns its id.
+   * The page cannot name a workspace outside the open root or a single file the
+   * user did not authorize.
+   */
+  save(copy: RecoveryCopy, generation: number): Promise<string> {
+    return call("Recovery.Save", copy, generation);
   },
 } as const;
 
