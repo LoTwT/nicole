@@ -269,6 +269,19 @@ func (s *SingleFileService) grant(path string) (SingleFile, error) {
 	return file, nil
 }
 
+// grantedPaths reports the canonical paths of all active grants. The workspace
+// uses it to preserve their disk hashes when another root is opened.
+func (s *SingleFileService) grantedPaths() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	paths := make([]string, 0, len(s.grants))
+	for path := range s.grants {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	return paths
+}
+
 // grantRecovered grants a canonical path that Recovery already checked. It is
 // deliberately not exported beyond the package and never accepts a path the
 // page supplied without a recovery entry behind it.

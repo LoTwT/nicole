@@ -72,6 +72,7 @@ func main() {
 	workspace.useDiskHashes(diskHashes)
 	singleFiles := NewSingleFileService()
 	singleFiles.useDiskHashes(diskHashes)
+	workspace.useOpenSingleFiles(singleFiles.grantedPaths)
 	workspace.useOfferedFiles(singleFiles.offeredPaths, singleFiles.takeOfferedFolder)
 	recoveryStore, err := startupRecoveryStore()
 	if err != nil {

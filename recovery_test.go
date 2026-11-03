@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func newTestRecovery(t *testing.T, root string) (*Workspace, *SingleFileService, *Recovery) {
@@ -432,10 +433,10 @@ func TestRecoveryLimits(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(store.dir, "other.json"), make([]byte, 200), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.save(targetID, "short", make([]byte, 20)); err != nil {
+	if err := store.save(targetID, make([]byte, 20)); err != nil {
 		t.Errorf("replacing a copy should exclude the old file: %v", err)
 	}
-	if err := store.save("8899aabbccddeeff", "other", make([]byte, 20)); !errors.Is(err, errRecoveryFolderFull) {
+	if err := store.save("8899aabbccddeeff", make([]byte, 20)); !errors.Is(err, errRecoveryFolderFull) {
 		t.Errorf("Save over the folder limit = %v, want errRecoveryFolderFull", err)
 	}
 }
@@ -499,5 +500,214 @@ func TestRecoveryRepeatedCopyKeepsDiskHash(t *testing.T) {
 	}
 	if got := listing.Items[0].DiskState; got != recoveryStateSame {
 		t.Errorf("DiskState after repeated copy = %q, want same", got)
+	}
+}
+
+func TestRecoveryUnconfirmedBaselineDoesNotBecomeSame(t *testing.T) {
+	root := t.TempDir()
+	workspace, _, recovery := newTestRecovery(t, root)
+	root = workspace.openRoot()
+	mustWriteFile(t, filepath.Join(root, "a.md"), []byte("disk version\n"))
+	if _, err := workspace.ReadFile("a.md"); err != nil {
+		t.Fatal(err)
+	}
+	generation := workspace.openGeneration()
+	saveTestCopy(t, recovery, RecoveryCopy{
+		Kind: recoveryKindWorkspace, Root: root, Path: "a.md",
+		LineEnding: "\n", Text: "confirmed copy\n",
+	}, generation)
+
+	id, err := recovery.Save(RecoveryCopy{
+		Kind: recoveryKindWorkspace, Root: root, Path: "a.md",
+		LineEnding: "\n", Text: "unconfirmed copy\n",
+		BaselineUnconfirmed: true,
+	}, generation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, err := recovery.store.get(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.DiskHash != "" {
+		t.Errorf("unconfirmed copy recorded disk hash %q, want empty", entry.DiskHash)
+	}
+	listing, err := recovery.List(generation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := listing.Items[0].DiskState; got != recoveryStateChanged {
+		t.Errorf("unconfirmed copy state = %q, want changed", got)
+	}
+}
+
+func TestRecoveryEncodesHTMLLiterallyAndUsesJSONByteLimit(t *testing.T) {
+	dir := t.TempDir()
+	entry := storedRecovery{
+		Version:    1,
+		Kind:       recoveryKindWorkspace,
+		Root:       t.TempDir(),
+		Path:       "a.md",
+		SavedAt:    time.Now().UTC().Format(time.RFC3339Nano),
+		LineEnding: "\n",
+		Text:       strings.Repeat("<div>&</div>", 20),
+	}
+	data, err := encodeRecoveryEntry(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), `\u003c`) || strings.Contains(string(data), `\u0026`) {
+		t.Errorf("encoded copy escaped HTML characters: %s", data[:80])
+	}
+	if !strings.Contains(string(data), "<div>&</div>") {
+		t.Errorf("encoded copy does not contain literal HTML")
+	}
+
+	id := recoveryID(entry.Kind, entry.Root, entry.Path)
+	atLimit := newRecoveryStoreIn(dir)
+	atLimit.maxFile = len(data)
+	if err := atLimit.save(id, data); err != nil {
+		t.Errorf("save at JSON byte limit: %v", err)
+	}
+	if _, err := atLimit.get(id); err != nil {
+		t.Errorf("read at JSON byte limit: %v", err)
+	}
+
+	tooSmall := newRecoveryStoreIn(t.TempDir())
+	tooSmall.maxFile = len(data) - 1
+	if err := tooSmall.save(id, data); !errors.Is(err, errRecoveryTooLarge) {
+		t.Errorf("save over JSON byte limit = %v, want errRecoveryTooLarge", err)
+	}
+}
+
+func TestRecoveryRejectsMismatchedFilename(t *testing.T) {
+	dir := t.TempDir()
+	store := newRecoveryStoreIn(dir)
+	entry := storedRecovery{
+		Version:    1,
+		Kind:       recoveryKindWorkspace,
+		Root:       t.TempDir(),
+		Path:       "a.md",
+		SavedAt:    time.Now().UTC().Format(time.RFC3339Nano),
+		LineEnding: "\n",
+		Text:       "text",
+	}
+	data, err := encodeRecoveryEntry(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongPath := filepath.Join(dir, "0000000000000000.json")
+	if err := os.WriteFile(wrongPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	copies, err := store.list()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(copies) != 0 {
+		t.Errorf("list returned copies with a mismatched filename: %+v", copies)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, item := range entries {
+		if strings.Contains(item.Name(), ".corrupt-") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("mismatched file was not renamed as corrupt")
+	}
+}
+
+func TestRecoveryCorruptBackupsDoNotConsumeQuota(t *testing.T) {
+	dir := t.TempDir()
+	store := newRecoveryStoreIn(dir)
+	store.maxFile = 100
+	store.maxTotal = 150
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "old.json.corrupt-20260101T000000.000000000Z"), make([]byte, 1000), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.save("0011223344556677", make([]byte, 100)); err != nil {
+		t.Errorf("corrupt backup consumed quota: %v", err)
+	}
+}
+
+func TestRecoverySingleMissingFileWithSymlinkedParentIsUnrestorable(t *testing.T) {
+	_, singleFiles, recovery := newTestRecovery(t, "")
+	base := t.TempDir()
+	realDir := filepath.Join(base, "real")
+	mustWriteFile(t, filepath.Join(realDir, "note.md"), []byte("text\n"))
+	file, err := singleFiles.grant(filepath.Join(realDir, "note.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := saveTestCopy(t, recovery, RecoveryCopy{
+		Kind: recoveryKindSingle, Path: file.Path, LineEnding: "\n", Text: "changed\n",
+	}, 0)
+	if err := os.Remove(file.Path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(realDir); err != nil {
+		t.Fatal(err)
+	}
+	elsewhere := filepath.Join(base, "elsewhere")
+	if err := os.Mkdir(elsewhere, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, realDir); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	listing, err := recovery.List(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listing.Items) != 1 || listing.Items[0].Restorable {
+		t.Errorf("List() = %+v, want an unrestorable item", listing.Items)
+	}
+	if _, err := recovery.RestoreSingleFile(id); !errors.Is(err, errRecoveryUnrestorable) {
+		t.Errorf("RestoreSingleFile with symlinked parent = %v, want errRecoveryUnrestorable", err)
+	}
+}
+
+func TestRecoveryKeepsOpenSingleFileHashesAcrossRootSwitch(t *testing.T) {
+	hashes := newDiskHashes()
+	first := t.TempDir()
+	second := t.TempDir()
+	workspace := NewWorkspace()
+	workspace.useDiskHashes(hashes)
+	singleFiles := NewSingleFileService()
+	singleFiles.useDiskHashes(hashes)
+	workspace.useOpenSingleFiles(singleFiles.grantedPaths)
+	if _, err := workspace.open(first); err != nil {
+		t.Fatal(err)
+	}
+	first = workspace.openRoot()
+	mustWriteFile(t, filepath.Join(first, "workspace.md"), []byte("workspace\n"))
+	if _, err := workspace.ReadFile("workspace.md"); err != nil {
+		t.Fatal(err)
+	}
+	singlePath := filepath.Join(first, "single.md")
+	mustWriteFile(t, singlePath, []byte("single\n"))
+	file, err := singleFiles.grant(singlePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := singleFiles.ReadSingleFile(file.Path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := workspace.open(second); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := hashes.lookup(filepath.Join(first, "workspace.md")); ok {
+		t.Error("workspace hash from the old root was kept")
+	}
+	if _, ok := hashes.lookup(file.Path); !ok {
+		t.Error("open single-file hash was cleared with the old root")
 	}
 }

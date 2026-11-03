@@ -2586,6 +2586,13 @@ describe("crash recovery", () => {
     await vi.advanceTimersByTimeAsync(5000);
     expect(mocks.writeFile).not.toHaveBeenCalled();
 
+    replaceEditorText("# A\nmore\nedited\n");
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(mocks.saveRecovery).toHaveBeenCalledWith(
+      expect.objectContaining({ baselineUnconfirmed: true }),
+      1,
+    );
+
     mocks.readFile.mockResolvedValue("# Disk\n");
     button("载入磁盘版本").click();
     await settle();
@@ -2795,5 +2802,212 @@ describe("crash recovery", () => {
     await settle();
     expect(mocks.saveRecovery).not.toHaveBeenCalled();
     expect(mocks.finishClose).toHaveBeenCalledWith(9, false);
+  });
+
+  it("rechecks disk state when restoring after the dialog opened", async () => {
+    await mountWithRecovery([recoveryItem()]);
+    mocks.listRecovery.mockResolvedValue({
+      items: [recoveryItem({ diskState: "changed", diskText: "# New\n" })],
+      otherFolders: 0,
+    });
+    vi.useFakeTimers();
+    dialogButton("全部恢复").click();
+    await settle();
+    expect(host.textContent).toContain("此文件已在 Nicole 之外被修改");
+    expect(editorView().state.doc.toString()).toBe("# A\nmore\n");
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+  });
+
+  it("does not replace a newer baseline while the dialog is open", async () => {
+    mocks.getWorkspaceTabs.mockResolvedValue({
+      tabs: [{ kind: "markdown", path: "a.md" }],
+      active: "a.md",
+    });
+    openFileText = "# Disk\n";
+    await mountWithRecovery([
+      recoveryItem({ diskText: "# Disk\n", text: "# Disk\nrecovered\n" }),
+    ]);
+    openFileText = "# Pulled\n";
+    watchEvents?.([{ op: "write", path: "a.md", isDir: false }]);
+    await settle();
+    expect(editorView().state.doc.toString()).toBe("# Pulled\n");
+
+    vi.useFakeTimers();
+    dialogButton("全部恢复").click();
+    await settle();
+    expect(host.textContent).toContain("此文件已在 Nicole 之外被修改");
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+  });
+
+  it("rechecks before keeping restored content", async () => {
+    await mountWithRecovery([recoveryItem()]);
+    dialogButton("逐个查看").click();
+    await settle();
+    mocks.listRecovery.mockResolvedValue({
+      items: [recoveryItem({ diskState: "changed", diskText: "# New\n" })],
+      otherFolders: 0,
+    });
+
+    button("保留恢复内容").click();
+    await settle();
+    expect(host.textContent).toContain("此文件已在 Nicole 之外被修改");
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+  });
+
+  it("moves a dirty tab's copy when its path changes", async () => {
+    vi.useFakeTimers();
+    await openFile();
+    mocks.writeFile.mockImplementation(() => new Promise<void>(() => {}));
+    replaceEditorText("# A\nchanged\n");
+    await vi.advanceTimersByTimeAsync(2000);
+    await settle();
+    expect(mocks.saveRecovery).toHaveBeenCalled();
+
+    mocks.deleteRecovery.mockClear();
+    mocks.saveRecovery.mockClear();
+    watchEvents?.([{ op: "rename", oldPath: "a.md", path: "b.md", isDir: false }]);
+    await settle();
+    expect(mocks.deleteRecovery).toHaveBeenCalledWith(
+      "0123456789abcdef",
+      1,
+    );
+    expect(mocks.saveRecovery).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: "b.md",
+        text: "# A\nchanged\n",
+      }),
+      1,
+    );
+    expect(host.querySelector('[role="tab"]')?.textContent).toContain("b.md");
+  });
+
+  it("keeps autosaving other tabs while the recovery dialog is open", async () => {
+    vi.useFakeTimers();
+    await mountAppWithApi();
+    await exposedApp!.value.openSingleFile("/tmp/single.md", "single.md");
+    await settle();
+    replaceEditorText("# Single changed\n");
+    await settle();
+
+    mocks.listRecovery.mockResolvedValue({
+      items: [recoveryItem()],
+      otherFolders: 0,
+    });
+    mocks.openFolder.mockResolvedValue(folder("/notes", 1));
+    button("打开文件夹").click();
+    await settle();
+    expect(dialog()).not.toBeNull();
+
+    await vi.advanceTimersByTimeAsync(1000);
+    await settle();
+    expect(mocks.writeSingleFile).toHaveBeenCalledWith(
+      "/tmp/single.md",
+      "# Single changed\n",
+    );
+  });
+
+  it("does not save a listed file while the dialog is open", async () => {
+    vi.useFakeTimers();
+    await mountAppWithApi();
+    await exposedApp!.value.openSingleFile("/tmp/single.md", "single.md");
+    await settle();
+    replaceEditorText("# Single changed\n");
+    await settle();
+
+    mocks.listRecovery.mockResolvedValue({
+      items: [
+        recoveryItem({
+          kind: "single",
+          root: "",
+          path: "/tmp/single.md",
+          name: "single.md",
+          text: "# Copy\n",
+          diskText: "# Single\n",
+        }),
+      ],
+      otherFolders: 0,
+    });
+    mocks.openFolder.mockResolvedValue(folder("/notes", 1));
+    button("打开文件夹").click();
+    await settle();
+    expect(dialog()).not.toBeNull();
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(mocks.writeSingleFile).not.toHaveBeenCalled();
+    window.dispatchEvent(new Event("pagehide"));
+    await settle();
+    expect(mocks.writeSingleFile).not.toHaveBeenCalled();
+  });
+
+  it("waits for recovery writes before completing the close", async () => {
+    vi.useFakeTimers();
+    await openFile();
+    replaceEditorText("# Changed\n");
+    const copy = deferred<string>();
+    mocks.saveRecovery.mockReturnValue(copy.promise);
+
+    const closing = closeHandler?.(12);
+    await settle();
+    expect(mocks.finishClose).not.toHaveBeenCalled();
+
+    copy.resolve("0123456789abcdef");
+    await closing;
+    await settle();
+    expect(mocks.finishClose).toHaveBeenCalledWith(12, true);
+  });
+
+  it("bounds the wait for a stuck recovery write", async () => {
+    vi.useFakeTimers();
+    await openFile();
+    replaceEditorText("# Changed\n");
+    mocks.saveRecovery.mockImplementation(() => new Promise<string>(() => {}));
+
+    const closing = closeHandler?.(13);
+    await settle();
+    expect(mocks.finishClose).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1000);
+    await closing;
+    expect(mocks.finishClose).toHaveBeenCalledWith(13, true);
+  });
+
+  it("waits for the recovery decision before handling an opened file", async () => {
+    await mountWithRecovery([recoveryItem()]);
+    mocks.takePendingOpenedFiles.mockClear();
+    pendingFiles = ["/notes/b.md"];
+    openHandler?.();
+    await settle();
+    expect(mocks.takePendingOpenedFiles).not.toHaveBeenCalled();
+
+    dialogButton("逐个查看").click();
+    await settle();
+    expect(mocks.takePendingOpenedFiles).toHaveBeenCalled();
+  });
+
+  it("does not delete a copy when new input follows a successful save", async () => {
+    vi.useFakeTimers();
+    await openFile();
+    const first = deferred<void>();
+    const second = deferred<void>();
+    mocks.writeFile
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValue(second.promise);
+    replaceEditorText("# First\n");
+    await vi.advanceTimersByTimeAsync(2000);
+    await settle();
+    expect(mocks.saveRecovery).toHaveBeenCalled();
+
+    replaceEditorText("# Second\n");
+    first.resolve();
+    await settle();
+    expect(mocks.deleteRecovery).not.toHaveBeenCalled();
+
+    second.resolve();
+    await settle();
+    expect(mocks.deleteRecovery).toHaveBeenCalledWith(
+      "0123456789abcdef",
+      1,
+    );
   });
 });

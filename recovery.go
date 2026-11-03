@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -26,9 +27,7 @@ const (
 	// old copy against the folder limit.
 	maxRecoveryFileBytes  = 8 << 20
 	maxRecoveryTotalBytes = 64 << 20
-	// JSON escaping can double the size of a text full of quotes or
-	// backslashes; anything much larger than that is not a copy this app wrote.
-	recoveryFileOverhead = maxRecoveryFileBytes
+	maxCorruptBackups     = 20
 
 	recoveryKindWorkspace = "workspace"
 	recoveryKindSingle    = "single"
@@ -86,16 +85,21 @@ func (h *diskHashes) lookup(absolute string) (string, bool) {
 	return value, ok
 }
 
-// clearUnder forgets every recorded path below root. Switching workspaces
-// drops the old root's hashes so a new folder cannot reuse them.
-func (h *diskHashes) clearUnder(root string) {
+// clearUnder forgets every recorded path below root except the paths still
+// open as single-file tabs. Switching workspaces drops the old root's hashes
+// so a new folder cannot reuse them.
+func (h *diskHashes) clearUnder(root string, keep []string) {
 	if h == nil || root == "" {
 		return
+	}
+	protected := make(map[string]bool, len(keep))
+	for _, path := range keep {
+		protected[filepath.Clean(path)] = true
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for candidate := range h.hashes {
-		if withinRoot(root, candidate) {
+		if withinRoot(root, candidate) && !protected[candidate] {
 			delete(h.hashes, candidate)
 		}
 	}
@@ -110,6 +114,11 @@ type RecoveryCopy struct {
 	Path       string `json:"path"`
 	LineEnding string `json:"lineEnding"`
 	Text       string `json:"text"`
+	// BaselineUnconfirmed means the page has not accepted the disk version as
+	// the tab's baseline (for example, an external modification is pending).
+	// Such a copy must not record or inherit a disk hash, so a later restart
+	// cannot mistake an unconfirmed disk version for the copy's baseline.
+	BaselineUnconfirmed bool `json:"baselineUnconfirmed,omitempty"`
 }
 
 // RecoveryItem is one copy listed for the page. DiskState is decided by Go
@@ -210,7 +219,9 @@ func (r *Recovery) Save(copy RecoveryCopy, generation int) (string, error) {
 		return "", err
 	}
 	id := recoveryID(entry.Kind, entry.Root, entry.Path)
-	if entry.DiskHash == "" {
+	if copy.BaselineUnconfirmed {
+		entry.DiskHash = ""
+	} else if entry.DiskHash == "" {
 		// A previous copy already records the last disk version Nicole knew.
 		// Keep that baseline instead of degrading a repeated copy to
 		// "changed" just because nothing was read in this process.
@@ -218,14 +229,28 @@ func (r *Recovery) Save(copy RecoveryCopy, generation int) (string, error) {
 			entry.DiskHash = previous.DiskHash
 		}
 	}
-	data, err := json.MarshalIndent(entry, "", "  ")
+	data, err := encodeRecoveryEntry(entry)
 	if err != nil {
 		return "", err
 	}
-	if err := r.store.save(id, entry.Text, append(data, '\n')); err != nil {
+	if err := r.store.save(id, data); err != nil {
 		return "", err
 	}
 	return id, nil
+}
+
+// encodeRecoveryEntry writes the copy as indented JSON with HTML escaping
+// disabled. Escaping <, > and & would make ordinary Markdown substantially
+// larger and could push a valid document past the byte limit.
+func encodeRecoveryEntry(entry storedRecovery) ([]byte, error) {
+	var buffer bytes.Buffer
+	encoder := json.NewEncoder(&buffer)
+	encoder.SetEscapeHTML(false)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(entry); err != nil {
+		return nil, err
+	}
+	return buffer.Bytes(), nil
 }
 
 func (r *Recovery) authorizeCopy(copy RecoveryCopy, generation int) (storedRecovery, error) {
@@ -452,32 +477,50 @@ func (r *Recovery) workspaceDiskState(entry storedRecovery, root string) (string
 }
 
 func (r *Recovery) singleDiskState(entry storedRecovery) (string, string, bool, string) {
-	clean := filepath.Clean(entry.Path)
-	if !filepath.IsAbs(clean) || !isMarkdownName(clean) {
+	exists, err := checkRestorableSinglePath(entry.Path)
+	if err != nil {
 		return "", recoveryStateChanged, false, "路径已不可用"
 	}
-	info, err := os.Lstat(clean)
-	if errors.Is(err, fs.ErrNotExist) {
+	if !exists {
 		return "", recoveryStateMissing, true, ""
 	}
-	if err != nil {
-		return "", recoveryStateChanged, false, "无法读取文件"
-	}
-	if info.Mode()&fs.ModeSymlink != 0 {
-		return "", recoveryStateChanged, false, "文件已变为符号链接"
-	}
-	if !info.Mode().IsRegular() {
-		return "", recoveryStateChanged, false, "不是普通文件"
-	}
-	resolved, err := filepath.EvalSymlinks(clean)
-	if err != nil || filepath.Clean(resolved) != clean {
-		return "", recoveryStateChanged, false, "路径已改变"
-	}
-	data, err := os.ReadFile(clean)
+	data, err := os.ReadFile(filepath.Clean(entry.Path))
 	if err != nil {
 		return "", recoveryStateChanged, true, ""
 	}
 	return string(data), recoveryDiskState(entry, string(data), true), true, ""
+}
+
+// checkRestorableSinglePath applies the path checks both List and
+// RestoreSingleFile need. It reports whether the file exists; a missing file
+// may still be recreated at its authorized path, as WriteSingleFile allows.
+func checkRestorableSinglePath(value string) (bool, error) {
+	clean := filepath.Clean(value)
+	if !filepath.IsAbs(clean) || !isMarkdownName(clean) {
+		return false, fmt.Errorf("%w: %q", errRecoveryUnrestorable, value)
+	}
+	info, err := os.Lstat(clean)
+	if errors.Is(err, fs.ErrNotExist) {
+		parent, evalErr := filepath.EvalSymlinks(filepath.Dir(clean))
+		if evalErr == nil && filepath.Clean(filepath.Join(parent, filepath.Base(clean))) != clean {
+			return false, fmt.Errorf("%w: %q changed location", errRecoveryUnrestorable, clean)
+		}
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if info.Mode()&fs.ModeSymlink != 0 {
+		return false, fmt.Errorf("%w: %q is a symbolic link", errRecoveryUnrestorable, clean)
+	}
+	if !info.Mode().IsRegular() {
+		return false, fmt.Errorf("%w: %q is not a regular file", errRecoveryUnrestorable, clean)
+	}
+	resolved, err := filepath.EvalSymlinks(clean)
+	if err != nil || filepath.Clean(resolved) != clean {
+		return false, fmt.Errorf("%w: %q changed location", errRecoveryUnrestorable, clean)
+	}
+	return true, nil
 }
 
 // RestoreSingleFile checks a single-file copy again and grants its canonical
@@ -502,30 +545,8 @@ func (r *Recovery) RestoreSingleFile(id string) (SingleFile, error) {
 		return SingleFile{}, fmt.Errorf("%w: %q", errRecoveryNotSingle, id)
 	}
 	clean := filepath.Clean(entry.Path)
-	if !filepath.IsAbs(clean) || !isMarkdownName(clean) {
-		return SingleFile{}, fmt.Errorf("%w: %q", errRecoveryUnrestorable, entry.Path)
-	}
-	info, err := os.Lstat(clean)
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if _, err := checkRestorableSinglePath(clean); err != nil {
 		return SingleFile{}, err
-	}
-	if err == nil {
-		if info.Mode()&fs.ModeSymlink != 0 {
-			return SingleFile{}, fmt.Errorf("%w: %q is a symbolic link", errRecoveryUnrestorable, clean)
-		}
-		if !info.Mode().IsRegular() {
-			return SingleFile{}, fmt.Errorf("%w: %q is not a regular file", errRecoveryUnrestorable, clean)
-		}
-		resolved, evalErr := filepath.EvalSymlinks(clean)
-		if evalErr != nil || filepath.Clean(resolved) != clean {
-			return SingleFile{}, fmt.Errorf("%w: %q changed location", errRecoveryUnrestorable, clean)
-		}
-	} else if parent, evalErr := filepath.EvalSymlinks(filepath.Dir(clean)); evalErr == nil {
-		// The file may be recreated at the authorized path, but a parent that
-		// has become a symlink elsewhere must not redirect that write.
-		if filepath.Clean(filepath.Join(parent, filepath.Base(clean))) != clean {
-			return SingleFile{}, fmt.Errorf("%w: %q changed location", errRecoveryUnrestorable, clean)
-		}
 	}
 	if r.singleFiles == nil {
 		return SingleFile{}, fmt.Errorf("%w: single-file service unavailable", errRecoveryNotAllowed)
@@ -597,9 +618,9 @@ func (s *recoveryStore) filePath(id string) string {
 	return filepath.Join(s.dir, id+".json")
 }
 
-func (s *recoveryStore) save(id, text string, data []byte) error {
-	if len(text) > s.maxFile {
-		return fmt.Errorf("%w: %d bytes", errRecoveryTooLarge, len(text))
+func (s *recoveryStore) save(id string, data []byte) error {
+	if len(data) > s.maxFile {
+		return fmt.Errorf("%w: %d bytes", errRecoveryTooLarge, len(data))
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -622,6 +643,11 @@ func (s *recoveryStore) save(id, text string, data []byte) error {
 		}
 		full := filepath.Join(s.dir, entry.Name())
 		if filepath.Clean(full) == filepath.Clean(target) {
+			continue
+		}
+		// Corrupt backups are forensic evidence, not active copies; they
+		// must not consume the folder's quota forever.
+		if strings.Contains(entry.Name(), ".corrupt-") {
 			continue
 		}
 		total += int(info.Size())
@@ -647,7 +673,7 @@ func (s *recoveryStore) readLocked(id string) (storedRecovery, error) {
 	if info.IsDir() {
 		return storedRecovery{}, fmt.Errorf("%w: %s is a folder", errInvalidRecoveryEntry, filePath)
 	}
-	if !info.Mode().IsRegular() || info.Size() > int64(s.maxFile+recoveryFileOverhead) {
+	if !info.Mode().IsRegular() || info.Size() > int64(s.maxFile) {
 		if err := s.backupCorruptLocked(filePath); err != nil {
 			return storedRecovery{}, err
 		}
@@ -670,9 +696,9 @@ func (s *recoveryStore) readLocked(id string) (storedRecovery, error) {
 		}
 		return storedRecovery{}, fs.ErrNotExist
 	}
-	if len(entry.Text) > s.maxFile {
+	if recoveryID(entry.Kind, entry.Root, entry.Path) != id {
 		if backupErr := s.backupCorruptLocked(filePath); backupErr != nil {
-			return storedRecovery{}, fmt.Errorf("recovery: copy %s is too large (backup failed: %v)", filePath, backupErr)
+			return storedRecovery{}, fmt.Errorf("recovery: copy %s has a mismatched id (backup failed: %v)", filePath, backupErr)
 		}
 		return storedRecovery{}, fs.ErrNotExist
 	}
@@ -735,7 +761,30 @@ func (s *recoveryStore) backupCorruptLocked(filePath string) error {
 	if err := os.Rename(filePath, backup); err != nil {
 		return fmt.Errorf("rename to %s: %w", backup, err)
 	}
+	s.pruneCorruptLocked()
 	return nil
+}
+
+// pruneCorruptLocked keeps only the newest backups. Their names contain a
+// sortable UTC timestamp, so name order is age order.
+func (s *recoveryStore) pruneCorruptLocked() {
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return
+	}
+	backups := make([]string, 0)
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.Contains(entry.Name(), ".corrupt-") {
+			backups = append(backups, entry.Name())
+		}
+	}
+	if len(backups) <= maxCorruptBackups {
+		return
+	}
+	sort.Strings(backups)
+	for _, name := range backups[:len(backups)-maxCorruptBackups] {
+		_ = os.Remove(filepath.Join(s.dir, name))
+	}
 }
 
 func validateRecoveryEntry(entry storedRecovery) error {

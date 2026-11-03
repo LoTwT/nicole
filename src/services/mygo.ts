@@ -120,6 +120,13 @@ export interface RecoveryCopy {
   path: string;
   lineEnding: string;
   text: string;
+  /**
+   * BaselineUnconfirmed means the page has not accepted the disk version as
+   * the tab's baseline (for example, an external modification is pending).
+   * Such a copy must not record or inherit a disk hash, so a later restart
+   * cannot mistake an unconfirmed disk version for the copy's baseline.
+   */
+  baselineUnconfirmed?: boolean;
 }
 
 /**

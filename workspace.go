@@ -69,6 +69,10 @@ type Workspace struct {
 	state  *workspaceState
 	writes *selfWrites
 	hashes *diskHashes
+	// openSingleFiles reports the single-file tabs that still hold a grant.
+	// Their hashes must survive a workspace switch even when they live below
+	// the old root.
+	openSingleFiles func() []string
 
 	close *closeCoordinator
 
@@ -112,6 +116,12 @@ func (w *Workspace) useOfferedFiles(paths func() []string, takeFolder func(strin
 // from without reading the file again. It is set once during startup.
 func (w *Workspace) useDiskHashes(hashes *diskHashes) {
 	w.hashes = hashes
+}
+
+// useOpenSingleFiles lets a workspace switch keep the recorded hashes of
+// single-file tabs that remain open.
+func (w *Workspace) useOpenSingleFiles(paths func() []string) {
+	w.openSingleFiles = paths
 }
 
 // openRoot reports the open workspace root for Settings.AddRecentFolder.
@@ -384,7 +394,11 @@ func (w *Workspace) open(root string) (WorkspaceFolder, error) {
 	previousRoot, _ := w.state.snapshot()
 	generation := w.state.replace(resolved)
 	if previousRoot != "" && previousRoot != resolved {
-		w.hashes.clearUnder(previousRoot)
+		var keep []string
+		if w.openSingleFiles != nil {
+			keep = w.openSingleFiles()
+		}
+		w.hashes.clearUnder(previousRoot, keep)
 	}
 	if w.settings != nil {
 		// Failing to remember a folder must not prevent the user from
