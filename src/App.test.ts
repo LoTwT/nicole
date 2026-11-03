@@ -2808,14 +2808,17 @@ describe("crash recovery", () => {
     const close = press({ key: "w", metaKey: true });
     const open = press({ key: "o", metaKey: true });
     const create = press({ key: "n", metaKey: true });
+    const save = press({ key: "s", metaKey: true });
     const next = press({ key: "Tab", ctrlKey: true });
     await settle();
 
     expect(close.defaultPrevented).toBe(false);
     expect(open.defaultPrevented).toBe(false);
     expect(create.defaultPrevented).toBe(false);
+    expect(save.defaultPrevented).toBe(false);
     expect(next.defaultPrevented).toBe(false);
     expect(mocks.pickFolder).not.toHaveBeenCalled();
+    expect(mocks.writeFile).not.toHaveBeenCalled();
     expect(
       host.querySelector<HTMLInputElement>('input[aria-label="新建文件"]'),
     ).toBeNull();
