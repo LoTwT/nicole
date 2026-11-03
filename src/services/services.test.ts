@@ -26,6 +26,11 @@ const mocks = vi.hoisted(() => ({
   popupNativeMenu: vi.fn(),
   takePendingOpenedFiles: vi.fn(),
   appOpenFileOn: vi.fn(),
+  saveRecovery: vi.fn(),
+  deleteRecovery: vi.fn(),
+  discardRecovery: vi.fn(),
+  listRecovery: vi.fn(),
+  restoreRecoverySingleFile: vi.fn(),
 }));
 
 vi.mock("./mygo", () => ({
@@ -63,6 +68,13 @@ vi.mock("./mygo", () => ({
   OpenedFiles: {
     takePendingOpenedFiles: mocks.takePendingOpenedFiles,
   },
+  Recovery: {
+    save: mocks.saveRecovery,
+    delete: mocks.deleteRecovery,
+    discard: mocks.discardRecovery,
+    list: mocks.listRecovery,
+    restoreSingleFile: mocks.restoreRecoverySingleFile,
+  },
   events: {
     appOpenFile: {
       on: mocks.appOpenFileOn,
@@ -90,6 +102,13 @@ import {
   releaseSingleFile,
   writeSingleFile,
 } from "./single-file";
+import {
+  deleteRecovery,
+  discardRecovery,
+  listRecovery,
+  restoreRecoverySingleFile,
+  saveRecovery,
+} from "./recovery";
 import {
   addRecentFolder,
   getSettings,
@@ -149,6 +168,14 @@ beforeEach(() => {
   mocks.popupNativeMenu.mockResolvedValue("new-file");
   mocks.takePendingOpenedFiles.mockResolvedValue(["/tmp/note.md"]);
   mocks.appOpenFileOn.mockReturnValue(() => {});
+  mocks.saveRecovery.mockResolvedValue("0123456789abcdef");
+  mocks.deleteRecovery.mockResolvedValue(undefined);
+  mocks.discardRecovery.mockResolvedValue(undefined);
+  mocks.listRecovery.mockResolvedValue({ items: [], otherFolders: 0 });
+  mocks.restoreRecoverySingleFile.mockResolvedValue({
+    path: "/tmp/note.md",
+    name: "note.md",
+  });
 });
 
 describe("service wrappers", () => {
@@ -250,5 +277,36 @@ describe("service wrappers", () => {
 
     await expect(takePendingOpenedFiles()).resolves.toEqual(["/tmp/note.md"]);
     expect(mocks.takePendingOpenedFiles).toHaveBeenCalledOnce();
+  });
+});
+
+describe("recovery wrappers", () => {
+  it("forwards copy lifecycle calls", async () => {
+    const copy = {
+      kind: "workspace",
+      root: "/notes",
+      path: "a.md",
+      lineEnding: "\n",
+      text: "text",
+    };
+    await expect(saveRecovery(copy, 3)).resolves.toBe("0123456789abcdef");
+    await deleteRecovery("0123456789abcdef", 3);
+    await discardRecovery(["1111111111111111"], 3);
+    await expect(listRecovery(3)).resolves.toEqual({ items: [], otherFolders: 0 });
+    await expect(restoreRecoverySingleFile("2222222222222222")).resolves.toEqual({
+      path: "/tmp/note.md",
+      name: "note.md",
+    });
+
+    expect(mocks.saveRecovery).toHaveBeenCalledWith(copy, 3);
+    expect(mocks.deleteRecovery).toHaveBeenCalledWith("0123456789abcdef", 3);
+    expect(mocks.discardRecovery).toHaveBeenCalledWith(
+      ["1111111111111111"],
+      3,
+    );
+    expect(mocks.listRecovery).toHaveBeenCalledWith(3);
+    expect(mocks.restoreRecoverySingleFile).toHaveBeenCalledWith(
+      "2222222222222222",
+    );
   });
 });

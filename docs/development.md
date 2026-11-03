@@ -147,7 +147,7 @@ macOS 的签名、通用二进制合成和 DMG 需要 macOS；Windows 安装包�
 
 ## 数据隔离
 
-应用的用户数据目录由 `userDataDir()` 决定：默认是 MyGo 的 `PathUserData`，即 macOS 的 `~/Library/Application Support/Nicole/`；设置 `NICOLE_USER_DATA_DIR`（必须是绝对路径）后完全使用该目录，不再读取或创建默认目录。窗口状态、`settings.json` 和 `tabs.json` 都走这里，`configureUserDataPath()` 同时把 MyGo 的 `PathUserData` 指向同一目录，更新器状态等插件数据也一起隔离。
+应用的用户数据目录由 `userDataDir()` 决定：默认是 MyGo 的 `PathUserData`，即 macOS 的 `~/Library/Application Support/Nicole/`；设置 `NICOLE_USER_DATA_DIR`（必须是绝对路径）后完全使用该目录，不再读取或创建默认目录。窗口状态、`settings.json`、`tabs.json` 和 `recovery/` 都走这里，`configureUserDataPath()` 同时把 MyGo 的 `PathUserData` 指向同一目录，更新器状态等插件数据也一起隔离。
 
 本地开发和测试按下面的方式使用临时目录，不要读写用户正在使用的 `~/Library/Application Support/Nicole/`：
 
@@ -173,7 +173,7 @@ GOTOOLCHAIN=auto go vet ./...
 GOTOOLCHAIN=auto go test ./...
 ```
 
-Vitest 覆盖三种模式的切换；挂载 `App.vue` 后切换亮暗主题，编辑器 DOM、选区和撤销历史保持不变；沉浸模式的 `Mod-b` 加粗；应用命令（如 `Mod-i`）优先于 `basicSetup` 默认键位；命令注册表的键位分平台显示、格式/段落命令和 `Prec.highest` 覆盖、slash 菜单的 `/` 与 `、` 触发、选区替换、拼音与最近使用排序、无匹配关闭并保留文字、执行后删除查询、翻转定位、组合输入期间的按键归属；`localStorage` 主题迁移和 `app:open-file` 事件接收；多标签模型与视图分离（后台标签页没有 `EditorView`、DOM 只有一个 `.cm-editor`）、切回恢复选区/滚动/撤销、保存写到模型自己的路径、关闭与批量关闭确认、按根目录记住和恢复、单文件标签页、重命名同步、后台标签页的外部修改和删除、15 个标签的标签栏、同名区分、标签命令键位和标签栏键盘操作；装订册布局、文件树按需读取与键盘导航、右键菜单调用、状态栏和横幅优先级、外部修改与图片 `create` 事件的区分、文件夹切换的防重入和取消保护、对话框焦点陷阱；图片 URL 的解析，粘贴、拖入 token 链路，插入凭据的位置映射、组合输入排队和撤销步；`src/services/` 的薄封装。Go 测试覆盖绑定服务、文件树和排除规则、文件操作的路径守卫与 generation、监听自写过滤、单文件授权与显示、设置存储、标签页布局存储的根目录校验与清理、测试数据隔离、图片协议的路径守卫与 Content-Type、drop token 的一次性和过期、图片保存的文件名、并发写入与原子失败。
+Vitest 覆盖三种模式的切换；挂载 `App.vue` 后切换亮暗主题，编辑器 DOM、选区和撤销历史保持不变；沉浸模式的 `Mod-b` 加粗；应用命令（如 `Mod-i`）优先于 `basicSetup` 默认键位；命令注册表的键位分平台显示、格式/段落命令和 `Prec.highest` 覆盖、slash 菜单的 `/` 与 `、` 触发、选区替换、拼音与最近使用排序、无匹配关闭并保留文字、执行后删除查询、翻转定位、组合输入期间的按键归属；`localStorage` 主题迁移和 `app:open-file` 事件接收；多标签模型与视图分离（后台标签页没有 `EditorView`、DOM 只有一个 `.cm-editor`）、切回恢复选区/滚动/撤销、保存写到模型自己的路径、关闭与批量关闭确认、按根目录记住和恢复、单文件标签页、重命名同步、后台标签页的外部修改和删除、15 个标签的标签栏、同名区分、标签命令键位和标签栏键盘操作；装订册布局、文件树按需读取与键盘导航、右键菜单调用、状态栏和横幅优先级、外部修改与图片 `create` 事件的区分、文件夹切换的防重入和取消保护、对话框焦点陷阱；崩溃恢复的列表、全部恢复/逐个查看/全部丢弃、Esc 等同逐个查看、恢复到磁盘未变/已更改/缺失三种状态、单文件恢复、副本计时不随按键重置、字数口径和时间格式；图片 URL 的解析，粘贴、拖入 token 链路，插入凭据的位置映射、组合输入排队和撤销步；`src/services/` 的薄封装。Go 测试覆盖绑定服务、文件树和排除规则、文件操作的路径守卫与 generation、监听自写过滤、单文件授权与显示、设置存储、标签页布局存储的根目录校验与清理、恢复副本的路径授权与 generation、`diskState` 判定、单文件恢复的安全复核和一次性授权、8MB/64MB 上限与替换豁免、损坏文件备份、磁盘哈希在切换根目录时清除、测试数据隔离、图片协议的路径守卫与 Content-Type、drop token 的一次性和过期、图片保存的文件名、并发写入与原子失败。
 
 ### 内存测量
 

@@ -31,6 +31,10 @@ export interface TabModel {
   revision: number;
   /** Workspace generation captured when the tab was opened; 0 for single files. */
   generation: number;
+  /** True while the tab holds content restored from an unsaved-copy file. */
+  restored: boolean;
+  /** The recovery copy backing this tab, if one has been written or restored. */
+  recoveryId: string | null;
   previewSize?: number;
   previewFolder?: string;
   /** Present while the tab is in the background. */

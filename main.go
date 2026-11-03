@@ -68,8 +68,17 @@ func main() {
 	}
 	assets := NewAssets(workspace)
 
+	diskHashes := newDiskHashes()
+	workspace.useDiskHashes(diskHashes)
 	singleFiles := NewSingleFileService()
+	singleFiles.useDiskHashes(diskHashes)
 	workspace.useOfferedFiles(singleFiles.offeredPaths, singleFiles.takeOfferedFolder)
+	recoveryStore, err := startupRecoveryStore()
+	if err != nil {
+		log.Fatal(err)
+	}
+	recovery := NewRecovery(recoveryStore, singleFiles, diskHashes)
+	recovery.useWorkspace(workspace.openRoot, workspace.openGeneration)
 	settings := NewSettings(settingsStore)
 	settings.useCurrentRoot(workspace.openRoot)
 	openedFiles := NewOpenedFiles()
@@ -103,6 +112,7 @@ func main() {
 		settings,
 		workspaceTabs,
 		singleFiles,
+		recovery,
 		openedFiles,
 		NativeMenu{},
 	)
