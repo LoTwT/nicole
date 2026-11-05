@@ -43,7 +43,7 @@ src/
     file-tree.ts          文件树节点、排序、展开与增量合并
     line-endings.ts       换行风格检测与写回
     paths.ts              工作区相对路径、主目录缩写
-    platform.ts           平台判断、平台文字与快捷键键帽拆分
+    platform.ts           平台判断、平台文字与本地化标签
     recovery.ts           副本计时器与恢复时间格式
     status.ts             保存状态、横幅优先级和标签页圆点
     tabs.ts               标签页模型、同名区分、关闭问题与后台快照映射
@@ -64,7 +64,8 @@ src/
     NonMarkdownPlaceholder.vue  非 Markdown 文件的占位页
     InlineNameInput.vue   行内文件名输入框
     AppIcon.vue           内联 Lucide 1.66.0 图标
-    KeyHint.vue           按平台拆分的快捷键键帽
+    ThemeToggle.vue       侧栏底栏与开始写作页共用的主题切换按钮
+    KeyHint.vue           浅色纯文字的快捷键提示
   editor/                 纯 TypeScript，不依赖 Vue 和 MyGo
     index.ts              createEditor、三种模式、widgets、核心命令、图片插入
     headings.ts           Lezer 语法树的 ATX/Setext 标题提取，供命令面板与大纲复用
@@ -180,16 +181,16 @@ Go（main.go）
 - 用 `mygo generate` 生成 TypeScript 客户端，输出路径由 `mygo.config.ts` 的 `bindings` 指定；本项目是 `src/services/mygo.ts`。
 - 前端只通过生成的客户端和 `services/` 调用 Go；Go 用 `mygo.Bind` 暴露服务，用 `*mygo.Channel[T]` 推送流，用 `mygo.NewEvent[T]` 发送事件。
 - 当前的最小服务是 `Application.Info()`，返回应用版本、操作系统、架构、Go 版本和主目录，用来验证前端与 Go 的调用链，并让界面把主目录写成 `~`。
-- `Workspace` 提供 `ChooseFolder`、`PickFolder`、`OpenFolder`、`ListFiles`、`ReadFile`、`WriteFile`、`ConfirmDiscard` 和 `FinishClose`，以及文件树的 `ListDirectory`、`CreateFile`、`CreateFolder`、`RenameEntry`、`TrashEntry`、`OpenWithDefaultApp`、`RevealEntry` 和 `Watch`。`PickFolder` 只返回用户在原生对话框中选择的路径；`OpenFolder` 只接受该路径、Go 记录的最近文件夹或系统提供的文件的所在文件夹，页面不能凭任意字符串切换根目录。只有“系统提供文件的父目录”这一来源会拒绝根目录、盘符根目录和主目录；用户主动选择、当前根目录和最近列表不受限制。成功的 `open` 由 Go 写入最近列表。写操作携带打开时返回的 `generation`，路径和文件类型的规则见[工作区与文件](specs/workspace.md#路径守卫)和[写入保证](specs/workspace.md#写入保证)。
+- `Workspace` 提供 `ChooseFolder`、`PickFolder`、`OpenFolder`、`OpenDroppedFolder`、`CloseWorkspace`、`ListFiles`、`ReadFile`、`WriteFile`、`ConfirmDiscard` 和 `FinishClose`，以及文件树的 `ListDirectory`、`CreateFile`、`CreateFolder`、`RenameEntry`、`TrashEntry`、`OpenWithDefaultApp`、`RevealEntry` 和 `Watch`。`PickFolder` 只返回用户在原生对话框中选择的路径；`OpenFolder` 只接受该路径、Go 记录的最近文件夹或系统提供的文件的所在文件夹，页面不能凭任意字符串切换根目录。只有“系统提供文件的父目录”这一来源会拒绝根目录、盘符根目录和主目录；用户主动选择、当前根目录和最近列表不受限制。`OpenDroppedFolder` 只接受原生拖入时由 Go 记录、一次性和约 10 秒过期的 token，不接收页面路径。成功的 `open` 由 Go 写入最近列表并清除 `workspaceClosed`；`CloseWorkspace` 清空根并记录该字段。写操作携带打开时返回的 `generation`，路径和文件类型的规则见[工作区与文件](specs/workspace.md#路径守卫)和[写入保证](specs/workspace.md#写入保证)。
 - 关窗时 Go 发出携带 `token` 的 `workspace:save-before-close` 事件并阻止关闭；前端保存后调用 `FinishClose(token, saved)`。保存失败时由 Go 弹出确认框，只有用户明确选择放弃才关窗；页面无响应时最多等待 5 秒。
 - `Workspace.Watch(generation)` 用 `*mygo.Channel[FileWatchPart]` 流式返回 `ready` 和事件批次；底层是 `mygo.WatchFiles`，在 Go 端过滤 Nicole 自己的写入（见[工作区与文件](specs/workspace.md#忽略-nicole-自己的写入)）。工作区状态本身是可替换的单例，后续协议 handler 在启动时注册、运行时读取同一个状态。
 - `SingleFileService` 提供 `ChooseSingleFile`、`AcceptSingleFile`、`DismissOfferedFile`、`ReadSingleFile`、`WriteSingleFile`、`RevealSingleFile` 和 `ReleaseSingleFile`；授权按解析后的绝对路径保存，只有对话框选择或 `App.OnOpenFile` 提供的文件才能被接受。打开系统文件的父目录是一次性授权：`OpenFolder` 成功后 Go 消耗对应提供项，取消时页面调用 `DismissOfferedFile`。`OpenedFiles` 暂存系统传入的路径；`app:open-file` 只通知“有新文件”，页面收到信号后调用 `TakePendingOpenedFiles` 一次取走队列，既覆盖启动时到达的文件，也不会重复交付同一个文件。
 - `Recovery` 提供 `Save(copy, generation)`、`List(generation)`、`Delete(id, generation)`、`Discard(ids, generation)` 和 `RestoreSingleFile(id)`。工作区副本只接受当前根和 generation；单文件副本写入时核对 `SingleFileService` 的授权。副本请求可带 `baselineUnconfirmed`，此时 Go 不记录也不沿用磁盘哈希。`List` 由 Go 读磁盘并返回 `diskState`、`text` 和 `diskText`，页面不自行读盘；`changed`/`missing` 的结果是列表时的快照，用户在对话框里做出选择前页面会重新 `List`。格式、上限和恢复规则见[工作区与文件](specs/workspace.md#崩溃恢复)。
-- `Settings` 提供 `Get`、`MigrateLegacyTheme`、`SetTheme`、`SetSidebarWidth`、`SetExpandedFolders`、`AddRecentFolder` 和 `RemoveRecentFolder`；`AddRecentFolder` 只接受当前已打开的根目录，最近列表由 `Workspace.open` 写入；`SetTheme` 同时调用 `mygo.Theme.SetSource` 同步原生外观。
+- `Settings` 提供 `Get`、`MigrateLegacyTheme`、`SetTheme`、`SetSidebarWidth`、`SetExpandedFolders`、`AddRecentFolder` 和 `RemoveRecentFolder`；`AddRecentFolder` 只接受当前已打开的根目录，最近列表由 `Workspace.open` 写入；`SetTheme` 同时调用 `mygo.Theme.SetSource` 同步原生外观。`workspaceClosed` 只由 `Workspace.CloseWorkspace` 和成功的 `open` 维护，页面只通过 `Get` 读取，用它决定启动时是否恢复上次的文件夹。
 - `WorkspaceTabs` 提供 `Get(root)` 和 `Save(root, tabs, active, recentFiles)`，只接受当前打开的根目录；标签和最近文件路径都是相对路径，只用于显示和恢复，不构成文件授权。格式和限制见[工作区与文件](specs/workspace.md#标签页存储)。
 - `NativeMenu.PopupNativeMenu` 在调用窗口的页面坐标显示原生菜单，返回选中项 ID 或空字符串；页面最多传 64 项，ID 唯一。正文的 WebView 右键菜单由 `Page.OnContextMenu` 裁剪，见[安全](#安全)。
 - 搜索通过 Channel 流式返回结果（见[工作区与文件](specs/workspace.md#搜索)）。
-- `Assets` 提供 `PasteImage(docPath, generation)` 和 `ImportImages(docPath, generation, dropToken)`，返回保存后的工作区相对路径和 Markdown。粘贴时 Go 先读剪贴板里的本地文件列表；列表非空时只导入其中的图片，没有图片就返回“剪贴板没有图片”，只有列表为空时才读 PNG 位图；拖入时 Go 从 `Window.OnFileDrop` 保存的路径中按一次性 token 取文件。页面不再传拖入路径，图片字节也不经过 IPC（见[工作区与文件](specs/workspace.md#图片)）。
+- `Assets` 提供 `PasteImage(docPath, generation)` 和 `ImportImages(docPath, generation, dropToken)`，返回保存后的工作区相对路径和 Markdown。粘贴时 Go 先读剪贴板里的本地文件列表；列表非空时只导入其中的图片，没有图片就返回“剪贴板没有图片”，只有列表为空时才读 PNG 位图；拖入时 Go 从 `Window.OnFileDrop` 保存的路径中按一次性 token 取文件。同一个原生 drop 在路径是单个真实文件夹时还会带一个文件夹 token，页面用它调用 `Workspace.OpenDroppedFolder`；两个 token 都是一次性且约 10 秒过期，页面不接触路径。页面不再传拖入路径，图片字节也不经过 IPC（见[工作区与文件](specs/workspace.md#图片)与[拖入文件夹](specs/workspace.md#拖入文件夹)）。
 - `src/services/assets.ts` 封装 `Assets.PasteImage`、`Assets.ImportImages` 和 `assets:file-drop`。DOM 拖放事件本身没有路径，只用于阻止浏览器默认行为；页面通过 `assets:file-drop` 从 Go 拿到一次性 token 和落点坐标，用 `EditorHandle.containsPoint` 确认在编辑区内后才创建插入凭据。绝对路径只保存在 Go，页面不记录拖放计数。
 
 各接口的具体语义、错误传播和背压行为见 [MyGo 参考](references/mygo.md#绑定与-ipc)。
@@ -212,7 +213,8 @@ Go（main.go）
 - 设置存储、标签页布局、单文件授权和恢复副本都只使用 Go 的文件接口；测试和开发构建通过 `NICOLE_USER_DATA_DIR` 指向临时目录，避免修改用户正在使用的数据（见[开发](development.md#数据隔离)）。标签页布局只接受当前根目录，路径只用于显示和恢复，不能授权访问文件。应用启动时请求单实例锁；不同的 `NICOLE_USER_DATA_DIR` 使用独立的锁命名空间，因此隔离的测试/开发实例不会被误转交给安装版。
 - 图片协议只映射当前工作区，handler 在启动时注册，运行时读取可替换的工作区状态。
 - 图片协议的 URL 带 `generation`，切换文件夹后旧请求返回 404，不会读到新工作区里的同名文件。
-- 拖入路径只从 `Window.OnFileDrop` 进入 Go；页面只能提交约 10 秒有效、一次性的 token，不能指定任意路径。源文件是符号链接或非常规文件时拒绝读取。
+- 拖入路径只从 `Window.OnFileDrop` 进入 Go；页面只能提交约 10 秒有效、一次性的 token，不能指定任意路径。源文件是符号链接或非常规文件时拒绝读取。另一种文件夹 token 只在 drop 恰好是一个真实文件夹时产生，页面通过 `OpenDroppedFolder(token)` 打开它；路径同样不出现在页面，token 取出即删除，多个项目、普通文件和不存在的路径都不授权。
+- 工作区可以在运行时关闭。`CloseWorkspace` 清空根并递增 `generation`，依赖根目录的服务返回“没有打开工作区”或 404，内存中的磁盘哈希被清除；`WorkspaceTabs` 和 `Recovery` 不再读写该根的记录，页面不能借关闭后的旧 `generation` 访问原目录。见[工作区与文件](specs/workspace.md#没有打开的根目录)。
 - 协议只接受 `.png`、`.jpg`、`.jpeg`、`.gif`、`.webp`、`.svg`，只接受 GET 和 HEAD；路径经过与文件读写相同的检查并用 `os.Root` 打开，越界、隐藏目录、`node_modules`、符号链接逃逸和目录都返回 404。
 - 响应显式设置 `Content-Type` 和 `X-Content-Type-Options: nosniff`，不会把伪装成图片的 HTML 当页面执行。
 - **顶层导航**：MyGo 把已注册协议的页面当作受信任页面，因此窗口通过 `OnWillNavigate` 取消任何顶层导航到 `nicole-image:` 的请求。图片只在 `<img>` 中加载，不会被打开成可调用 Go 的文档。
