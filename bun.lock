@@ -5,7 +5,7 @@
     "": {
       "name": "nicole",
       "dependencies": {
-        "@ayingott/theme": "^0.3.0",
+        "@ayingott/theme": "^0.4.0",
         "@codemirror/commands": "^6.9.0",
         "@codemirror/lang-markdown": "^6.5.2",
         "@codemirror/language": "^6.13.1",
@@ -36,7 +36,7 @@
 
     "@asamuzakjp/dom-selector": ["@asamuzakjp/dom-selector@10.0.5", "", { "dependencies": { "bidi-js": "^1.1.0", "css-tree": "^3.2.1", "is-potential-custom-element-name": "^1.0.1", "lru-cache": "^11.5.3" } }, "sha512-EgmJ7oEaGQECTn3H3wmnQpEy4hKY66VvM7VQndwPIQob3p877BgbyOUE3EX0LgXQCciF2H8KMdR+RznqjMNOLw=="],
 
-    "@ayingott/theme": ["@ayingott/theme@0.3.0", "", { "peerDependencies": { "tailwindcss": "^4.0.0" } }, "sha512-bRLUMudle3eXm5i+zRLlSsWhnM/EjsgKdX+//n9A6MuAJPJH020F0R6CY5vcplvKHyNdu9Kef5LjVuNSfJzNRA=="],
+    "@ayingott/theme": ["@ayingott/theme@0.4.0", "", { "peerDependencies": { "tailwindcss": "^4.0.0" } }, "sha512-/SKhXNY56bU41GxdvgFC6Awg6BI0ACbgfn4L+FDpcD4NFSqF01G9NsUBA8JG6FoAKKle97xwXU3Z76QzoNoYuw=="],
 
     "@babel/helper-string-parser": ["@babel/helper-string-parser@7.29.11", "", {}, "sha512-snZbO7MEDOof+hvNa97EjEY7qD7h2kwvQr5AJC3ZhQudKW5dnej6k3kP9NQV88hJwaS8vDqRLFo9rivLEhle2g=="],
 

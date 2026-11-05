@@ -7,7 +7,7 @@ is included in the frontend bundle and the Go binary.
 
 ## Frontend bundle
 
-### @ayingott/theme - 0.3.0 (MIT)
+### @ayingott/theme - 0.4.0 (MIT)
 
 ```text
 MIT License

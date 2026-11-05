@@ -27,7 +27,7 @@ func mainWindowOptions() mygo.WindowOptions {
 		Height:          defaultWindowSize.Height,
 		MinWidth:        640,
 		MinHeight:       480,
-		BackgroundColor: "light-dark(#faf8f4, #121019)", // the page's surface canvas
+		BackgroundColor: "light-dark(#f8f8f7, #131318)", // the page's surface canvas
 		StateKey:        mainWindowStateKey,
 		URL:             "/",
 		TitleBarStyle:   mygo.TitleBarHidden,

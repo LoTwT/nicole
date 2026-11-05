@@ -12,13 +12,13 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
-function mount(platform: AppPlatform) {
+function mount(platform: AppPlatform, mode: "start" | "no-file" = "no-file") {
   document.body.innerHTML = '<div id="app"></div>';
   app = createApp(
     defineComponent({
       render: () =>
         h(EmptyState, {
-          mode: "no-file",
+          mode,
           recentFolders: [],
           missingFolders: [],
           missingLastFolder: null,
@@ -55,8 +55,23 @@ describe("EmptyState", () => {
 
   it("keeps keycaps for the temporary empty-state shortcuts", () => {
     const row = quickOpenRow(mount("macos"));
-    expect(
-      [...row.querySelectorAll("kbd")].map((key) => key.textContent?.trim()),
-    ).toEqual(["⌘", "P"]);
+    const keys = [...row.querySelectorAll("kbd")];
+    expect(keys.map((key) => key.textContent?.trim())).toEqual(["⌘", "P"]);
+    for (const key of keys) {
+      expect(key.classList).toContain("border");
+      expect(key.classList).toContain("bg-[var(--surface-canvas)]");
+    }
+  });
+
+  it("keeps the primary open-folder button text-only with a tooltip", () => {
+    const host = mount("macos", "start");
+    const primary = [...host.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent?.includes("打开文件夹"),
+    );
+    expect(primary).not.toBeUndefined();
+    expect(primary!.textContent?.trim()).toBe("打开文件夹");
+    expect(primary!.querySelector("kbd")).toBeNull();
+    expect(primary!.getAttribute("aria-label")).toBe("打开文件夹");
+    expect(primary!.getAttribute("title")).toBe("打开文件夹 ⌘O");
   });
 });

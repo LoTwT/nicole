@@ -14,7 +14,7 @@
 2. `reading-*` 阅读层：编辑区、阅读模式、导出 HTML 共用。
 3. 用户自定义 CSS：只能覆盖 `reading-*` 和字体变量，不影响应用界面。
 
-主题包 0.3.0 提供的内容和限制见 [`@ayingott/theme` 参考](../references/ayingott-theme.md)。
+主题包 0.4.0 提供的内容、与 0.3.0 的差异和限制见 [`@ayingott/theme` 参考](../references/ayingott-theme.md)。
 
 ## 字体
 
@@ -47,9 +47,10 @@ CodeMirror 6 的主题直接使用 `var(--text-primary)` 这类 CSS 变量。切
 
 - 主题保存在用户数据目录的 `settings.json` 中，取值为 `system`、`light` 或 `dark`，默认 `system`。旧版存在 `localStorage` 的 `nicole-theme` 在启动时迁移到设置，成功后删除旧值，见[设置存储](workspace.md#设置存储)。
 - `src/App.vue` 切换 `<html>` 上的 `.dark`。`system` 时监听 `prefers-color-scheme` 的变化并实时切换；明确的 `light`/`dark` 不随系统变化。切换时同时调用 `Settings.SetTheme`，由 Go 调用 `mygo.Theme.SetSource`，让原生菜单、右键菜单和对话框跟随；`system` 用 `ThemeSystem`。
-- `src/style.css` 在 `@theme` 中覆盖字体变量，并定义 `--nicole-syntax-mark`、`--nicole-caret`、`--nicole-selection`、`--nicole-quote-border`，缺失的阅读层变量回退到主题包现有变量。
-- 任务框变量同样在 `src/style.css` 定义：`--nicole-checkbox-border`、`--nicole-checkbox-bg`、`--nicole-checkbox-checked-border`、`--nicole-checkbox-checked-bg`、`--nicole-checkbox-mark` 和 `--nicole-checkbox-focus`。每个变量写成 `var(--reading-checkbox-*, …)`，主题包 0.3.0 没有 `reading-checkbox-*` 时分别回退到 `--text-muted`、`transparent`、`--text-accent`、`--text-accent`、`--surface-canvas` 和 `--reading-focus`，满足[任务框](ui.md#任务框)的对比度要求。
+- `src/style.css` 在 `@theme` 中覆盖字体变量，并定义 `--nicole-syntax-mark`、`--nicole-caret`、`--nicole-selection`、`--nicole-quote-border`，缺失的阅读层变量回退到主题包现有变量。0.4.0 把 `--accent-primary` 定义为只承载 `--accent-contrast` 的填充面，因此编辑器光标和任务框这类独立指示色回退到 `--text-accent`，不随填充色变浅。
+- 任务框变量同样在 `src/style.css` 定义：`--nicole-checkbox-border`、`--nicole-checkbox-bg`、`--nicole-checkbox-checked-border`、`--nicole-checkbox-checked-bg`、`--nicole-checkbox-mark` 和 `--nicole-checkbox-focus`。每个变量写成 `var(--reading-checkbox-*, …)`，主题包 0.4.0 仍未提供 `reading-checkbox-*` 时分别回退到 `--text-muted`、`transparent`、`--text-accent`、`--text-accent`、`--surface-canvas` 和 `--reading-focus`，满足[任务框](ui.md#任务框)的对比度要求。
 - `src/editor/index.ts` 的 `EditorView.theme` 和 `HighlightStyle` 只引用这些变量，不读主题状态，因此切换主题不会触发 `EditorView` 重建。
+- `window_options.go` 的 `BackgroundColor` 直接写 Paper 和 Ink 的 `--surface-canvas` 值，避免窗口创建到页面绘制之间闪出旧底色；主题包调整画布颜色时需要同步。
 - 没有引入 `@ayingott/theme/fonts.css`，构建产物里没有字体文件。
 
 ## 限制
@@ -60,11 +61,11 @@ CodeMirror 6 的主题直接使用 `var(--text-primary)` 这类 CSS 变量。切
 
 ## 待办：补充主题包变量
 
-以下变量建议补充到 `LoTwT/design-system`，属于该仓库的待办，当前 0.3.0 尚未提供：
+以下变量建议补充到 `LoTwT/design-system`，属于该仓库的待办，当前 0.4.0 尚未提供：
 
 | 变量 | 用途 |
 |---|---|
-| `--reading-syntax-mark` | 露出的 `**`、`#` 等 Markdown 符号的颜色。 |
+| `--reading-syntax-mark` | 露出的 `**`、`#` 等 Markdown 符号的颜色。0.4.0 已有 `--color-syntax-*`，但阅读层还没有对应变量。 |
 | `--reading-syntax-*` | 代码高亮。 |
 | `--reading-caret` | 光标。 |
 | `--reading-selection` | 选区。 |

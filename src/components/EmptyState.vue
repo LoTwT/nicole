@@ -57,11 +57,11 @@ function folderName(path: string): string {
       <button
         type="button"
         class="focus-ring mt-5 inline-flex items-center gap-2 rounded-full bg-[var(--accent-primary)] px-4 py-2 text-[13px] font-medium text-[var(--accent-contrast)]"
-        :aria-label="`打开文件夹 ${openFolderKey}`"
+        aria-label="打开文件夹"
+        :title="`打开文件夹 ${openFolderKey}`"
         @click="emit('open-folder')"
       >
         打开文件夹
-        <KeyHint :shortcut="openFolderKey" />
       </button>
 
       <div v-if="recentFolders.length > 0" class="mt-8 text-left">
