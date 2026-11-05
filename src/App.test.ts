@@ -3452,6 +3452,41 @@ describe("crash recovery", () => {
     expect(mocks.listRecovery).toHaveBeenCalledWith(1);
   });
 
+  it("ignores the native close-workspace command behind the recovery dialog", async () => {
+    await mountWithRecovery([recoveryItem()]);
+    window.dispatchEvent(
+      new CustomEvent("nicole:run-command", {
+        detail: "app.close-workspace",
+      }),
+    );
+    await settle();
+    expect(mocks.closeWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("ignores a folder drop while the recovery dialog is open", async () => {
+    app?.unmount();
+    mocks.getSettings.mockResolvedValue({
+      theme: "system",
+      sidebarWidth: 252,
+      recentFolders: [],
+      expandedFolders: {},
+      workspaceClosed: true,
+    });
+    mocks.listRecovery.mockResolvedValue({ items: [recoveryItem()], otherFolders: 0 });
+    app = createApp(App);
+    app.mount(host);
+    await settle();
+    expect(dialog()?.textContent).toContain("发现未保存的内容");
+    dropHandler?.({
+      token: "image",
+      folderToken: "folder-drop",
+      x: 10,
+      y: 10,
+    });
+    await settle();
+    expect(mocks.openDroppedFolder).not.toHaveBeenCalled();
+  });
+
   it("does not dispatch app shortcuts behind the recovery dialog", async () => {
     mocks.getWorkspaceTabs.mockResolvedValue({
       tabs: [
@@ -4265,6 +4300,156 @@ describe("start page and workspace lifecycle", () => {
     expect(host.querySelector("aside")).toBeNull();
     expect(host.textContent).toContain("开始写作");
     expect(host.querySelectorAll('[role="tab"]')).toHaveLength(0);
+    expect(
+      document.activeElement?.getAttribute("aria-label"),
+    ).toBe("打开文件夹 ⌘O");
+  });
+
+  it("waits for recovery deletes before closing the workspace", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    host.querySelector<HTMLElement>('[data-tree-path="a.md"]')!.click();
+    await settle();
+    replaceEditorText("# A changed\n");
+    mocks.writeFile.mockRejectedValue(new Error("read only"));
+
+    window.dispatchEvent(
+      new CustomEvent("nicole:run-command", {
+        detail: "app.close-workspace",
+      }),
+    );
+    await settle();
+    expect(mocks.saveRecovery).toHaveBeenCalled();
+
+    const deletion = deferred<void>();
+    mocks.deleteRecovery.mockReturnValue(deletion.promise);
+    dialogButton("放弃更改并关闭工作区").click();
+    await settle();
+    expect(mocks.closeWorkspace).not.toHaveBeenCalled();
+
+    deletion.resolve();
+    await settle();
+    expect(mocks.closeWorkspace).toHaveBeenCalledOnce();
+    expect(mocks.deleteRecovery.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.closeWorkspace.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("waits for recovery deletes before switching folders", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    host.querySelector<HTMLElement>('[data-tree-path="a.md"]')!.click();
+    await settle();
+    replaceEditorText("# A changed\n");
+    mocks.writeFile.mockRejectedValue(new Error("read only"));
+    mocks.pickFolder.mockResolvedValue({ path: "/second", canceled: false });
+    mocks.openFolder.mockResolvedValue(folder("/second", 2));
+
+    sidebarButton("切换文件夹").click();
+    await settle();
+    expect(mocks.saveRecovery).toHaveBeenCalled();
+    const deletion = deferred<void>();
+    mocks.deleteRecovery.mockReturnValue(deletion.promise);
+    dialogButton("放弃更改并切换").click();
+    await settle();
+    expect(mocks.openFolder).toHaveBeenCalledTimes(1);
+
+    deletion.resolve();
+    await settle();
+    expect(mocks.openFolder).toHaveBeenCalledTimes(2);
+    expect(mocks.deleteRecovery.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.openFolder.mock.invocationCallOrder[1]!,
+    );
+  });
+
+  it("keeps single-file grants until the workspace close succeeds", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    pendingFiles = ["/tmp/single.md"];
+    openHandler?.();
+    await settle();
+    dialogButton("只打开这个文件").click();
+    await settle();
+    expect(host.querySelectorAll('[role="tab"]')).toHaveLength(1);
+
+    mocks.closeWorkspace.mockRejectedValueOnce(new Error("backend down"));
+    window.dispatchEvent(
+      new CustomEvent("nicole:run-command", {
+        detail: "app.close-workspace",
+      }),
+    );
+    await settle();
+    expect(host.querySelector("aside")).not.toBeNull();
+    expect(mocks.releaseSingleFile).not.toHaveBeenCalled();
+
+    window.dispatchEvent(
+      new CustomEvent("nicole:run-command", {
+        detail: "app.close-workspace",
+      }),
+    );
+    await settle();
+    expect(mocks.releaseSingleFile).toHaveBeenCalledWith("/tmp/single.md");
+  });
+
+  it("restarts recovery copies when the workspace close fails", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    host.querySelector<HTMLElement>('[data-tree-path="a.md"]')!.click();
+    await settle();
+    replaceEditorText("# A changed\n");
+    mocks.writeFile.mockRejectedValue(new Error("read only"));
+    mocks.closeWorkspace.mockRejectedValue(new Error("backend down"));
+
+    window.dispatchEvent(
+      new CustomEvent("nicole:run-command", {
+        detail: "app.close-workspace",
+      }),
+    );
+    await settle();
+    dialogButton("放弃更改并关闭工作区").click();
+    await settle();
+
+    expect(mocks.saveRecovery.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(host.querySelector("aside")).not.toBeNull();
+    expect(editorView().state.doc.toString()).toBe("# A changed\n");
+  });
+
+  it("marks a recent folder missing when opening it fails with ENOENT", async () => {
+    app?.unmount();
+    mocks.getSettings.mockResolvedValue({
+      theme: "system",
+      sidebarWidth: 252,
+      recentFolders: ["/gone"],
+      expandedFolders: {},
+      workspaceClosed: true,
+    });
+    mocks.openFolder.mockRejectedValue(
+      new Error("lstat /gone: no such file or directory"),
+    );
+    app = createApp(App);
+    app.mount(host);
+    await settle();
+
+    host.querySelector<HTMLElement>("li button")!.click();
+    await settle();
+    expect(mocks.openFolder).toHaveBeenCalledWith("/gone");
+    expect(host.textContent).toContain("已不存在");
+  });
+
+  it("does not mark a recent folder missing for other open failures", async () => {
+    app?.unmount();
+    mocks.getSettings.mockResolvedValue({
+      theme: "system",
+      sidebarWidth: 252,
+      recentFolders: ["/blocked"],
+      expandedFolders: {},
+      workspaceClosed: true,
+    });
+    mocks.openFolder.mockRejectedValue(new Error("permission denied"));
+    app = createApp(App);
+    app.mount(host);
+    await settle();
+
+    host.querySelector<HTMLElement>("li button")!.click();
+    await settle();
+    expect(mocks.openFolder).toHaveBeenCalledWith("/blocked");
+    expect(host.textContent).not.toContain("已不存在");
   });
 
   it("keeps the workspace when the close confirmation is cancelled", async () => {
@@ -4467,6 +4652,21 @@ describe("start page and workspace lifecycle", () => {
 
   it("ignores a dropped folder while a workspace is open", async () => {
     await openFile();
+    dropHandler?.({
+      token: "image",
+      folderToken: "folder-drop",
+      x: 10,
+      y: 10,
+    });
+    await settle();
+    expect(mocks.openDroppedFolder).not.toHaveBeenCalled();
+  });
+
+  it("ignores a dropped folder while a page dialog is open", async () => {
+    pendingFiles = ["/tmp/note.md"];
+    openHandler?.();
+    await settle();
+    expect(dialog()).not.toBeNull();
     dropHandler?.({
       token: "image",
       folderToken: "folder-drop",

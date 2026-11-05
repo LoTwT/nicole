@@ -94,7 +94,7 @@ describe("EmptyState", () => {
     const { host } = mount("macos", { mode: "start" });
     const primary = button(host, "打开文件夹");
     expect(primary.querySelector("kbd")).toBeNull();
-    expect(primary.getAttribute("aria-label")).toBe("打开文件夹");
+    expect(primary.getAttribute("aria-label")).toBe("打开文件夹 ⌘O");
     expect(primary.getAttribute("title")).toBe("打开文件夹 ⌘O");
   });
 

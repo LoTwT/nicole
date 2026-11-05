@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
 
 import { displayPath } from "../app/paths";
 import type { AppPlatform } from "../app/platform";
@@ -42,12 +42,19 @@ const newFileKey = computed(() =>
 const quickOpenKey = computed(() =>
   commandShortcut("nav.quick-open", props.platform),
 );
+const openFolderButton = ref<HTMLButtonElement | null>(null);
 
 function folderName(path: string): string {
   const clean = path.replace(/[\\/]+$/, "");
   const index = Math.max(clean.lastIndexOf("/"), clean.lastIndexOf("\\"));
   return index === -1 ? clean : clean.slice(index + 1);
 }
+
+defineExpose({
+  focusOpenFolder() {
+    openFolderButton.value?.focus();
+  },
+});
 </script>
 
 <template>
@@ -66,9 +73,10 @@ function folderName(path: string): string {
         打开一个文件夹作为工作区，里面的文件就是你的文章
       </p>
       <button
+        ref="openFolderButton"
         type="button"
         class="focus-ring mt-5 inline-flex items-center gap-2 rounded-full bg-[var(--accent-primary)] px-4 py-2 text-[13px] font-medium text-[var(--accent-contrast)]"
-        aria-label="打开文件夹"
+        :aria-label="`打开文件夹 ${openFolderKey}`"
         :title="`打开文件夹 ${openFolderKey}`"
         @click="emit('open-folder')"
       >

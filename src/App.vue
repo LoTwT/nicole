@@ -216,6 +216,7 @@ interface RecoveryWriteState {
 
 const editorHost = ref<HTMLElement | null>(null);
 const sidebar = ref<InstanceType<typeof AppSidebar> | null>(null);
+const emptyState = ref<InstanceType<typeof EmptyState> | null>(null);
 const topBar = ref<InstanceType<typeof TopBar> | null>(null);
 const palette = ref<InstanceType<typeof CommandPalette> | null>(null);
 const appInfo = ref<AppInfo | null>(null);
@@ -416,6 +417,17 @@ const dialogActions = computed(() => dialog.value?.actions ?? []);
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** True when opening a recent folder failed because the folder is gone. */
+function isMissingFolderError(error: unknown): boolean {
+  const message = errorText(error).toLowerCase();
+  return (
+    message.includes("no such file or directory") ||
+    message.includes("file does not exist") ||
+    message.includes("cannot find the file") ||
+    message.includes("enoent")
+  );
 }
 
 function findTab(id: number | null): TabModel | null {
@@ -803,11 +815,15 @@ function trackRecovery<T>(promise: Promise<T>): Promise<T> {
   return promise;
 }
 
-async function waitForRecoveryOperations(timeoutMs: number): Promise<void> {
+async function waitForRecoveryOperations(
+  timeoutMs = Number.POSITIVE_INFINITY,
+): Promise<void> {
   if (timeoutMs <= 0) {
     return;
   }
-  const deadline = Date.now() + timeoutMs;
+  const deadline = Number.isFinite(timeoutMs)
+    ? Date.now() + timeoutMs
+    : Number.POSITIVE_INFINITY;
   while (pendingRecoveryOperations.size > 0) {
     const remaining = deadline - Date.now();
     if (remaining <= 0) {
@@ -816,12 +832,17 @@ async function waitForRecoveryOperations(timeoutMs: number): Promise<void> {
     const pending = [...pendingRecoveryOperations];
     let timer: ReturnType<typeof setTimeout> | null = null;
     try {
-      await Promise.race([
-        Promise.allSettled(pending).then(() => undefined),
-        new Promise<void>((resolve) => {
-          timer = setTimeout(resolve, remaining);
-        }),
-      ]);
+      const settled = Promise.allSettled(pending).then(() => undefined);
+      if (deadline === Number.POSITIVE_INFINITY) {
+        await settled;
+      } else {
+        await Promise.race([
+          settled,
+          new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, remaining);
+          }),
+        ]);
+      }
     } finally {
       if (timer !== null) {
         clearTimeout(timer);
@@ -2059,7 +2080,10 @@ async function applyWorkspace(folder: {
   }
 }
 
-async function switchToFolder(path: string): Promise<boolean> {
+async function switchToFolder(
+  path: string,
+  options: { markMissing?: boolean } = {},
+): Promise<boolean> {
   if (workspace.value?.root === path) {
     closeOverlaySidebar();
     return true;
@@ -2093,10 +2117,13 @@ async function switchToFolder(path: string): Promise<boolean> {
       return false;
     }
     // The user agreed to discard what could not be saved; the copies for
-    // those documents must not outlive this switch.
+    // those documents must not outlive this switch. Recovery runs in separate
+    // Go goroutines, so wait for deletes and in-flight writes before the
+    // generation changes; otherwise Go rejects the late deletes.
     for (const tab of closingTabs) {
       forgetRecoveryForTab(tab);
     }
+    await waitForRecoveryOperations();
     await persistTabsNow();
   }
 
@@ -2104,6 +2131,9 @@ async function switchToFolder(path: string): Promise<boolean> {
   try {
     folder = await openFolderAtPath(path);
   } catch (error) {
+    if (options.markMissing === true && isMissingFolderError(error)) {
+      markMissing(path);
+    }
     showNotice(`打开失败：${errorText(error)}`, "danger");
     return false;
   }
@@ -2143,7 +2173,9 @@ async function chooseFolder() {
 }
 
 async function openRecentFolder(path: string) {
-  await startFolderOperation(() => switchToFolder(path));
+  await startFolderOperation(() =>
+    switchToFolder(path, { markMissing: true }),
+  );
 }
 
 async function closeWorkspace() {
@@ -2188,17 +2220,25 @@ async function closeWorkspace() {
     await persistTabsNow();
     for (const tab of closing) {
       forgetRecoveryForTab(tab);
-      if (tab.kind === "single") {
-        void releaseSingleFile(tab.path).catch(() => {});
-      }
     }
+    // Recovery deletes run in separate Go goroutines and are bound to the
+    // current generation. Let deletes and in-flight copy writes finish before
+    // CloseWorkspace advances it; otherwise a discarded copy survives and is
+    // offered again the next time this folder opens.
+    await waitForRecoveryOperations();
     try {
       await closeWorkspaceInGo();
     } catch (error) {
+      resumeRecoveryCopies(closing);
       showNotice(`关闭工作区失败：${errorText(error)}`, "danger");
       return false;
     }
 
+    for (const tab of closing) {
+      if (tab.kind === "single") {
+        void releaseSingleFile(tab.path).catch(() => {});
+      }
+    }
     stopWatch();
     closeCommandPalette();
     closePopoverMenus();
@@ -2209,7 +2249,6 @@ async function closeWorkspace() {
     lastWorkspaceActivePath = null;
     closedTabs.value = [];
     workspace.value = null;
-    workspaceClosed.value = true;
     missingLastFolder.value = null;
     overlaySidebar.value = false;
     dropActive.value = false;
@@ -2218,8 +2257,22 @@ async function closeWorkspace() {
       current.root,
       ...recentFolders.value.filter((folder) => folder !== current.root),
     ].slice(0, 10);
+    await nextTick();
+    emptyState.value?.focusOpenFolder();
     return true;
   });
+}
+
+/** Re-protects tabs whose copies were removed before a failed close. */
+function resumeRecoveryCopies(closing: readonly TabModel[]) {
+  for (const tab of closing) {
+    const current = findTab(tab.id);
+    if (current === null || !needsRecoveryCopy(current)) {
+      continue;
+    }
+    startRecoveryTimer(current.id);
+    writeRecoveryCopy(current.id);
+  }
 }
 
 async function restoreLastWorkspace() {
@@ -3194,7 +3247,12 @@ function handleDomDrop(event: DragEvent) {
 }
 
 async function handleFolderDrop(drop: AssetDrop) {
-  if (!startState.value) {
+  if (
+    !startState.value ||
+    dialogOpen ||
+    recoveryDialog.value !== null ||
+    recoveryChecking
+  ) {
     return;
   }
   dropActive.value = false;
@@ -4004,6 +4062,7 @@ defineExpose({
           <div class="relative isolate min-h-0 flex-1" data-editor-host>
             <EmptyState
               v-if="startState"
+              ref="emptyState"
               mode="start"
               :recent-folders="recentFolders"
               :missing-folders="missingRecent"
