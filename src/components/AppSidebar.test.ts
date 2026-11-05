@@ -13,6 +13,7 @@ vi.mock("../services/files", () => ({
 vi.mock("../services/menu", () => ({ popupNativeMenu: vi.fn() }));
 vi.mock("../services/clipboard", () => ({ copyText: vi.fn() }));
 
+import { copyText } from "../services/clipboard";
 import { listDirectory } from "../services/files";
 import { popupNativeMenu } from "../services/menu";
 import AppSidebar from "./AppSidebar.vue";
@@ -27,6 +28,7 @@ async function settle() {
 beforeEach(() => {
   document.body.innerHTML = '<div id="app"></div>';
   host = document.querySelector<HTMLElement>("#app")!;
+  vi.mocked(copyText).mockResolvedValue(true);
 });
 
 afterEach(() => {
@@ -191,7 +193,7 @@ describe("workspace tool row", () => {
   it("shows the workspace name and four labelled icon buttons", async () => {
     mount();
     await settle();
-    const tools = host.querySelector('[aria-label="工作区工具"]')!;
+    const tools = host.querySelector('[role="group"][aria-label="工作区操作"]')!;
     expect(tools.textContent).toContain("notes");
     const labels = [...tools.querySelectorAll("button")].map((button) =>
       button.getAttribute("aria-label"),
@@ -236,10 +238,41 @@ describe("workspace tool row", () => {
     const request = vi.mocked(popupNativeMenu).mock.calls[0]![0];
     expect(request.items.map((item) => item.label)).toEqual([
       "在 Finder 中显示",
+      "复制路径",
       "",
       "关闭工作区",
     ]);
     expect(log.runCommands).toContain("app.close-workspace");
+  });
+
+  it("copies the workspace root from the more menu", async () => {
+    vi.mocked(popupNativeMenu).mockResolvedValue("copy-workspace-path");
+    const log = mount();
+    await settle();
+    host
+      .querySelector<HTMLButtonElement>('button[aria-label="更多"]')!
+      .click();
+    await settle();
+    expect(vi.mocked(copyText)).toHaveBeenCalledWith("/tmp/notes");
+    expect(log.runCommands).toEqual([]);
+  });
+
+  it("returns focus to the new-file button when inline creation is cancelled", async () => {
+    mount();
+    await settle();
+    const trigger = host.querySelector<HTMLButtonElement>(
+      'button[aria-label="新建文件 ⌘N"]',
+    )!;
+    trigger.click();
+    await settle();
+    const input = host.querySelector<HTMLInputElement>(
+      'input[aria-label="新建文件"]',
+    )!;
+    input.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    );
+    await settle();
+    expect(document.activeElement).toBe(trigger);
   });
 });
 

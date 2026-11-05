@@ -5,6 +5,7 @@ import { buildContextMenu } from "../app/context-menu";
 import type { TreeEditState, TreeNode } from "../app/file-tree";
 import type { AppPlatform } from "../app/platform";
 import { commandShortcut } from "../commands/registry";
+import { copyText } from "../services/clipboard";
 import { popupNativeMenu } from "../services/menu";
 import type { WorkspaceFileEvent } from "../services/mygo";
 import AppIcon from "./AppIcon.vue";
@@ -46,6 +47,8 @@ const emit = defineEmits<{
 }>();
 
 const tree = ref<InstanceType<typeof FileTree> | null>(null);
+const newFileButton = ref<HTMLButtonElement | null>(null);
+const newFolderButton = ref<HTMLButtonElement | null>(null);
 const moreButton = ref<HTMLButtonElement | null>(null);
 const resizing = ref(false);
 let dragStartX = 0;
@@ -72,12 +75,15 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function startRootCreate(kind: "create-file" | "create-folder") {
-  void tree.value?.startCreate(kind, ".");
+function startRootCreate(
+  kind: "create-file" | "create-folder",
+  returnFocus: HTMLElement | null,
+) {
+  void tree.value?.startCreate(kind, ".", returnFocus);
 }
 
-function collapseAll() {
-  tree.value?.collapseAll();
+async function collapseAll() {
+  await tree.value?.collapseAll();
 }
 
 async function openMoreMenu() {
@@ -99,6 +105,12 @@ async function openMoreMenu() {
     });
   } catch (error) {
     emit("status", `菜单打开失败：${errorText(error)}`);
+    return;
+  }
+  if (choice === "copy-workspace-path") {
+    if (!(await copyText(props.rootPath))) {
+      emit("status", "复制失败");
+    }
     return;
   }
   if (choice !== "") {
@@ -167,13 +179,17 @@ defineExpose({
     return tree.value?.reveal(path);
   },
   removePath(path: string) {
-    tree.value?.removePath(path);
+    return tree.value?.removePath(path);
   },
-  startCreate(kind: "create-file" | "create-folder", dir: string) {
-    return tree.value?.startCreate(kind, dir);
+  startCreate(
+    kind: "create-file" | "create-folder",
+    dir: string,
+    returnFocus: HTMLElement | null = null,
+  ) {
+    return tree.value?.startCreate(kind, dir, returnFocus);
   },
   collapseAll() {
-    tree.value?.collapseAll();
+    return tree.value?.collapseAll();
   },
 });
 </script>
@@ -213,8 +229,8 @@ defineExpose({
 
     <div
       class="flex h-[26px] shrink-0 items-center gap-0.5 px-2.5"
-      role="toolbar"
-      aria-label="工作区工具"
+      role="group"
+      aria-label="工作区操作"
     >
       <span
         class="min-w-0 flex-1 truncate text-[11px] font-semibold text-[var(--text-muted)]"
@@ -223,20 +239,22 @@ defineExpose({
         {{ rootName }}
       </span>
       <button
+        ref="newFileButton"
         type="button"
         class="focus-ring grid size-[22px] shrink-0 place-items-center rounded-[var(--radius-control)] text-[var(--text-muted)] hover:bg-[var(--surface-muted)] hover:text-[var(--text-primary)]"
         :aria-label="newFileHint"
         :title="newFileHint"
-        @click="startRootCreate('create-file')"
+        @click="startRootCreate('create-file', newFileButton)"
       >
         <AppIcon name="file-plus" :size="14" />
       </button>
       <button
+        ref="newFolderButton"
         type="button"
         class="focus-ring grid size-[22px] shrink-0 place-items-center rounded-[var(--radius-control)] text-[var(--text-muted)] hover:bg-[var(--surface-muted)] hover:text-[var(--text-primary)]"
         :aria-label="newFolderHint"
         :title="newFolderHint"
-        @click="startRootCreate('create-folder')"
+        @click="startRootCreate('create-folder', newFolderButton)"
       >
         <AppIcon name="folder-plus" :size="14" />
       </button>

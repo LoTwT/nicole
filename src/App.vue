@@ -156,6 +156,9 @@ const AUTOSAVE_DELAY_MS = 1000;
 const SAVING_DISPLAY_DELAY_MS = 300;
 const NOTICE_DURATION_MS = 3000;
 const PERSIST_TABS_DELAY_MS = 400;
+// Keep close/switch inside the same five-second budget as the window-close path.
+const RECOVERY_OPERATION_TIMEOUT_MS = 5000;
+const MISSING_FOLDER_ERROR = "workspace: folder does not exist";
 
 interface WorkspaceState {
   root: string;
@@ -416,15 +419,9 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** True when opening a recent folder failed because the folder is gone. */
+/** Go reports a missing root with this fixed, locale-independent error. */
 function isMissingFolderError(error: unknown): boolean {
-  const message = errorText(error).toLowerCase();
-  return (
-    message.includes("no such file or directory") ||
-    message.includes("file does not exist") ||
-    message.includes("cannot find the file") ||
-    message.includes("enoent")
-  );
+  return errorText(error) === MISSING_FOLDER_ERROR;
 }
 
 function findTab(id: number | null): TabModel | null {
@@ -814,9 +811,9 @@ function trackRecovery<T>(promise: Promise<T>): Promise<T> {
 
 async function waitForRecoveryOperations(
   timeoutMs = Number.POSITIVE_INFINITY,
-): Promise<void> {
+): Promise<boolean> {
   if (timeoutMs <= 0) {
-    return;
+    return pendingRecoveryOperations.size === 0;
   }
   const deadline = Number.isFinite(timeoutMs)
     ? Date.now() + timeoutMs
@@ -824,7 +821,7 @@ async function waitForRecoveryOperations(
   while (pendingRecoveryOperations.size > 0) {
     const remaining = deadline - Date.now();
     if (remaining <= 0) {
-      return;
+      return false;
     }
     const pending = [...pendingRecoveryOperations];
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -846,6 +843,7 @@ async function waitForRecoveryOperations(
       }
     }
   }
+  return true;
 }
 
 function tabInRecoveryDialog(tab: TabModel): boolean {
@@ -2087,12 +2085,12 @@ async function switchToFolder(
   }
   const targetName = absoluteBaseName(path);
   const currentWorkspace = workspace.value;
+  const closingTabs = tabs.value.filter(
+    (tab) => tab.kind === "workspace" || tab.kind === "preview",
+  );
   let hadProblems = false;
 
   if (currentWorkspace !== null) {
-    const closingTabs = tabs.value.filter(
-      (tab) => tab.kind === "workspace" || tab.kind === "preview",
-    );
     await saveWorkspaceTabs();
     const problems = closingTabs.flatMap(tabCloseProblems);
     hadProblems = problems.length > 0;
@@ -2120,7 +2118,11 @@ async function switchToFolder(
     for (const tab of closingTabs) {
       forgetRecoveryForTab(tab);
     }
-    await waitForRecoveryOperations();
+    if (!(await waitForRecoveryOperations(RECOVERY_OPERATION_TIMEOUT_MS))) {
+      resumeRecoveryCopies(closingTabs);
+      showNotice("切换文件夹失败：恢复副本仍在写入", "danger");
+      return false;
+    }
     await persistTabsNow();
   }
 
@@ -2128,6 +2130,7 @@ async function switchToFolder(
   try {
     folder = await openFolderAtPath(path);
   } catch (error) {
+    resumeRecoveryCopies(closingTabs);
     if (options.markMissing === true && isMissingFolderError(error)) {
       markMissing(path);
     }
@@ -2221,8 +2224,13 @@ async function closeWorkspace() {
     // Recovery deletes run in separate Go goroutines and are bound to the
     // current generation. Let deletes and in-flight copy writes finish before
     // CloseWorkspace advances it; otherwise a discarded copy survives and is
-    // offered again the next time this folder opens.
-    await waitForRecoveryOperations();
+    // offered again the next time this folder opens. A stuck backend must not
+    // close the workspace with copies still in flight.
+    if (!(await waitForRecoveryOperations(RECOVERY_OPERATION_TIMEOUT_MS))) {
+      resumeRecoveryCopies(closing);
+      showNotice("关闭工作区失败：恢复副本仍在写入", "danger");
+      return false;
+    }
     try {
       await closeWorkspaceInGo();
     } catch (error) {
@@ -3699,7 +3707,7 @@ async function requestTrash(entry: TreeNode) {
     showNotice(`移到废纸篓失败：${errorText(error)}`, "danger");
     return;
   }
-  sidebar.value?.removePath(entry.path);
+  await sidebar.value?.removePath(entry.path);
   const affected = tabs.value.filter(
     (tab) =>
       tab.kind !== "single" &&
@@ -3959,7 +3967,10 @@ onMounted(async () => {
     // keeping room inside Go's five-second close timeout.
     const remaining = Math.max(
       0,
-      Math.min(1000, 5000 - (Date.now() - started) - 100),
+      Math.min(
+        1000,
+        RECOVERY_OPERATION_TIMEOUT_MS - (Date.now() - started) - 100,
+      ),
     );
     await waitForRecoveryOperations(remaining);
     try {

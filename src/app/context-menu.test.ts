@@ -70,14 +70,32 @@ describe("context menus", () => {
   });
 
   it("builds the workspace tools menu from commands", () => {
+    const items = buildContextMenu({
+      target: "workspace-tools",
+      platform: "windows",
+      isMarkdown: false,
+      inWorkspace: true,
+    });
+    expect(items.map((item) => item.label)).toEqual([
+      "在资源管理器中显示",
+      "复制路径",
+      "",
+      "关闭工作区",
+    ]);
+    expect(items.find((item) => item.label === "复制路径")?.id).toBe(
+      "copy-workspace-path",
+    );
+  });
+
+  it("uses the Linux reveal label", () => {
     expect(
       buildContextMenu({
         target: "workspace-tools",
-        platform: "windows",
+        platform: "linux",
         isMarkdown: false,
         inWorkspace: true,
-      }).map((item) => item.label),
-    ).toEqual(["在资源管理器中显示", "", "关闭工作区"]);
+      })[0]?.label,
+    ).toBe("在文件管理器中显示");
   });
 
   it("leaves the multi-tab actions disabled for the single tab", () => {

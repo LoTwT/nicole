@@ -3463,6 +3463,34 @@ describe("crash recovery", () => {
     expect(mocks.closeWorkspace).not.toHaveBeenCalled();
   });
 
+  it("ignores a folder drop while startup recovery is still checking", async () => {
+    app?.unmount();
+    const listing = deferred<{ items: unknown[]; otherFolders: number }>();
+    mocks.getSettings.mockResolvedValue({
+      theme: "system",
+      sidebarWidth: 252,
+      recentFolders: [],
+      expandedFolders: {},
+      workspaceClosed: true,
+    });
+    mocks.listRecovery.mockReturnValue(listing.promise);
+    app = createApp(App);
+    app.mount(host);
+    await settle();
+
+    dropHandler?.({
+      token: "image",
+      folderToken: "folder-drop",
+      x: 10,
+      y: 10,
+    });
+    await settle();
+    expect(mocks.openDroppedFolder).not.toHaveBeenCalled();
+
+    listing.resolve({ items: [], otherFolders: 0 });
+    await settle();
+  });
+
   it("ignores a folder drop while the recovery dialog is open", async () => {
     app?.unmount();
     mocks.getSettings.mockResolvedValue({
@@ -4410,7 +4438,82 @@ describe("start page and workspace lifecycle", () => {
     expect(editorView().state.doc.toString()).toBe("# A changed\n");
   });
 
-  it("marks a recent folder missing when opening it fails with ENOENT", async () => {
+  it("cancels a workspace close when recovery operations exceed the timeout", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    host.querySelector<HTMLElement>('[data-tree-path="a.md"]')!.click();
+    await settle();
+    replaceEditorText("# A changed\n");
+    mocks.writeFile.mockRejectedValue(new Error("read only"));
+
+    window.dispatchEvent(
+      new CustomEvent("nicole:run-command", {
+        detail: "app.close-workspace",
+      }),
+    );
+    await settle();
+    expect(mocks.saveRecovery).toHaveBeenCalled();
+    const deletion = deferred<void>();
+    mocks.deleteRecovery.mockReturnValue(deletion.promise);
+
+    vi.useFakeTimers();
+    dialogButton("放弃更改并关闭工作区").click();
+    await settle();
+    expect(mocks.closeWorkspace).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(5000);
+    await settle();
+    expect(mocks.closeWorkspace).not.toHaveBeenCalled();
+    expect(host.querySelector("aside")).not.toBeNull();
+    expect(host.textContent).toContain("关闭工作区失败：恢复副本仍在写入");
+    expect(mocks.saveRecovery.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("cancels a folder switch when recovery operations exceed the timeout", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    host.querySelector<HTMLElement>('[data-tree-path="a.md"]')!.click();
+    await settle();
+    replaceEditorText("# A changed\n");
+    mocks.writeFile.mockRejectedValue(new Error("read only"));
+    mocks.pickFolder.mockResolvedValue({ path: "/second", canceled: false });
+    mocks.openFolder.mockClear();
+    const deletion = deferred<void>();
+    mocks.deleteRecovery.mockReturnValue(deletion.promise);
+
+    sidebarButton("切换文件夹").click();
+    await settle();
+    vi.useFakeTimers();
+    dialogButton("放弃更改并切换").click();
+    await settle();
+    expect(mocks.openFolder).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(5000);
+    await settle();
+    expect(mocks.openFolder).not.toHaveBeenCalled();
+    expect(host.textContent).toContain("切换文件夹失败：恢复副本仍在写入");
+    expect(mocks.saveRecovery.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("restores dirty recovery copies when opening the next folder fails", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    host.querySelector<HTMLElement>('[data-tree-path="a.md"]')!.click();
+    await settle();
+    replaceEditorText("# A changed\n");
+    mocks.writeFile.mockRejectedValue(new Error("read only"));
+    mocks.pickFolder.mockResolvedValue({ path: "/second", canceled: false });
+    mocks.openFolder.mockRejectedValueOnce(new Error("permission denied"));
+
+    sidebarButton("切换文件夹").click();
+    await settle();
+    dialogButton("放弃更改并切换").click();
+    await settle();
+
+    expect(mocks.saveRecovery.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(host.querySelector("aside")).not.toBeNull();
+    expect(editorView().state.doc.toString()).toBe("# A changed\n");
+    expect(host.textContent).toContain("打开失败：permission denied");
+  });
+
+  it("marks a recent folder missing for Go's fixed missing-folder error", async () => {
     app?.unmount();
     mocks.getSettings.mockResolvedValue({
       theme: "system",
@@ -4420,7 +4523,7 @@ describe("start page and workspace lifecycle", () => {
       workspaceClosed: true,
     });
     mocks.openFolder.mockRejectedValue(
-      new Error("lstat /gone: no such file or directory"),
+      new Error("workspace: folder does not exist"),
     );
     app = createApp(App);
     app.mount(host);
@@ -4432,7 +4535,7 @@ describe("start page and workspace lifecycle", () => {
     expect(host.textContent).toContain("已不存在");
   });
 
-  it("does not mark a recent folder missing for other open failures", async () => {
+  it("does not mark a localized not-found message or other open failures", async () => {
     app?.unmount();
     mocks.getSettings.mockResolvedValue({
       theme: "system",
@@ -4441,7 +4544,7 @@ describe("start page and workspace lifecycle", () => {
       expandedFolders: {},
       workspaceClosed: true,
     });
-    mocks.openFolder.mockRejectedValue(new Error("permission denied"));
+    mocks.openFolder.mockRejectedValue(new Error("系统找不到指定的文件。"));
     app = createApp(App);
     app.mount(host);
     await settle();
@@ -4598,6 +4701,42 @@ describe("start page and workspace lifecycle", () => {
     expect(host.querySelectorAll("li")).toHaveLength(5);
     expect(host.textContent).toContain("/a");
     expect(host.textContent).not.toContain("/f");
+  });
+
+  it("reveals the workspace root from the palette", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    pressPaletteShortcut("P");
+    await settle();
+    typePalette("显示工作区文件夹");
+    await settle();
+    const option = paletteOptions().find((item) =>
+      item.textContent?.includes("显示工作区文件夹"),
+    );
+    expect(option).not.toBeUndefined();
+    option!.click();
+    await settle();
+    expect(mocks.revealEntry).toHaveBeenCalledWith(".", 1);
+  });
+
+  it("collapses folders through settings when the sidebar is hidden", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    const originalWidth = window.innerWidth;
+    window.innerWidth = 700;
+    window.dispatchEvent(new Event("resize"));
+    await settle();
+    expect(host.querySelector("aside")).toBeNull();
+    pressPaletteShortcut("P");
+    await settle();
+    typePalette("全部折叠");
+    await settle();
+    const option = paletteOptions().find((item) =>
+      item.textContent?.includes("全部折叠"),
+    );
+    expect(option).not.toBeUndefined();
+    option!.click();
+    await settle();
+    expect(mocks.setExpandedFolders).toHaveBeenCalledWith("/notes", []);
+    window.innerWidth = originalWidth;
   });
 
   it("runs the collapse-all command from the palette", async () => {

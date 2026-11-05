@@ -59,6 +59,7 @@ const noteEntries = [
 
 let host: HTMLElement;
 let app: ReturnType<typeof createApp> | null = null;
+let treeApi: InstanceType<typeof FileTree> | null = null;
 let events: {
   open: ReturnType<typeof vi.fn>;
   created: ReturnType<typeof vi.fn>;
@@ -80,11 +81,12 @@ async function settle() {
 function mountTree(
   initialExpanded: string[] = [],
   platform: "macos" | "windows" | "linux" = "macos",
+  selectedPath: string | null = null,
 ) {
   const props = reactive({
     rootPath: "/tmp/notes",
     generation: 3,
-    selectedPath: null as string | null,
+    selectedPath,
     platform,
     initialExpanded,
   });
@@ -104,6 +106,9 @@ function mountTree(
       return () =>
         h(FileTree, {
           ...props,
+          ref: (value: unknown) => {
+            treeApi = value as InstanceType<typeof FileTree> | null;
+          },
           onOpenEntry: events.open,
           onEntryCreated: events.created,
           onEntryRenaming: events.renaming,
@@ -334,6 +339,86 @@ describe("FileTree", () => {
     );
     await settle();
     expect(mocks.listDirectory).toHaveBeenCalledWith("notes");
+  });
+
+  it("keeps focus on a first-level item when pressing ArrowLeft", async () => {
+    mountTree();
+    await settle();
+    const first = row("a.md");
+    first.focus();
+    first.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }),
+    );
+    await settle();
+    expect(document.activeElement).toBe(first);
+    expect(first.tabIndex).toBe(0);
+  });
+
+  it("moves focus to the next sibling after removing the focused item", async () => {
+    mountTree();
+    await settle();
+    row("a.md").focus();
+    await treeApi!.removePath("a.md");
+    await settle();
+    expect(document.activeElement).toBe(row("notes"));
+  });
+
+  it("moves focus to the previous sibling when no next sibling remains", async () => {
+    mountTree();
+    await settle();
+    row("notes").focus();
+    await treeApi!.removePath("notes");
+    await settle();
+    expect(document.activeElement).toBe(row("a.md"));
+  });
+
+  it("moves focus to the parent when no sibling remains", async () => {
+    mountTree(["notes"]);
+    await settle();
+    row("b.md").focus();
+    await treeApi!.removePath("notes/b.md");
+    await settle();
+    expect(document.activeElement).toBe(row("notes"));
+  });
+
+  it("falls back to the first visible item when focusedPath is hidden", async () => {
+    mountTree([], "macos", "missing.md");
+    await settle();
+    const stops = host.querySelectorAll<HTMLElement>(
+      '[role="treeitem"][tabindex="0"]',
+    );
+    expect(stops).toHaveLength(1);
+    expect(stops[0]).toBe(row("notes"));
+  });
+
+  it("focuses the first item after collapsing all while the tree has focus", async () => {
+    mountTree(["notes"]);
+    await settle();
+    row("b.md").focus();
+    await treeApi!.collapseAll();
+    await settle();
+    expect(document.activeElement).toBe(row("notes"));
+    expect(host.querySelectorAll('[role="treeitem"][tabindex="0"]')).toHaveLength(1);
+  });
+
+  it("returns focus to the tree item when creation started from a menu is cancelled", async () => {
+    mocks.popupNativeMenu.mockResolvedValue("new-file");
+    mountTree();
+    await settle();
+    const source = row("a.md");
+    source.focus();
+    source.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, cancelable: true }),
+    );
+    await settle();
+    const input = host.querySelector<HTMLInputElement>(
+      'input[aria-label="新建文件"]',
+    )!;
+    input.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    );
+    await settle();
+    expect(document.activeElement).toBe(row("a.md"));
   });
 
   it("dispatches macOS file-tree shortcuts from the registry", async () => {

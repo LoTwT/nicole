@@ -52,6 +52,7 @@ const emit = defineEmits<{
 
 const tree = ref<HTMLElement | null>(null);
 const nodes = ref<TreeNode[]>([]);
+let editReturnFocus: HTMLElement | null = null;
 const rootLoading = ref(false);
 const rootError = ref(false);
 const expandedSet = ref(new Set<string>());
@@ -250,6 +251,20 @@ function visibleNodes(): TreeNode[] {
   return result;
 }
 
+const tabStopPath = computed(() => {
+  const visible = visibleNodes();
+  if (visible.some((node) => node.path === focusedPath.value)) {
+    return focusedPath.value;
+  }
+  if (
+    props.selectedPath !== null &&
+    visible.some((node) => node.path === props.selectedPath)
+  ) {
+    return props.selectedPath;
+  }
+  return visible[0]?.path ?? "";
+});
+
 async function moveFocus(delta: number) {
   const visible = visibleNodes();
   if (visible.length === 0) {
@@ -269,7 +284,11 @@ function focusedNode(): TreeNode | null {
   return findNode(nodes.value, focusedPath.value);
 }
 
-async function startCreate(kind: "create-file" | "create-folder", dir: string) {
+async function startCreate(
+  kind: "create-file" | "create-folder",
+  dir: string,
+  returnFocus: HTMLElement | null = null,
+) {
   let target = dir === "" ? "." : dir;
   if (target !== ".") {
     const node = findNode(nodes.value, target);
@@ -279,6 +298,7 @@ async function startCreate(kind: "create-file" | "create-folder", dir: string) {
       return;
     }
   }
+  editReturnFocus = returnFocus;
   editing.value = {
     kind,
     target,
@@ -288,13 +308,25 @@ async function startCreate(kind: "create-file" | "create-folder", dir: string) {
 }
 
 async function startRename(node: TreeNode) {
+  editReturnFocus = null;
   editing.value = { kind: "rename", target: node.path, value: node.name };
   focusedPath.value = node.path;
   await nextTick();
 }
 
-function cancelEdit() {
+async function cancelEdit() {
+  const returnFocus = editReturnFocus;
+  editReturnFocus = null;
   editing.value = null;
+  await nextTick();
+  if (returnFocus?.isConnected) {
+    returnFocus.focus();
+    return;
+  }
+  const path = tabStopPath.value;
+  if (path !== "") {
+    await focusPath(path);
+  }
 }
 
 function updateEdit(value: string) {
@@ -308,11 +340,13 @@ async function commitEdit() {
   if (current === null) {
     return;
   }
-  editing.value = null;
   const value = current.value.trim();
   if (value === "") {
+    await cancelEdit();
     return;
   }
+  editing.value = null;
+  editReturnFocus = null;
 
   try {
     if (current.kind === "rename") {
@@ -519,7 +553,7 @@ async function handleTreeKeydown(event: KeyboardEvent) {
     event.preventDefault();
     if (node.isDir && node.expanded) {
       await collapseNode(node);
-    } else {
+    } else if (parentPath(node.path) !== ".") {
       focusedPath.value = parentPath(node.path);
       await focusPath(focusedPath.value);
     }
@@ -646,7 +680,8 @@ function handleTreeMenu(event: MouseEvent) {
   void showMenu("blank", null, event);
 }
 
-function collapseAll() {
+async function collapseAll() {
+  const hadFocus = tree.value?.contains(document.activeElement) ?? false;
   const collapse = (list: TreeNode[]) => {
     for (const node of list) {
       node.expanded = false;
@@ -659,29 +694,49 @@ function collapseAll() {
   expandedSet.value.clear();
   persistExpanded();
   const first = nodes.value[0];
-  if (first) {
-    focusedPath.value = first.path;
+  focusedPath.value = first?.path ?? "";
+  if (hadFocus && first) {
+    await focusPath(first.path);
   }
 }
 
-function removePath(path: string) {
+async function removePath(path: string) {
   const node = findNode(nodes.value, path);
   if (!node) {
     return;
   }
+  const hadFocus = tree.value?.contains(document.activeElement) ?? false;
   const parent = parentPath(path);
+  const siblings =
+    parent === "."
+      ? nodes.value
+      : findNode(nodes.value, parent)?.children ?? [];
+  const index = siblings.findIndex((item) => item.path === path);
+  const nextPath =
+    siblings[index + 1]?.path ??
+    siblings[index - 1]?.path ??
+    (parent === "." ? "" : parent);
+
   if (parent === ".") {
     nodes.value = nodes.value.filter((item) => item.path !== path);
-    return;
-  }
-  const parentNode = findNode(nodes.value, parent);
-  if (parentNode?.children) {
-    parentNode.children = parentNode.children.filter(
-      (item) => item.path !== path,
-    );
+  } else {
+    const parentNode = findNode(nodes.value, parent);
+    if (parentNode?.children) {
+      parentNode.children = parentNode.children.filter(
+        (item) => item.path !== path,
+      );
+    }
   }
   removeExpandedBelow(path);
   persistExpanded();
+  focusedPath.value = nextPath;
+  if (hadFocus) {
+    await nextTick();
+    const target = tabStopPath.value;
+    if (target !== "") {
+      await focusPath(target);
+    }
+  }
 }
 
 applyExpanded();
@@ -766,7 +821,7 @@ defineExpose({
           :node="node"
           :depth="0"
           :selected-path="selectedPath"
-          :focused-path="focusedPath"
+          :tab-stop-path="tabStopPath"
           :editing="editing"
           :platform="platform"
           @toggle="toggleNode"

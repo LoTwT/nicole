@@ -87,6 +87,7 @@ export function buildContextMenu(
   if (target === "workspace-tools") {
     return [
       { id: "app.reveal-workspace", label: revealLabel(platform) },
+      { id: "copy-workspace-path", label: "复制路径" },
       { id: "", label: "", separator: true },
       { id: "app.close-workspace", label: "关闭工作区" },
     ];

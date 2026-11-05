@@ -14,7 +14,7 @@ const props = defineProps<{
   node: TreeNode;
   depth: number;
   selectedPath: string | null;
-  focusedPath: string;
+  tabStopPath: string;
   editing: TreeEditState | null;
   platform: AppPlatform;
 }>();
@@ -90,7 +90,7 @@ function activate() {
       :aria-level="depth + 1"
       :aria-expanded="node.isDir ? node.expanded : undefined"
       :aria-selected="isSelected"
-      :tabindex="focusedPath === node.path ? 0 : -1"
+      :tabindex="tabStopPath === node.path ? 0 : -1"
       class="focus-ring group flex h-[26px] cursor-default items-center gap-1.5 rounded-[var(--radius-control)] pr-1 text-[13px] outline-offset-[-2px]"
       :class="[
         isSelected
@@ -147,7 +147,7 @@ function activate() {
           :node="child"
           :depth="depth + 1"
           :selected-path="selectedPath"
-          :focused-path="focusedPath"
+          :tab-stop-path="tabStopPath"
           :editing="editing"
           :platform="platform"
           @toggle="emit('toggle', $event)"

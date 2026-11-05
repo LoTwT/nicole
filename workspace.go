@@ -48,6 +48,7 @@ var (
 	errDanglingLink    = errors.New("workspace: dangling symbolic link")
 	errFolderNotChosen = errors.New("workspace: folder was not chosen by the user")
 	errFolderForbidden = errors.New("workspace: folder cannot be opened as a workspace")
+	errFolderMissing   = errors.New("workspace: folder does not exist")
 	errFolderDrop      = errors.New("workspace: unknown or expired folder drop token")
 )
 
@@ -524,10 +525,16 @@ func resolveWorkspaceRoot(root string) (string, error) {
 	}
 	resolved, err := filepath.EvalSymlinks(root)
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", errFolderMissing
+		}
 		return "", err
 	}
 	info, err := os.Stat(resolved)
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", errFolderMissing
+		}
 		return "", err
 	}
 	if !info.IsDir() {
