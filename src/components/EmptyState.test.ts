@@ -23,7 +23,11 @@ function mount(
   platform: AppPlatform,
   options: MountOptions = {},
 ) {
-  const calls = { quickOpen: 0, openRecent: [] as string[] };
+  const calls = {
+    quickOpen: 0,
+    openRecent: [] as string[],
+    removeRecent: [] as string[],
+  };
   document.body.innerHTML = '<div id="app"></div>';
   app = createApp(
     defineComponent({
@@ -41,6 +45,9 @@ function mount(
           },
           onOpenRecent: (path: string) => {
             calls.openRecent.push(path);
+          },
+          onRemoveRecent: (path: string) => {
+            calls.removeRecent.push(path);
           },
         }),
     }),
@@ -100,19 +107,111 @@ describe("EmptyState", () => {
     expect(primary.getAttribute("title")).toBe("打开文件夹 ⌘O");
   });
 
-  it("shows at most five recent folders while keeping the missing marker", () => {
-    const folders = ["/a", "/b", "/c", "/d", "/e", "/f", "/g"];
+  it("shows at most five recent folders as name-only capsules", () => {
+    const folders = [
+      "/Users/test/one",
+      "/Users/test/two",
+      "/Users/test/three",
+      "/Users/test/four",
+      "/Users/test/five",
+      "/Users/test/six",
+      "/Users/test/seven",
+    ];
     const { host } = mount("macos", {
       mode: "start",
       recentFolders: folders,
-      missingFolders: ["/c"],
     });
-    const rows = [...host.querySelectorAll("li")];
-    expect(rows).toHaveLength(5);
-    expect(host.textContent).toContain("a");
-    expect(host.textContent).toContain("e");
-    expect(host.textContent).not.toContain("/f");
-    expect(rows[2]?.textContent).toContain("已不存在");
+    const capsules = [...host.querySelectorAll("[data-recent-item]")];
+    expect(capsules).toHaveLength(5);
+    expect(capsules[0]?.textContent).toContain("one");
+    expect(capsules[4]?.textContent).toContain("five");
+    expect(host.textContent).not.toContain("six");
+    expect(host.querySelectorAll('[role="listitem"]')).toHaveLength(5);
+    expect(
+      [...host.querySelectorAll('[data-recent-item] button[aria-label^="打开 "]')]
+        .map((item) => item.getAttribute("aria-label")),
+    ).toEqual([
+      "打开 one（~/one）",
+      "打开 two（~/two）",
+      "打开 three（~/three）",
+      "打开 four（~/four）",
+      "打开 five（~/five）",
+    ]);
+  });
+
+  it("keeps paths out of the label and puts them in the tooltip and accessible name", () => {
+    const { host } = mount("macos", {
+      mode: "start",
+      recentFolders: ["/Users/test/Notes"],
+    });
+    const open = host.querySelector<HTMLButtonElement>(
+      'button[aria-label="打开 Notes（~/Notes）"]',
+    )!;
+    expect(open.textContent?.replace(/\s+/g, "")).toBe("Notes");
+    expect(open.getAttribute("title")).toBe("~/Notes");
+    expect(open.closest("[data-recent-item]")?.getAttribute("title")).toBe(
+      "~/Notes",
+    );
+    expect(host.textContent).not.toContain("~/Notes");
+  });
+
+  it("uses the shared suffix logic for duplicate folder names", () => {
+    const { host } = mount("macos", {
+      mode: "start",
+      recentFolders: [
+        "/Users/test/Dropbox/notes",
+        "/Users/test/Drive/notes",
+      ],
+    });
+    const open = [...host.querySelectorAll<HTMLButtonElement>(
+      'button[aria-label^="打开 notes"]',
+    )];
+    expect(open).toHaveLength(2);
+    expect(host.textContent).toContain("notes");
+    expect(host.textContent).toContain("· Dropbox");
+    expect(host.textContent).toContain("· Drive");
+  });
+
+  it("keeps a missing capsule unopenable with a remove button", () => {
+    const { host, calls } = mount("macos", {
+      mode: "start",
+      recentFolders: ["/Users/test/Gone"],
+      missingFolders: ["/Users/test/Gone"],
+    });
+    const open = host.querySelector<HTMLButtonElement>(
+      'button[aria-label="打开 Gone（~/Gone），已不存在"]',
+    )!;
+    expect(open.disabled).toBe(true);
+    expect(open.getAttribute("title")).toBe("~/Gone（已不存在）");
+    expect(host.textContent).not.toContain("已不存在");
+    open.click();
+    expect(calls.openRecent).toEqual([]);
+
+    const remove = host.querySelector<HTMLButtonElement>(
+      'button[aria-label="从最近打开中移除 Gone"]',
+    )!;
+    expect(remove.className).toContain("opacity-100");
+    expect(remove.className).toContain("absolute");
+    remove.click();
+    expect(calls.removeRecent).toEqual(["/Users/test/Gone"]);
+  });
+
+  it("removes a recent folder from the capsule action", () => {
+    const { host, calls } = mount("macos", {
+      mode: "start",
+      recentFolders: ["/Users/test/Notes"],
+    });
+    const remove = host.querySelector<HTMLButtonElement>(
+      'button[aria-label="从最近打开中移除 Notes"]',
+    )!;
+    expect(remove.className).toContain("opacity-0");
+    expect(remove.className).toContain("group-focus-within:opacity-100");
+    expect(
+      host.querySelector("[data-recent-item] button[aria-label^='打开 ']")!
+        .className,
+    ).toContain("pr-8");
+    remove.click();
+    expect(calls.removeRecent).toEqual(["/Users/test/Notes"]);
   });
 
   it("hides the recent block when there is no history", () => {

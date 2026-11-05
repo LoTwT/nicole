@@ -1,8 +1,17 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import {
+  computed,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  watch,
+} from "vue";
 
 import { displayPath } from "../app/paths";
 import type { AppPlatform } from "../app/platform";
+import { layoutRecentRows } from "../app/recent-layout";
+import { distinguishingSuffixes } from "../app/tabs";
 import { commandShortcut } from "../commands/registry";
 import AppIcon from "./AppIcon.vue";
 
@@ -25,10 +34,42 @@ const emit = defineEmits<{
 }>();
 
 const MAX_VISIBLE_RECENT = 5;
+const RECENT_GAP = 6;
+
+interface RecentItem {
+  id: number;
+  path: string;
+  name: string;
+  suffix: string;
+  pathLabel: string;
+  missing: boolean;
+}
 
 const missing = computed(() => new Set(props.missingFolders));
 const visibleRecent = computed(() =>
   props.recentFolders.slice(0, MAX_VISIBLE_RECENT),
+);
+const recentItems = computed<RecentItem[]>(() => {
+  const paths = visibleRecent.value;
+  const suffixEntries = paths.map((path, index) => ({
+    id: index,
+    name: folderName(path),
+    path: path.replaceAll("\\", "/"),
+  }));
+  const suffixes = distinguishingSuffixes(suffixEntries, "根目录");
+  return paths.map((path, index) => ({
+    id: index,
+    path,
+    name: folderName(path),
+    suffix: suffixes.get(index) ?? "",
+    pathLabel: displayPath(path, props.homeDir),
+    missing: missing.value.has(path),
+  }));
+});
+const recentRows = ref<RecentItem[][]>([]);
+const recentList = ref<HTMLElement | null>(null);
+const recentRowsView = computed(() =>
+  recentRows.value.length > 0 ? recentRows.value : [recentItems.value],
 );
 const openFolderKey = computed(() =>
   commandShortcut("app.open-folder", props.platform),
@@ -40,12 +81,95 @@ const quickOpenKey = computed(() =>
   commandShortcut("nav.quick-open", props.platform),
 );
 const openFolderButton = ref<HTMLButtonElement | null>(null);
+let recentObserver: ResizeObserver | null = null;
 
 function folderName(path: string): string {
   const clean = path.replace(/[\\/]+$/, "");
   const index = Math.max(clean.lastIndexOf("/"), clean.lastIndexOf("\\"));
   return index === -1 ? clean : clean.slice(index + 1);
 }
+
+function openRecentLabel(item: RecentItem): string {
+  const missingLabel = item.missing ? "，已不存在" : "";
+  return `打开 ${item.name}（${item.pathLabel}）${missingLabel}`;
+}
+
+function recentPathTitle(item: RecentItem): string {
+  return item.missing ? `${item.pathLabel}（已不存在）` : item.pathLabel;
+}
+
+function removeRecentLabel(item: RecentItem): string {
+  return `从最近打开中移除 ${item.name}`;
+}
+
+function sameRows(left: readonly RecentItem[][], right: readonly RecentItem[][]) {
+  return (
+    left.length === right.length &&
+    left.every(
+      (row, index) =>
+        row.length === right[index]?.length &&
+        row.every((item, itemIndex) => item.path === right[index]?.[itemIndex]?.path),
+    )
+  );
+}
+
+async function measureRecentRows() {
+  await nextTick();
+  const container = recentList.value;
+  if (container === null || recentItems.value.length === 0) {
+    recentRows.value = [];
+    return;
+  }
+  const elements = [
+    ...container.querySelectorAll<HTMLElement>("[data-recent-item]"),
+  ];
+  const widths = elements.map(
+    (element) => element.getBoundingClientRect().width,
+  );
+  const rows = layoutRecentRows(
+    recentItems.value,
+    widths,
+    container.clientWidth,
+    RECENT_GAP,
+  );
+  if (!sameRows(rows, recentRows.value)) {
+    recentRows.value = rows;
+  }
+}
+
+watch(recentList, (element, previous) => {
+  if (recentObserver !== null) {
+    if (previous !== null) {
+      recentObserver.unobserve(previous);
+    }
+    if (element !== null) {
+      recentObserver.observe(element);
+    }
+  }
+  void measureRecentRows();
+});
+
+watch(recentItems, () => {
+  recentRows.value = [];
+  void measureRecentRows();
+});
+
+onMounted(() => {
+  if (typeof ResizeObserver !== "undefined") {
+    recentObserver = new ResizeObserver(() => {
+      void measureRecentRows();
+    });
+    if (recentList.value !== null) {
+      recentObserver.observe(recentList.value);
+    }
+  }
+  void measureRecentRows();
+});
+
+onBeforeUnmount(() => {
+  recentObserver?.disconnect();
+  recentObserver = null;
+});
 
 defineExpose({
   focusOpenFolder() {
@@ -80,45 +204,73 @@ defineExpose({
         打开文件夹
       </button>
 
-      <div v-if="visibleRecent.length > 0" class="mt-8 text-left">
-        <h2 class="m-0 mb-2 text-[12px] font-semibold text-[var(--text-muted)]">
+      <div v-if="visibleRecent.length > 0" class="mt-8 text-center">
+        <h2 class="m-0 text-[12px] font-semibold text-[var(--text-muted)]">
           最近打开
         </h2>
-        <ul class="m-0 list-none space-y-1 p-0">
-          <li
-            v-for="folder in visibleRecent"
-            :key="folder"
-            class="group flex items-center gap-2 rounded-[var(--radius-control)] px-2 py-1.5 hover:bg-[var(--surface-subtle)]"
+        <div
+          ref="recentList"
+          role="list"
+          class="mt-2 flex flex-col items-stretch gap-1.5"
+        >
+          <div
+            v-for="(row, rowIndex) in recentRowsView"
+            :key="rowIndex"
+            class="flex flex-wrap items-center justify-center gap-1.5"
           >
-            <button
-              type="button"
-              class="focus-ring flex min-w-0 flex-1 items-baseline gap-2 rounded-[var(--radius-control)] text-left"
-              :disabled="missing.has(folder)"
-              @click="emit('open-recent', folder)"
+            <div
+              v-for="item in row"
+              :key="item.path"
+              role="listitem"
+              data-recent-item
+              class="group relative inline-flex items-center rounded-full border border-[var(--border-default)] bg-[var(--surface-elevated)] text-[var(--text-primary)] transition-colors"
+              :class="item.missing ? 'opacity-60' : 'hover:bg-[var(--surface-subtle)]'"
+              :style="{ maxWidth: 'min(200px, 100%)' }"
+              :title="recentPathTitle(item)"
             >
-              <span class="shrink-0 text-[13px] text-[var(--text-primary)]">
-                {{ folderName(folder) }}
-              </span>
-              <span class="min-w-0 truncate text-[11px] text-[var(--text-muted)]">
-                {{ displayPath(folder, homeDir) }}
-              </span>
-              <span
-                v-if="missing.has(folder)"
-                class="shrink-0 text-[11px] text-[var(--status-danger-fg)]"
+              <button
+                type="button"
+                class="focus-ring flex min-w-0 items-center gap-1.5 rounded-full py-1.5 pl-3 pr-8 text-left disabled:cursor-default"
+                :disabled="item.missing"
+                :aria-label="openRecentLabel(item)"
+                :title="recentPathTitle(item)"
+                @click="emit('open-recent', item.path)"
               >
-                已不存在
-              </span>
-            </button>
-            <button
-              type="button"
-              class="focus-ring grid size-5 shrink-0 place-items-center rounded-[var(--radius-control)] text-[var(--text-muted)] opacity-0 group-hover:opacity-100 focus-visible:opacity-100 hover:bg-[var(--surface-muted)] hover:text-[var(--text-primary)]"
-              aria-label="从最近打开中移除"
-              @click="emit('remove-recent', folder)"
-            >
-              <AppIcon name="close" :size="12" />
-            </button>
-          </li>
-        </ul>
+                <AppIcon
+                  name="folder"
+                  :size="14"
+                  class="shrink-0 text-[var(--text-muted)]"
+                />
+                <span
+                  class="min-w-0 truncate text-[13px]"
+                  :class="{ 'line-through': item.missing }"
+                >
+                  {{ item.name }}
+                </span>
+                <span
+                  v-if="item.suffix"
+                  class="shrink-0 text-[11px] text-[var(--text-muted)]"
+                >
+                  · {{ item.suffix }}
+                </span>
+              </button>
+              <button
+                type="button"
+                class="focus-ring absolute right-1 grid size-5 place-items-center rounded-[var(--radius-control)] text-[var(--text-muted)] hover:bg-[var(--surface-muted)] hover:text-[var(--text-primary)]"
+                :class="
+                  item.missing
+                    ? 'opacity-100'
+                    : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100 group-focus-within:opacity-100'
+                "
+                :aria-label="removeRecentLabel(item)"
+                :title="removeRecentLabel(item)"
+                @click="emit('remove-recent', item.path)"
+              >
+                <AppIcon name="close" :size="12" />
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
 
       <div

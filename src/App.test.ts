@@ -4529,10 +4529,12 @@ describe("start page and workspace lifecycle", () => {
     app.mount(host);
     await settle();
 
-    host.querySelector<HTMLElement>("li button")!.click();
+    host.querySelector<HTMLButtonElement>("[data-recent-item] button")!.click();
     await settle();
     expect(mocks.openFolder).toHaveBeenCalledWith("/gone");
-    expect(host.textContent).toContain("已不存在");
+    expect(
+      host.querySelector('[aria-label="打开 gone（/gone），已不存在"]'),
+    ).not.toBeNull();
   });
 
   it("does not mark a localized not-found message or other open failures", async () => {
@@ -4549,7 +4551,7 @@ describe("start page and workspace lifecycle", () => {
     app.mount(host);
     await settle();
 
-    host.querySelector<HTMLElement>("li button")!.click();
+    host.querySelector<HTMLButtonElement>("[data-recent-item] button")!.click();
     await settle();
     expect(mocks.openFolder).toHaveBeenCalledWith("/blocked");
     expect(host.textContent).not.toContain("已不存在");
@@ -4698,9 +4700,10 @@ describe("start page and workspace lifecycle", () => {
     app.mount(host);
     await settle();
 
-    expect(host.querySelectorAll("li")).toHaveLength(5);
-    expect(host.textContent).toContain("/a");
-    expect(host.textContent).not.toContain("/f");
+    expect(host.querySelectorAll("[data-recent-item]")).toHaveLength(5);
+    expect(host.textContent).toContain("a");
+    expect(host.textContent).toContain("e");
+    expect(host.textContent).not.toContain("f");
   });
 
   it("reveals the workspace root from the palette", async () => {
