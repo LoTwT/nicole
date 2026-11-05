@@ -4573,11 +4573,118 @@ describe("start page and workspace lifecycle", () => {
     await settle();
     expect(mocks.openFolder).toHaveBeenCalledWith("/gone");
     const missingButton = host.querySelector<HTMLButtonElement>(
-      '[data-recent-item] button[aria-label="打开 gone（/gone），已不存在"]',
+      '[data-recent-item] button[aria-label="打开 gone（/gone），已不存在，点击重试"]',
     )!;
-    expect(missingButton.disabled).toBe(true);
+    expect(missingButton.disabled).toBe(false);
     expect(host.textContent).toContain("文件夹已不存在");
     expect(host.textContent).not.toContain("workspace: folder does not exist");
+  });
+
+  it("clears the missing marker after a successful retry", async () => {
+    app?.unmount();
+    mocks.getSettings.mockResolvedValue({
+      theme: "system",
+      sidebarWidth: 252,
+      recentFolders: ["/gone"],
+      expandedFolders: {},
+      workspaceClosed: true,
+    });
+    mocks.openFolder
+      .mockRejectedValueOnce(new Error("workspace: folder does not exist"))
+      .mockResolvedValueOnce(folder("/gone"));
+    app = createApp(App);
+    app.mount(host);
+    await settle();
+
+    const open = host.querySelector<HTMLButtonElement>(
+      "[data-recent-item] button",
+    )!;
+    open.click();
+    await settle();
+    expect(
+      host.querySelector(
+        '[data-recent-item] button[aria-label="打开 gone（/gone），已不存在，点击重试"]',
+      ),
+    ).not.toBeNull();
+
+    host.querySelector<HTMLButtonElement>("[data-recent-item] button")!.click();
+    await settle();
+    expect(host.querySelector("aside")).not.toBeNull();
+
+    window.dispatchEvent(
+      new CustomEvent("nicole:run-command", {
+        detail: "app.close-workspace",
+      }),
+    );
+    await settle();
+    const retried = host.querySelector<HTMLButtonElement>(
+      '[data-recent-item] button[aria-label^="打开 gone"]',
+    )!;
+    expect(retried.getAttribute("aria-label")).not.toContain("已不存在");
+  });
+
+  it("keeps the missing marker and focus when retry still finds no folder", async () => {
+    app?.unmount();
+    mocks.getSettings.mockResolvedValue({
+      theme: "system",
+      sidebarWidth: 252,
+      recentFolders: ["/gone"],
+      expandedFolders: {},
+      workspaceClosed: true,
+    });
+    mocks.openFolder.mockRejectedValue(
+      new Error("workspace: folder does not exist"),
+    );
+    app = createApp(App);
+    app.mount(host);
+    await settle();
+
+    host.querySelector<HTMLButtonElement>("[data-recent-item] button")!.click();
+    await settle();
+    const missingButton = host.querySelector<HTMLButtonElement>(
+      '[data-recent-item] button[aria-label="打开 gone（/gone），已不存在，点击重试"]',
+    )!;
+    missingButton.blur();
+    expect(document.activeElement).not.toBe(missingButton);
+    missingButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await settle();
+
+    expect(mocks.openFolder).toHaveBeenCalledTimes(2);
+    expect(missingButton.isConnected).toBe(true);
+    expect(missingButton.getAttribute("aria-label")).toContain(
+      "已不存在，点击重试",
+    );
+    expect(document.activeElement).toBe(missingButton);
+  });
+
+  it("keeps an existing missing marker for other retry errors", async () => {
+    app?.unmount();
+    mocks.getSettings.mockResolvedValue({
+      theme: "system",
+      sidebarWidth: 252,
+      recentFolders: ["/gone"],
+      expandedFolders: {},
+      workspaceClosed: true,
+    });
+    mocks.openFolder
+      .mockRejectedValueOnce(new Error("workspace: folder does not exist"))
+      .mockRejectedValueOnce(new Error("permission denied"));
+    app = createApp(App);
+    app.mount(host);
+    await settle();
+
+    host.querySelector<HTMLButtonElement>("[data-recent-item] button")!.click();
+    await settle();
+    const missingButton = host.querySelector<HTMLButtonElement>(
+      '[data-recent-item] button[aria-label="打开 gone（/gone），已不存在，点击重试"]',
+    )!;
+    missingButton.blur();
+    missingButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await settle();
+
+    expect(missingButton.getAttribute("aria-label")).toContain("已不存在");
+    expect(document.activeElement).toBe(missingButton);
+    expect(host.textContent).toContain("打开失败：permission denied");
   });
 
   it("does not mark a localized not-found message or other open failures", async () => {

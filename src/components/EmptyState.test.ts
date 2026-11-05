@@ -237,13 +237,13 @@ describe("EmptyState", () => {
       missingFolders: ["/Users/test/Gone"],
     });
     const open = host.querySelector<HTMLButtonElement>(
-      'button[aria-label="打开 Gone（~/Gone），已不存在"]',
+      'button[aria-label="打开 Gone（~/Gone），已不存在，点击重试"]',
     )!;
-    expect(open.disabled).toBe(true);
-    expect(open.getAttribute("title")).toBe("~/Gone（已不存在）");
+    expect(open.disabled).toBe(false);
+    expect(open.getAttribute("title")).toBe("~/Gone（已不存在，点击重试）");
     expect(host.textContent).not.toContain("已不存在");
     open.click();
-    expect(calls.openRecent).toEqual([]);
+    expect(calls.openRecent).toEqual(["/Users/test/Gone"]);
 
     const remove = host.querySelector<HTMLButtonElement>(
       'button[aria-label="从最近打开中移除 Gone（已不存在）"]',
@@ -252,6 +252,7 @@ describe("EmptyState", () => {
     expect(remove.className).toContain("absolute");
     remove.click();
     expect(calls.removeRecent).toEqual(["/Users/test/Gone"]);
+    expect(calls.openRecent).toEqual(["/Users/test/Gone"]);
   });
 
   it("removes a recent folder from the capsule action", () => {
@@ -264,12 +265,18 @@ describe("EmptyState", () => {
     )!;
     expect(remove.className).toContain("opacity-0");
     expect(remove.className).toContain("group-focus-within:opacity-100");
-    expect(
-      host.querySelector("[data-recent-item] button[aria-label^='打开 ']")!
-        .className,
-    ).toContain("pr-8");
+    expect(remove.className).toContain("size-6");
+    expect(remove.className).toContain("-right-2");
+    expect(remove.className).toContain("-top-2");
+    expect(remove.querySelector("span")?.className).toContain("size-4");
+    const open = host.querySelector<HTMLButtonElement>(
+      "[data-recent-item] button[aria-label^='打开 ']",
+    )!;
+    expect(open.className).not.toContain("pr-8");
+    expect(open.className).toContain("px-4");
     remove.click();
     expect(calls.removeRecent).toEqual(["/Users/test/Notes"]);
+    expect(calls.openRecent).toEqual([]);
   });
 
   it("shows the path when a root folder has no basename", () => {
@@ -375,7 +382,7 @@ describe("EmptyState", () => {
     );
   });
 
-  it("keeps the capsule DOM and focuses its remove button when it becomes missing", async () => {
+  it("keeps the capsule DOM and focus when it becomes missing", async () => {
     const live = mountLive("macos", ["/Users/test/notes"], {
       markMissingOnOpen: true,
     });
@@ -384,14 +391,15 @@ describe("EmptyState", () => {
       'button[aria-label="打开 notes（~/notes）"]',
     )!;
     const capsule = open.closest("[data-recent-item]")!;
+    open.focus();
     open.click();
     await flush();
-    expect(open.disabled).toBe(true);
+    expect(open.disabled).toBe(false);
     expect(open.isConnected).toBe(true);
     expect(capsule.isConnected).toBe(true);
     expect(capsule.querySelector("span.line-through")).not.toBeNull();
     expect(document.activeElement?.getAttribute("aria-label")).toBe(
-      "从最近打开中移除 notes（已不存在）",
+      "打开 notes（~/notes），已不存在，点击重试",
     );
   });
 

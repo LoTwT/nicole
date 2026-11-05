@@ -34,7 +34,7 @@ const emit = defineEmits<{
 }>();
 
 const MAX_VISIBLE_RECENT = 5;
-const RECENT_GAP = 6;
+const RECENT_GAP = 8;
 
 interface RecentItem {
   id: number;
@@ -91,7 +91,6 @@ const quickOpenKey = computed(() =>
 const openFolderButton = ref<HTMLButtonElement | null>(null);
 let recentObserver: ResizeObserver | null = null;
 let pendingRemoveFocus: string | null | undefined = undefined;
-let pendingMissingFocus: string | null = null;
 
 function folderName(path: string): string {
   const name = absoluteBaseName(path);
@@ -103,12 +102,14 @@ function recentDisplayName(item: RecentItem): string {
 }
 
 function openRecentLabel(item: RecentItem): string {
-  const missingLabel = item.missing ? "，已不存在" : "";
+  const missingLabel = item.missing ? "，已不存在，点击重试" : "";
   return `打开 ${item.name}（${item.pathLabel}）${missingLabel}`;
 }
 
 function recentPathTitle(item: RecentItem): string {
-  return item.missing ? `${item.pathLabel}（已不存在）` : item.pathLabel;
+  return item.missing
+    ? `${item.pathLabel}（已不存在，点击重试）`
+    : item.pathLabel;
 }
 
 function removeRecentLabel(item: RecentItem): string {
@@ -130,23 +131,13 @@ function focusRecentOpen(path: string) {
     ?.focus();
 }
 
-function focusRecentRemove(path: string) {
-  recentElement(path)
-    ?.querySelector<HTMLButtonElement>('button[aria-label^="从最近打开中移除 "]')
-    ?.focus();
-}
-
 function focusRecent(path: string) {
   const item = recentItems.value.find((candidate) => candidate.path === path);
   if (item === undefined) {
     openFolderButton.value?.focus();
     return;
   }
-  if (item.missing) {
-    focusRecentRemove(path);
-  } else {
-    focusRecentOpen(path);
-  }
+  focusRecentOpen(path);
 }
 
 async function applyPendingFocus() {
@@ -161,22 +152,9 @@ async function applyPendingFocus() {
     }
     return;
   }
-  if (pendingMissingFocus !== null) {
-    const item = recentItems.value.find(
-      (candidate) => candidate.path === pendingMissingFocus,
-    );
-    if (item?.missing) {
-      await nextTick();
-      focusRecentRemove(item.path);
-      pendingMissingFocus = null;
-    } else if (item === undefined) {
-      pendingMissingFocus = null;
-    }
-  }
 }
 
 function openRecent(item: RecentItem) {
-  pendingMissingFocus = item.path;
   emit("open-recent", item.path);
 }
 
@@ -264,6 +242,9 @@ defineExpose({
   focusOpenFolder() {
     openFolderButton.value?.focus();
   },
+  focusRecentItem(path: string) {
+    focusRecent(path);
+  },
 });
 </script>
 
@@ -300,7 +281,7 @@ defineExpose({
         <div
           ref="recentList"
           role="list"
-          class="mt-2 flex flex-wrap items-center justify-center gap-1.5"
+          class="mt-2 flex flex-wrap items-center justify-center gap-2"
         >
           <template v-for="(item, index) in recentItems" :key="item.path">
             <div
@@ -319,8 +300,7 @@ defineExpose({
             >
               <button
                 type="button"
-                class="focus-ring flex min-w-0 items-center gap-1.5 rounded-full py-1.5 pl-3 pr-8 text-left disabled:cursor-default"
-                :disabled="item.missing"
+                class="focus-ring flex min-w-0 items-center justify-center gap-1.5 rounded-full px-4 py-1.5 text-left"
                 :aria-label="openRecentLabel(item)"
                 :title="recentPathTitle(item)"
                 @click="openRecent(item)"
@@ -345,7 +325,7 @@ defineExpose({
               </button>
               <button
                 type="button"
-                class="focus-ring absolute right-1 grid size-5 place-items-center rounded-[var(--radius-control)] text-[var(--text-muted)] hover:bg-[var(--surface-muted)] hover:text-[var(--text-primary)]"
+                class="focus-ring absolute -right-2 -top-2 z-10 grid size-6 place-items-center rounded-full bg-transparent text-[var(--text-muted)] hover:text-[var(--text-primary)]"
                 :class="
                   item.missing
                     ? 'opacity-100'
@@ -353,9 +333,13 @@ defineExpose({
                 "
                 :aria-label="removeRecentLabel(item)"
                 :title="removeRecentLabel(item)"
-                @click="removeRecent(item)"
+                @click.stop="removeRecent(item)"
               >
-                <AppIcon name="close" :size="12" />
+                <span
+                  class="grid size-4 place-items-center rounded-full border border-[var(--border-default)] bg-[var(--surface-elevated)]"
+                >
+                  <AppIcon name="close" :size="10" />
+                </span>
               </button>
             </div>
           </template>

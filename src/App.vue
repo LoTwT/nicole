@@ -2177,9 +2177,14 @@ async function chooseFolder() {
 }
 
 async function openRecentFolder(path: string) {
-  await startFolderOperation(() =>
+  const opened = await startFolderOperation(() =>
     switchToFolder(path, { markMissing: true }),
   );
+  if (!opened && startState.value) {
+    // WebKit does not move focus to a button on click; a failed retry must
+    // leave the user on the same enabled recent item.
+    emptyState.value?.focusRecentItem(path);
+  }
 }
 
 async function closeWorkspace() {
