@@ -230,7 +230,7 @@ describe("EmptyState", () => {
     expect(host.textContent).toContain("· Drive");
   });
 
-  it("keeps a missing capsule unopenable with a remove button", () => {
+  it("keeps a missing capsule retryable with a remove button", () => {
     const { host, calls } = mount("macos", {
       mode: "start",
       recentFolders: ["/Users/test/Gone"],
@@ -248,8 +248,21 @@ describe("EmptyState", () => {
     const remove = host.querySelector<HTMLButtonElement>(
       'button[aria-label="从最近打开中移除 Gone（已不存在）"]',
     )!;
+    const item = remove.closest("[data-recent-item]")!;
+    const capsule = item.querySelector("[data-recent-capsule]")!;
     expect(remove.className).toContain("opacity-100");
     expect(remove.className).toContain("absolute");
+    expect(item.className).not.toContain("opacity-60");
+    expect(capsule.className).toContain("opacity-60");
+    expect(capsule.className).toContain("border");
+    expect(capsule.className).toContain("border-[var(--border-default)]");
+    for (
+      let ancestor = remove.parentElement;
+      ancestor !== null;
+      ancestor = ancestor.parentElement
+    ) {
+      expect(ancestor.className).not.toContain("opacity-60");
+    }
     remove.click();
     expect(calls.removeRecent).toEqual(["/Users/test/Gone"]);
     expect(calls.openRecent).toEqual(["/Users/test/Gone"]);
@@ -268,7 +281,26 @@ describe("EmptyState", () => {
     expect(remove.className).toContain("size-6");
     expect(remove.className).toContain("-right-2");
     expect(remove.className).toContain("-top-2");
-    expect(remove.querySelector("span")?.className).toContain("size-4");
+    expect(remove.className).toContain("group/remove");
+    expect(remove.className).toContain("focus-ring");
+    const circle = remove.querySelector("span")!;
+    expect(circle.className).toContain("size-4");
+    expect(circle.className).toContain("transition-colors");
+    for (const state of ["hover", "active", "focus-visible"]) {
+      expect(circle.className).toContain(
+        `group-${state}/remove:border-[var(--text-primary)]`,
+      );
+      expect(circle.className).toContain(
+        `group-${state}/remove:bg-[var(--text-primary)]`,
+      );
+      expect(circle.className).toContain(
+        `group-${state}/remove:text-[var(--surface-canvas)]`,
+      );
+    }
+    const item = remove.closest("[data-recent-item]")!;
+    const capsule = item.querySelector("[data-recent-capsule]")!;
+    expect(item.className).not.toContain("hover:bg-[var(--surface-subtle)]");
+    expect(capsule.className).toContain("hover:bg-[var(--surface-subtle)]");
     const open = host.querySelector<HTMLButtonElement>(
       "[data-recent-item] button[aria-label^='打开 ']",
     )!;

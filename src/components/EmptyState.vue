@@ -293,39 +293,46 @@ defineExpose({
               role="listitem"
               data-recent-item
               :data-recent-path="item.path"
-              class="group relative inline-flex items-center rounded-full border border-[var(--border-default)] bg-[var(--surface-elevated)] text-[var(--text-primary)] transition-colors"
-              :class="item.missing ? 'opacity-60' : 'hover:bg-[var(--surface-subtle)]'"
+              class="group relative inline-flex items-center"
               :style="{ maxWidth: 'min(200px, 100%)' }"
               :title="recentPathTitle(item)"
             >
-              <button
-                type="button"
-                class="focus-ring flex min-w-0 items-center justify-center gap-1.5 rounded-full px-4 py-1.5 text-left"
-                :aria-label="openRecentLabel(item)"
-                :title="recentPathTitle(item)"
-                @click="openRecent(item)"
+              <div
+                data-recent-capsule
+                class="flex min-w-0 items-center rounded-full border border-[var(--border-default)] bg-[var(--surface-elevated)] text-[var(--text-primary)] transition-colors"
+                :class="
+                  item.missing ? 'opacity-60' : 'hover:bg-[var(--surface-subtle)]'
+                "
               >
-                <AppIcon
-                  name="folder"
-                  :size="14"
-                  class="shrink-0 text-[var(--text-muted)]"
-                />
-                <span
-                  class="min-w-0 flex-1 truncate text-[13px]"
-                  :class="{ 'line-through': item.missing }"
+                <button
+                  type="button"
+                  class="focus-ring flex min-w-0 items-center justify-center gap-1.5 rounded-full px-4 py-1.5 text-left"
+                  :aria-label="openRecentLabel(item)"
+                  :title="recentPathTitle(item)"
+                  @click="openRecent(item)"
                 >
-                  {{ item.name }}
-                </span>
-                <span
-                  v-if="item.suffix"
-                  class="min-w-0 max-w-[80px] shrink truncate text-[11px] text-[var(--text-muted)]"
-                >
-                  · {{ item.suffix }}
-                </span>
-              </button>
+                  <AppIcon
+                    name="folder"
+                    :size="14"
+                    class="shrink-0 text-[var(--text-muted)]"
+                  />
+                  <span
+                    class="min-w-0 flex-1 truncate text-[13px]"
+                    :class="{ 'line-through': item.missing }"
+                  >
+                    {{ item.name }}
+                  </span>
+                  <span
+                    v-if="item.suffix"
+                    class="min-w-0 max-w-[80px] shrink truncate text-[11px] text-[var(--text-muted)]"
+                  >
+                    · {{ item.suffix }}
+                  </span>
+                </button>
+              </div>
               <button
                 type="button"
-                class="focus-ring absolute -right-2 -top-2 z-10 grid size-6 place-items-center rounded-full bg-transparent text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                class="group/remove focus-ring absolute -right-2 -top-2 z-10 grid size-6 place-items-center rounded-full bg-transparent"
                 :class="
                   item.missing
                     ? 'opacity-100'
@@ -336,7 +343,7 @@ defineExpose({
                 @click.stop="removeRecent(item)"
               >
                 <span
-                  class="grid size-4 place-items-center rounded-full border border-[var(--border-default)] bg-[var(--surface-elevated)]"
+                  class="grid size-4 place-items-center rounded-full border border-[var(--border-default)] bg-[var(--surface-elevated)] text-[var(--text-muted)] transition-colors group-hover/remove:border-[var(--text-primary)] group-hover/remove:bg-[var(--text-primary)] group-hover/remove:text-[var(--surface-canvas)] group-active/remove:border-[var(--text-primary)] group-active/remove:bg-[var(--text-primary)] group-active/remove:text-[var(--surface-canvas)] group-focus-visible/remove:border-[var(--text-primary)] group-focus-visible/remove:bg-[var(--text-primary)] group-focus-visible/remove:text-[var(--surface-canvas)]"
                 >
                   <AppIcon name="close" :size="10" />
                 </span>
