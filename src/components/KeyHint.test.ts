@@ -13,7 +13,7 @@ afterEach(() => {
 
 function mount(
   shortcut: string,
-  variant?: "keycap" | "plain",
+  variant?: "keycap" | "on-accent" | "plain",
 ) {
   document.body.innerHTML = '<div id="app"></div>';
   app = createApp(
@@ -38,6 +38,33 @@ describe("KeyHint", () => {
       expect(key.classList).toContain("font-medium");
       expect(key.classList).toContain("leading-none");
       expect(key.classList).toContain("font-sans");
+      expect(key.classList).toContain("border");
+      expect(key.classList).toContain("bg-[var(--surface-canvas)]");
+      expect(key.classList).toContain("text-[var(--text-secondary)]");
+      expect(key.className).toContain(
+        "shadow-[inset_0_-1px_0_var(--border-subtle)]",
+      );
+    }
+  });
+
+  it("renders an on-accent keycap without border or inset shadow", () => {
+    const keys = mount("⌘O", "on-accent");
+    expect(keys.map((key) => key.textContent?.trim())).toEqual(["⌘", "O"]);
+    for (const key of keys) {
+      expect(key.classList).toContain(
+        "bg-[color-mix(in_srgb,currentColor_14%,transparent)]",
+      );
+      expect(key.classList).toContain("text-inherit");
+      expect(
+        [...key.classList].some(
+          (name) => name === "border" || name.startsWith("border-"),
+        ),
+      ).toBe(false);
+      expect(key.className).not.toContain("shadow-[");
+      expect(key.classList).toContain("h-[18px]");
+      expect(key.classList).toContain("min-w-[18px]");
+      expect(key.classList).toContain("text-[10px]");
+      expect(key.classList).toContain("leading-none");
     }
   });
 

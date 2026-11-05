@@ -4,11 +4,19 @@ import { computed } from "vue";
 import { shortcutKeycaps } from "../app/platform";
 
 const props = withDefaults(
-  defineProps<{ shortcut: string; variant?: "keycap" | "plain" }>(),
+  defineProps<{
+    shortcut: string;
+    variant?: "keycap" | "on-accent" | "plain";
+  }>(),
   { variant: "keycap" },
 );
 
 const keys = computed(() => shortcutKeycaps(props.shortcut));
+const keycapChrome = computed(() =>
+  props.variant === "on-accent"
+    ? "bg-[color-mix(in_srgb,currentColor_14%,transparent)] text-inherit"
+    : "border border-[var(--border-strong)] bg-[var(--surface-canvas)] text-[var(--text-secondary)] shadow-[inset_0_-1px_0_var(--border-subtle)]",
+);
 </script>
 
 <template>
@@ -27,7 +35,8 @@ const keys = computed(() => shortcutKeycaps(props.shortcut));
     <kbd
       v-for="(key, index) in keys"
       :key="`${key}-${index}`"
-      class="inline-grid h-[18px] min-w-[18px] place-items-center rounded-[4px] border border-[var(--border-strong)] bg-[var(--surface-canvas)] px-1 font-sans text-[10px] font-medium leading-none text-[var(--text-secondary)] shadow-[inset_0_-1px_0_var(--border-subtle)]"
+      class="inline-grid h-[18px] min-w-[18px] place-items-center rounded-[4px] px-1 font-sans text-[10px] font-medium leading-none"
+      :class="keycapChrome"
     >
       {{ key }}
     </kbd>

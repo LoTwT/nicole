@@ -61,7 +61,7 @@ function folderName(path: string): string {
         @click="emit('open-folder')"
       >
         打开文件夹
-        <KeyHint :shortcut="openFolderKey" />
+        <KeyHint :shortcut="openFolderKey" variant="on-accent" />
       </button>
 
       <div v-if="recentFolders.length > 0" class="mt-8 text-left">
