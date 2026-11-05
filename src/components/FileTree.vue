@@ -31,9 +31,7 @@ import FileTreeNode from "./FileTreeNode.vue";
 import InlineNameInput from "./InlineNameInput.vue";
 
 const props = defineProps<{
-  rootName: string;
   rootPath: string;
-  rootDisplayPath: string;
   generation: number;
   selectedPath: string | null;
   platform: AppPlatform;
@@ -48,12 +46,12 @@ const emit = defineEmits<{
   "entry-renamed": [oldPath: string, newPath: string, isDir: boolean];
   "trash-request": [entry: TreeNode];
   "expanded-change": [folders: string[]];
+  "run-command": [id: string];
   status: [message: string];
 }>();
 
 const tree = ref<HTMLElement | null>(null);
 const nodes = ref<TreeNode[]>([]);
-const rootOpen = ref(true);
 const rootLoading = ref(false);
 const rootError = ref(false);
 const expandedSet = ref(new Set<string>());
@@ -281,7 +279,6 @@ async function startCreate(kind: "create-file" | "create-folder", dir: string) {
       return;
     }
   }
-  rootOpen.value = true;
   editing.value = {
     kind,
     target,
@@ -409,7 +406,6 @@ async function reloadFolder(path: string): Promise<void> {
 }
 
 async function reveal(path: string): Promise<void> {
-  rootOpen.value = true;
   const parts = path.split("/");
   let prefix = "";
   for (let index = 0; index < parts.length - 1; index++) {
@@ -562,7 +558,7 @@ async function handleTreeKeydown(event: KeyboardEvent) {
 }
 
 async function showMenu(
-  target: "blank" | "root" | "file" | "folder",
+  target: "blank" | "file" | "folder",
   node: TreeNode | null,
   event: MouseEvent,
 ) {
@@ -634,6 +630,9 @@ async function showMenu(
         emit("status", "复制失败");
       }
       break;
+    case "app.close-workspace":
+      emit("run-command", "app.close-workspace");
+      break;
   }
 }
 
@@ -645,6 +644,24 @@ function handleTreeMenu(event: MouseEvent) {
     return;
   }
   void showMenu("blank", null, event);
+}
+
+function collapseAll() {
+  const collapse = (list: TreeNode[]) => {
+    for (const node of list) {
+      node.expanded = false;
+      if (node.children) {
+        collapse(node.children);
+      }
+    }
+  };
+  collapse(nodes.value);
+  expandedSet.value.clear();
+  persistExpanded();
+  const first = nodes.value[0];
+  if (first) {
+    focusedPath.value = first.path;
+  }
 }
 
 function removePath(path: string) {
@@ -692,47 +709,12 @@ defineExpose({
   reveal,
   removePath,
   startCreate,
+  collapseAll,
 });
 </script>
 
 <template>
   <div class="flex min-h-0 flex-1 flex-col">
-    <div
-      class="group flex h-7 shrink-0 items-center gap-1 rounded-[var(--radius-control)] pr-1 text-[12px] font-semibold text-[var(--text-secondary)]"
-      role="group"
-      :aria-label="`根目录 ${rootName}`"
-      @contextmenu.prevent="showMenu('root', null, $event)"
-    >
-      <button
-        type="button"
-        class="focus-ring flex min-w-0 flex-1 items-center gap-1 rounded-[var(--radius-control)] px-1.5 py-1 text-left hover:bg-[var(--surface-subtle)]"
-        :aria-expanded="rootOpen"
-        @click="rootOpen = !rootOpen"
-      >
-        <AppIcon
-          :name="rootOpen ? 'chevron-down' : 'chevron-right'"
-          :size="12"
-          class="shrink-0 text-[var(--text-muted)]"
-        />
-        <span class="shrink-0">{{ rootName }}</span>
-        <span
-          v-if="!rootOpen"
-          class="min-w-0 truncate text-[11px] font-normal text-[var(--text-muted)]"
-        >
-          {{ rootDisplayPath }}
-        </span>
-      </button>
-      <button
-        type="button"
-        class="focus-ring grid size-5 shrink-0 place-items-center rounded-[var(--radius-control)] text-[var(--text-muted)] opacity-0 hover:bg-[var(--surface-muted)] hover:text-[var(--text-primary)] focus-visible:opacity-100 group-hover:opacity-100"
-        aria-label="新建文件"
-        title="新建文件"
-        @click="startCreate('create-file', '.')"
-      >
-        <AppIcon name="plus" :size="13" />
-      </button>
-    </div>
-
     <div
       ref="tree"
       class="min-h-0 flex-1 overflow-auto"
@@ -757,7 +739,7 @@ defineExpose({
           重试
         </button>
       </div>
-      <template v-else-if="rootOpen">
+      <template v-else>
         <div
           v-if="isRootCreate && editing"
           class="flex h-[26px] items-center pr-1"

@@ -13,6 +13,8 @@ vi.mock("../services/files", () => ({
 vi.mock("../services/menu", () => ({ popupNativeMenu: vi.fn() }));
 vi.mock("../services/clipboard", () => ({ copyText: vi.fn() }));
 
+import { listDirectory } from "../services/files";
+import { popupNativeMenu } from "../services/menu";
 import AppSidebar from "./AppSidebar.vue";
 
 let host: HTMLElement;
@@ -36,12 +38,15 @@ afterEach(() => {
 function mount(
   width = 252,
   platform: "macos" | "windows" | "linux" = "macos",
+  initialExpanded: string[] = [],
 ) {
   const changes: number[] = [];
   const commits: number[] = [];
   let resets = 0;
   let themes = 0;
   let openFolders = 0;
+  const runCommands: string[] = [];
+  const expandedChanges: string[][] = [];
   const Component = defineComponent({
     setup() {
       return () =>
@@ -51,10 +56,9 @@ function mount(
           platform,
           rootName: "notes",
           rootPath: "/tmp/notes",
-          rootDisplayPath: "~/notes",
           generation: 1,
           selectedPath: null,
-          initialExpanded: [],
+          initialExpanded,
           isDark: false,
           onWidthChange: (value: number) => changes.push(value),
           onWidthCommit: (value: number) => commits.push(value),
@@ -67,6 +71,12 @@ function mount(
           onOpenFolder: () => {
             openFolders += 1;
           },
+          onRunCommand: (id: string) => {
+            runCommands.push(id);
+          },
+          onExpandedChange: (folders: string[]) => {
+            expandedChanges.push(folders);
+          },
         });
     },
   });
@@ -78,6 +88,8 @@ function mount(
     resets: () => resets,
     themes: () => themes,
     openFolders: () => openFolders,
+    runCommands,
+    expandedChanges,
   };
 }
 
@@ -172,5 +184,110 @@ describe("AppSidebar", () => {
       .querySelector<HTMLButtonElement>('button[aria-label="切换到暗色主题"]')!
       .click();
     expect(log.themes()).toBe(1);
+  });
+});
+
+describe("workspace tool row", () => {
+  it("shows the workspace name and four labelled icon buttons", async () => {
+    mount();
+    await settle();
+    const tools = host.querySelector('[aria-label="工作区工具"]')!;
+    expect(tools.textContent).toContain("notes");
+    const labels = [...tools.querySelectorAll("button")].map((button) =>
+      button.getAttribute("aria-label"),
+    );
+    expect(labels).toEqual([
+      "新建文件 ⌘N",
+      "新建文件夹 ⇧⌘N",
+      "全部折叠",
+      "更多",
+    ]);
+  });
+
+  it("starts inline creation at the workspace root", async () => {
+    mount();
+    await settle();
+    host
+      .querySelector<HTMLButtonElement>('button[aria-label="新建文件 ⌘N"]')!
+      .click();
+    await settle();
+    expect(
+      host.querySelector('input[aria-label="新建文件"]'),
+    ).not.toBeNull();
+
+    host
+      .querySelector<HTMLButtonElement>('button[aria-label="新建文件夹 ⇧⌘N"]')!
+      .click();
+    await settle();
+    expect(
+      host.querySelector('input[aria-label="新建文件夹"]'),
+    ).not.toBeNull();
+  });
+
+  it("runs commands from the more menu", async () => {
+    vi.mocked(popupNativeMenu).mockResolvedValue("app.close-workspace");
+    const log = mount();
+    await settle();
+    host
+      .querySelector<HTMLButtonElement>('button[aria-label="更多"]')!
+      .click();
+    await settle();
+    expect(popupNativeMenu).toHaveBeenCalledOnce();
+    const request = vi.mocked(popupNativeMenu).mock.calls[0]![0];
+    expect(request.items.map((item) => item.label)).toEqual([
+      "在 Finder 中显示",
+      "",
+      "关闭工作区",
+    ]);
+    expect(log.runCommands).toContain("app.close-workspace");
+  });
+});
+
+describe("collapse all", () => {
+  it("collapses every folder and saves the empty expansion", async () => {
+    vi.mocked(listDirectory).mockImplementation(async (path: string) => {
+      if (path === ".") {
+        return {
+          path: ".",
+          entries: [
+            {
+              name: "notes",
+              path: "notes",
+              isDir: true,
+              isMarkdown: false,
+              size: 0,
+            },
+          ],
+        };
+      }
+      if (path === "notes") {
+        return {
+          path: "notes",
+          entries: [
+            {
+              name: "a.md",
+              path: "notes/a.md",
+              isDir: false,
+              isMarkdown: true,
+              size: 10,
+            },
+          ],
+        };
+      }
+      return { path, entries: [] };
+    });
+    const log = mount(252, "macos", ["notes"]);
+    await settle();
+    const folder = host.querySelector<HTMLElement>(
+      '[data-tree-path="notes"]',
+    )!;
+    expect(folder.getAttribute("aria-expanded")).toBe("true");
+
+    host
+      .querySelector<HTMLButtonElement>('button[aria-label="全部折叠"]')!
+      .click();
+    await settle();
+    expect(folder.getAttribute("aria-expanded")).toBe("false");
+    expect(log.expandedChanges.at(-1)).toEqual([]);
   });
 });

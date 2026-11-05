@@ -67,6 +67,7 @@ let events: {
   renamed: ReturnType<typeof vi.fn>;
   trash: ReturnType<typeof vi.fn>;
   expanded: ReturnType<typeof vi.fn>;
+  runCommand: ReturnType<typeof vi.fn>;
   status: ReturnType<typeof vi.fn>;
 };
 
@@ -81,9 +82,7 @@ function mountTree(
   platform: "macos" | "windows" | "linux" = "macos",
 ) {
   const props = reactive({
-    rootName: "notes",
     rootPath: "/tmp/notes",
-    rootDisplayPath: "~/notes",
     generation: 3,
     selectedPath: null as string | null,
     platform,
@@ -97,6 +96,7 @@ function mountTree(
     renamed: vi.fn(),
     trash: vi.fn(),
     expanded: vi.fn(),
+    runCommand: vi.fn(),
     status: vi.fn(),
   };
   const Component = defineComponent({
@@ -111,6 +111,7 @@ function mountTree(
           onEntryRenamed: events.renamed,
           onTrashRequest: events.trash,
           onExpandedChange: events.expanded,
+          onRunCommand: events.runCommand,
           onStatus: (message: string) => {
             (events.status as unknown as (value: string) => void)(message);
           },
@@ -552,5 +553,40 @@ describe("FileTree", () => {
     await settle();
     expect(document.activeElement?.textContent).toContain("notes");
     expect(event.defaultPrevented).toBe(false);
+  });
+});
+
+describe("workspace-level tree actions", () => {
+  it("removes the root row and keeps blank-area root actions", async () => {
+    mocks.popupNativeMenu.mockResolvedValue("app.close-workspace");
+    mountTree();
+    await settle();
+    expect(
+      host.querySelector('[role="group"][aria-label^="根目录"]'),
+    ).toBeNull();
+
+    host
+      .querySelector('[role="tree"]')!
+      .dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: 10,
+          clientY: 20,
+        }),
+      );
+    await settle();
+    const request = vi.mocked(mocks.popupNativeMenu).mock.calls[0]![0];
+    expect(request.items.map((item: { label: string }) => item.label)).toEqual([
+      "新建文件",
+      "新建文件夹",
+      "",
+      "在 Finder 中显示",
+      "",
+      "复制路径",
+      "",
+      "关闭工作区",
+    ]);
+    expect(events.runCommand).toHaveBeenCalledWith("app.close-workspace");
   });
 });

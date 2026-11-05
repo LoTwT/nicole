@@ -4600,6 +4600,22 @@ describe("start page and workspace lifecycle", () => {
     expect(host.textContent).not.toContain("/f");
   });
 
+  it("runs the collapse-all command from the palette", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    pressPaletteShortcut("P");
+    await settle();
+    typePalette("全部折叠");
+    await settle();
+    const option = paletteOptions().find((item) =>
+      item.textContent?.includes("全部折叠"),
+    );
+    expect(option).not.toBeUndefined();
+    expect(option!.querySelector("kbd")).toBeNull();
+    option!.click();
+    await settle();
+    expect(mocks.setExpandedFolders).toHaveBeenCalledWith("/notes", []);
+  });
+
   it("opens the file palette from the empty folder state", async () => {
     await openFolder();
     const quick = button("快速打开");

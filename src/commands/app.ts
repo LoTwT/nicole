@@ -50,6 +50,29 @@ export const appCommands: readonly CommandDefinition[] = [
     },
   },
   {
+    id: "app.collapse-folders",
+    label: "全部折叠",
+    group: "app",
+    scope: "app",
+    requiresWorkspace: true,
+    run: ({ app }) => {
+      void app?.collapseAllFolders();
+      return app !== undefined;
+    },
+  },
+  {
+    id: "app.reveal-workspace",
+    label: "显示工作区文件夹",
+    pinyin: "reveal workspace finder explorer",
+    group: "app",
+    scope: "app",
+    requiresWorkspace: true,
+    run: ({ app }) => {
+      void app?.revealWorkspace();
+      return app !== undefined;
+    },
+  },
+  {
     id: "app.settings",
     label: "设置",
     group: "app",

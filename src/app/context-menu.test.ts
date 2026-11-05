@@ -50,17 +50,34 @@ describe("context menus", () => {
     expect(folder).not.toContain("open-default-app");
   });
 
-  it("gives the root group only file, folder and reveal actions", () => {
+  it("keeps the old root actions on the blank tree menu", () => {
     expect(
       ids(
         buildContextMenu({
-          target: "root",
+          target: "blank",
           platform: "macos",
           isMarkdown: false,
           inWorkspace: true,
         }),
       ),
-    ).toEqual(["new-file", "new-folder", "reveal", "copy-path"]);
+    ).toEqual([
+      "new-file",
+      "new-folder",
+      "reveal",
+      "copy-path",
+      "app.close-workspace",
+    ]);
+  });
+
+  it("builds the workspace tools menu from commands", () => {
+    expect(
+      buildContextMenu({
+        target: "workspace-tools",
+        platform: "windows",
+        isMarkdown: false,
+        inWorkspace: true,
+      }).map((item) => item.label),
+    ).toEqual(["在资源管理器中显示", "", "关闭工作区"]);
   });
 
   it("leaves the multi-tab actions disabled for the single tab", () => {

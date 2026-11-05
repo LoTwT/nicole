@@ -60,6 +60,8 @@ const COMMAND_BY_ROW: Readonly<Record<string, string | readonly string[]>> = {
   "立即保存": "app.save",
   "设置": "app.settings",
   "关闭工作区": "app.close-workspace",
+  "全部折叠": "app.collapse-folders",
+  "显示工作区文件夹": "app.reveal-workspace",
   "快速打开文件": "nav.quick-open",
   "命令面板": "nav.command-palette",
   "转到标题": "nav.goto-heading",

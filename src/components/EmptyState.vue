@@ -5,7 +5,6 @@ import { displayPath } from "../app/paths";
 import type { AppPlatform } from "../app/platform";
 import { commandShortcut } from "../commands/registry";
 import AppIcon from "./AppIcon.vue";
-import ThemeToggle from "./ThemeToggle.vue";
 
 const props = defineProps<{
   mode: "start" | "no-file";
@@ -14,7 +13,6 @@ const props = defineProps<{
   missingLastFolder: string | null;
   homeDir: string;
   platform: AppPlatform;
-  isDark: boolean;
   dropActive?: boolean;
 }>();
 
@@ -24,7 +22,6 @@ const emit = defineEmits<{
   "remove-recent": [path: string];
   "new-file": [];
   "quick-open": [];
-  "toggle-theme": [];
 }>();
 
 const MAX_VISIBLE_RECENT = 5;
@@ -133,34 +130,32 @@ defineExpose({
           松开以打开文件夹
         </p>
       </div>
-
-      <div class="absolute bottom-0 left-2 flex h-[26px] items-center">
-        <ThemeToggle :is-dark="isDark" @toggle="emit('toggle-theme')" />
-      </div>
     </div>
 
     <div v-else class="text-center">
       <p class="m-0 text-[13px] text-[var(--text-secondary)]">选择一个文件开始写作</p>
-      <p class="mt-2 flex items-center justify-center gap-4 text-[12px] text-[var(--text-muted)]">
+      <div class="mt-3 flex flex-wrap items-center justify-center gap-2.5">
         <button
           type="button"
-          class="focus-ring rounded-[var(--radius-control)] hover:text-[var(--text-primary)]"
+          class="focus-ring inline-flex items-center gap-1.5 rounded-[var(--radius-control)] border border-[var(--border-default)] bg-[var(--surface-elevated)] px-[14px] py-[7px] text-[12px] text-[var(--text-primary)] hover:bg-[var(--surface-subtle)]"
           :aria-label="`新建文件 ${newFileKey}`"
           :title="`新建文件 ${newFileKey}`"
           @click="emit('new-file')"
         >
+          <AppIcon name="file-plus" :size="14" class="text-[var(--text-muted)]" />
           新建文件
         </button>
         <button
           type="button"
-          class="focus-ring rounded-[var(--radius-control)] hover:text-[var(--text-primary)]"
+          class="focus-ring inline-flex items-center gap-1.5 rounded-[var(--radius-control)] border border-[var(--border-default)] bg-[var(--surface-elevated)] px-[14px] py-[7px] text-[12px] text-[var(--text-primary)] hover:bg-[var(--surface-subtle)]"
           :aria-label="`快速打开 ${quickOpenKey}`"
           :title="`快速打开 ${quickOpenKey}`"
           @click="emit('quick-open')"
         >
+          <AppIcon name="search" :size="14" class="text-[var(--text-muted)]" />
           快速打开
         </button>
-      </p>
+      </div>
     </div>
   </div>
 </template>

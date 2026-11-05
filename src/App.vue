@@ -359,9 +359,6 @@ const selectedTreePath = computed(() => {
 const rootName = computed(() =>
   workspace.value ? absoluteBaseName(workspace.value.root) : "",
 );
-const rootDisplayPath = computed(() =>
-  workspace.value ? displayPath(workspace.value.root, homeDir.value) : "",
-);
 const expandedForRoot = computed(() => {
   if (!workspace.value) return [];
   return expandedByRoot.value[workspace.value.root] ?? [];
@@ -3031,6 +3028,35 @@ async function revealPreview() {
   }
 }
 
+function collapseAllFolders() {
+  const current = workspace.value;
+  if (current === null) {
+    return;
+  }
+  const mounted = sidebar.value;
+  if (mounted !== null) {
+    mounted.collapseAll();
+    return;
+  }
+  expandedByRoot.value = {
+    ...expandedByRoot.value,
+    [current.root]: [],
+  };
+  void setExpandedFolders(current.root, []).catch(() => {});
+}
+
+async function revealWorkspace() {
+  const current = workspace.value;
+  if (current === null) {
+    return;
+  }
+  try {
+    await revealEntry(".", current.generation);
+  } catch (error) {
+    showNotice(`无法显示：${errorText(error)}`, "danger");
+  }
+}
+
 function canOpenParentFolder(parent: string): boolean {
   if (parent === "" || parent === "/") {
     return false;
@@ -3180,27 +3206,37 @@ function handleEditCommand(event: Event) {
   }
 }
 
-/** Runs a command the native menu asked for, under the page's own guards. */
-function handleRunCommand(event: Event) {
-  const id = (event as CustomEvent<unknown>).detail;
-  if (typeof id !== "string") {
-    return;
-  }
-  if (dialogOpen || recoveryDialog.value !== null) {
-    return;
-  }
+/** Runs one registered app command with the current page context. */
+function runAppCommand(id: string): boolean {
   const command = getCommand(id);
   if (
     command === undefined ||
     !isCommandAvailable(command) ||
     command.scope !== "app"
   ) {
-    return;
+    return false;
   }
   if (command.requiresWorkspace && !hasWorkspace.value) {
+    return false;
+  }
+  return command.run(commandContext(editor?.view ?? null));
+}
+
+/** Runs a command requested by native chrome, honouring modal guards. */
+function runChromeCommand(id: string) {
+  if (dialogOpen || recoveryDialog.value !== null) {
     return;
   }
-  command.run(commandContext(editor?.view ?? null));
+  runAppCommand(id);
+}
+
+/** Runs a command the native menu asked for, under the page's own guards. */
+function handleRunCommand(event: Event) {
+  const id = (event as CustomEvent<unknown>).detail;
+  if (typeof id !== "string") {
+    return;
+  }
+  runChromeCommand(id);
 }
 
 function dragHasFiles(event: DragEvent): boolean {
@@ -3458,6 +3494,10 @@ function commandContext(view: CommandContext["view"]): CommandContext {
       },
       closeWorkspace: () => {
         void closeWorkspace();
+      },
+      collapseAllFolders,
+      revealWorkspace: () => {
+        void revealWorkspace();
       },
       reopenClosedTab: () => {
         void reopenClosedTab();
@@ -4007,7 +4047,6 @@ defineExpose({
       :platform="platform"
       :root-name="rootName"
       :root-path="workspace.root"
-      :root-display-path="rootDisplayPath"
       :generation="workspace.generation"
       :selected-path="selectedTreePath"
       :initial-expanded="expandedForRoot"
@@ -4025,6 +4064,7 @@ defineExpose({
       @entry-renamed="handleEntryRenamed"
       @trash-request="requestTrash"
       @expanded-change="handleExpandedChange"
+      @run-command="runChromeCommand"
       @status="(message) => showNotice(message, 'danger')"
     />
 
@@ -4069,14 +4109,12 @@ defineExpose({
               :missing-last-folder="missingLastFolder"
               :home-dir="homeDir"
               :platform="platform"
-              :is-dark="isDark"
               :drop-active="dropActive"
               @open-folder="chooseFolder"
               @open-recent="openRecentFolder"
               @remove-recent="removeRecent"
               @new-file="newFile"
               @quick-open="openCommandPalette('file')"
-              @toggle-theme="toggleTheme"
             />
             <EmptyState
               v-else-if="noFileState"
@@ -4086,11 +4124,9 @@ defineExpose({
               :missing-last-folder="missingLastFolder"
               :home-dir="homeDir"
               :platform="platform"
-              :is-dark="isDark"
               @open-folder="chooseFolder"
               @new-file="newFile"
               @quick-open="openCommandPalette('file')"
-              @toggle-theme="toggleTheme"
             />
             <NonMarkdownPlaceholder
               v-else-if="currentPreview"
@@ -4115,6 +4151,9 @@ defineExpose({
         :save-status="saveStatus"
         :notice="notice?.text ?? null"
         :notice-tone="notice?.tone"
+        :start-theme="startState"
+        :is-dark="isDark"
+        @toggle-theme="toggleTheme"
       />
     </div>
 

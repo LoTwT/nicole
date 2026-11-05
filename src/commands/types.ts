@@ -43,6 +43,8 @@ export interface AppCommandActions {
   toggleTheme(): void | Promise<void>;
   closeActiveTab(): void | Promise<void>;
   closeWorkspace(): void | Promise<void>;
+  collapseAllFolders(): void | Promise<void>;
+  revealWorkspace(): void | Promise<void>;
   reopenClosedTab(): void | Promise<void>;
   nextTab(): void | Promise<void>;
   previousTab(): void | Promise<void>;

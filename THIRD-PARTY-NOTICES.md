@@ -8,7 +8,7 @@
 
 `src/components/AppIcon.vue` 内联了 Lucide 1.66.0 的以下图标几何数据：
 
-`panel-left`、`search`、`plus`、`settings`、`chevron-right`、`chevron-down`、`x`、`folder`、`folder-open`、`file-text`、`file`、`panel-right`、`sun`、`moon`、`ellipsis`、`eye`、`pen-line`、`code`。
+`panel-left`、`search`、`plus`、`settings`、`chevron-right`、`chevron-down`、`x`、`folder`、`folder-open`、`file-text`、`file`、`file-plus`、`folder-plus`、`chevrons-down-up`、`panel-right`、`sun`、`moon`、`ellipsis`、`eye`、`pen-line`、`code`。
 
 项目不包含 Lucide 的运行时包或字体文件；图标以 24×24 viewBox 和 `stroke-width="1.75"` 内联在 Vue 组件中。
 
