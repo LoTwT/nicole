@@ -8,7 +8,7 @@ import {
   watch,
 } from "vue";
 
-import { displayPath } from "../app/paths";
+import { absoluteBaseName, displayPath } from "../app/paths";
 import type { AppPlatform } from "../app/platform";
 import { layoutRecentRows } from "../app/recent-layout";
 import { distinguishingSuffixes } from "../app/tabs";
@@ -68,9 +68,17 @@ const recentItems = computed<RecentItem[]>(() => {
 });
 const recentRows = ref<RecentItem[][]>([]);
 const recentList = ref<HTMLElement | null>(null);
-const recentRowsView = computed(() =>
-  recentRows.value.length > 0 ? recentRows.value : [recentItems.value],
-);
+const recentRowBreaks = computed(() => {
+  const breaks = new Set<number>();
+  let offset = 0;
+  for (const row of recentRows.value) {
+    if (offset > 0) {
+      breaks.add(offset);
+    }
+    offset += row.length;
+  }
+  return breaks;
+});
 const openFolderKey = computed(() =>
   commandShortcut("app.open-folder", props.platform),
 );
@@ -82,11 +90,16 @@ const quickOpenKey = computed(() =>
 );
 const openFolderButton = ref<HTMLButtonElement | null>(null);
 let recentObserver: ResizeObserver | null = null;
+let pendingRemoveFocus: string | null | undefined = undefined;
+let pendingMissingFocus: string | null = null;
 
 function folderName(path: string): string {
-  const clean = path.replace(/[\\/]+$/, "");
-  const index = Math.max(clean.lastIndexOf("/"), clean.lastIndexOf("\\"));
-  return index === -1 ? clean : clean.slice(index + 1);
+  const name = absoluteBaseName(path);
+  return name === "" ? (path === "" ? "/" : path) : name;
+}
+
+function recentDisplayName(item: RecentItem): string {
+  return item.suffix ? `${item.name} · ${item.suffix}` : item.name;
 }
 
 function openRecentLabel(item: RecentItem): string {
@@ -99,7 +112,81 @@ function recentPathTitle(item: RecentItem): string {
 }
 
 function removeRecentLabel(item: RecentItem): string {
-  return `从最近打开中移除 ${item.name}`;
+  const missingLabel = item.missing ? "（已不存在）" : "";
+  return `从最近打开中移除 ${recentDisplayName(item)}${missingLabel}`;
+}
+
+function recentElement(path: string): HTMLElement | null {
+  return (
+    [...(recentList.value?.querySelectorAll<HTMLElement>("[data-recent-item]") ?? [])].find(
+      (element) => element.dataset.recentPath === path,
+    ) ?? null
+  );
+}
+
+function focusRecentOpen(path: string) {
+  recentElement(path)
+    ?.querySelector<HTMLButtonElement>('button[aria-label^="打开 "]')
+    ?.focus();
+}
+
+function focusRecentRemove(path: string) {
+  recentElement(path)
+    ?.querySelector<HTMLButtonElement>('button[aria-label^="从最近打开中移除 "]')
+    ?.focus();
+}
+
+function focusRecent(path: string) {
+  const item = recentItems.value.find((candidate) => candidate.path === path);
+  if (item === undefined) {
+    openFolderButton.value?.focus();
+    return;
+  }
+  if (item.missing) {
+    focusRecentRemove(path);
+  } else {
+    focusRecentOpen(path);
+  }
+}
+
+async function applyPendingFocus() {
+  if (pendingRemoveFocus !== undefined) {
+    const target = pendingRemoveFocus;
+    pendingRemoveFocus = undefined;
+    await nextTick();
+    if (target === null) {
+      openFolderButton.value?.focus();
+    } else {
+      focusRecent(target);
+    }
+    return;
+  }
+  if (pendingMissingFocus !== null) {
+    const item = recentItems.value.find(
+      (candidate) => candidate.path === pendingMissingFocus,
+    );
+    if (item?.missing) {
+      await nextTick();
+      focusRecentRemove(item.path);
+      pendingMissingFocus = null;
+    } else if (item === undefined) {
+      pendingMissingFocus = null;
+    }
+  }
+}
+
+function openRecent(item: RecentItem) {
+  pendingMissingFocus = item.path;
+  emit("open-recent", item.path);
+}
+
+function removeRecent(item: RecentItem) {
+  const index = visibleRecent.value.indexOf(item.path);
+  pendingRemoveFocus =
+    index >= 0
+      ? (visibleRecent.value[index + 1] ?? visibleRecent.value[index - 1] ?? null)
+      : null;
+  emit("remove-recent", item.path);
 }
 
 function sameRows(left: readonly RecentItem[][], right: readonly RecentItem[][]) {
@@ -149,8 +236,10 @@ watch(recentList, (element, previous) => {
   void measureRecentRows();
 });
 
-watch(recentItems, () => {
+watch(recentItems, async () => {
   recentRows.value = [];
+  await nextTick();
+  await applyPendingFocus();
   void measureRecentRows();
 });
 
@@ -211,18 +300,18 @@ defineExpose({
         <div
           ref="recentList"
           role="list"
-          class="mt-2 flex flex-col items-stretch gap-1.5"
+          class="mt-2 flex flex-wrap items-center justify-center gap-1.5"
         >
-          <div
-            v-for="(row, rowIndex) in recentRowsView"
-            :key="rowIndex"
-            class="flex flex-wrap items-center justify-center gap-1.5"
-          >
+          <template v-for="(item, index) in recentItems" :key="item.path">
             <div
-              v-for="item in row"
-              :key="item.path"
+              v-if="recentRowBreaks.has(index)"
+              class="basis-full h-0"
+              aria-hidden="true"
+            ></div>
+            <div
               role="listitem"
               data-recent-item
+              :data-recent-path="item.path"
               class="group relative inline-flex items-center rounded-full border border-[var(--border-default)] bg-[var(--surface-elevated)] text-[var(--text-primary)] transition-colors"
               :class="item.missing ? 'opacity-60' : 'hover:bg-[var(--surface-subtle)]'"
               :style="{ maxWidth: 'min(200px, 100%)' }"
@@ -234,7 +323,7 @@ defineExpose({
                 :disabled="item.missing"
                 :aria-label="openRecentLabel(item)"
                 :title="recentPathTitle(item)"
-                @click="emit('open-recent', item.path)"
+                @click="openRecent(item)"
               >
                 <AppIcon
                   name="folder"
@@ -242,14 +331,14 @@ defineExpose({
                   class="shrink-0 text-[var(--text-muted)]"
                 />
                 <span
-                  class="min-w-0 truncate text-[13px]"
+                  class="min-w-0 flex-1 truncate text-[13px]"
                   :class="{ 'line-through': item.missing }"
                 >
                   {{ item.name }}
                 </span>
                 <span
                   v-if="item.suffix"
-                  class="shrink-0 text-[11px] text-[var(--text-muted)]"
+                  class="min-w-0 max-w-[80px] shrink truncate text-[11px] text-[var(--text-muted)]"
                 >
                   · {{ item.suffix }}
                 </span>
@@ -264,12 +353,12 @@ defineExpose({
                 "
                 :aria-label="removeRecentLabel(item)"
                 :title="removeRecentLabel(item)"
-                @click="emit('remove-recent', item.path)"
+                @click="removeRecent(item)"
               >
                 <AppIcon name="close" :size="12" />
               </button>
             </div>
-          </div>
+          </template>
         </div>
       </div>
 

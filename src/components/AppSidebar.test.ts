@@ -206,6 +206,26 @@ describe("workspace tool row", () => {
     ]);
   });
 
+  it("does not steal focus when an empty root creation blurs", async () => {
+    mount();
+    await settle();
+    host
+      .querySelector<HTMLButtonElement>('button[aria-label="新建文件 ⌘N"]')!
+      .click();
+    await settle();
+    const input = host.querySelector<HTMLInputElement>(
+      'input[aria-label="新建文件"]',
+    )!;
+    input.value = "";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    const outside = document.createElement("button");
+    document.body.append(outside);
+    outside.focus();
+    await settle();
+    expect(document.activeElement).toBe(outside);
+    expect(input.isConnected).toBe(false);
+  });
+
   it("starts inline creation at the workspace root", async () => {
     mount();
     await settle();

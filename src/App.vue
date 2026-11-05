@@ -2119,7 +2119,7 @@ async function switchToFolder(
       forgetRecoveryForTab(tab);
     }
     if (!(await waitForRecoveryOperations(RECOVERY_OPERATION_TIMEOUT_MS))) {
-      resumeRecoveryCopies(closingTabs);
+      void resumeRecoveryCopiesAfterPending(closingTabs);
       showNotice("切换文件夹失败：恢复副本仍在写入", "danger");
       return false;
     }
@@ -2131,10 +2131,14 @@ async function switchToFolder(
     folder = await openFolderAtPath(path);
   } catch (error) {
     resumeRecoveryCopies(closingTabs);
-    if (options.markMissing === true && isMissingFolderError(error)) {
-      markMissing(path);
+    if (isMissingFolderError(error)) {
+      if (options.markMissing === true) {
+        markMissing(path);
+      }
+      showNotice("文件夹已不存在", "danger");
+    } else {
+      showNotice(`打开失败：${errorText(error)}`, "danger");
     }
-    showNotice(`打开失败：${errorText(error)}`, "danger");
     return false;
   }
   const applied = await applyWorkspace(folder);
@@ -2227,7 +2231,7 @@ async function closeWorkspace() {
     // offered again the next time this folder opens. A stuck backend must not
     // close the workspace with copies still in flight.
     if (!(await waitForRecoveryOperations(RECOVERY_OPERATION_TIMEOUT_MS))) {
-      resumeRecoveryCopies(closing);
+      void resumeRecoveryCopiesAfterPending(closing);
       showNotice("关闭工作区失败：恢复副本仍在写入", "danger");
       return false;
     }
@@ -2280,6 +2284,26 @@ function resumeRecoveryCopies(closing: readonly TabModel[]) {
   }
 }
 
+/**
+ * A timed-out close/switch may leave an old delete in flight. Recovery ids are
+ * deterministic per kind/root/path, and the write cache suppresses identical
+ * text, so rewriting before that delete settles could lose the new copy. Wait
+ * for the old operations, reset the cache, then write again.
+ */
+async function resumeRecoveryCopiesAfterPending(closing: readonly TabModel[]) {
+  while (pendingRecoveryOperations.size > 0) {
+    await Promise.allSettled([...pendingRecoveryOperations]);
+  }
+  for (const tab of closing) {
+    const state = recoveryWrites.get(tab.id);
+    if (state !== undefined) {
+      state.written = null;
+      state.writtenBaselineUnconfirmed = null;
+    }
+  }
+  resumeRecoveryCopies(closing);
+}
+
 async function restoreLastWorkspace() {
   if (workspaceClosed.value) {
     return;
@@ -2301,9 +2325,13 @@ async function restoreLastWorkspace() {
         ...recentFolders.value.filter((item) => item !== folder.root),
       ].slice(0, 10);
       return true;
-    } catch {
-      missingLastFolder.value = last;
-      markMissing(last);
+    } catch (error) {
+      if (isMissingFolderError(error)) {
+        missingLastFolder.value = last;
+        markMissing(last);
+      } else {
+        showNotice(`打开失败：${errorText(error)}`, "danger");
+      }
       return false;
     }
   });

@@ -13,22 +13,27 @@ export function layoutRecentRows<T>(
     return [];
   }
   const usable = Math.max(0, availableWidth);
-  // Use the widest possible combination so every row is guaranteed to fit,
-  // not just the first row in recent-order.
-  const widestFirst = [...widths].sort((a, b) => b - a);
-  let maxPerRow = 0;
-  let occupied = -gap;
-  for (const width of widestFirst) {
-    if (occupied + gap + width > usable) {
-      break;
+  const gapSize = Math.max(0, gap);
+  const measured = items.map((item, index) => ({
+    item,
+    width: Math.max(0, widths[index] ?? 0),
+  }));
+  // Try one visual line, then two, and so on. The first row count whose
+  // actual slices fit wins; this avoids both the widest-item overestimate and
+  // a trailing 1 when the real widths can make 3+2.
+  for (let rowCount = 1; rowCount <= measured.length; rowCount++) {
+    const perRow = Math.ceil(measured.length / rowCount);
+    const rows: (typeof measured)[] = [];
+    for (let start = 0; start < measured.length; start += perRow) {
+      rows.push(measured.slice(start, start + perRow));
     }
-    occupied += gap + width;
-    maxPerRow += 1;
+    const fits = rows.every((row) => {
+      const occupied = row.reduce((sum, entry) => sum + entry.width, 0);
+      return occupied + Math.max(0, row.length - 1) * gapSize <= usable;
+    });
+    if (fits) {
+      return rows.map((row) => row.map((entry) => entry.item));
+    }
   }
-  const perRowLimit = Math.max(1, maxPerRow);
-  const rowCount = Math.ceil(items.length / perRowLimit);
-  const perRow = Math.ceil(items.length / rowCount);
-  return Array.from({ length: rowCount }, (_, index) =>
-    items.slice(index * perRow, (index + 1) * perRow),
-  );
+  return measured.map((entry) => [entry.item]);
 }

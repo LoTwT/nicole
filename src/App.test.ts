@@ -522,7 +522,7 @@ describe("application shell", () => {
     expect(mocks.addRecentFolder).not.toHaveBeenCalled();
   });
 
-  it("shows the last folder as missing instead of opening it", async () => {
+  it("shows the last folder as missing only for the fixed missing-folder error", async () => {
     app?.unmount();
     mocks.getSettings.mockResolvedValue({
       theme: "system",
@@ -530,13 +530,39 @@ describe("application shell", () => {
       recentFolders: ["/gone"],
       expandedFolders: {},
     });
-    mocks.openFolder.mockRejectedValue(new Error("not found"));
+    mocks.openFolder.mockRejectedValue(
+      new Error("workspace: folder does not exist"),
+    );
     await settle();
     app = createApp(App);
     app.mount(host);
     await settle();
     expect(mocks.openFolder).toHaveBeenCalledWith("/gone");
     expect(host.textContent).toContain("上次打开的文件夹“gone”已不存在");
+    expect(host.textContent).not.toContain("workspace: folder does not exist");
+  });
+
+  it("does not mark the last folder missing for other startup failures", async () => {
+    app?.unmount();
+    mocks.getSettings.mockResolvedValue({
+      theme: "system",
+      sidebarWidth: 252,
+      recentFolders: ["/blocked"],
+      expandedFolders: {},
+    });
+    mocks.openFolder.mockRejectedValue(new Error("permission denied"));
+    await settle();
+    app = createApp(App);
+    app.mount(host);
+    await settle();
+
+    const open = host.querySelector<HTMLButtonElement>(
+      '[data-recent-item] button[aria-label^="打开 "]',
+    )!;
+    expect(open.disabled).toBe(false);
+    expect(open.getAttribute("aria-label")).not.toContain("已不存在");
+    expect(host.textContent).not.toContain("上次打开的文件夹");
+    expect(host.textContent).toContain("打开失败：permission denied");
   });
 
   it("confirms a folder switch and keeps the current file on cancel", async () => {
@@ -4465,7 +4491,14 @@ describe("start page and workspace lifecycle", () => {
     expect(mocks.closeWorkspace).not.toHaveBeenCalled();
     expect(host.querySelector("aside")).not.toBeNull();
     expect(host.textContent).toContain("关闭工作区失败：恢复副本仍在写入");
+    expect(mocks.saveRecovery.mock.calls.length).toBe(1);
+
+    deletion.resolve();
+    await settle();
     expect(mocks.saveRecovery.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(mocks.deleteRecovery.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.saveRecovery.mock.invocationCallOrder[1]!,
+    );
   });
 
   it("cancels a folder switch when recovery operations exceed the timeout", async () => {
@@ -4490,7 +4523,14 @@ describe("start page and workspace lifecycle", () => {
     await settle();
     expect(mocks.openFolder).not.toHaveBeenCalled();
     expect(host.textContent).toContain("切换文件夹失败：恢复副本仍在写入");
+    expect(mocks.saveRecovery.mock.calls.length).toBe(1);
+
+    deletion.resolve();
+    await settle();
     expect(mocks.saveRecovery.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(mocks.deleteRecovery.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.saveRecovery.mock.invocationCallOrder[1]!,
+    );
   });
 
   it("restores dirty recovery copies when opening the next folder fails", async () => {
@@ -4532,9 +4572,12 @@ describe("start page and workspace lifecycle", () => {
     host.querySelector<HTMLButtonElement>("[data-recent-item] button")!.click();
     await settle();
     expect(mocks.openFolder).toHaveBeenCalledWith("/gone");
-    expect(
-      host.querySelector('[aria-label="打开 gone（/gone），已不存在"]'),
-    ).not.toBeNull();
+    const missingButton = host.querySelector<HTMLButtonElement>(
+      '[data-recent-item] button[aria-label="打开 gone（/gone），已不存在"]',
+    )!;
+    expect(missingButton.disabled).toBe(true);
+    expect(host.textContent).toContain("文件夹已不存在");
+    expect(host.textContent).not.toContain("workspace: folder does not exist");
   });
 
   it("does not mark a localized not-found message or other open failures", async () => {
@@ -4551,9 +4594,14 @@ describe("start page and workspace lifecycle", () => {
     app.mount(host);
     await settle();
 
-    host.querySelector<HTMLButtonElement>("[data-recent-item] button")!.click();
+    const open = host.querySelector<HTMLButtonElement>(
+      '[data-recent-item] button[aria-label^="打开 "]',
+    )!;
+    open.click();
     await settle();
     expect(mocks.openFolder).toHaveBeenCalledWith("/blocked");
+    expect(open.disabled).toBe(false);
+    expect(open.getAttribute("aria-label")).not.toContain("已不存在");
     expect(host.textContent).not.toContain("已不存在");
   });
 

@@ -48,6 +48,28 @@ describe("layoutRecentRows", () => {
     ]);
   });
 
+  it("uses actual widths instead of the widest-item estimate", () => {
+    expect(
+      layoutRecentRows(
+        [1, 2, 3, 4, 5],
+        [131, 148, 118, 158, 95],
+        420,
+        6,
+      ).map((row) => row.length),
+    ).toEqual([3, 2]);
+  });
+
+  it("counts the gaps between capsules", () => {
+    expect(layoutRecentRows([1, 2, 3], [100, 100, 100], 312, 6)).toEqual([
+      [1, 2, 3],
+    ]);
+    expect(
+      layoutRecentRows([1, 2, 3], [100, 100, 100], 311, 6).map(
+        (row) => row.length,
+      ),
+    ).toEqual([2, 1]);
+  });
+
   it("handles a single row and an empty list", () => {
     expect(layoutRecentRows([1], [100], 100, 6)).toEqual([[1]]);
     expect(layoutRecentRows([], [], 420, 6)).toEqual([]);

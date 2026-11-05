@@ -1,14 +1,20 @@
-import { createApp, defineComponent, h } from "vue";
-import { afterEach, describe, expect, it } from "vitest";
+import { createApp, defineComponent, h, nextTick, reactive } from "vue";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { AppPlatform } from "../app/platform";
 import EmptyState from "./EmptyState.vue";
 
 let app: ReturnType<typeof createApp> | null = null;
 
+function unmountApp() {
+  app?.unmount();
+  app = null;
+}
+
 afterEach(() => {
   app?.unmount();
   app = null;
+  vi.unstubAllGlobals();
   document.body.innerHTML = "";
 });
 
@@ -54,6 +60,58 @@ function mount(
   );
   app.mount("#app");
   return { host: document.querySelector<HTMLElement>("#app")!, calls };
+}
+
+function mountLive(
+  platform: AppPlatform,
+  initialFolders: string[],
+  options: { markMissingOnOpen?: boolean } = {},
+) {
+  const state = reactive({
+    folders: [...initialFolders],
+    missing: [] as string[],
+  });
+  const calls = {
+    openRecent: [] as string[],
+    removeRecent: [] as string[],
+  };
+  document.body.innerHTML = '<div id="app"></div>';
+  app = createApp(
+    defineComponent({
+      render: () =>
+        h(EmptyState, {
+          mode: "start",
+          recentFolders: state.folders,
+          missingFolders: state.missing,
+          missingLastFolder: null,
+          homeDir: "/Users/test",
+          platform,
+          dropActive: false,
+          onOpenRecent: (path: string) => {
+            calls.openRecent.push(path);
+            if (options.markMissingOnOpen === true) {
+              state.missing = [...state.missing, path];
+            }
+          },
+          onRemoveRecent: (path: string) => {
+            calls.removeRecent.push(path);
+            state.folders = state.folders.filter((folder) => folder !== path);
+          },
+        }),
+    }),
+  );
+  app.mount("#app");
+  return {
+    host: document.querySelector<HTMLElement>("#app")!,
+    calls,
+    state,
+  };
+}
+
+async function flush() {
+  for (let index = 0; index < 8; index++) {
+    await nextTick();
+  }
 }
 
 function button(host: HTMLElement, label: string): HTMLButtonElement {
@@ -188,7 +246,7 @@ describe("EmptyState", () => {
     expect(calls.openRecent).toEqual([]);
 
     const remove = host.querySelector<HTMLButtonElement>(
-      'button[aria-label="从最近打开中移除 Gone"]',
+      'button[aria-label="从最近打开中移除 Gone（已不存在）"]',
     )!;
     expect(remove.className).toContain("opacity-100");
     expect(remove.className).toContain("absolute");
@@ -212,6 +270,201 @@ describe("EmptyState", () => {
     ).toContain("pr-8");
     remove.click();
     expect(calls.removeRecent).toEqual(["/Users/test/Notes"]);
+  });
+
+  it("shows the path when a root folder has no basename", () => {
+    const { host } = mount("macos", {
+      mode: "start",
+      recentFolders: ["/"],
+    });
+    const open = host.querySelector<HTMLButtonElement>(
+      'button[aria-label="打开 /（/）"]',
+    )!;
+    expect(open.textContent?.trim()).toBe("/");
+  });
+
+  it("normalizes Windows paths for names and suffixes", () => {
+    const { host } = mount("macos", {
+      mode: "start",
+      recentFolders: [
+        "C:\\Users\\me\\Dropbox\\notes",
+        "C:\\Users\\me\\Drive\\notes",
+      ],
+    });
+    expect(host.textContent).toContain("notes");
+    expect(host.textContent).toContain("· Dropbox");
+    expect(host.textContent).toContain("· Drive");
+  });
+
+  it("keeps the name visible when the disambiguating suffix is long", () => {
+    const { host } = mount("macos", {
+      mode: "start",
+      recentFolders: [
+        "/Users/test/a-very-long-parent-directory-name-for-this-folder/notes",
+        "/Users/test/other/notes",
+      ],
+    });
+    const open = [...host.querySelectorAll<HTMLButtonElement>(
+      'button[aria-label^="打开 notes"]',
+    )];
+    expect(open).toHaveLength(2);
+    const name = open[0]!.querySelector<HTMLElement>("span")!;
+    const suffix = open[0]!.querySelectorAll<HTMLElement>("span")[1]!;
+    expect(name.className).toContain("flex-1");
+    expect(name.className).toContain("min-w-0");
+    expect(suffix.className).toContain("max-w-[80px]");
+    expect(suffix.className).toContain("truncate");
+  });
+
+  it("uses the suffix and missing state in the remove accessible name", () => {
+    const { host } = mount("macos", {
+      mode: "start",
+      recentFolders: [
+        "/Users/test/Dropbox/notes",
+        "/Users/test/Drive/notes",
+      ],
+      missingFolders: ["/Users/test/Drive/notes"],
+    });
+    expect(
+      host.querySelector(
+        'button[aria-label="从最近打开中移除 notes · Drive（已不存在）"]',
+      ),
+    ).not.toBeNull();
+    expect(
+      host.querySelector('[data-recent-item] span.line-through'),
+    ).not.toBeNull();
+  });
+
+  it("moves focus to the next, previous, or open-folder button after removal", async () => {
+    const first = mountLive("macos", ["/a", "/b", "/c"]);
+    await flush();
+    first.host
+      .querySelector<HTMLButtonElement>(
+        'button[aria-label="从最近打开中移除 b"]',
+      )!
+      .click();
+    await flush();
+    expect(document.activeElement?.getAttribute("aria-label")).toBe(
+      "打开 c（/c）",
+    );
+
+    unmountApp();
+    const last = mountLive("macos", ["/a", "/b", "/c"]);
+    await flush();
+    last.host
+      .querySelector<HTMLButtonElement>(
+        'button[aria-label="从最近打开中移除 c"]',
+      )!
+      .click();
+    await flush();
+    expect(document.activeElement?.getAttribute("aria-label")).toBe(
+      "打开 b（/b）",
+    );
+
+    unmountApp();
+    const only = mountLive("macos", ["/a"]);
+    await flush();
+    only.host
+      .querySelector<HTMLButtonElement>(
+        'button[aria-label="从最近打开中移除 a"]',
+      )!
+      .click();
+    await flush();
+    expect(document.activeElement?.getAttribute("aria-label")).toBe(
+      "打开文件夹 ⌘O",
+    );
+  });
+
+  it("keeps the capsule DOM and focuses its remove button when it becomes missing", async () => {
+    const live = mountLive("macos", ["/Users/test/notes"], {
+      markMissingOnOpen: true,
+    });
+    await flush();
+    const open = live.host.querySelector<HTMLButtonElement>(
+      'button[aria-label="打开 notes（~/notes）"]',
+    )!;
+    const capsule = open.closest("[data-recent-item]")!;
+    open.click();
+    await flush();
+    expect(open.disabled).toBe(true);
+    expect(open.isConnected).toBe(true);
+    expect(capsule.isConnected).toBe(true);
+    expect(capsule.querySelector("span.line-through")).not.toBeNull();
+    expect(document.activeElement?.getAttribute("aria-label")).toBe(
+      "从最近打开中移除 notes（已不存在）",
+    );
+  });
+
+  it("does not move focus when unrelated recent items change", async () => {
+    const live = mountLive("macos", ["/a", "/b"]);
+    await flush();
+    const open = live.host.querySelector<HTMLButtonElement>(
+      'button[aria-label="打开 a（/a）"]',
+    )!;
+    open.focus();
+    live.state.folders = ["/a", "/b", "/c"];
+    await flush();
+    expect(document.activeElement).toBe(open);
+  });
+
+  it("uses actual measured widths, reflows on resize, and disconnects the observer", async () => {
+    class FakeResizeObserver {
+      static instances: FakeResizeObserver[] = [];
+      readonly observed = new Set<Element>();
+      disconnected = false;
+      constructor(readonly callback: ResizeObserverCallback) {
+        FakeResizeObserver.instances.push(this);
+      }
+      observe(element: Element) {
+        this.observed.add(element);
+      }
+      unobserve(element: Element) {
+        this.observed.delete(element);
+      }
+      disconnect() {
+        this.disconnected = true;
+        this.observed.clear();
+      }
+      trigger() {
+        this.callback([], this as unknown as ResizeObserver);
+      }
+    }
+    vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+    const { host } = mount("macos", {
+      mode: "start",
+      recentFolders: ["/a", "/b", "/c", "/d", "/e"],
+    });
+    await flush();
+    const list = host.querySelector<HTMLElement>('[role="list"]')!;
+    let width = 420;
+    Object.defineProperty(list, "clientWidth", {
+      configurable: true,
+      get: () => width,
+    });
+    const capsules = [...list.querySelectorAll<HTMLElement>("[data-recent-item]")];
+    for (const capsule of capsules) {
+      Object.defineProperty(capsule, "getBoundingClientRect", {
+        configurable: true,
+        value: () => ({ width: 100 }) as DOMRect,
+      });
+    }
+    const observer = FakeResizeObserver.instances.find(
+      (item) => item.observed.size > 0,
+    )!;
+    observer.trigger();
+    await flush();
+    expect(list.querySelectorAll(".basis-full")).toHaveLength(1);
+    const firstCapsule = capsules[0]!;
+
+    width = 220;
+    observer.trigger();
+    await flush();
+    expect(list.querySelectorAll(".basis-full")).toHaveLength(2);
+    expect(firstCapsule.isConnected).toBe(true);
+
+    unmountApp();
+    expect(observer.disconnected).toBe(true);
+    vi.unstubAllGlobals();
   });
 
   it("hides the recent block when there is no history", () => {

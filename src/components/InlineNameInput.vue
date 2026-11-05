@@ -10,18 +10,18 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   "update:value": [value: string];
-  commit: [];
+  commit: [source: "enter" | "blur"];
   cancel: [];
 }>();
 
 const input = ref<HTMLInputElement | null>(null);
 const cancelled = ref(false);
 
-function finish() {
+function finish(source: "enter" | "blur") {
   if (cancelled.value) {
     return;
   }
-  emit("commit");
+  emit("commit", source);
 }
 
 function cancel() {
@@ -54,8 +54,8 @@ onMounted(() => {
     @input="emit('update:value', ($event.target as HTMLInputElement).value)"
     @click.stop
     @mousedown.stop
-    @keydown.enter.prevent.stop="finish"
+    @keydown.enter.prevent.stop="finish('enter')"
     @keydown.esc.prevent.stop="cancel"
-    @blur="finish"
+    @blur="finish('blur')"
   />
 </template>

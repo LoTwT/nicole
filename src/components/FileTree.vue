@@ -51,6 +51,7 @@ const emit = defineEmits<{
 }>();
 
 const tree = ref<HTMLElement | null>(null);
+const rootEmptyButton = ref<HTMLButtonElement | null>(null);
 const nodes = ref<TreeNode[]>([]);
 let editReturnFocus: HTMLElement | null = null;
 const rootLoading = ref(false);
@@ -335,14 +336,19 @@ function updateEdit(value: string) {
   }
 }
 
-async function commitEdit() {
+async function commitEdit(source: "enter" | "blur" = "enter") {
   const current = editing.value;
   if (current === null) {
     return;
   }
   const value = current.value.trim();
   if (value === "") {
-    await cancelEdit();
+    if (source === "blur") {
+      editing.value = null;
+      editReturnFocus = null;
+    } else {
+      await cancelEdit();
+    }
     return;
   }
   editing.value = null;
@@ -729,6 +735,14 @@ async function removePath(path: string) {
   }
   removeExpandedBelow(path);
   persistExpanded();
+  if (nodes.value.length === 0) {
+    focusedPath.value = "";
+    if (hadFocus) {
+      await nextTick();
+      rootEmptyButton.value?.focus();
+    }
+    return;
+  }
   focusedPath.value = nextPath;
   if (hadFocus) {
     await nextTick();
@@ -839,6 +853,7 @@ defineExpose({
         <div v-if="showRootEmpty" class="px-2 py-2 text-[12px] text-[var(--text-muted)]">
           <p class="m-0">这个文件夹是空的</p>
           <button
+            ref="rootEmptyButton"
             type="button"
             class="focus-ring mt-2 rounded-[var(--radius-control)] border border-[var(--border-default)] px-2 py-1 text-[12px] text-[var(--text-secondary)] hover:bg-[var(--surface-subtle)]"
             @click="startCreate('create-file', '.')"

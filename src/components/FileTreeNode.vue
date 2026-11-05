@@ -26,7 +26,7 @@ const emit = defineEmits<{
   focus: [node: TreeNode];
   "start-rename": [node: TreeNode];
   "update-edit": [value: string];
-  "commit-edit": [];
+  "commit-edit": [source: "enter" | "blur"];
   "cancel-edit": [];
 }>();
 
@@ -79,7 +79,7 @@ function activate() {
         :select-end="renameRange[1]"
         label="重命名"
         @update:value="emit('update-edit', $event)"
-        @commit="emit('commit-edit')"
+        @commit="emit('commit-edit', $event)"
         @cancel="emit('cancel-edit')"
       />
     </div>
@@ -136,7 +136,7 @@ function activate() {
           :select-end="editSelectionRange(editing)[1]"
           :label="editing.kind === 'create-folder' ? '新建文件夹' : '新建文件'"
           @update:value="emit('update-edit', $event)"
-          @commit="emit('commit-edit')"
+          @commit="emit('commit-edit', $event)"
           @cancel="emit('cancel-edit')"
         />
       </div>
@@ -156,7 +156,7 @@ function activate() {
           @focus="emit('focus', $event)"
           @start-rename="emit('start-rename', $event)"
           @update-edit="emit('update-edit', $event)"
-          @commit-edit="emit('commit-edit')"
+          @commit-edit="emit('commit-edit', $event)"
           @cancel-edit="emit('cancel-edit')"
         />
       </template>

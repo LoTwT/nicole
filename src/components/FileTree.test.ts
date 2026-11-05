@@ -421,6 +421,56 @@ describe("FileTree", () => {
     expect(document.activeElement).toBe(row("a.md"));
   });
 
+  it("falls back to a visible selected item when focusedPath is hidden", async () => {
+    mountTree([], "macos", "notes");
+    await settle();
+    await treeApi!.reveal("missing");
+    await settle();
+    const stops = host.querySelectorAll<HTMLElement>(
+      '[role="treeitem"][tabindex="0"]',
+    );
+    expect(stops).toHaveLength(1);
+    expect(stops[0]).toBe(row("notes"));
+  });
+
+  it("focuses the empty-folder action after removing the last tree item", async () => {
+    mocks.listDirectory.mockImplementation(async (path: string) => ({
+      path,
+      entries: path === "." ? [rootEntries[0]!] : [],
+    }));
+    mountTree();
+    await settle();
+    row("a.md").focus();
+    await treeApi!.removePath("a.md");
+    await settle();
+    const emptyButton = [...host.querySelectorAll<HTMLButtonElement>("button")].find(
+      (item) => item.textContent?.trim() === "新建文件",
+    )!;
+    expect(document.activeElement).toBe(emptyButton);
+  });
+
+  it("does not move focus when an empty inline name is submitted by blur", async () => {
+    mocks.popupNativeMenu.mockResolvedValue("new-file");
+    mountTree();
+    await settle();
+    row("a.md").focus();
+    row("a.md").dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, cancelable: true }),
+    );
+    await settle();
+    const input = host.querySelector<HTMLInputElement>(
+      'input[aria-label="新建文件"]',
+    )!;
+    input.value = "";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    const outside = document.createElement("button");
+    document.body.append(outside);
+    outside.focus();
+    await settle();
+    expect(document.activeElement).toBe(outside);
+    expect(input.isConnected).toBe(false);
+  });
+
   it("dispatches macOS file-tree shortcuts from the registry", async () => {
     mountTree();
     await settle();
