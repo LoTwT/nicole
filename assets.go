@@ -44,11 +44,14 @@ var (
 )
 
 // AssetDrop tells the page that native files were dropped and names the
-// one-time token that lets it import them. The paths stay in Go.
+// one-time token that lets it import them. FolderToken is set only when the
+// drop was exactly one real folder; it lets the page open that folder without
+// ever seeing the path. The paths stay in Go.
 type AssetDrop struct {
-	Token string `json:"token"`
-	X     int    `json:"x"`
-	Y     int    `json:"y"`
+	Token       string `json:"token"`
+	FolderToken string `json:"folderToken,omitempty"`
+	X           int    `json:"x"`
+	Y           int    `json:"y"`
 }
 
 // assetFileDrop is emitted to the page after Window.OnFileDrop receives
@@ -56,14 +59,16 @@ type AssetDrop struct {
 var assetFileDrop = mygo.NewEvent[AssetDrop]("assets:file-drop")
 
 // newAssetDropHandler turns a native drop into a page event. Paths stay in
-// Assets; the page receives only a one-time token and the drop position.
-func newAssetDropHandler(assets *Assets, emit func(AssetDrop) error) func(*mygo.FileDropEvent) {
+// Assets and Workspace; the page receives only one-time tokens and the drop
+// position. A single real folder also gets a folder token.
+func newAssetDropHandler(assets *Assets, workspace *Workspace, emit func(AssetDrop) error) func(*mygo.FileDropEvent) {
 	return func(drop *mygo.FileDropEvent) {
 		token, ok := assets.acceptDrop(drop.Paths)
 		if !ok {
 			return
 		}
-		_ = emit(AssetDrop{Token: token, X: drop.X, Y: drop.Y})
+		folderToken, _ := workspace.acceptFolderDrop(drop.Paths)
+		_ = emit(AssetDrop{Token: token, FolderToken: folderToken, X: drop.X, Y: drop.Y})
 	}
 }
 

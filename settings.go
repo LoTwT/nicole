@@ -47,6 +47,11 @@ type AppSettings struct {
 	// ExpandedFolders keeps the expanded folders of a workspace root, by
 	// the root's absolute path and with slash-separated relative paths.
 	ExpandedFolders map[string][]string `json:"expandedFolders"`
+	// WorkspaceClosed is set when the user closes the workspace and cleared
+	// by the next successful open. The page reads it at startup to decide
+	// whether to restore the last folder. It is omitted while false so older
+	// files stay unchanged.
+	WorkspaceClosed bool `json:"workspaceClosed,omitempty"`
 }
 
 // Settings serves the global settings to the page. `mygo generate` turns its
@@ -184,6 +189,7 @@ type settingsFile struct {
 	SidebarWidth    int                 `json:"sidebarWidth"`
 	RecentFolders   []string            `json:"recentFolders"`
 	ExpandedFolders map[string][]string `json:"expandedFolders"`
+	WorkspaceClosed bool                `json:"workspaceClosed"`
 }
 
 func defaultSettings() AppSettings {
@@ -251,6 +257,22 @@ func (s *settingsStore) recordRecentFolder(folder string) error {
 	})
 }
 
+// markWorkspaceClosed records that the app should start on the start page.
+// Opening any folder clears it again; the page has no direct setter.
+func (s *settingsStore) markWorkspaceClosed() error {
+	return s.update(func(settings *AppSettings) {
+		settings.WorkspaceClosed = true
+	})
+}
+
+// clearWorkspaceClosed is called after a folder opened. It keeps an explicit
+// false out of settings.json by relying on omitempty for the false value.
+func (s *settingsStore) clearWorkspaceClosed() error {
+	return s.update(func(settings *AppSettings) {
+		settings.WorkspaceClosed = false
+	})
+}
+
 // update reads, changes and writes the settings in one critical section.
 func (s *settingsStore) update(change func(*AppSettings)) error {
 	s.mu.Lock()
@@ -286,6 +308,7 @@ func (s *settingsStore) readLocked() (AppSettings, bool, error) {
 		SidebarWidth:    file.SidebarWidth,
 		RecentFolders:   file.RecentFolders,
 		ExpandedFolders: file.ExpandedFolders,
+		WorkspaceClosed: file.WorkspaceClosed,
 	}
 	if file.Theme != nil {
 		settings.Theme = *file.Theme

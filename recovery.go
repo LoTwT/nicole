@@ -202,7 +202,11 @@ func (r *Recovery) currentWorkspaceRoot() string {
 	if r.currentRoot == nil {
 		return ""
 	}
-	return filepath.Clean(r.currentRoot())
+	root := r.currentRoot()
+	if root == "" {
+		return ""
+	}
+	return filepath.Clean(root)
 }
 
 func (r *Recovery) requireGeneration(generation int) error {
@@ -380,10 +384,15 @@ func (r *Recovery) allowDelete(entry storedRecovery, generation int) error {
 // each document's current disk state. Copies belonging to other workspace
 // roots are only counted, never read into the page.
 func (r *Recovery) List(generation int) (RecoveryListing, error) {
-	if err := r.requireGeneration(generation); err != nil {
-		return RecoveryListing{}, err
-	}
 	root := r.currentWorkspaceRoot()
+	// Without a root there is no workspace generation to bind the request to.
+	// Single-file copies are listed and workspace copies only counted, which
+	// is the start page's and first launch's view.
+	if root != "" {
+		if err := r.requireGeneration(generation); err != nil {
+			return RecoveryListing{}, err
+		}
+	}
 	entries, err := r.store.list()
 	if err != nil {
 		return RecoveryListing{}, err

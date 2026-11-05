@@ -36,14 +36,24 @@ export interface AppSettings {
    * the root's absolute path and with slash-separated relative paths.
    */
   expandedFolders: Record<string, string[]>;
+  /**
+   * WorkspaceClosed is set when the user closes the workspace and cleared
+   * by the next successful open. The page reads it at startup to decide
+   * whether to restore the last folder. It is omitted while false so older
+   * files stay unchanged.
+   */
+  workspaceClosed?: boolean;
 }
 
 /**
  * AssetDrop tells the page that native files were dropped and names the
- * one-time token that lets it import them. The paths stay in Go.
+ * one-time token that lets it import them. FolderToken is set only when the
+ * drop was exactly one real folder; it lets the page open that folder without
+ * ever seeing the path. The paths stay in Go.
  */
 export interface AssetDrop {
   token: string;
+  folderToken?: string;
   x: number;
   y: number;
 }
@@ -271,6 +281,15 @@ export const Workspace = {
     return call("Workspace.ChooseFolder");
   },
   /**
+   * CloseWorkspace returns the app to the start page. The tab layout and
+   * recovery copies stay on disk; only the in-process root and its disk hashes
+   * are cleared. The recent folder is kept first and workspaceClosed makes the
+   * next launch skip restoring it until a folder is opened again.
+   */
+  closeWorkspace(): Promise<void> {
+    return call("Workspace.CloseWorkspace");
+  },
+  /**
    * ConfirmDiscard asks whether the page may throw away unsaved edits before
    * switching files or folders. It is separate from the close confirmation so
    * the user sees the action that will discard the edits.
@@ -316,6 +335,15 @@ export const Workspace = {
    */
   listFiles(): Promise<string[]> {
     return call("Workspace.ListFiles");
+  },
+  /**
+   * OpenDroppedFolder opens the folder of a native drop the page claimed with
+   * its one-time token. The token is consumed even when the path no longer
+   * opens, so one drop can authorize at most one attempt. PickFolder and
+   * OpenFolder remain the only other ways to name a root.
+   */
+  openDroppedFolder(token: string): Promise<WorkspaceFolder> {
+    return call("Workspace.OpenDroppedFolder", token);
   },
   /**
    * OpenFolder switches to a folder the user chose in the picker, a recent
