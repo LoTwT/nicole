@@ -132,24 +132,24 @@ describe("AppSidebar", () => {
     );
     expect(search).not.toBeNull();
     expect(search!.querySelectorAll("kbd")).toHaveLength(0);
-    expect(search!.textContent?.replace(/\s+/g, "")).toContain(
-      "搜索工作区⇧⌘F",
-    );
+    expect(search!.textContent?.replace(/\s+/g, "")).toBe("搜索工作区");
+    expect(search!.getAttribute("title")).toContain("⇧⌘F");
+    expect(search!.getAttribute("aria-label")).toContain("⇧⌘F");
     expect(
       host.querySelector('button[aria-label="切换到暗色主题"]'),
     ).not.toBeNull();
   });
 
-  it("shows the platform shortcut as plain text in the search entry", async () => {
+  it("keeps the platform shortcut only in the search tooltip", async () => {
     mount(252, "windows");
     await settle();
     const search = host.querySelector<HTMLButtonElement>(
       'button[aria-label^="搜索工作区"]',
     )!;
     expect(search.querySelectorAll("kbd")).toHaveLength(0);
-    expect(search.textContent?.replace(/\s+/g, "")).toContain(
-      "搜索工作区Ctrl+Shift+F",
-    );
+    expect(search.textContent?.replace(/\s+/g, "")).toBe("搜索工作区");
+    expect(search.getAttribute("title")).toContain("Ctrl+Shift+F");
+    expect(search.getAttribute("aria-label")).toContain("Ctrl+Shift+F");
   });
 
   it("switches folders from an icon-only footer button", async () => {

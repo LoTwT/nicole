@@ -8,6 +8,8 @@ const mocks = vi.hoisted(() => ({
   getAppInfo: vi.fn(),
   pickFolder: vi.fn(),
   openFolder: vi.fn(),
+  openDroppedFolder: vi.fn(),
+  closeWorkspace: vi.fn(),
   listFiles: vi.fn(),
   readFile: vi.fn(),
   writeFile: vi.fn(),
@@ -55,6 +57,8 @@ vi.mock("./services/app", () => ({ getAppInfo: mocks.getAppInfo }));
 vi.mock("./services/workspace", () => ({
   pickFolder: mocks.pickFolder,
   openFolder: mocks.openFolder,
+  openDroppedFolder: mocks.openDroppedFolder,
+  closeWorkspace: mocks.closeWorkspace,
   listFiles: mocks.listFiles,
   readFile: mocks.readFile,
   writeFile: mocks.writeFile,
@@ -167,6 +171,8 @@ let exposedApp: { value: any } | null = null;
 let tree: ReturnType<typeof entry>[] = [];
 let openFileText = "";
 let watchEvents: ((events: import("./services/mygo").WorkspaceFileEvent[]) => void) | null =
+  null;
+let dropHandler: ((drop: import("./services/mygo").AssetDrop) => void) | null =
   null;
 let closeHandler: ((token: number) => Promise<void>) | null = null;
 let openHandler: (() => void) | null = null;
@@ -371,6 +377,7 @@ beforeEach(() => {
   pendingFiles = [];
   openFileText = "";
   watchEvents = null;
+  dropHandler = null;
   closeHandler = null;
   openHandler = null;
 
@@ -384,6 +391,8 @@ beforeEach(() => {
   });
   mocks.pickFolder.mockResolvedValue({ path: "/notes", canceled: false });
   mocks.openFolder.mockResolvedValue(folder("/notes"));
+  mocks.openDroppedFolder.mockResolvedValue(folder("/dropped"));
+  mocks.closeWorkspace.mockResolvedValue(undefined);
   mocks.readFile.mockImplementation(async () => openFileText);
   mocks.listFiles.mockResolvedValue([]);
   mocks.writeFile.mockResolvedValue(undefined);
@@ -449,7 +458,14 @@ beforeEach(() => {
       openHandler = null;
     };
   });
-  mocks.onWindowFileDrop.mockReturnValue(() => {});
+  mocks.onWindowFileDrop.mockImplementation(
+    (handler: (drop: import("./services/mygo").AssetDrop) => void) => {
+      dropHandler = handler;
+      return () => {
+        dropHandler = null;
+      };
+    },
+  );
   mocks.pasteImage.mockResolvedValue([]);
   mocks.importImages.mockResolvedValue([]);
   mocks.onSaveBeforeClose.mockImplementation(
@@ -1259,18 +1275,23 @@ describe("single files and dialogs", () => {
 describe("theme and accessibility", () => {
   it("toggles an explicit theme from the sidebar footer", async () => {
     await settle();
-    expect(
-      host.querySelector('button[aria-label="切换到暗色主题"]'),
-    ).toBeNull();
-    await openFile();
-    const themeButton = host.querySelector<HTMLButtonElement>(
-      'aside button[aria-label="切换到暗色主题"]',
+    const startTheme = host.querySelector<HTMLButtonElement>(
+      'button[aria-label="切换到暗色主题"]',
     );
-    expect(themeButton).not.toBeNull();
+    expect(startTheme).not.toBeNull();
+    expect(host.querySelector("aside")).toBeNull();
+    await openFile();
+    expect(
+      host.querySelector('aside button[aria-label="切换到暗色主题"]'),
+    ).not.toBeNull();
+    const themeButtons = host.querySelectorAll<HTMLButtonElement>(
+      'button[aria-label="切换到暗色主题"]',
+    );
+    expect(themeButtons).toHaveLength(1);
     expect(
       host.querySelector('footer button[aria-label^="切换到"]'),
     ).toBeNull();
-    themeButton!.click();
+    themeButtons[0]!.click();
     await settle();
     expect(document.documentElement.classList.contains("dark")).toBe(true);
     expect(mocks.setTheme).toHaveBeenCalledWith("dark");
@@ -4215,5 +4236,325 @@ describe("crash recovery", () => {
       "0123456789abcdef",
       1,
     );
+  });
+});
+
+describe("start page and workspace lifecycle", () => {
+  it("saves, closes the workspace and returns to the start page", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    host.querySelector<HTMLElement>('[data-tree-path="a.md"]')!.click();
+    await settle();
+    replaceEditorText("# A changed\n");
+
+    window.dispatchEvent(
+      new CustomEvent("nicole:run-command", {
+        detail: "app.close-workspace",
+      }),
+    );
+    await settle();
+
+    expect(dialog()).toBeNull();
+    expect(mocks.writeFile).toHaveBeenCalledWith("a.md", "# A changed\n", 1);
+    expect(mocks.saveWorkspaceTabs).toHaveBeenCalledWith(
+      "/notes",
+      [expect.objectContaining({ kind: "markdown", path: "a.md" })],
+      "a.md",
+      expect.any(Array),
+    );
+    expect(mocks.closeWorkspace).toHaveBeenCalledOnce();
+    expect(host.querySelector("aside")).toBeNull();
+    expect(host.textContent).toContain("开始写作");
+    expect(host.querySelectorAll('[role="tab"]')).toHaveLength(0);
+  });
+
+  it("keeps the workspace when the close confirmation is cancelled", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    host.querySelector<HTMLElement>('[data-tree-path="a.md"]')!.click();
+    await settle();
+    replaceEditorText("# A changed\n");
+    mocks.writeFile.mockRejectedValue(new Error("read only"));
+
+    window.dispatchEvent(
+      new CustomEvent("nicole:run-command", {
+        detail: "app.close-workspace",
+      }),
+    );
+    await settle();
+
+    expect(dialog()?.textContent).toContain("关闭工作区？");
+    expect(dialog()?.textContent).toContain("a.md：保存失败");
+    expect(dialog()?.textContent).toContain(
+      "当前文件夹的 1 个标签页会关闭，下次打开“notes”时会恢复这些标签页",
+    );
+    dialogButton("取消").click();
+    await settle();
+
+    expect(mocks.closeWorkspace).not.toHaveBeenCalled();
+    expect(host.querySelector("aside")).not.toBeNull();
+    expect(editorView().state.doc.toString()).toBe("# A changed\n");
+    expect(tabElements()).toHaveLength(1);
+  });
+
+  it("closes after the user gives up a failed save", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    host.querySelector<HTMLElement>('[data-tree-path="a.md"]')!.click();
+    await settle();
+    replaceEditorText("# A changed\n");
+    mocks.writeFile.mockRejectedValue(new Error("read only"));
+
+    window.dispatchEvent(
+      new CustomEvent("nicole:run-command", {
+        detail: "app.close-workspace",
+      }),
+    );
+    await settle();
+    dialogButton("放弃更改并关闭工作区").click();
+    await settle();
+
+    expect(mocks.closeWorkspace).toHaveBeenCalledOnce();
+    expect(host.querySelector("aside")).toBeNull();
+    expect(host.textContent).toContain("开始写作");
+  });
+
+  it("offers close workspace only while a folder is open", async () => {
+    window.dispatchEvent(
+      new CustomEvent("nicole:run-command", {
+        detail: "app.close-workspace",
+      }),
+    );
+    await settle();
+    expect(mocks.closeWorkspace).not.toHaveBeenCalled();
+
+    pressPaletteShortcut("P");
+    await settle();
+    typePalette("关闭工作区");
+    await settle();
+    expect(paletteOptions()).toHaveLength(0);
+
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    );
+    await settle();
+    await openFile();
+
+    pressPaletteShortcut("P");
+    await settle();
+    typePalette("关闭工作区");
+    await settle();
+    const option = paletteOptions().find((item) =>
+      item.textContent?.includes("关闭工作区"),
+    );
+    expect(option).not.toBeUndefined();
+    option!.click();
+    await settle();
+    expect(mocks.closeWorkspace).toHaveBeenCalledOnce();
+    expect(host.textContent).toContain("开始写作");
+  });
+
+  it("starts on the start page when the workspace was closed before exit", async () => {
+    app?.unmount();
+    mocks.getSettings.mockResolvedValue({
+      theme: "system",
+      sidebarWidth: 252,
+      recentFolders: ["/notes"],
+      expandedFolders: {},
+      workspaceClosed: true,
+    });
+    app = createApp(App);
+    app.mount(host);
+    await settle();
+
+    expect(mocks.openFolder).not.toHaveBeenCalled();
+    expect(host.textContent).toContain("开始写作");
+    expect(host.querySelector("aside")).toBeNull();
+  });
+
+  it("still restores the last folder when the workspace was not closed", async () => {
+    app?.unmount();
+    mocks.getSettings.mockResolvedValue({
+      theme: "system",
+      sidebarWidth: 252,
+      recentFolders: ["/notes"],
+      expandedFolders: {},
+      workspaceClosed: false,
+    });
+    app = createApp(App);
+    app.mount(host);
+    await settle();
+
+    expect(mocks.openFolder).toHaveBeenCalledWith("/notes");
+    expect(host.querySelector("aside")).not.toBeNull();
+  });
+
+  it("shows five recent folders on the start page while storing ten", async () => {
+    app?.unmount();
+    mocks.getSettings.mockResolvedValue({
+      theme: "system",
+      sidebarWidth: 252,
+      recentFolders: [
+        "/a",
+        "/b",
+        "/c",
+        "/d",
+        "/e",
+        "/f",
+        "/g",
+        "/h",
+        "/i",
+        "/j",
+      ],
+      expandedFolders: {},
+      workspaceClosed: true,
+    });
+    app = createApp(App);
+    app.mount(host);
+    await settle();
+
+    expect(host.querySelectorAll("li")).toHaveLength(5);
+    expect(host.textContent).toContain("/a");
+    expect(host.textContent).not.toContain("/f");
+  });
+
+  it("opens the file palette from the empty folder state", async () => {
+    await openFolder();
+    const quick = button("快速打开");
+    expect(quick.querySelector("kbd")).toBeNull();
+    expect(quick.getAttribute("aria-label")).toBe("快速打开 ⌘P");
+    quick.click();
+    await settle();
+    expect(paletteInput().getAttribute("aria-label")).toBe(
+      "命令面板，输入文件名",
+    );
+    expect(
+      document.querySelector('[role="listbox"]')?.textContent,
+    ).not.toContain("关闭工作区");
+  });
+
+  it("toggles the theme from the start page", async () => {
+    await settle();
+    const theme = host.querySelector<HTMLButtonElement>(
+      'button[aria-label="切换到暗色主题"]',
+    );
+    expect(theme).not.toBeNull();
+    theme!.click();
+    await settle();
+    expect(document.documentElement.classList.contains("dark")).toBe(true);
+    expect(mocks.setTheme).toHaveBeenCalledWith("dark");
+    expect(
+      host.querySelector('button[aria-label="切换到亮色主题"]'),
+    ).not.toBeNull();
+  });
+
+  it("opens a single dropped folder and rejects other drops", async () => {
+    await settle();
+    dropHandler?.({ token: "image", x: 10, y: 10 });
+    await settle();
+    expect(host.textContent).toContain("只能拖入一个文件夹");
+    expect(mocks.openDroppedFolder).not.toHaveBeenCalled();
+
+    dropHandler?.({
+      token: "image",
+      folderToken: "folder-drop",
+      x: 10,
+      y: 10,
+    });
+    await settle();
+
+    expect(mocks.openDroppedFolder).toHaveBeenCalledWith("folder-drop");
+    expect(host.querySelector("aside")).not.toBeNull();
+    expect(host.textContent).toContain("选择一个文件开始写作");
+  });
+
+  it("ignores a dropped folder while a workspace is open", async () => {
+    await openFile();
+    dropHandler?.({
+      token: "image",
+      folderToken: "folder-drop",
+      x: 10,
+      y: 10,
+    });
+    await settle();
+    expect(mocks.openDroppedFolder).not.toHaveBeenCalled();
+  });
+
+  it("shows the folder drop hint while dragging files", async () => {
+    await settle();
+    const root = host.firstElementChild as HTMLElement;
+    const dragEvent = new Event("dragenter", {
+      bubbles: true,
+      cancelable: true,
+    });
+    Object.defineProperty(dragEvent, "dataTransfer", {
+      value: { types: ["Files"], dropEffect: "none" },
+    });
+    root.dispatchEvent(dragEvent);
+    await settle();
+    expect(host.textContent).toContain("松开以打开文件夹");
+
+    const leave = new Event("dragleave", { bubbles: true });
+    Object.defineProperty(leave, "dataTransfer", {
+      value: { types: ["Files"], dropEffect: "none" },
+    });
+    root.dispatchEvent(leave);
+    await settle();
+    expect(host.textContent).not.toContain("松开以打开文件夹");
+  });
+
+  it("shows shortcuts as plain muted text in menus and the palette", async () => {
+    await openFile();
+    pressPaletteShortcut("P");
+    await settle();
+    const command = paletteOptions()[0]!;
+    expect(command.querySelector("kbd")).toBeNull();
+    const hint = command.querySelector<HTMLElement>(".text-right");
+    expect(hint?.textContent?.trim()).toMatch(/[⌘⇧⌃]|Ctrl/);
+    expect(hint?.className).toContain("text-[var(--text-muted)]");
+    expect(hint?.className).not.toContain("border");
+    expect(command.getAttribute("aria-label")).toContain(
+      hint?.textContent?.trim(),
+    );
+
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    );
+    await settle();
+    typeSlashAtEnd();
+    await settle();
+    const slash = slashMenuElement();
+    expect(slash).not.toBeNull();
+    expect(slash!.querySelector("kbd")).toBeNull();
+    expect(slash!.querySelector(".text-right")?.textContent?.trim()).toMatch(
+      /[⌘⇧⌃]|Ctrl/,
+    );
+
+    const originalWidth = window.innerWidth;
+    try {
+      const close = new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+      });
+      document.dispatchEvent(close);
+      window.innerWidth = 700;
+      window.dispatchEvent(new Event("resize"));
+      await settle();
+      const modeButton = host.querySelector<HTMLButtonElement>(
+        'button[aria-haspopup="menu"]',
+      );
+      modeButton!.click();
+      await settle();
+      const menu = host.querySelector('[role="menu"]');
+      expect(menu).not.toBeNull();
+      expect(menu!.querySelector("kbd")).toBeNull();
+      expect(menu!.querySelector(".text-right")?.textContent?.trim()).toMatch(
+        /[⌘⇧⌃]|Ctrl/,
+      );
+      expect(
+        menu!.querySelector('[role="menuitemradio"]')?.getAttribute("aria-label"),
+      ).toMatch(/[⌘⇧⌃]|Ctrl/);
+    } finally {
+      window.innerWidth = originalWidth;
+      window.dispatchEvent(new Event("resize"));
+      await settle();
+    }
   });
 });

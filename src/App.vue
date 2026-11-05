@@ -96,7 +96,7 @@ import {
 import { createImageInsertion } from "./image-insertion";
 import { resolveImageUrl } from "./image-url";
 import { getAppInfo, type AppInfo } from "./services/app";
-import { onWindowFileDrop } from "./services/assets";
+import { onWindowFileDrop, type AssetDrop } from "./services/assets";
 import { copyText } from "./services/clipboard";
 import {
   listDirectory,
@@ -140,9 +140,11 @@ import {
 } from "./services/tabs";
 import type { WorkspaceFileEvent } from "./services/mygo";
 import {
+  closeWorkspace as closeWorkspaceInGo,
   finishClose,
   listFiles,
   onSaveBeforeClose,
+  openDroppedFolder as openDroppedFolderInGo,
   openFolder as openFolderAtPath,
   pickFolder,
   readFile,
@@ -229,6 +231,9 @@ const sidebarWidth = ref(252);
 const recentFolders = ref<string[]>([]);
 const missingRecent = ref<string[]>([]);
 const missingLastFolder = ref<string | null>(null);
+const workspaceClosed = ref(false);
+const dropActive = ref(false);
+let dragDepth = 0;
 const expandedByRoot = ref<Record<string, string[]>>({});
 const recentFilesByRoot = ref<Record<string, string[]>>({});
 const paletteSession = shallowRef<PaletteSession | null>(null);
@@ -329,6 +334,7 @@ const paletteCommands = computed(() =>
   commandRegistry.filter(
     (command) =>
       isCommandAvailable(command) &&
+      (!command.requiresWorkspace || hasWorkspace.value) &&
       (command.scope === "app" ||
         (command.scope === "editor" && isMarkdownOpen.value && editor !== null)),
   ),
@@ -516,6 +522,7 @@ function applySettings(loaded: AppSettings) {
   sidebarWidth.value = Math.min(400, Math.max(200, loaded.sidebarWidth || 252));
   recentFolders.value = [...loaded.recentFolders].slice(0, 10);
   expandedByRoot.value = { ...loaded.expandedFolders };
+  workspaceClosed.value = loaded.workspaceClosed === true;
   applyTheme();
 }
 
@@ -1872,6 +1879,9 @@ function applyWorkspaceState(folder: {
 }) {
   workspace.value = { root: folder.root, generation: folder.generation };
   missingLastFolder.value = null;
+  workspaceClosed.value = false;
+  dropActive.value = false;
+  dragDepth = 0;
   rememberRecent(folder.root);
   startWatch(folder.generation);
 }
@@ -2136,7 +2146,86 @@ async function openRecentFolder(path: string) {
   await startFolderOperation(() => switchToFolder(path));
 }
 
+async function closeWorkspace() {
+  const current = workspace.value;
+  if (current === null) {
+    return false;
+  }
+  return startFolderOperation(async () => {
+    const closing = [...tabs.value];
+    await saveAllTabs();
+    const problems = closing.flatMap(tabCloseProblems);
+    if (problems.length > 0) {
+      const workspaceTabCount = closing.filter(
+        (tab) => tab.kind !== "single",
+      ).length;
+      const singleCount = closing.length - workspaceTabCount;
+      let message = `当前文件夹的 ${workspaceTabCount} 个标签页会关闭，下次打开“${rootName.value}”时会恢复这些标签页`;
+      if (singleCount > 0) {
+        message += `；${singleCount} 个单文件标签页会关闭且不会恢复`;
+      }
+      const choice = await askDialog({
+        title: "关闭工作区？",
+        message,
+        details: [...new Set(problems)],
+        actions: [
+          { label: "取消", value: "cancel", autofocus: true },
+          {
+            label: "放弃更改并关闭工作区",
+            value: "close",
+            primary: true,
+            danger: true,
+          },
+        ],
+      });
+      if (choice !== "close") {
+        return false;
+      }
+    }
+
+    // The layout must be written while Go still treats this folder as the
+    // current root. It stays in tabs.json for the next open.
+    await persistTabsNow();
+    for (const tab of closing) {
+      forgetRecoveryForTab(tab);
+      if (tab.kind === "single") {
+        void releaseSingleFile(tab.path).catch(() => {});
+      }
+    }
+    try {
+      await closeWorkspaceInGo();
+    } catch (error) {
+      showNotice(`关闭工作区失败：${errorText(error)}`, "danger");
+      return false;
+    }
+
+    stopWatch();
+    closeCommandPalette();
+    closePopoverMenus();
+    cancelPersistTimer();
+    clearEditor();
+    tabs.value = [];
+    activeTabId.value = null;
+    lastWorkspaceActivePath = null;
+    closedTabs.value = [];
+    workspace.value = null;
+    workspaceClosed.value = true;
+    missingLastFolder.value = null;
+    overlaySidebar.value = false;
+    dropActive.value = false;
+    dragDepth = 0;
+    recentFolders.value = [
+      current.root,
+      ...recentFolders.value.filter((folder) => folder !== current.root),
+    ].slice(0, 10);
+    return true;
+  });
+}
+
 async function restoreLastWorkspace() {
+  if (workspaceClosed.value) {
+    return;
+  }
   const last = recentFolders.value[0];
   if (!last) {
     return;
@@ -3038,6 +3127,97 @@ function handleEditCommand(event: Event) {
   }
 }
 
+/** Runs a command the native menu asked for, under the page's own guards. */
+function handleRunCommand(event: Event) {
+  const id = (event as CustomEvent<unknown>).detail;
+  if (typeof id !== "string") {
+    return;
+  }
+  if (dialogOpen || recoveryDialog.value !== null) {
+    return;
+  }
+  const command = getCommand(id);
+  if (
+    command === undefined ||
+    !isCommandAvailable(command) ||
+    command.scope !== "app"
+  ) {
+    return;
+  }
+  if (command.requiresWorkspace && !hasWorkspace.value) {
+    return;
+  }
+  command.run(commandContext(editor?.view ?? null));
+}
+
+function dragHasFiles(event: DragEvent): boolean {
+  return Array.from(event.dataTransfer?.types ?? []).includes("Files");
+}
+
+function handleDragEnter(event: DragEvent) {
+  if (!startState.value || !dragHasFiles(event)) {
+    return;
+  }
+  event.preventDefault();
+  dragDepth += 1;
+  dropActive.value = true;
+}
+
+function handleDragOver(event: DragEvent) {
+  if (!startState.value || !dragHasFiles(event)) {
+    return;
+  }
+  event.preventDefault();
+  if (event.dataTransfer !== null) {
+    event.dataTransfer.dropEffect = "copy";
+  }
+  dropActive.value = true;
+}
+
+function handleDragLeave() {
+  if (!startState.value) {
+    return;
+  }
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) {
+    dropActive.value = false;
+  }
+}
+
+function handleDomDrop(event: DragEvent) {
+  if (!startState.value) {
+    return;
+  }
+  event.preventDefault();
+  dragDepth = 0;
+  dropActive.value = false;
+}
+
+async function handleFolderDrop(drop: AssetDrop) {
+  if (!startState.value) {
+    return;
+  }
+  dropActive.value = false;
+  if (drop.folderToken === undefined) {
+    showNotice("只能拖入一个文件夹", "muted");
+    return;
+  }
+  await startFolderOperation(async () => {
+    let folder;
+    try {
+      folder = await openDroppedFolderInGo(drop.folderToken!);
+    } catch (error) {
+      showNotice(`无法打开拖入的文件夹：${errorText(error)}`, "danger");
+      return false;
+    }
+    const applied = await applyWorkspace(folder);
+    if (applied) {
+      await maybeShowRecoveryDialog();
+    }
+    return applied;
+  });
+}
+
 function setMode(next: EditorMode) {
   mode.value = next;
   editor?.setMode(next);
@@ -3218,6 +3398,9 @@ function commandContext(view: CommandContext["view"]): CommandContext {
       closeActiveTab: () => {
         void closeActiveTab();
       },
+      closeWorkspace: () => {
+        void closeWorkspace();
+      },
       reopenClosedTab: () => {
         void reopenClosedTab();
       },
@@ -3239,6 +3422,9 @@ async function runPaletteCommand(id: string) {
   await nextTick();
   const command = getCommand(id);
   if (command === undefined || !isCommandAvailable(command)) {
+    return;
+  }
+  if (command.requiresWorkspace && !hasWorkspace.value) {
     return;
   }
   if (command.scope === "file-tree") {
@@ -3318,6 +3504,9 @@ function handleGlobalKeydown(event: KeyboardEvent) {
   }
   const command = matchCommand(event, platform.value, commandRegistry, "app");
   if (command === null) {
+    return;
+  }
+  if (command.requiresWorkspace && !hasWorkspace.value) {
     return;
   }
   const handled = command.run(commandContext(editor?.view ?? null));
@@ -3649,6 +3838,7 @@ onMounted(async () => {
   document.addEventListener("visibilitychange", handleVisibilityChange);
   systemTheme.addEventListener("change", handleSystemThemeChange);
   window.addEventListener("nicole:edit-command", handleEditCommand);
+  window.addEventListener("nicole:run-command", handleRunCommand);
   offOpenFile = onOpenFile(() => {
     if (!appReady) {
       pendingOpenSignal = true;
@@ -3658,6 +3848,7 @@ onMounted(async () => {
   });
   offFileDrop = onWindowFileDrop((drop) => {
     imageInsertion.handleDrop(drop);
+    void handleFolderDrop(drop);
   });
   offSaveBeforeClose = onSaveBeforeClose(async (token) => {
     const started = Date.now();
@@ -3705,6 +3896,7 @@ onBeforeUnmount(() => {
   document.removeEventListener("visibilitychange", handleVisibilityChange);
   systemTheme.removeEventListener("change", handleSystemThemeChange);
   window.removeEventListener("nicole:edit-command", handleEditCommand);
+  window.removeEventListener("nicole:run-command", handleRunCommand);
   offOpenFile?.();
   offOpenFile = null;
   offFileDrop?.();
@@ -3732,6 +3924,7 @@ onBeforeUnmount(() => {
 
 defineExpose({
   chooseFolder,
+  closeWorkspace,
   openWorkspaceFile,
   openSingleFile,
   openCommandPalette,
@@ -3743,6 +3936,10 @@ defineExpose({
   <div
     class="relative flex h-full min-h-0 overflow-hidden bg-[var(--surface-canvas)] text-[var(--text-primary)]"
     :style="{ '--sidebar-width': `${sidebarWidth}px` }"
+    @dragenter="handleDragEnter"
+    @dragover="handleDragOver"
+    @dragleave="handleDragLeave"
+    @drop="handleDomDrop"
   >
     <AppSidebar
       v-if="sidebarShown && workspace"
@@ -3813,10 +4010,14 @@ defineExpose({
               :missing-last-folder="missingLastFolder"
               :home-dir="homeDir"
               :platform="platform"
+              :is-dark="isDark"
+              :drop-active="dropActive"
               @open-folder="chooseFolder"
               @open-recent="openRecentFolder"
               @remove-recent="removeRecent"
               @new-file="newFile"
+              @quick-open="openCommandPalette('file')"
+              @toggle-theme="toggleTheme"
             />
             <EmptyState
               v-else-if="noFileState"
@@ -3826,8 +4027,11 @@ defineExpose({
               :missing-last-folder="missingLastFolder"
               :home-dir="homeDir"
               :platform="platform"
+              :is-dark="isDark"
               @open-folder="chooseFolder"
               @new-file="newFile"
+              @quick-open="openCommandPalette('file')"
+              @toggle-theme="toggleTheme"
             />
             <NonMarkdownPlaceholder
               v-else-if="currentPreview"

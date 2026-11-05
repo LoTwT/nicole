@@ -5,7 +5,7 @@ import { displayPath } from "../app/paths";
 import type { AppPlatform } from "../app/platform";
 import { commandShortcut } from "../commands/registry";
 import AppIcon from "./AppIcon.vue";
-import KeyHint from "./KeyHint.vue";
+import ThemeToggle from "./ThemeToggle.vue";
 
 const props = defineProps<{
   mode: "start" | "no-file";
@@ -14,6 +14,8 @@ const props = defineProps<{
   missingLastFolder: string | null;
   homeDir: string;
   platform: AppPlatform;
+  isDark: boolean;
+  dropActive?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -21,9 +23,16 @@ const emit = defineEmits<{
   "open-recent": [path: string];
   "remove-recent": [path: string];
   "new-file": [];
+  "quick-open": [];
+  "toggle-theme": [];
 }>();
 
+const MAX_VISIBLE_RECENT = 5;
+
 const missing = computed(() => new Set(props.missingFolders));
+const visibleRecent = computed(() =>
+  props.recentFolders.slice(0, MAX_VISIBLE_RECENT),
+);
 const openFolderKey = computed(() =>
   commandShortcut("app.open-folder", props.platform),
 );
@@ -42,7 +51,9 @@ function folderName(path: string): string {
 </script>
 
 <template>
-  <div class="flex h-full items-center justify-center overflow-auto px-6 py-10">
+  <div
+    class="relative flex h-full items-center justify-center overflow-auto px-6 py-10"
+  >
     <div v-if="mode === 'start'" class="w-full max-w-[420px] text-center">
       <p
         v-if="missingLastFolder"
@@ -64,13 +75,13 @@ function folderName(path: string): string {
         打开文件夹
       </button>
 
-      <div v-if="recentFolders.length > 0" class="mt-8 text-left">
+      <div v-if="visibleRecent.length > 0" class="mt-8 text-left">
         <h2 class="m-0 mb-2 text-[12px] font-semibold text-[var(--text-muted)]">
           最近打开
         </h2>
         <ul class="m-0 list-none space-y-1 p-0">
           <li
-            v-for="folder in recentFolders"
+            v-for="folder in visibleRecent"
             :key="folder"
             class="group flex items-center gap-2 rounded-[var(--radius-control)] px-2 py-1.5 hover:bg-[var(--surface-subtle)]"
           >
@@ -104,6 +115,20 @@ function folderName(path: string): string {
           </li>
         </ul>
       </div>
+
+      <div
+        v-if="dropActive"
+        data-drop-hint
+        class="pointer-events-none absolute inset-2 flex items-center justify-center rounded-[var(--radius-card)] border-2 border-dashed border-[var(--accent-primary)] bg-[var(--accent-soft)]/40"
+      >
+        <p class="m-0 text-[13px] font-medium text-[var(--text-primary)]">
+          松开以打开文件夹
+        </p>
+      </div>
+
+      <div class="absolute bottom-0 left-2 flex h-[26px] items-center">
+        <ThemeToggle :is-dark="isDark" @toggle="emit('toggle-theme')" />
+      </div>
     </div>
 
     <div v-else class="text-center">
@@ -113,14 +138,20 @@ function folderName(path: string): string {
           type="button"
           class="focus-ring rounded-[var(--radius-control)] hover:text-[var(--text-primary)]"
           :aria-label="`新建文件 ${newFileKey}`"
+          :title="`新建文件 ${newFileKey}`"
           @click="emit('new-file')"
         >
-          新建文件 <KeyHint :shortcut="newFileKey" />
+          新建文件
         </button>
-        <span class="inline-flex items-center gap-1">
-          快速打开 <KeyHint :shortcut="quickOpenKey" />
-          <span class="sr-only">{{ quickOpenKey }}</span>
-        </span>
+        <button
+          type="button"
+          class="focus-ring rounded-[var(--radius-control)] hover:text-[var(--text-primary)]"
+          :aria-label="`快速打开 ${quickOpenKey}`"
+          :title="`快速打开 ${quickOpenKey}`"
+          @click="emit('quick-open')"
+        >
+          快速打开
+        </button>
       </p>
     </div>
   </div>

@@ -39,6 +39,17 @@ export const appCommands: readonly CommandDefinition[] = [
     },
   },
   {
+    id: "app.close-workspace",
+    label: "关闭工作区",
+    group: "app",
+    scope: "app",
+    requiresWorkspace: true,
+    run: ({ app }) => {
+      void app?.closeWorkspace();
+      return app !== undefined;
+    },
+  },
+  {
     id: "app.settings",
     label: "设置",
     group: "app",

@@ -7,7 +7,7 @@ import { commandShortcut } from "../commands/registry";
 import type { WorkspaceFileEvent } from "../services/mygo";
 import AppIcon from "./AppIcon.vue";
 import FileTree from "./FileTree.vue";
-import KeyHint from "./KeyHint.vue";
+import ThemeToggle from "./ThemeToggle.vue";
 
 export type SidebarMode = "pinned" | "overlay";
 
@@ -55,9 +55,6 @@ const asideStyle = computed(() => ({
 
 const sidebarShortcut = computed(() =>
   commandShortcut("nav.toggle-sidebar", props.platform),
-);
-const themeAction = computed(() =>
-  props.isDark ? "切换到亮色主题" : "切换到暗色主题",
 );
 
 function startResize(event: PointerEvent) {
@@ -160,10 +157,6 @@ defineExpose({
     >
       <AppIcon name="search" :size="13" />
       <span class="flex-1 text-left">搜索工作区</span>
-      <KeyHint
-        variant="plain"
-        :shortcut="commandShortcut('nav.search', platform)"
-      />
     </button>
 
     <FileTree
@@ -204,15 +197,7 @@ defineExpose({
         <AppIcon name="folder-open" :size="14" />
       </button>
       <div class="flex items-center gap-1">
-        <button
-          type="button"
-          class="focus-ring grid size-6 place-items-center rounded-[var(--radius-control)] text-[var(--text-muted)] hover:bg-[var(--surface-subtle)] hover:text-[var(--text-primary)]"
-          :aria-label="themeAction"
-          :title="themeAction"
-          @click="emit('toggle-theme')"
-        >
-          <AppIcon :name="isDark ? 'sun' : 'moon'" :size="14" />
-        </button>
+        <ThemeToggle :is-dark="isDark" @toggle="emit('toggle-theme')" />
         <button
           type="button"
           class="focus-ring grid size-6 place-items-center rounded-[var(--radius-control)] text-[var(--text-muted)] disabled:cursor-default disabled:opacity-50"
