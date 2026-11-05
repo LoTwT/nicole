@@ -63,25 +63,15 @@ describe("EmptyState", () => {
     }
   });
 
-  it("uses an on-accent keycap in the primary button", () => {
+  it("keeps the primary open-folder button text-only with a tooltip", () => {
     const host = mount("macos", "start");
     const primary = [...host.querySelectorAll<HTMLButtonElement>("button")].find(
       (button) => button.textContent?.includes("打开文件夹"),
     );
     expect(primary).not.toBeUndefined();
-    const keys = [...primary!.querySelectorAll("kbd")];
-    expect(keys.map((key) => key.textContent?.trim())).toEqual(["⌘", "O"]);
-    for (const key of keys) {
-      expect(key.classList).toContain(
-        "bg-[color-mix(in_srgb,currentColor_14%,transparent)]",
-      );
-      expect(key.classList).toContain("text-inherit");
-      expect(
-        [...key.classList].some(
-          (name) => name === "border" || name.startsWith("border-"),
-        ),
-      ).toBe(false);
-      expect(key.className).not.toContain("shadow-[");
-    }
+    expect(primary!.textContent?.trim()).toBe("打开文件夹");
+    expect(primary!.querySelector("kbd")).toBeNull();
+    expect(primary!.getAttribute("aria-label")).toBe("打开文件夹");
+    expect(primary!.getAttribute("title")).toBe("打开文件夹 ⌘O");
   });
 });
