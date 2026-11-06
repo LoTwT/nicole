@@ -66,6 +66,40 @@ func TestWindowMenuHasNoCloseShortcut(t *testing.T) {
 	}
 }
 
+func TestFileMenuRunsThePageCommandWithoutAnAccelerator(t *testing.T) {
+	items := fileMenuItems()
+	if len(items) != 1 {
+		t.Fatalf("file menu has %d items, want 1", len(items))
+	}
+	item := items[0]
+	if item.Label != "关闭工作区" {
+		t.Errorf("file menu item label = %q", item.Label)
+	}
+	if item.Click == nil {
+		t.Error("file menu item does not run a page command")
+	}
+	if item.Accelerator != "" {
+		t.Errorf("file menu item accelerator = %q, want none", item.Accelerator)
+	}
+
+	menu := mygo.NewMenu(menuBarItems(&mygo.MenuItem{Label: "Nicole"}, false))
+	tops := menu.Items()
+	if len(tops) < 2 || tops[0].Label != "Nicole" || tops[1].Label != "文件" {
+		t.Fatalf("top menus = %v, want Nicole then 文件", menuLabels(tops))
+	}
+	if len(tops[1].Submenu) != 1 || tops[1].Submenu[0].Label != "关闭工作区" {
+		t.Errorf("文件 submenu = %v", menuLabels(tops[1].Submenu))
+	}
+}
+
+func menuLabels(items []*mygo.MenuItem) []string {
+	labels := make([]string, 0, len(items))
+	for _, item := range items {
+		labels = append(labels, item.Label)
+	}
+	return labels
+}
+
 func TestTrimPageContextMenu(t *testing.T) {
 	menu := mygo.NewMenu([]*mygo.MenuItem{
 		{ID: mygo.ContextMenuReload, Label: "Reload"},

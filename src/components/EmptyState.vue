@@ -1,11 +1,19 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import {
+  computed,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  watch,
+} from "vue";
 
-import { displayPath } from "../app/paths";
+import { absoluteBaseName, displayPath } from "../app/paths";
 import type { AppPlatform } from "../app/platform";
+import { layoutRecentRows } from "../app/recent-layout";
+import { distinguishingSuffixes } from "../app/tabs";
 import { commandShortcut } from "../commands/registry";
 import AppIcon from "./AppIcon.vue";
-import KeyHint from "./KeyHint.vue";
 
 const props = defineProps<{
   mode: "start" | "no-file";
@@ -14,6 +22,7 @@ const props = defineProps<{
   missingLastFolder: string | null;
   homeDir: string;
   platform: AppPlatform;
+  dropActive?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -21,9 +30,55 @@ const emit = defineEmits<{
   "open-recent": [path: string];
   "remove-recent": [path: string];
   "new-file": [];
+  "quick-open": [];
 }>();
 
+const MAX_VISIBLE_RECENT = 5;
+const RECENT_GAP = 8;
+
+interface RecentItem {
+  id: number;
+  path: string;
+  name: string;
+  suffix: string;
+  pathLabel: string;
+  missing: boolean;
+}
+
 const missing = computed(() => new Set(props.missingFolders));
+const visibleRecent = computed(() =>
+  props.recentFolders.slice(0, MAX_VISIBLE_RECENT),
+);
+const recentItems = computed<RecentItem[]>(() => {
+  const paths = visibleRecent.value;
+  const suffixEntries = paths.map((path, index) => ({
+    id: index,
+    name: folderName(path),
+    path: path.replaceAll("\\", "/"),
+  }));
+  const suffixes = distinguishingSuffixes(suffixEntries, "根目录");
+  return paths.map((path, index) => ({
+    id: index,
+    path,
+    name: folderName(path),
+    suffix: suffixes.get(index) ?? "",
+    pathLabel: displayPath(path, props.homeDir),
+    missing: missing.value.has(path),
+  }));
+});
+const recentRows = ref<RecentItem[][]>([]);
+const recentList = ref<HTMLElement | null>(null);
+const recentRowBreaks = computed(() => {
+  const breaks = new Set<number>();
+  let offset = 0;
+  for (const row of recentRows.value) {
+    if (offset > 0) {
+      breaks.add(offset);
+    }
+    offset += row.length;
+  }
+  return breaks;
+});
 const openFolderKey = computed(() =>
   commandShortcut("app.open-folder", props.platform),
 );
@@ -33,16 +88,170 @@ const newFileKey = computed(() =>
 const quickOpenKey = computed(() =>
   commandShortcut("nav.quick-open", props.platform),
 );
+const openFolderButton = ref<HTMLButtonElement | null>(null);
+let recentObserver: ResizeObserver | null = null;
+let pendingRemoveFocus: string | null | undefined = undefined;
 
 function folderName(path: string): string {
-  const clean = path.replace(/[\\/]+$/, "");
-  const index = Math.max(clean.lastIndexOf("/"), clean.lastIndexOf("\\"));
-  return index === -1 ? clean : clean.slice(index + 1);
+  const name = absoluteBaseName(path);
+  return name === "" ? (path === "" ? "/" : path) : name;
 }
+
+function recentDisplayName(item: RecentItem): string {
+  return item.suffix ? `${item.name} · ${item.suffix}` : item.name;
+}
+
+function openRecentLabel(item: RecentItem): string {
+  const missingLabel = item.missing ? "，已不存在，点击重试" : "";
+  return `打开 ${item.name}（${item.pathLabel}）${missingLabel}`;
+}
+
+function recentPathTitle(item: RecentItem): string {
+  return item.missing
+    ? `${item.pathLabel}（已不存在，点击重试）`
+    : item.pathLabel;
+}
+
+function removeRecentLabel(item: RecentItem): string {
+  const missingLabel = item.missing ? "（已不存在）" : "";
+  return `从最近打开中移除 ${recentDisplayName(item)}${missingLabel}`;
+}
+
+function recentElement(path: string): HTMLElement | null {
+  return (
+    [...(recentList.value?.querySelectorAll<HTMLElement>("[data-recent-item]") ?? [])].find(
+      (element) => element.dataset.recentPath === path,
+    ) ?? null
+  );
+}
+
+function focusRecentOpen(path: string) {
+  recentElement(path)
+    ?.querySelector<HTMLButtonElement>('button[aria-label^="打开 "]')
+    ?.focus();
+}
+
+function focusRecent(path: string) {
+  const item = recentItems.value.find((candidate) => candidate.path === path);
+  if (item === undefined) {
+    openFolderButton.value?.focus();
+    return;
+  }
+  focusRecentOpen(path);
+}
+
+async function applyPendingFocus() {
+  if (pendingRemoveFocus !== undefined) {
+    const target = pendingRemoveFocus;
+    pendingRemoveFocus = undefined;
+    await nextTick();
+    if (target === null) {
+      openFolderButton.value?.focus();
+    } else {
+      focusRecent(target);
+    }
+    return;
+  }
+}
+
+function openRecent(item: RecentItem) {
+  emit("open-recent", item.path);
+}
+
+function removeRecent(item: RecentItem) {
+  const index = visibleRecent.value.indexOf(item.path);
+  pendingRemoveFocus =
+    index >= 0
+      ? (visibleRecent.value[index + 1] ?? visibleRecent.value[index - 1] ?? null)
+      : null;
+  emit("remove-recent", item.path);
+}
+
+function sameRows(left: readonly RecentItem[][], right: readonly RecentItem[][]) {
+  return (
+    left.length === right.length &&
+    left.every(
+      (row, index) =>
+        row.length === right[index]?.length &&
+        row.every((item, itemIndex) => item.path === right[index]?.[itemIndex]?.path),
+    )
+  );
+}
+
+async function measureRecentRows() {
+  await nextTick();
+  const container = recentList.value;
+  if (container === null || recentItems.value.length === 0) {
+    recentRows.value = [];
+    return;
+  }
+  const elements = [
+    ...container.querySelectorAll<HTMLElement>("[data-recent-item]"),
+  ];
+  const widths = elements.map(
+    (element) => element.getBoundingClientRect().width,
+  );
+  const rows = layoutRecentRows(
+    recentItems.value,
+    widths,
+    container.clientWidth,
+    RECENT_GAP,
+  );
+  if (!sameRows(rows, recentRows.value)) {
+    recentRows.value = rows;
+  }
+}
+
+watch(recentList, (element, previous) => {
+  if (recentObserver !== null) {
+    if (previous !== null) {
+      recentObserver.unobserve(previous);
+    }
+    if (element !== null) {
+      recentObserver.observe(element);
+    }
+  }
+  void measureRecentRows();
+});
+
+watch(recentItems, async () => {
+  recentRows.value = [];
+  await nextTick();
+  await applyPendingFocus();
+  void measureRecentRows();
+});
+
+onMounted(() => {
+  if (typeof ResizeObserver !== "undefined") {
+    recentObserver = new ResizeObserver(() => {
+      void measureRecentRows();
+    });
+    if (recentList.value !== null) {
+      recentObserver.observe(recentList.value);
+    }
+  }
+  void measureRecentRows();
+});
+
+onBeforeUnmount(() => {
+  recentObserver?.disconnect();
+  recentObserver = null;
+});
+
+defineExpose({
+  focusOpenFolder() {
+    openFolderButton.value?.focus();
+  },
+  focusRecentItem(path: string) {
+    focusRecent(path);
+  },
+});
 </script>
 
 <template>
-  <div class="flex h-full items-center justify-center overflow-auto px-6 py-10">
+  <div
+    class="relative flex h-full items-center justify-center overflow-auto px-6 py-10"
+  >
     <div v-if="mode === 'start'" class="w-full max-w-[420px] text-center">
       <p
         v-if="missingLastFolder"
@@ -55,73 +264,130 @@ function folderName(path: string): string {
         打开一个文件夹作为工作区，里面的文件就是你的文章
       </p>
       <button
+        ref="openFolderButton"
         type="button"
         class="focus-ring mt-5 inline-flex items-center gap-2 rounded-full bg-[var(--accent-primary)] px-4 py-2 text-[13px] font-medium text-[var(--accent-contrast)]"
-        aria-label="打开文件夹"
+        :aria-label="`打开文件夹 ${openFolderKey}`"
         :title="`打开文件夹 ${openFolderKey}`"
         @click="emit('open-folder')"
       >
         打开文件夹
       </button>
 
-      <div v-if="recentFolders.length > 0" class="mt-8 text-left">
-        <h2 class="m-0 mb-2 text-[12px] font-semibold text-[var(--text-muted)]">
+      <div v-if="visibleRecent.length > 0" class="mt-8 text-center">
+        <h2 class="m-0 text-[12px] font-semibold text-[var(--text-muted)]">
           最近打开
         </h2>
-        <ul class="m-0 list-none space-y-1 p-0">
-          <li
-            v-for="folder in recentFolders"
-            :key="folder"
-            class="group flex items-center gap-2 rounded-[var(--radius-control)] px-2 py-1.5 hover:bg-[var(--surface-subtle)]"
-          >
-            <button
-              type="button"
-              class="focus-ring flex min-w-0 flex-1 items-baseline gap-2 rounded-[var(--radius-control)] text-left"
-              :disabled="missing.has(folder)"
-              @click="emit('open-recent', folder)"
+        <div
+          ref="recentList"
+          role="list"
+          class="mt-2 flex flex-wrap items-center justify-center gap-2"
+        >
+          <template v-for="(item, index) in recentItems" :key="item.path">
+            <div
+              v-if="recentRowBreaks.has(index)"
+              class="basis-full h-0"
+              aria-hidden="true"
+            ></div>
+            <div
+              role="listitem"
+              data-recent-item
+              :data-recent-path="item.path"
+              class="group relative inline-flex items-center"
+              :style="{ maxWidth: 'min(200px, 100%)' }"
+              :title="recentPathTitle(item)"
             >
-              <span class="shrink-0 text-[13px] text-[var(--text-primary)]">
-                {{ folderName(folder) }}
-              </span>
-              <span class="min-w-0 truncate text-[11px] text-[var(--text-muted)]">
-                {{ displayPath(folder, homeDir) }}
-              </span>
-              <span
-                v-if="missing.has(folder)"
-                class="shrink-0 text-[11px] text-[var(--status-danger-fg)]"
+              <div
+                data-recent-capsule
+                class="flex min-w-0 items-center rounded-full border border-[var(--border-default)] bg-[var(--surface-elevated)] text-[var(--text-primary)] transition-colors"
+                :class="
+                  item.missing ? 'opacity-60' : 'hover:bg-[var(--surface-subtle)]'
+                "
               >
-                已不存在
-              </span>
-            </button>
-            <button
-              type="button"
-              class="focus-ring grid size-5 shrink-0 place-items-center rounded-[var(--radius-control)] text-[var(--text-muted)] opacity-0 group-hover:opacity-100 focus-visible:opacity-100 hover:bg-[var(--surface-muted)] hover:text-[var(--text-primary)]"
-              aria-label="从最近打开中移除"
-              @click="emit('remove-recent', folder)"
-            >
-              <AppIcon name="close" :size="12" />
-            </button>
-          </li>
-        </ul>
+                <button
+                  type="button"
+                  class="focus-ring flex min-w-0 items-center justify-center gap-1.5 rounded-full px-4 py-1.5 text-left"
+                  :aria-label="openRecentLabel(item)"
+                  :title="recentPathTitle(item)"
+                  @click="openRecent(item)"
+                >
+                  <AppIcon
+                    name="folder"
+                    :size="14"
+                    class="shrink-0 text-[var(--text-muted)]"
+                  />
+                  <span
+                    class="min-w-0 flex-1 truncate text-[13px]"
+                    :class="{ 'line-through': item.missing }"
+                  >
+                    {{ item.name }}
+                  </span>
+                  <span
+                    v-if="item.suffix"
+                    class="min-w-0 max-w-[80px] shrink truncate text-[11px] text-[var(--text-muted)]"
+                  >
+                    · {{ item.suffix }}
+                  </span>
+                </button>
+              </div>
+              <button
+                type="button"
+                class="group/remove focus-ring absolute -right-2 -top-2 z-10 grid size-6 place-items-center rounded-full bg-transparent"
+                :class="
+                  item.missing
+                    ? 'opacity-100'
+                    : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100 group-focus-within:opacity-100'
+                "
+                :aria-label="removeRecentLabel(item)"
+                :title="removeRecentLabel(item)"
+                @click.stop="removeRecent(item)"
+              >
+                <span
+                  class="grid size-4 place-items-center rounded-full border border-[var(--border-default)] bg-[var(--surface-elevated)] text-[var(--text-muted)] transition-colors group-hover/remove:bg-[var(--surface-muted)] group-hover/remove:text-[var(--text-primary)] group-active/remove:bg-[var(--surface-muted)] group-active/remove:text-[var(--text-primary)] group-focus-visible/remove:bg-[var(--surface-muted)] group-focus-visible/remove:text-[var(--text-primary)]"
+                >
+                  <AppIcon name="close" :size="10" />
+                </span>
+              </button>
+            </div>
+          </template>
+        </div>
+      </div>
+
+      <div
+        v-if="dropActive"
+        data-drop-hint
+        class="pointer-events-none absolute inset-2 flex items-center justify-center rounded-[var(--radius-card)] border-2 border-dashed border-[var(--accent-primary)] bg-[var(--accent-soft)]/40"
+      >
+        <p class="m-0 text-[13px] font-medium text-[var(--text-primary)]">
+          松开以打开文件夹
+        </p>
       </div>
     </div>
 
     <div v-else class="text-center">
       <p class="m-0 text-[13px] text-[var(--text-secondary)]">选择一个文件开始写作</p>
-      <p class="mt-2 flex items-center justify-center gap-4 text-[12px] text-[var(--text-muted)]">
+      <div class="mt-3 flex flex-wrap items-center justify-center gap-2.5">
         <button
           type="button"
-          class="focus-ring rounded-[var(--radius-control)] hover:text-[var(--text-primary)]"
+          class="focus-ring inline-flex items-center gap-1.5 rounded-[var(--radius-control)] border border-[var(--border-default)] bg-[var(--surface-elevated)] px-[14px] py-[7px] text-[12px] text-[var(--text-primary)] hover:bg-[var(--surface-subtle)]"
           :aria-label="`新建文件 ${newFileKey}`"
+          :title="`新建文件 ${newFileKey}`"
           @click="emit('new-file')"
         >
-          新建文件 <KeyHint :shortcut="newFileKey" />
+          <AppIcon name="file-plus" :size="14" class="text-[var(--text-muted)]" />
+          新建文件
         </button>
-        <span class="inline-flex items-center gap-1">
-          快速打开 <KeyHint :shortcut="quickOpenKey" />
-          <span class="sr-only">{{ quickOpenKey }}</span>
-        </span>
-      </p>
+        <button
+          type="button"
+          class="focus-ring inline-flex items-center gap-1.5 rounded-[var(--radius-control)] border border-[var(--border-default)] bg-[var(--surface-elevated)] px-[14px] py-[7px] text-[12px] text-[var(--text-primary)] hover:bg-[var(--surface-subtle)]"
+          :aria-label="`快速打开 ${quickOpenKey}`"
+          :title="`快速打开 ${quickOpenKey}`"
+          @click="emit('quick-open')"
+        >
+          <AppIcon name="search" :size="14" class="text-[var(--text-muted)]" />
+          快速打开
+        </button>
+      </div>
     </div>
   </div>
 </template>

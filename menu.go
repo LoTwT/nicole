@@ -37,13 +37,50 @@ func appMenu(dev bool) *mygo.Menu {
 	}
 	appItems = append(appItems, &mygo.MenuItem{Role: mygo.RoleQuit})
 
-	items := []*mygo.MenuItem{
-		{Label: "Nicole", Submenu: appItems},
+	items := menuBarItems(&mygo.MenuItem{Label: "Nicole", Submenu: appItems}, dev)
+	return mygo.NewMenu(items)
+}
+
+// menuBarItems puts the app menu first and the File menu directly after it,
+// then the standard menus. Keeping the order in one function lets tests check
+// the placement without building the updater's app menu.
+func menuBarItems(appMenu *mygo.MenuItem, dev bool) []*mygo.MenuItem {
+	return []*mygo.MenuItem{
+		appMenu,
+		{Label: "文件", Submenu: fileMenuItems()},
 		{Role: mygo.RoleEditMenu},
 		{Role: mygo.RoleViewMenu, Submenu: viewMenuItems(dev)},
 		{Role: mygo.RoleWindowMenu, Submenu: windowMenuItems()},
 	}
-	return mygo.NewMenu(items)
+}
+
+// fileMenuItems holds workspace lifecycle items. "关闭工作区" asks the page to
+// run the registered command, so the menu does not own a second implementation
+// or a native accelerator that could conflict with page key dispatch.
+func fileMenuItems() []*mygo.MenuItem {
+	return []*mygo.MenuItem{
+		{Label: "关闭工作区", Click: pageRunCommand("app.close-workspace")},
+	}
+}
+
+// pageRunCommand asks the page to run one command from its registry. The page
+// decides whether the command exists and whether its context allows it.
+func pageRunCommand(commandID string) func(*mygo.MenuItem, *mygo.Window) {
+	return func(_ *mygo.MenuItem, win *mygo.Window) {
+		if win == nil {
+			win = mygo.FocusedWindow()
+		}
+		if win == nil {
+			return
+		}
+		if page := win.Page(); page != nil {
+			script := fmt.Sprintf(
+				`window.dispatchEvent(new CustomEvent("nicole:run-command", { detail: %q }))`,
+				commandID,
+			)
+			_, _ = page.Eval(script)
+		}
+	}
 }
 
 // customizeEditMenu makes Undo and Redo send an edit command to the page

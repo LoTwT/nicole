@@ -2,7 +2,12 @@ import { commandShortcut } from "../commands/registry";
 import type { NativeMenuItem } from "../services/mygo";
 import { revealLabel, trashLabel, type AppPlatform } from "./platform";
 
-export type MenuTarget = "file" | "folder" | "blank" | "root" | "tab";
+export type MenuTarget =
+  | "file"
+  | "folder"
+  | "blank"
+  | "tab"
+  | "workspace-tools";
 
 export interface ContextMenuOptions {
   target: MenuTarget;
@@ -70,6 +75,21 @@ export function buildContextMenu(
         label: "新建文件夹",
         accelerator: accelerator("file-tree.new-folder", platform),
       },
+      { id: "", label: "", separator: true },
+      { id: "reveal", label: revealLabel(platform) },
+      { id: "", label: "", separator: true },
+      { id: "copy-path", label: "复制路径" },
+      { id: "", label: "", separator: true },
+      { id: "app.close-workspace", label: "关闭工作区" },
+    ];
+  }
+
+  if (target === "workspace-tools") {
+    return [
+      { id: "app.reveal-workspace", label: revealLabel(platform) },
+      { id: "copy-workspace-path", label: "复制路径" },
+      { id: "", label: "", separator: true },
+      { id: "app.close-workspace", label: "关闭工作区" },
     ];
   }
 
@@ -84,21 +104,17 @@ export function buildContextMenu(
       label: "新建文件夹",
       accelerator: accelerator("file-tree.new-folder", platform),
     },
+    {
+      id: "rename",
+      label: "重命名",
+      accelerator: accelerator("file-tree.rename", platform),
+    },
+    {
+      id: "trash",
+      label: trashLabel(platform),
+      accelerator: accelerator("file-tree.trash", platform),
+    },
   ];
-  if (target !== "root") {
-    items.push(
-      {
-        id: "rename",
-        label: "重命名",
-        accelerator: accelerator("file-tree.rename", platform),
-      },
-      {
-        id: "trash",
-        label: trashLabel(platform),
-        accelerator: accelerator("file-tree.trash", platform),
-      },
-    );
-  }
   items.push({ id: "", label: "", separator: true });
   if (target === "file" && !options.isMarkdown) {
     items.push({ id: "open-default-app", label: "用默认应用打开" });
@@ -106,8 +122,6 @@ export function buildContextMenu(
   items.push({ id: "reveal", label: revealLabel(platform) });
   items.push({ id: "", label: "", separator: true });
   items.push({ id: "copy-path", label: "复制路径" });
-  if (target !== "root") {
-    items.push({ id: "copy-relative-path", label: "复制相对路径" });
-  }
+  items.push({ id: "copy-relative-path", label: "复制相对路径" });
   return items;
 }

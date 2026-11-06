@@ -2,12 +2,17 @@
 import { computed } from "vue";
 
 import type { SaveStatusPresentation } from "../app/status";
+import ThemeToggle from "./ThemeToggle.vue";
 
 const props = defineProps<{
   saveStatus: SaveStatusPresentation | null;
   notice: string | null;
   noticeTone?: "success" | "danger" | "muted";
+  startTheme?: boolean;
+  isDark?: boolean;
 }>();
+
+const emit = defineEmits<{ "toggle-theme": [] }>();
 
 const dotClass = computed(() => {
   if (props.notice) {
@@ -38,6 +43,9 @@ const dotClass = computed(() => {
   <footer
     class="flex h-[26px] shrink-0 items-center gap-3 border-t border-[var(--border-subtle)] px-3.5 text-[12px] text-[var(--text-muted)]"
   >
+    <div v-if="startTheme" class="-ml-1.5 flex shrink-0 items-center">
+      <ThemeToggle :is-dark="isDark === true" @toggle="emit('toggle-theme')" />
+    </div>
     <span class="flex min-w-0 flex-1 items-center gap-1.5">
       <template v-if="notice">
         <span class="size-[7px] shrink-0 rounded-full" :class="dotClass"></span>

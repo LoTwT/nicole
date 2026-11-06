@@ -31,9 +31,7 @@ import FileTreeNode from "./FileTreeNode.vue";
 import InlineNameInput from "./InlineNameInput.vue";
 
 const props = defineProps<{
-  rootName: string;
   rootPath: string;
-  rootDisplayPath: string;
   generation: number;
   selectedPath: string | null;
   platform: AppPlatform;
@@ -48,12 +46,14 @@ const emit = defineEmits<{
   "entry-renamed": [oldPath: string, newPath: string, isDir: boolean];
   "trash-request": [entry: TreeNode];
   "expanded-change": [folders: string[]];
+  "run-command": [id: string];
   status: [message: string];
 }>();
 
 const tree = ref<HTMLElement | null>(null);
+const rootEmptyButton = ref<HTMLButtonElement | null>(null);
 const nodes = ref<TreeNode[]>([]);
-const rootOpen = ref(true);
+let editReturnFocus: HTMLElement | null = null;
 const rootLoading = ref(false);
 const rootError = ref(false);
 const expandedSet = ref(new Set<string>());
@@ -252,6 +252,20 @@ function visibleNodes(): TreeNode[] {
   return result;
 }
 
+const tabStopPath = computed(() => {
+  const visible = visibleNodes();
+  if (visible.some((node) => node.path === focusedPath.value)) {
+    return focusedPath.value;
+  }
+  if (
+    props.selectedPath !== null &&
+    visible.some((node) => node.path === props.selectedPath)
+  ) {
+    return props.selectedPath;
+  }
+  return visible[0]?.path ?? "";
+});
+
 async function moveFocus(delta: number) {
   const visible = visibleNodes();
   if (visible.length === 0) {
@@ -271,7 +285,11 @@ function focusedNode(): TreeNode | null {
   return findNode(nodes.value, focusedPath.value);
 }
 
-async function startCreate(kind: "create-file" | "create-folder", dir: string) {
+async function startCreate(
+  kind: "create-file" | "create-folder",
+  dir: string,
+  returnFocus: HTMLElement | null = null,
+) {
   let target = dir === "" ? "." : dir;
   if (target !== ".") {
     const node = findNode(nodes.value, target);
@@ -281,7 +299,7 @@ async function startCreate(kind: "create-file" | "create-folder", dir: string) {
       return;
     }
   }
-  rootOpen.value = true;
+  editReturnFocus = returnFocus;
   editing.value = {
     kind,
     target,
@@ -291,13 +309,25 @@ async function startCreate(kind: "create-file" | "create-folder", dir: string) {
 }
 
 async function startRename(node: TreeNode) {
+  editReturnFocus = null;
   editing.value = { kind: "rename", target: node.path, value: node.name };
   focusedPath.value = node.path;
   await nextTick();
 }
 
-function cancelEdit() {
+async function cancelEdit() {
+  const returnFocus = editReturnFocus;
+  editReturnFocus = null;
   editing.value = null;
+  await nextTick();
+  if (returnFocus?.isConnected) {
+    returnFocus.focus();
+    return;
+  }
+  const path = tabStopPath.value;
+  if (path !== "") {
+    await focusPath(path);
+  }
 }
 
 function updateEdit(value: string) {
@@ -306,16 +336,23 @@ function updateEdit(value: string) {
   }
 }
 
-async function commitEdit() {
+async function commitEdit(source: "enter" | "blur" = "enter") {
   const current = editing.value;
   if (current === null) {
     return;
   }
-  editing.value = null;
   const value = current.value.trim();
   if (value === "") {
+    if (source === "blur") {
+      editing.value = null;
+      editReturnFocus = null;
+    } else {
+      await cancelEdit();
+    }
     return;
   }
+  editing.value = null;
+  editReturnFocus = null;
 
   try {
     if (current.kind === "rename") {
@@ -409,7 +446,6 @@ async function reloadFolder(path: string): Promise<void> {
 }
 
 async function reveal(path: string): Promise<void> {
-  rootOpen.value = true;
   const parts = path.split("/");
   let prefix = "";
   for (let index = 0; index < parts.length - 1; index++) {
@@ -523,7 +559,7 @@ async function handleTreeKeydown(event: KeyboardEvent) {
     event.preventDefault();
     if (node.isDir && node.expanded) {
       await collapseNode(node);
-    } else {
+    } else if (parentPath(node.path) !== ".") {
       focusedPath.value = parentPath(node.path);
       await focusPath(focusedPath.value);
     }
@@ -562,7 +598,7 @@ async function handleTreeKeydown(event: KeyboardEvent) {
 }
 
 async function showMenu(
-  target: "blank" | "root" | "file" | "folder",
+  target: "blank" | "file" | "folder",
   node: TreeNode | null,
   event: MouseEvent,
 ) {
@@ -634,6 +670,9 @@ async function showMenu(
         emit("status", "复制失败");
       }
       break;
+    case "app.close-workspace":
+      emit("run-command", "app.close-workspace");
+      break;
   }
 }
 
@@ -647,24 +686,71 @@ function handleTreeMenu(event: MouseEvent) {
   void showMenu("blank", null, event);
 }
 
-function removePath(path: string) {
+async function collapseAll() {
+  const hadFocus = tree.value?.contains(document.activeElement) ?? false;
+  const collapse = (list: TreeNode[]) => {
+    for (const node of list) {
+      node.expanded = false;
+      if (node.children) {
+        collapse(node.children);
+      }
+    }
+  };
+  collapse(nodes.value);
+  expandedSet.value.clear();
+  persistExpanded();
+  const first = nodes.value[0];
+  focusedPath.value = first?.path ?? "";
+  if (hadFocus && first) {
+    await focusPath(first.path);
+  }
+}
+
+async function removePath(path: string) {
   const node = findNode(nodes.value, path);
   if (!node) {
     return;
   }
+  const hadFocus = tree.value?.contains(document.activeElement) ?? false;
   const parent = parentPath(path);
+  const siblings =
+    parent === "."
+      ? nodes.value
+      : findNode(nodes.value, parent)?.children ?? [];
+  const index = siblings.findIndex((item) => item.path === path);
+  const nextPath =
+    siblings[index + 1]?.path ??
+    siblings[index - 1]?.path ??
+    (parent === "." ? "" : parent);
+
   if (parent === ".") {
     nodes.value = nodes.value.filter((item) => item.path !== path);
-    return;
-  }
-  const parentNode = findNode(nodes.value, parent);
-  if (parentNode?.children) {
-    parentNode.children = parentNode.children.filter(
-      (item) => item.path !== path,
-    );
+  } else {
+    const parentNode = findNode(nodes.value, parent);
+    if (parentNode?.children) {
+      parentNode.children = parentNode.children.filter(
+        (item) => item.path !== path,
+      );
+    }
   }
   removeExpandedBelow(path);
   persistExpanded();
+  if (nodes.value.length === 0) {
+    focusedPath.value = "";
+    if (hadFocus) {
+      await nextTick();
+      rootEmptyButton.value?.focus();
+    }
+    return;
+  }
+  focusedPath.value = nextPath;
+  if (hadFocus) {
+    await nextTick();
+    const target = tabStopPath.value;
+    if (target !== "") {
+      await focusPath(target);
+    }
+  }
 }
 
 applyExpanded();
@@ -692,47 +778,12 @@ defineExpose({
   reveal,
   removePath,
   startCreate,
+  collapseAll,
 });
 </script>
 
 <template>
   <div class="flex min-h-0 flex-1 flex-col">
-    <div
-      class="group flex h-7 shrink-0 items-center gap-1 rounded-[var(--radius-control)] pr-1 text-[12px] font-semibold text-[var(--text-secondary)]"
-      role="group"
-      :aria-label="`根目录 ${rootName}`"
-      @contextmenu.prevent="showMenu('root', null, $event)"
-    >
-      <button
-        type="button"
-        class="focus-ring flex min-w-0 flex-1 items-center gap-1 rounded-[var(--radius-control)] px-1.5 py-1 text-left hover:bg-[var(--surface-subtle)]"
-        :aria-expanded="rootOpen"
-        @click="rootOpen = !rootOpen"
-      >
-        <AppIcon
-          :name="rootOpen ? 'chevron-down' : 'chevron-right'"
-          :size="12"
-          class="shrink-0 text-[var(--text-muted)]"
-        />
-        <span class="shrink-0">{{ rootName }}</span>
-        <span
-          v-if="!rootOpen"
-          class="min-w-0 truncate text-[11px] font-normal text-[var(--text-muted)]"
-        >
-          {{ rootDisplayPath }}
-        </span>
-      </button>
-      <button
-        type="button"
-        class="focus-ring grid size-5 shrink-0 place-items-center rounded-[var(--radius-control)] text-[var(--text-muted)] opacity-0 hover:bg-[var(--surface-muted)] hover:text-[var(--text-primary)] focus-visible:opacity-100 group-hover:opacity-100"
-        aria-label="新建文件"
-        title="新建文件"
-        @click="startCreate('create-file', '.')"
-      >
-        <AppIcon name="plus" :size="13" />
-      </button>
-    </div>
-
     <div
       ref="tree"
       class="min-h-0 flex-1 overflow-auto"
@@ -757,7 +808,7 @@ defineExpose({
           重试
         </button>
       </div>
-      <template v-else-if="rootOpen">
+      <template v-else>
         <div
           v-if="isRootCreate && editing"
           class="flex h-[26px] items-center pr-1"
@@ -784,7 +835,7 @@ defineExpose({
           :node="node"
           :depth="0"
           :selected-path="selectedPath"
-          :focused-path="focusedPath"
+          :tab-stop-path="tabStopPath"
           :editing="editing"
           :platform="platform"
           @toggle="toggleNode"
@@ -802,6 +853,7 @@ defineExpose({
         <div v-if="showRootEmpty" class="px-2 py-2 text-[12px] text-[var(--text-muted)]">
           <p class="m-0">这个文件夹是空的</p>
           <button
+            ref="rootEmptyButton"
             type="button"
             class="focus-ring mt-2 rounded-[var(--radius-control)] border border-[var(--border-default)] px-2 py-1 text-[12px] text-[var(--text-secondary)] hover:bg-[var(--surface-subtle)]"
             @click="startCreate('create-file', '.')"

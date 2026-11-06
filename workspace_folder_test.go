@@ -46,6 +46,30 @@ func TestOpenFolderAcceptsOnlyKnownFolders(t *testing.T) {
 	}
 }
 
+func TestOpenFolderReportsMissingFolder(t *testing.T) {
+	parent := resolveTestPath(t, t.TempDir())
+	missingLeaf := filepath.Join(parent, "missing")
+	missingParent := filepath.Join(parent, "missing", "nested")
+	settings := newSettingsStoreIn(filepath.Join(t.TempDir(), "settings.json"))
+	if err := settings.update(func(settings *AppSettings) {
+		settings.RecentFolders = []string{missingLeaf, missingParent}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	workspace := NewWorkspace()
+	workspace.useSettings(settings)
+
+	for _, root := range []string{missingLeaf, missingParent} {
+		_, err := workspace.OpenFolder(root)
+		if !errors.Is(err, errFolderMissing) {
+			t.Fatalf("OpenFolder(%q) error = %v, want errFolderMissing", root, err)
+		}
+		if err.Error() != "workspace: folder does not exist" {
+			t.Fatalf("OpenFolder(%q) message = %q, want the fixed missing-folder text", root, err)
+		}
+	}
+}
+
 func TestOpenFolderAcceptsTheLastPickOnce(t *testing.T) {
 	root := resolveTestPath(t, t.TempDir())
 	workspace := NewWorkspace()

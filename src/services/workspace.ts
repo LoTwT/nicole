@@ -17,6 +17,16 @@ export function pickFolder(): Promise<FolderPick> {
   return Workspace.pickFolder();
 }
 
+/** Opens the single folder of a native drop named by its one-time Go token. */
+export function openDroppedFolder(token: string): Promise<WorkspaceFolder> {
+  return Workspace.openDroppedFolder(token);
+}
+
+/** Closes the workspace and returns the app to the start page. */
+export function closeWorkspace(): Promise<void> {
+  return Workspace.closeWorkspace();
+}
+
 /**
  * Switches to a folder the user just picked, a recent folder, or the folder
  * of a system-provided file. Go refuses any other path.

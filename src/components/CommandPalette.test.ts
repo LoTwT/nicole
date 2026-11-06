@@ -156,7 +156,11 @@ describe("CommandPalette", () => {
     );
     expect(options()[0]?.getAttribute("aria-selected")).toBe("true");
     expect(options()[0]?.tabIndex).toBe(-1);
-    expect(options()[0]?.querySelector("kbd")?.textContent).toBe("⌘");
+    expect(options()[0]?.querySelector("kbd")).toBeNull();
+    expect(options()[0]?.textContent).toContain("⌘I");
+    expect(options()[0]?.querySelector("span.text-right")?.textContent?.trim()).toBe(
+      "⌘I",
+    );
   });
 
   it("runs the selected command with Enter and leaves IME keys alone", async () => {

@@ -713,7 +713,7 @@ func TestAssetDropHandlerEmitsTokenAndImports(t *testing.T) {
 
 	assets := testAssets(workspace, fakeClipboard{})
 	var emitted AssetDrop
-	handler := newAssetDropHandler(assets, func(drop AssetDrop) error {
+	handler := newAssetDropHandler(assets, workspace, func(drop AssetDrop) error {
 		emitted = drop
 		return nil
 	})

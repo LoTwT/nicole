@@ -14,7 +14,7 @@ const props = defineProps<{
   node: TreeNode;
   depth: number;
   selectedPath: string | null;
-  focusedPath: string;
+  tabStopPath: string;
   editing: TreeEditState | null;
   platform: AppPlatform;
 }>();
@@ -26,7 +26,7 @@ const emit = defineEmits<{
   focus: [node: TreeNode];
   "start-rename": [node: TreeNode];
   "update-edit": [value: string];
-  "commit-edit": [];
+  "commit-edit": [source: "enter" | "blur"];
   "cancel-edit": [];
 }>();
 
@@ -79,7 +79,7 @@ function activate() {
         :select-end="renameRange[1]"
         label="重命名"
         @update:value="emit('update-edit', $event)"
-        @commit="emit('commit-edit')"
+        @commit="emit('commit-edit', $event)"
         @cancel="emit('cancel-edit')"
       />
     </div>
@@ -90,7 +90,7 @@ function activate() {
       :aria-level="depth + 1"
       :aria-expanded="node.isDir ? node.expanded : undefined"
       :aria-selected="isSelected"
-      :tabindex="focusedPath === node.path ? 0 : -1"
+      :tabindex="tabStopPath === node.path ? 0 : -1"
       class="focus-ring group flex h-[26px] cursor-default items-center gap-1.5 rounded-[var(--radius-control)] pr-1 text-[13px] outline-offset-[-2px]"
       :class="[
         isSelected
@@ -136,7 +136,7 @@ function activate() {
           :select-end="editSelectionRange(editing)[1]"
           :label="editing.kind === 'create-folder' ? '新建文件夹' : '新建文件'"
           @update:value="emit('update-edit', $event)"
-          @commit="emit('commit-edit')"
+          @commit="emit('commit-edit', $event)"
           @cancel="emit('cancel-edit')"
         />
       </div>
@@ -147,7 +147,7 @@ function activate() {
           :node="child"
           :depth="depth + 1"
           :selected-path="selectedPath"
-          :focused-path="focusedPath"
+          :tab-stop-path="tabStopPath"
           :editing="editing"
           :platform="platform"
           @toggle="emit('toggle', $event)"
@@ -156,7 +156,7 @@ function activate() {
           @focus="emit('focus', $event)"
           @start-rename="emit('start-rename', $event)"
           @update-edit="emit('update-edit', $event)"
-          @commit-edit="emit('commit-edit')"
+          @commit-edit="emit('commit-edit', $event)"
           @cancel-edit="emit('cancel-edit')"
         />
       </template>

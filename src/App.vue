@@ -96,7 +96,7 @@ import {
 import { createImageInsertion } from "./image-insertion";
 import { resolveImageUrl } from "./image-url";
 import { getAppInfo, type AppInfo } from "./services/app";
-import { onWindowFileDrop } from "./services/assets";
+import { onWindowFileDrop, type AssetDrop } from "./services/assets";
 import { copyText } from "./services/clipboard";
 import {
   listDirectory,
@@ -140,9 +140,11 @@ import {
 } from "./services/tabs";
 import type { WorkspaceFileEvent } from "./services/mygo";
 import {
+  closeWorkspace as closeWorkspaceInGo,
   finishClose,
   listFiles,
   onSaveBeforeClose,
+  openDroppedFolder as openDroppedFolderInGo,
   openFolder as openFolderAtPath,
   pickFolder,
   readFile,
@@ -154,6 +156,9 @@ const AUTOSAVE_DELAY_MS = 1000;
 const SAVING_DISPLAY_DELAY_MS = 300;
 const NOTICE_DURATION_MS = 3000;
 const PERSIST_TABS_DELAY_MS = 400;
+// Keep close/switch inside the same five-second budget as the window-close path.
+const RECOVERY_OPERATION_TIMEOUT_MS = 5000;
+const MISSING_FOLDER_ERROR = "workspace: folder does not exist";
 
 interface WorkspaceState {
   root: string;
@@ -214,6 +219,7 @@ interface RecoveryWriteState {
 
 const editorHost = ref<HTMLElement | null>(null);
 const sidebar = ref<InstanceType<typeof AppSidebar> | null>(null);
+const emptyState = ref<InstanceType<typeof EmptyState> | null>(null);
 const topBar = ref<InstanceType<typeof TopBar> | null>(null);
 const palette = ref<InstanceType<typeof CommandPalette> | null>(null);
 const appInfo = ref<AppInfo | null>(null);
@@ -229,6 +235,9 @@ const sidebarWidth = ref(252);
 const recentFolders = ref<string[]>([]);
 const missingRecent = ref<string[]>([]);
 const missingLastFolder = ref<string | null>(null);
+const workspaceClosed = ref(false);
+const dropActive = ref(false);
+let dragDepth = 0;
 const expandedByRoot = ref<Record<string, string[]>>({});
 const recentFilesByRoot = ref<Record<string, string[]>>({});
 const paletteSession = shallowRef<PaletteSession | null>(null);
@@ -329,6 +338,7 @@ const paletteCommands = computed(() =>
   commandRegistry.filter(
     (command) =>
       isCommandAvailable(command) &&
+      (!command.requiresWorkspace || hasWorkspace.value) &&
       (command.scope === "app" ||
         (command.scope === "editor" && isMarkdownOpen.value && editor !== null)),
   ),
@@ -351,9 +361,6 @@ const selectedTreePath = computed(() => {
 
 const rootName = computed(() =>
   workspace.value ? absoluteBaseName(workspace.value.root) : "",
-);
-const rootDisplayPath = computed(() =>
-  workspace.value ? displayPath(workspace.value.root, homeDir.value) : "",
 );
 const expandedForRoot = computed(() => {
   if (!workspace.value) return [];
@@ -410,6 +417,11 @@ const dialogActions = computed(() => dialog.value?.actions ?? []);
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** Go reports a missing root with this fixed, locale-independent error. */
+function isMissingFolderError(error: unknown): boolean {
+  return errorText(error) === MISSING_FOLDER_ERROR;
 }
 
 function findTab(id: number | null): TabModel | null {
@@ -516,6 +528,7 @@ function applySettings(loaded: AppSettings) {
   sidebarWidth.value = Math.min(400, Math.max(200, loaded.sidebarWidth || 252));
   recentFolders.value = [...loaded.recentFolders].slice(0, 10);
   expandedByRoot.value = { ...loaded.expandedFolders };
+  workspaceClosed.value = loaded.workspaceClosed === true;
   applyTheme();
 }
 
@@ -796,31 +809,41 @@ function trackRecovery<T>(promise: Promise<T>): Promise<T> {
   return promise;
 }
 
-async function waitForRecoveryOperations(timeoutMs: number): Promise<void> {
+async function waitForRecoveryOperations(
+  timeoutMs = Number.POSITIVE_INFINITY,
+): Promise<boolean> {
   if (timeoutMs <= 0) {
-    return;
+    return pendingRecoveryOperations.size === 0;
   }
-  const deadline = Date.now() + timeoutMs;
+  const deadline = Number.isFinite(timeoutMs)
+    ? Date.now() + timeoutMs
+    : Number.POSITIVE_INFINITY;
   while (pendingRecoveryOperations.size > 0) {
     const remaining = deadline - Date.now();
     if (remaining <= 0) {
-      return;
+      return false;
     }
     const pending = [...pendingRecoveryOperations];
     let timer: ReturnType<typeof setTimeout> | null = null;
     try {
-      await Promise.race([
-        Promise.allSettled(pending).then(() => undefined),
-        new Promise<void>((resolve) => {
-          timer = setTimeout(resolve, remaining);
-        }),
-      ]);
+      const settled = Promise.allSettled(pending).then(() => undefined);
+      if (deadline === Number.POSITIVE_INFINITY) {
+        await settled;
+      } else {
+        await Promise.race([
+          settled,
+          new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, remaining);
+          }),
+        ]);
+      }
     } finally {
       if (timer !== null) {
         clearTimeout(timer);
       }
     }
   }
+  return true;
 }
 
 function tabInRecoveryDialog(tab: TabModel): boolean {
@@ -1872,6 +1895,9 @@ function applyWorkspaceState(folder: {
 }) {
   workspace.value = { root: folder.root, generation: folder.generation };
   missingLastFolder.value = null;
+  workspaceClosed.value = false;
+  dropActive.value = false;
+  dragDepth = 0;
   rememberRecent(folder.root);
   startWatch(folder.generation);
 }
@@ -2049,19 +2075,22 @@ async function applyWorkspace(folder: {
   }
 }
 
-async function switchToFolder(path: string): Promise<boolean> {
+async function switchToFolder(
+  path: string,
+  options: { markMissing?: boolean } = {},
+): Promise<boolean> {
   if (workspace.value?.root === path) {
     closeOverlaySidebar();
     return true;
   }
   const targetName = absoluteBaseName(path);
   const currentWorkspace = workspace.value;
+  const closingTabs = tabs.value.filter(
+    (tab) => tab.kind === "workspace" || tab.kind === "preview",
+  );
   let hadProblems = false;
 
   if (currentWorkspace !== null) {
-    const closingTabs = tabs.value.filter(
-      (tab) => tab.kind === "workspace" || tab.kind === "preview",
-    );
     await saveWorkspaceTabs();
     const problems = closingTabs.flatMap(tabCloseProblems);
     hadProblems = problems.length > 0;
@@ -2083,9 +2112,16 @@ async function switchToFolder(path: string): Promise<boolean> {
       return false;
     }
     // The user agreed to discard what could not be saved; the copies for
-    // those documents must not outlive this switch.
+    // those documents must not outlive this switch. Recovery runs in separate
+    // Go goroutines, so wait for deletes and in-flight writes before the
+    // generation changes; otherwise Go rejects the late deletes.
     for (const tab of closingTabs) {
       forgetRecoveryForTab(tab);
+    }
+    if (!(await waitForRecoveryOperations(RECOVERY_OPERATION_TIMEOUT_MS))) {
+      void resumeRecoveryCopiesAfterPending(closingTabs);
+      showNotice("切换文件夹失败：恢复副本仍在写入", "danger");
+      return false;
     }
     await persistTabsNow();
   }
@@ -2094,7 +2130,15 @@ async function switchToFolder(path: string): Promise<boolean> {
   try {
     folder = await openFolderAtPath(path);
   } catch (error) {
-    showNotice(`打开失败：${errorText(error)}`, "danger");
+    resumeRecoveryCopies(closingTabs);
+    if (isMissingFolderError(error)) {
+      if (options.markMissing === true) {
+        markMissing(path);
+      }
+      showNotice("文件夹已不存在", "danger");
+    } else {
+      showNotice(`打开失败：${errorText(error)}`, "danger");
+    }
     return false;
   }
   const applied = await applyWorkspace(folder);
@@ -2133,10 +2177,142 @@ async function chooseFolder() {
 }
 
 async function openRecentFolder(path: string) {
-  await startFolderOperation(() => switchToFolder(path));
+  const opened = await startFolderOperation(() =>
+    switchToFolder(path, { markMissing: true }),
+  );
+  if (!opened && startState.value) {
+    // WebKit does not move focus to a button on click; a failed retry must
+    // leave the user on the same enabled recent item.
+    emptyState.value?.focusRecentItem(path);
+  }
+}
+
+async function closeWorkspace() {
+  const current = workspace.value;
+  if (current === null) {
+    return false;
+  }
+  return startFolderOperation(async () => {
+    const closing = [...tabs.value];
+    await saveAllTabs();
+    const problems = closing.flatMap(tabCloseProblems);
+    if (problems.length > 0) {
+      const workspaceTabCount = closing.filter(
+        (tab) => tab.kind !== "single",
+      ).length;
+      const singleCount = closing.length - workspaceTabCount;
+      let message = `当前文件夹的 ${workspaceTabCount} 个标签页会关闭，下次打开“${rootName.value}”时会恢复这些标签页`;
+      if (singleCount > 0) {
+        message += `；${singleCount} 个单文件标签页会关闭且不会恢复`;
+      }
+      const choice = await askDialog({
+        title: "关闭工作区？",
+        message,
+        details: [...new Set(problems)],
+        actions: [
+          { label: "取消", value: "cancel", autofocus: true },
+          {
+            label: "放弃更改并关闭工作区",
+            value: "close",
+            primary: true,
+            danger: true,
+          },
+        ],
+      });
+      if (choice !== "close") {
+        return false;
+      }
+    }
+
+    // The layout must be written while Go still treats this folder as the
+    // current root. It stays in tabs.json for the next open.
+    await persistTabsNow();
+    for (const tab of closing) {
+      forgetRecoveryForTab(tab);
+    }
+    // Recovery deletes run in separate Go goroutines and are bound to the
+    // current generation. Let deletes and in-flight copy writes finish before
+    // CloseWorkspace advances it; otherwise a discarded copy survives and is
+    // offered again the next time this folder opens. A stuck backend must not
+    // close the workspace with copies still in flight.
+    if (!(await waitForRecoveryOperations(RECOVERY_OPERATION_TIMEOUT_MS))) {
+      void resumeRecoveryCopiesAfterPending(closing);
+      showNotice("关闭工作区失败：恢复副本仍在写入", "danger");
+      return false;
+    }
+    try {
+      await closeWorkspaceInGo();
+    } catch (error) {
+      resumeRecoveryCopies(closing);
+      showNotice(`关闭工作区失败：${errorText(error)}`, "danger");
+      return false;
+    }
+
+    for (const tab of closing) {
+      if (tab.kind === "single") {
+        void releaseSingleFile(tab.path).catch(() => {});
+      }
+    }
+    stopWatch();
+    closeCommandPalette();
+    closePopoverMenus();
+    cancelPersistTimer();
+    clearEditor();
+    tabs.value = [];
+    activeTabId.value = null;
+    lastWorkspaceActivePath = null;
+    closedTabs.value = [];
+    workspace.value = null;
+    missingLastFolder.value = null;
+    overlaySidebar.value = false;
+    dropActive.value = false;
+    dragDepth = 0;
+    recentFolders.value = [
+      current.root,
+      ...recentFolders.value.filter((folder) => folder !== current.root),
+    ].slice(0, 10);
+    await nextTick();
+    emptyState.value?.focusOpenFolder();
+    return true;
+  });
+}
+
+/** Re-protects tabs whose copies were removed before a failed close. */
+function resumeRecoveryCopies(closing: readonly TabModel[]) {
+  for (const tab of closing) {
+    const current = findTab(tab.id);
+    if (current === null || !needsRecoveryCopy(current)) {
+      continue;
+    }
+    startRecoveryTimer(current.id);
+    writeRecoveryCopy(current.id);
+  }
+}
+
+/**
+ * A timed-out close/switch may leave an old delete in flight. Recovery ids are
+ * deterministic per kind/root/path, and the write cache suppresses identical
+ * text, so rewriting before that delete settles could lose the new copy. Wait
+ * for the old operations, reset the cache, then write again.
+ */
+async function resumeRecoveryCopiesAfterPending(closing: readonly TabModel[]) {
+  while (pendingRecoveryOperations.size > 0) {
+    await Promise.allSettled([...pendingRecoveryOperations]);
+  }
+  for (const tab of closing) {
+    const state = recoveryWrites.get(tab.id);
+    if (state !== undefined) {
+      state.written = null;
+      state.writtenBaselineUnconfirmed = null;
+    }
+  }
+  resumeRecoveryCopies(closing);
 }
 
 async function restoreLastWorkspace() {
+  if (workspaceClosed.value) {
+    return;
+  }
   const last = recentFolders.value[0];
   if (!last) {
     return;
@@ -2154,9 +2330,13 @@ async function restoreLastWorkspace() {
         ...recentFolders.value.filter((item) => item !== folder.root),
       ].slice(0, 10);
       return true;
-    } catch {
-      missingLastFolder.value = last;
-      markMissing(last);
+    } catch (error) {
+      if (isMissingFolderError(error)) {
+        missingLastFolder.value = last;
+        markMissing(last);
+      } else {
+        showNotice(`打开失败：${errorText(error)}`, "danger");
+      }
       return false;
     }
   });
@@ -2889,6 +3069,35 @@ async function revealPreview() {
   }
 }
 
+function collapseAllFolders() {
+  const current = workspace.value;
+  if (current === null) {
+    return;
+  }
+  const mounted = sidebar.value;
+  if (mounted !== null) {
+    mounted.collapseAll();
+    return;
+  }
+  expandedByRoot.value = {
+    ...expandedByRoot.value,
+    [current.root]: [],
+  };
+  void setExpandedFolders(current.root, []).catch(() => {});
+}
+
+async function revealWorkspace() {
+  const current = workspace.value;
+  if (current === null) {
+    return;
+  }
+  try {
+    await revealEntry(".", current.generation);
+  } catch (error) {
+    showNotice(`无法显示：${errorText(error)}`, "danger");
+  }
+}
+
 function canOpenParentFolder(parent: string): boolean {
   if (parent === "" || parent === "/") {
     return false;
@@ -3036,6 +3245,112 @@ function handleEditCommand(event: Event) {
   } else {
     target.redo();
   }
+}
+
+/** Runs one registered app command with the current page context. */
+function runAppCommand(id: string): boolean {
+  const command = getCommand(id);
+  if (
+    command === undefined ||
+    !isCommandAvailable(command) ||
+    command.scope !== "app"
+  ) {
+    return false;
+  }
+  if (command.requiresWorkspace && !hasWorkspace.value) {
+    return false;
+  }
+  return command.run(commandContext(editor?.view ?? null));
+}
+
+/** Runs a command requested by native chrome, honouring modal guards. */
+function runChromeCommand(id: string) {
+  if (dialogOpen || recoveryDialog.value !== null) {
+    return;
+  }
+  runAppCommand(id);
+}
+
+/** Runs a command the native menu asked for, under the page's own guards. */
+function handleRunCommand(event: Event) {
+  const id = (event as CustomEvent<unknown>).detail;
+  if (typeof id !== "string") {
+    return;
+  }
+  runChromeCommand(id);
+}
+
+function dragHasFiles(event: DragEvent): boolean {
+  return Array.from(event.dataTransfer?.types ?? []).includes("Files");
+}
+
+function handleDragEnter(event: DragEvent) {
+  if (!startState.value || !dragHasFiles(event)) {
+    return;
+  }
+  event.preventDefault();
+  dragDepth += 1;
+  dropActive.value = true;
+}
+
+function handleDragOver(event: DragEvent) {
+  if (!startState.value || !dragHasFiles(event)) {
+    return;
+  }
+  event.preventDefault();
+  if (event.dataTransfer !== null) {
+    event.dataTransfer.dropEffect = "copy";
+  }
+  dropActive.value = true;
+}
+
+function handleDragLeave() {
+  if (!startState.value) {
+    return;
+  }
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) {
+    dropActive.value = false;
+  }
+}
+
+function handleDomDrop(event: DragEvent) {
+  if (!startState.value) {
+    return;
+  }
+  event.preventDefault();
+  dragDepth = 0;
+  dropActive.value = false;
+}
+
+async function handleFolderDrop(drop: AssetDrop) {
+  if (
+    !startState.value ||
+    dialogOpen ||
+    recoveryDialog.value !== null ||
+    recoveryChecking
+  ) {
+    return;
+  }
+  dropActive.value = false;
+  if (drop.folderToken === undefined) {
+    showNotice("只能拖入一个文件夹", "muted");
+    return;
+  }
+  await startFolderOperation(async () => {
+    let folder;
+    try {
+      folder = await openDroppedFolderInGo(drop.folderToken!);
+    } catch (error) {
+      showNotice(`无法打开拖入的文件夹：${errorText(error)}`, "danger");
+      return false;
+    }
+    const applied = await applyWorkspace(folder);
+    if (applied) {
+      await maybeShowRecoveryDialog();
+    }
+    return applied;
+  });
 }
 
 function setMode(next: EditorMode) {
@@ -3218,6 +3533,13 @@ function commandContext(view: CommandContext["view"]): CommandContext {
       closeActiveTab: () => {
         void closeActiveTab();
       },
+      closeWorkspace: () => {
+        void closeWorkspace();
+      },
+      collapseAllFolders,
+      revealWorkspace: () => {
+        void revealWorkspace();
+      },
       reopenClosedTab: () => {
         void reopenClosedTab();
       },
@@ -3239,6 +3561,9 @@ async function runPaletteCommand(id: string) {
   await nextTick();
   const command = getCommand(id);
   if (command === undefined || !isCommandAvailable(command)) {
+    return;
+  }
+  if (command.requiresWorkspace && !hasWorkspace.value) {
     return;
   }
   if (command.scope === "file-tree") {
@@ -3318,6 +3643,9 @@ function handleGlobalKeydown(event: KeyboardEvent) {
   }
   const command = matchCommand(event, platform.value, commandRegistry, "app");
   if (command === null) {
+    return;
+  }
+  if (command.requiresWorkspace && !hasWorkspace.value) {
     return;
   }
   const handled = command.run(commandContext(editor?.view ?? null));
@@ -3412,7 +3740,7 @@ async function requestTrash(entry: TreeNode) {
     showNotice(`移到废纸篓失败：${errorText(error)}`, "danger");
     return;
   }
-  sidebar.value?.removePath(entry.path);
+  await sidebar.value?.removePath(entry.path);
   const affected = tabs.value.filter(
     (tab) =>
       tab.kind !== "single" &&
@@ -3649,6 +3977,7 @@ onMounted(async () => {
   document.addEventListener("visibilitychange", handleVisibilityChange);
   systemTheme.addEventListener("change", handleSystemThemeChange);
   window.addEventListener("nicole:edit-command", handleEditCommand);
+  window.addEventListener("nicole:run-command", handleRunCommand);
   offOpenFile = onOpenFile(() => {
     if (!appReady) {
       pendingOpenSignal = true;
@@ -3658,6 +3987,7 @@ onMounted(async () => {
   });
   offFileDrop = onWindowFileDrop((drop) => {
     imageInsertion.handleDrop(drop);
+    void handleFolderDrop(drop);
   });
   offSaveBeforeClose = onSaveBeforeClose(async (token) => {
     const started = Date.now();
@@ -3670,7 +4000,10 @@ onMounted(async () => {
     // keeping room inside Go's five-second close timeout.
     const remaining = Math.max(
       0,
-      Math.min(1000, 5000 - (Date.now() - started) - 100),
+      Math.min(
+        1000,
+        RECOVERY_OPERATION_TIMEOUT_MS - (Date.now() - started) - 100,
+      ),
     );
     await waitForRecoveryOperations(remaining);
     try {
@@ -3705,6 +4038,7 @@ onBeforeUnmount(() => {
   document.removeEventListener("visibilitychange", handleVisibilityChange);
   systemTheme.removeEventListener("change", handleSystemThemeChange);
   window.removeEventListener("nicole:edit-command", handleEditCommand);
+  window.removeEventListener("nicole:run-command", handleRunCommand);
   offOpenFile?.();
   offOpenFile = null;
   offFileDrop?.();
@@ -3732,6 +4066,7 @@ onBeforeUnmount(() => {
 
 defineExpose({
   chooseFolder,
+  closeWorkspace,
   openWorkspaceFile,
   openSingleFile,
   openCommandPalette,
@@ -3743,6 +4078,10 @@ defineExpose({
   <div
     class="relative flex h-full min-h-0 overflow-hidden bg-[var(--surface-canvas)] text-[var(--text-primary)]"
     :style="{ '--sidebar-width': `${sidebarWidth}px` }"
+    @dragenter="handleDragEnter"
+    @dragover="handleDragOver"
+    @dragleave="handleDragLeave"
+    @drop="handleDomDrop"
   >
     <AppSidebar
       v-if="sidebarShown && workspace"
@@ -3752,7 +4091,6 @@ defineExpose({
       :platform="platform"
       :root-name="rootName"
       :root-path="workspace.root"
-      :root-display-path="rootDisplayPath"
       :generation="workspace.generation"
       :selected-path="selectedTreePath"
       :initial-expanded="expandedForRoot"
@@ -3770,6 +4108,7 @@ defineExpose({
       @entry-renamed="handleEntryRenamed"
       @trash-request="requestTrash"
       @expanded-change="handleExpandedChange"
+      @run-command="runChromeCommand"
       @status="(message) => showNotice(message, 'danger')"
     />
 
@@ -3807,16 +4146,19 @@ defineExpose({
           <div class="relative isolate min-h-0 flex-1" data-editor-host>
             <EmptyState
               v-if="startState"
+              ref="emptyState"
               mode="start"
               :recent-folders="recentFolders"
               :missing-folders="missingRecent"
               :missing-last-folder="missingLastFolder"
               :home-dir="homeDir"
               :platform="platform"
+              :drop-active="dropActive"
               @open-folder="chooseFolder"
               @open-recent="openRecentFolder"
               @remove-recent="removeRecent"
               @new-file="newFile"
+              @quick-open="openCommandPalette('file')"
             />
             <EmptyState
               v-else-if="noFileState"
@@ -3828,6 +4170,7 @@ defineExpose({
               :platform="platform"
               @open-folder="chooseFolder"
               @new-file="newFile"
+              @quick-open="openCommandPalette('file')"
             />
             <NonMarkdownPlaceholder
               v-else-if="currentPreview"
@@ -3852,6 +4195,9 @@ defineExpose({
         :save-status="saveStatus"
         :notice="notice?.text ?? null"
         :notice-tone="notice?.tone"
+        :start-theme="startState"
+        :is-dark="isDark"
+        @toggle-theme="toggleTheme"
       />
     </div>
 

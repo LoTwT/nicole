@@ -42,6 +42,9 @@ export interface AppCommandActions {
   setMode(mode: CommandEditorMode): void | Promise<void>;
   toggleTheme(): void | Promise<void>;
   closeActiveTab(): void | Promise<void>;
+  closeWorkspace(): void | Promise<void>;
+  collapseAllFolders(): void | Promise<void>;
+  revealWorkspace(): void | Promise<void>;
   reopenClosedTab(): void | Promise<void>;
   nextTab(): void | Promise<void>;
   previousTab(): void | Promise<void>;
@@ -90,5 +93,10 @@ export interface CommandDefinition {
    * dispatch and future menus skip it. Defaults to true.
    */
   available?: boolean;
+  /**
+   * True when the command needs an open workspace. The palette does not list
+   * it and key dispatch does not run it while there is no root.
+   */
+  requiresWorkspace?: boolean;
   run: (context: CommandContext) => boolean;
 }

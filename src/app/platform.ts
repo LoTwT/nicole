@@ -27,32 +27,3 @@ export function revealLabel(platform: AppPlatform): string {
 export function trashLabel(platform: AppPlatform): string {
   return isMac(platform) ? "移到废纸篓" : "移到回收站";
 }
-
-const SHORTCUT_SYMBOLS = "⌘⇧⌃⌥⌫↑↓←→";
-
-/** Split displayed shortcut text into one label per keycap. */
-export function shortcutKeycaps(text: string): string[] {
-  const value = text.trim();
-  if (!value) {
-    return [];
-  }
-  if (value.includes("+")) {
-    return value
-      .split("+")
-      .map((key) => key.trim())
-      .filter(Boolean);
-  }
-  const keys = Array.from(value);
-  if (keys.length > 1 && SHORTCUT_SYMBOLS.includes(keys[0]!)) {
-    const keycaps: string[] = [];
-    while (
-      keycaps.length < keys.length - 1 &&
-      SHORTCUT_SYMBOLS.includes(keys[keycaps.length]!)
-    ) {
-      keycaps.push(keys[keycaps.length]!);
-    }
-    keycaps.push(keys.slice(keycaps.length).join(""));
-    return keycaps;
-  }
-  return [value];
-}

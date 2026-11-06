@@ -59,6 +59,9 @@ const COMMAND_BY_ROW: Readonly<Record<string, string | readonly string[]>> = {
   "新建文件（当前文件所在的文件夹，否则根目录）": "app.new-file",
   "立即保存": "app.save",
   "设置": "app.settings",
+  "关闭工作区": "app.close-workspace",
+  "全部折叠": "app.collapse-folders",
+  "显示工作区文件夹": "app.reveal-workspace",
   "快速打开文件": "nav.quick-open",
   "命令面板": "nav.command-palette",
   "转到标题": "nav.goto-heading",
@@ -197,6 +200,12 @@ describe("command registry", () => {
         expect(command, id).toBeDefined();
         return command!;
       });
+
+      if (row.macos === "无" && row.windows === "无") {
+        expect(commands.flatMap((command) => command.keys ?? [])).toEqual([]);
+        expect(commands.every((command) => command.requiresWorkspace)).toBe(true);
+        continue;
+      }
 
       expectSameShortcuts(
         commands.flatMap((command) => bindingTexts(command, "macos")),

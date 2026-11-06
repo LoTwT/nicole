@@ -48,6 +48,8 @@ var (
 	errDanglingLink    = errors.New("workspace: dangling symbolic link")
 	errFolderNotChosen = errors.New("workspace: folder was not chosen by the user")
 	errFolderForbidden = errors.New("workspace: folder cannot be opened as a workspace")
+	errFolderMissing   = errors.New("workspace: folder does not exist")
+	errFolderDrop      = errors.New("workspace: unknown or expired folder drop token")
 )
 
 // WorkspaceFolder is the result of choosing a folder. Canceled is true when
@@ -86,14 +88,29 @@ type Workspace struct {
 	settings          *settingsStore
 	offeredFiles      func() []string
 	takeOfferedFolder func(string) bool
+
+	// folderDrops keeps the paths of native folder drops until the page
+	// claims one with its one-time token. Paths never reach the page.
+	now         func() time.Time
+	folderTTL   time.Duration
+	dropMu      sync.Mutex
+	folderDrops map[string]folderDrop
+}
+
+type folderDrop struct {
+	path    string
+	expires time.Time
 }
 
 // NewWorkspace returns a workspace with no folder open.
 func NewWorkspace() *Workspace {
 	return &Workspace{
-		state:  &workspaceState{},
-		writes: newSelfWrites(),
-		close:  newCloseCoordinator(),
+		state:       &workspaceState{},
+		writes:      newSelfWrites(),
+		close:       newCloseCoordinator(),
+		now:         time.Now,
+		folderTTL:   dropTokenLifetime,
+		folderDrops: map[string]folderDrop{},
 	}
 }
 
@@ -234,6 +251,92 @@ func forbiddenWorkspaceRoot(root string) bool {
 	}
 	resolved, err := filepath.EvalSymlinks(home)
 	return err == nil && root == filepath.Clean(resolved)
+}
+
+// OpenDroppedFolder opens the folder of a native drop the page claimed with
+// its one-time token. The token is consumed even when the path no longer
+// opens, so one drop can authorize at most one attempt. PickFolder and
+// OpenFolder remain the only other ways to name a root.
+func (w *Workspace) OpenDroppedFolder(token string) (WorkspaceFolder, error) {
+	path, err := w.takeFolderDrop(token)
+	if err != nil {
+		return WorkspaceFolder{}, err
+	}
+	return w.open(path)
+}
+
+// acceptFolderDrop remembers a native drop that is exactly one real folder and
+// returns a one-time token for the page. Multiple paths, files, symlinks and
+// paths that cannot be inspected get no token.
+func (w *Workspace) acceptFolderDrop(paths []string) (string, bool) {
+	if len(paths) != 1 {
+		return "", false
+	}
+	clean := filepath.Clean(paths[0])
+	if !filepath.IsAbs(clean) {
+		return "", false
+	}
+	info, err := os.Lstat(clean)
+	if err != nil || info.Mode()&fs.ModeSymlink != 0 || !info.IsDir() {
+		return "", false
+	}
+	var random [16]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", false
+	}
+	token := hex.EncodeToString(random[:])
+	now := w.now()
+	w.dropMu.Lock()
+	defer w.dropMu.Unlock()
+	w.pruneFolderDropsLocked(now)
+	w.folderDrops[token] = folderDrop{path: clean, expires: now.Add(w.folderTTL)}
+	return token, true
+}
+
+func (w *Workspace) takeFolderDrop(token string) (string, error) {
+	now := w.now()
+	w.dropMu.Lock()
+	defer w.dropMu.Unlock()
+	w.pruneFolderDropsLocked(now)
+	drop, ok := w.folderDrops[token]
+	if !ok || !now.Before(drop.expires) {
+		delete(w.folderDrops, token)
+		return "", errFolderDrop
+	}
+	delete(w.folderDrops, token)
+	return drop.path, nil
+}
+
+func (w *Workspace) pruneFolderDropsLocked(now time.Time) {
+	for token, drop := range w.folderDrops {
+		if !now.Before(drop.expires) {
+			delete(w.folderDrops, token)
+		}
+	}
+}
+
+// CloseWorkspace returns the app to the start page. The tab layout and
+// recovery copies stay on disk; only the in-process root and its disk hashes
+// are cleared. The recent folder is kept first and workspaceClosed makes the
+// next launch skip restoring it until a folder is opened again.
+func (w *Workspace) CloseWorkspace() error {
+	root, _ := w.state.snapshot()
+	if root == "" {
+		return errNoWorkspace
+	}
+	var keep []string
+	if w.openSingleFiles != nil {
+		keep = w.openSingleFiles()
+	}
+	w.hashes.clearUnder(root, keep)
+	w.state.replace("")
+	if w.settings != nil {
+		// The workspace is already closed; remembering the start state is
+		// best effort, like the recent list.
+		_ = w.settings.recordRecentFolder(root)
+		_ = w.settings.markWorkspaceClosed()
+	}
+	return nil
 }
 
 func (w *Workspace) folderSource(clean string) folderSource {
@@ -404,6 +507,7 @@ func (w *Workspace) open(root string) (WorkspaceFolder, error) {
 		// Failing to remember a folder must not prevent the user from
 		// working in it; the recent list is best effort.
 		_ = w.settings.recordRecentFolder(resolved)
+		_ = w.settings.clearWorkspaceClosed()
 	}
 	return WorkspaceFolder{
 		Root:       resolved,
@@ -421,10 +525,16 @@ func resolveWorkspaceRoot(root string) (string, error) {
 	}
 	resolved, err := filepath.EvalSymlinks(root)
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", errFolderMissing
+		}
 		return "", err
 	}
 	info, err := os.Stat(resolved)
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", errFolderMissing
+		}
 		return "", err
 	}
 	if !info.IsDir() {

@@ -108,13 +108,20 @@ function parentName(path: string): string {
   return slash === -1 ? "" : path.slice(0, slash);
 }
 
+export interface DistinguishablePath {
+  id: number;
+  name: string;
+  path: string;
+}
+
 /**
- * Same-named files get a suffix. A workspace file uses its parent folder; a
+ * Same-named items get a suffix. A workspace file uses its parent folder; a
  * single file uses the folder of its absolute path. Root files fall back to
- * the root name so the suffix is never empty.
+ * the root name so the suffix is never empty. Recent folders reuse this
+ * shared counting and suffix logic.
  */
 export function distinguishingSuffixes(
-  tabs: readonly TabModel[],
+  tabs: readonly DistinguishablePath[],
   rootName: string,
 ): Map<number, string> {
   const counts = new Map<string, number>();
