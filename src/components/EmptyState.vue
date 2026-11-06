@@ -343,7 +343,7 @@ defineExpose({
                 @click.stop="removeRecent(item)"
               >
                 <span
-                  class="grid size-4 place-items-center rounded-full border border-[var(--border-default)] bg-[var(--surface-elevated)] text-[var(--text-muted)] transition-colors group-hover/remove:border-[var(--text-primary)] group-hover/remove:bg-[var(--text-primary)] group-hover/remove:text-[var(--surface-canvas)] group-active/remove:border-[var(--text-primary)] group-active/remove:bg-[var(--text-primary)] group-active/remove:text-[var(--surface-canvas)] group-focus-visible/remove:border-[var(--text-primary)] group-focus-visible/remove:bg-[var(--text-primary)] group-focus-visible/remove:text-[var(--surface-canvas)]"
+                  class="grid size-4 place-items-center rounded-full border border-[var(--border-default)] bg-[var(--surface-elevated)] text-[var(--text-muted)] transition-colors group-hover/remove:bg-[var(--surface-muted)] group-hover/remove:text-[var(--text-primary)] group-active/remove:bg-[var(--surface-muted)] group-active/remove:text-[var(--text-primary)] group-focus-visible/remove:bg-[var(--surface-muted)] group-focus-visible/remove:text-[var(--text-primary)]"
                 >
                   <AppIcon name="close" :size="10" />
                 </span>

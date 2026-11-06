@@ -286,15 +286,14 @@ describe("EmptyState", () => {
     const circle = remove.querySelector("span")!;
     expect(circle.className).toContain("size-4");
     expect(circle.className).toContain("transition-colors");
+    expect(circle.className).toContain("border-[var(--border-default)]");
+    expect(circle.className).not.toContain("border-[var(--text-primary)]");
     for (const state of ["hover", "active", "focus-visible"]) {
       expect(circle.className).toContain(
-        `group-${state}/remove:border-[var(--text-primary)]`,
+        `group-${state}/remove:bg-[var(--surface-muted)]`,
       );
       expect(circle.className).toContain(
-        `group-${state}/remove:bg-[var(--text-primary)]`,
-      );
-      expect(circle.className).toContain(
-        `group-${state}/remove:text-[var(--surface-canvas)]`,
+        `group-${state}/remove:text-[var(--text-primary)]`,
       );
     }
     const item = remove.closest("[data-recent-item]")!;
