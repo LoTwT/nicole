@@ -1430,11 +1430,13 @@ const LONE_MODIFIER_KEYS = new Set([
 ]);
 
 /**
- * WKWebView can lose `compositionend` while keeping the editor focused, so
- * CodeMirror's flag stays set. A key that is neither part of a composition
- * nor a lone modifier proves the IME no longer owns the editor: ignore the
- * stale flag for autosave until the next composition starts. This changes
- * only the save decision; CodeMirror's state and rendering stay untouched.
+ * A fallback for a composition whose CodeMirror flag never clears while the
+ * editor keeps focus; the 2026-11-08 Rime/WKWebView probe did not observe a
+ * lost `compositionend`, so this is not a confirmed platform behavior. A key
+ * that is neither part of a composition nor a lone modifier proves the IME
+ * no longer owns the editor: ignore the stale flag for autosave until the
+ * next composition start or end. This changes only the save decision;
+ * CodeMirror's state and rendering stay untouched.
  */
 function noteCompositionEndKey(event: KeyboardEvent) {
   if (event.isComposing || event.keyCode === 229) {
