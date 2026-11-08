@@ -856,6 +856,8 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     });
   };
 
+  let focusedCheckbox: HTMLInputElement | null = null;
+  let recoverRemovedCheckbox: () => void = () => {};
   const extensions: Extension[] = [
     basicSetup,
     EditorView.lineWrapping,
@@ -865,6 +867,9 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     createCommandKeymap(enabledCommands, platform),
     imageHandlers(onPasteImage, createTicketAt),
     EditorView.updateListener.of((update) => {
+      if (focusedCheckbox !== null && !focusedCheckbox.isConnected) {
+        window.setTimeout(recoverRemovedCheckbox, 0);
+      }
       if (update.docChanged) {
         // The edit, not the pending restore, owns the viewport now.
         cancelScrollRestore();
@@ -939,72 +944,37 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     target instanceof HTMLInputElement &&
     target.classList.contains("cm-nicole-checkbox-input");
   let leftCheckbox = false;
-  let selectAllPending = false;
-  let focusedCheckbox: HTMLInputElement | null = null;
-  let checkboxObserver: MutationObserver | null = null;
-  const stopWatchingCheckbox = () => {
-    checkboxObserver?.disconnect();
-    checkboxObserver = null;
+  recoverRemovedCheckbox = () => {
+    if (destroyed || focusedCheckbox === null || focusedCheckbox.isConnected) {
+      return;
+    }
+    const active = editorDocument.activeElement;
+    if (
+      active !== null &&
+      active !== editorDocument.body &&
+      active !== editorDocument.documentElement
+    ) {
+      focusedCheckbox = null;
+      return;
+    }
+    // A blurred window cannot take focus; the window focus listener retries.
+    if (!editorDocument.hasFocus()) return;
     focusedCheckbox = null;
-  };
-  const watchCheckbox = (checkbox: HTMLInputElement) => {
-    focusedCheckbox = checkbox;
-    if (checkboxObserver !== null) return;
-    checkboxObserver = new MutationObserver(() => {
-      const removed = focusedCheckbox;
-      if (removed === null || removed.isConnected) return;
-      // WebKit drops focus to BODY without firing focusout when the focused
-      // box is removed by replaceDocument, undo or virtualization.
-      window.setTimeout(() => {
-        if (
-          destroyed ||
-          focusedCheckbox !== removed ||
-          removed.isConnected ||
-          !editorDocument.hasFocus()
-        ) {
-          return;
-        }
-        const active = editorDocument.activeElement;
-        if (
-          active !== null &&
-          active !== editorDocument.body &&
-          active !== editorDocument.documentElement
-        ) {
-          return;
-        }
-        stopWatchingCheckbox();
-        focusEditor();
-      }, 0);
-    });
-    checkboxObserver.observe(view.dom, { childList: true, subtree: true });
+    focusEditor();
   };
   const onCheckboxFocusOut = (event: FocusEvent) => {
     const checkbox = event.target;
     if (!isTaskCheckbox(checkbox)) return;
     leftCheckbox = true;
-    selectAllPending = true;
     window.setTimeout(() => {
-      selectAllPending = false;
-    }, 0);
-    // A task box can be removed by replaceDocument, undo or virtualization.
-    // In that case no focusin follows. Hand keyboard ownership back after the
-    // current update, but not when another control or window took focus.
-    window.setTimeout(() => {
-      if (destroyed || checkbox.isConnected || !view.dom.isConnected) return;
-      if (!editorDocument.hasFocus()) return;
-      const active = editorDocument.activeElement;
-      if (active !== null && active !== editorDocument.body) return;
-      leftCheckbox = false;
-      stopWatchingCheckbox();
-      focusEditor();
-    }, 0);
-    // If focus moved to another control, the box may stay in the document;
-    // stop observing once this focus change has settled.
-    window.setTimeout(() => {
-      if (destroyed || document.activeElement === checkbox) return;
-      if (focusedCheckbox === checkbox && checkbox.isConnected) {
-        stopWatchingCheckbox();
+      if (
+        focusedCheckbox === checkbox &&
+        checkbox.isConnected &&
+        editorDocument.activeElement !== checkbox
+      ) {
+        focusedCheckbox = null;
       }
+      recoverRemovedCheckbox();
     }, 0);
   };
   const onCheckboxFocusIn = (event: FocusEvent) => {
@@ -1018,7 +988,7 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     leftCheckbox = false;
     if (!checkboxFocused()) return;
     if (event.target instanceof HTMLInputElement) {
-      watchCheckbox(event.target);
+      focusedCheckbox = event.target;
     }
     editorDocument.getSelection()?.removeAllRanges();
   };
@@ -1034,14 +1004,15 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     }
     const primaryModifier = isMac(platform) ? event.metaKey : event.ctrlKey;
     if (primaryModifier) {
-      // Find, find-next and select-all are editor commands, not menu actions.
-      // Give the editor focus, then run the same keymap CodeMirror would have
-      // run if the event had targeted the contentEditable.
+      // Find, find-next, find-previous (with Shift for g) and select-all are
+      // editor commands, not menu actions. Give the editor focus, then run the
+      // same keymap CodeMirror would have run if the event had targeted the
+      // contentEditable.
       const key = event.key.toLowerCase();
       if (
         !event.altKey &&
-        !event.shiftKey &&
-        (key === "f" || key === "g" || key === "a")
+        (key === "f" || key === "a" || key === "g") &&
+        (key === "g" || !event.shiftKey)
       ) {
         event.preventDefault();
         focusEditor();
@@ -1052,19 +1023,22 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     // Tab and Escape stay native. Everything else is blocked; on macOS the
     // control modifier is not the primary modifier and must not reach CodeMirror.
     if (event.key === "Tab" || event.key === "Escape") return;
-    // Do not stop propagation: window-level shortcut listeners still need the
-    // event, and preventDefault is enough to keep CodeMirror from handling it.
+    // Do not stop propagation: the window-level composition guard still needs
+    // to see the key. Application shortcuts do not run for this event because
+    // the target is an INPUT and the event is defaultPrevented.
     event.preventDefault();
   };
   const onCheckboxEditing = (event: Event) => {
     if (!checkboxFocused()) return;
     event.preventDefault();
   };
-  // macOS routes the native Select All menu action to selectstart on the body
-  // after keyboard focus leaves the checkbox. The cleared native selection
-  // gives that action nothing to select, so run the editor command explicitly.
+  // macOS routes the native Select All menu action to selectstart on the page
+  // background while keyboard focus is still on the checkbox. The cleared
+  // native selection gives that action nothing to select, so run the editor
+  // command explicitly. A selectstart after focus leaves the checkbox is left
+  // to the browser, so clicking blank page space does not select the document.
   const onSelectStart = (event: Event) => {
-    if (!selectAllPending && !checkboxFocused()) return;
+    if (!checkboxFocused()) return;
     const target = event.target;
     if (
       target !== editorDocument.body &&
@@ -1072,13 +1046,13 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     ) {
       return;
     }
-    selectAllPending = false;
     event.preventDefault();
     focusEditor();
     selectAll(view);
   };
   const checkboxBlockedEvents = ["beforeinput", "paste", "cut"] as const;
   editorDocument.addEventListener("selectstart", onSelectStart, true);
+  window.addEventListener("focus", recoverRemovedCheckbox);
   view.contentDOM.addEventListener("focusout", onCheckboxFocusOut, true);
   view.contentDOM.addEventListener("focusin", onCheckboxFocusIn, true);
   view.contentDOM.addEventListener("keydown", onCheckboxKeydown, true);
@@ -1153,7 +1127,7 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     destroy() {
       destroyed = true;
       editorDocument.removeEventListener("selectstart", onSelectStart, true);
-      stopWatchingCheckbox();
+      window.removeEventListener("focus", recoverRemovedCheckbox);
       view.contentDOM.removeEventListener("focusout", onCheckboxFocusOut, true);
       view.contentDOM.removeEventListener("focusin", onCheckboxFocusIn, true);
       view.contentDOM.removeEventListener("keydown", onCheckboxKeydown, true);

@@ -543,8 +543,9 @@ describe("task checkbox", () => {
       const view = instance.view;
       await settle();
       const input = checkboxes(view)[0]!.querySelector("input")!;
-      input.focus();
       view.scrollDOM.scrollTop = 321;
+      input.focus();
+      expect(view.scrollDOM.scrollTop).toBe(321);
 
       const focus = vi
         .spyOn(view, "focus")
@@ -617,6 +618,67 @@ describe("task checkbox", () => {
     await settleTimer();
 
     expect(view.state.doc.toString()).toBe(doc);
+    expect(document.activeElement).toBe(view.contentDOM);
+    expect(view.hasFocus).toBe(true);
+  });
+
+  it("recovers a box removed while the window is blurred after it returns", async () => {
+    const instance = mountOn("macos");
+    const view = instance.view;
+    await settle();
+    const input = checkboxes(view)[0]!.querySelector("input")!;
+    input.focus();
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+
+    instance.replaceDocument("只有普通文字\n\n第二段\n");
+    await settleTimer();
+
+    expect(document.activeElement).not.toBe(view.contentDOM);
+
+    hasFocus.mockReturnValue(true);
+    window.dispatchEvent(new Event("focus"));
+    await settleTimer();
+
+    expect(document.activeElement).toBe(view.contentDOM);
+    expect(view.hasFocus).toBe(true);
+    hasFocus.mockRestore();
+  });
+
+  it("does not take focus back from another control after the box is gone", async () => {
+    const instance = mountOn("macos");
+    const view = instance.view;
+    await settle();
+    const input = checkboxes(view)[0]!.querySelector("input")!;
+    input.focus();
+    const outside = document.createElement("input");
+    document.body.append(outside);
+
+    instance.replaceDocument("只有普通文字\n\n第二段\n");
+    outside.focus();
+    await settleTimer();
+
+    expect(document.activeElement).toBe(outside);
+    outside.remove();
+  });
+
+  it("keeps focus on a connected box across ordinary updates", async () => {
+    const instance = mountOn("macos");
+    const view = instance.view;
+    await settle();
+    const input = checkboxes(view)[0]!.querySelector("input")!;
+    input.focus();
+
+    view.dispatch({ changes: { from: 0, insert: "前" } });
+    await settleTimer();
+
+    expect(document.activeElement).toBe(input);
+    expect(checkboxes(view)[0]!.querySelector("input")).toBe(input);
+
+    // The ordinary update must not forget the box: removing it afterwards still
+    // returns the keyboard to the editor.
+    instance.replaceDocument("只有普通文字\n\n第二段\n");
+    await settleTimer();
+
     expect(document.activeElement).toBe(view.contentDOM);
     expect(view.hasFocus).toBe(true);
   });
@@ -842,6 +904,95 @@ describe("task checkbox", () => {
     expect(run).toHaveBeenCalledTimes(3);
   });
 
+  it("forwards find-previous with Shift but no other shifted or Alt shortcut", async () => {
+    const runG = vi.fn(() => true);
+    const runF = vi.fn(() => true);
+    const runA = vi.fn(() => true);
+    const runAlt = vi.fn(() => true);
+    const instance = createEditor({
+      parent,
+      doc,
+      mode: "live",
+      platform: "macos",
+      commands: [
+        {
+          id: "test.shift-g",
+          label: "Shift G",
+          group: "insert",
+          scope: "editor",
+          keys: [{ key: "Meta-Shift-g" }],
+          run: runG,
+        },
+        {
+          id: "test.shift-f",
+          label: "Shift F",
+          group: "insert",
+          scope: "editor",
+          keys: [{ key: "Meta-Shift-f" }],
+          run: runF,
+        },
+        {
+          id: "test.shift-a",
+          label: "Shift A",
+          group: "insert",
+          scope: "editor",
+          keys: [{ key: "Meta-Shift-a" }],
+          run: runA,
+        },
+        {
+          id: "test.alt-g",
+          label: "Alt G",
+          group: "insert",
+          scope: "editor",
+          keys: [{ key: "Meta-Alt-g" }],
+          run: runAlt,
+        },
+      ],
+    });
+    editor = instance;
+    const view = instance.view;
+    await settle();
+    const input = checkboxes(view)[0]!.querySelector("input")!;
+
+    input.focus();
+    const previous = pressKey(input, {
+      key: "g",
+      code: "KeyG",
+      metaKey: true,
+      shiftKey: true,
+    });
+    expect(previous.defaultPrevented).toBe(true);
+    expect(runG).toHaveBeenCalledOnce();
+    expect(document.activeElement).toBe(view.contentDOM);
+
+    for (const [key, code, run] of [
+      ["f", "KeyF", runF],
+      ["a", "KeyA", runA],
+    ] as const) {
+      input.focus();
+      const event = pressKey(input, {
+        key,
+        code,
+        metaKey: true,
+        shiftKey: true,
+      });
+      expect(event.defaultPrevented).toBe(false);
+      expect(run).not.toHaveBeenCalled();
+      expect(document.activeElement).toBe(input);
+    }
+
+    input.focus();
+    const withAlt = pressKey(input, {
+      key: "g",
+      code: "KeyG",
+      metaKey: true,
+      altKey: true,
+    });
+    expect(withAlt.defaultPrevented).toBe(false);
+    expect(runAlt).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(input);
+  });
+
   it("uses Ctrl as the primary modifier on Windows and Linux", async () => {
     for (const platform of ["windows", "linux"] as const) {
       document.body.innerHTML = '<div id="host"></div>';
@@ -878,6 +1029,18 @@ describe("task checkbox", () => {
 
       expect(event.defaultPrevented).toBe(true);
       expect(run).toHaveBeenCalledOnce();
+      expect(document.activeElement).toBe(view.contentDOM);
+
+      const nextInput = checkboxes(view)[0]!.querySelector("input")!;
+      nextInput.focus();
+      const previous = pressKey(nextInput, {
+        key: "g",
+        code: "KeyG",
+        ctrlKey: true,
+        shiftKey: true,
+      });
+
+      expect(previous.defaultPrevented).toBe(true);
       expect(document.activeElement).toBe(view.contentDOM);
       instance.destroy();
       editor = undefined as never;
@@ -939,49 +1102,57 @@ describe("task checkbox", () => {
     expect(document.activeElement).toBe(view.contentDOM);
   });
 
-  it("recovers native Select All after the checkbox loses focus", async () => {
+  it("ignores selectstart outside the page background while the checkbox has focus", async () => {
     const instance = mount("live");
     const view = instance.view;
     await settle();
     const input = checkboxes(view)[0]!.querySelector("input")!;
     input.focus();
+    view.dispatch({ selection: { anchor: 4 } });
+    const div = document.createElement("div");
+    document.body.append(div);
 
-    input.dispatchEvent(
-      new FocusEvent("focusout", {
-        bubbles: true,
-        relatedTarget: document.body,
-      }),
-    );
-    view.dispatch({ selection: { anchor: 0 } });
+    const event = new Event("selectstart", {
+      bubbles: true,
+      cancelable: true,
+    });
+    div.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(view.state.selection.main.to).toBe(4);
+    expect(document.activeElement).toBe(input);
+    div.remove();
+  });
+
+  it("does not turn a body selectstart into Select All after the checkbox lost focus", async () => {
+    const instance = mount("live");
+    const view = instance.view;
+    await settle();
+    const input = checkboxes(view)[0]!.querySelector("input")!;
+    input.focus();
+    view.dispatch({ selection: { anchor: 4 } });
+    view.focus();
+    const before = view.state.selection.main.toJSON();
+
     const menu = new Event("selectstart", {
       bubbles: true,
       cancelable: true,
     });
     document.body.dispatchEvent(menu);
 
-    expect(menu.defaultPrevented).toBe(true);
-    expect(view.state.selection.main.from).toBe(0);
-    expect(view.state.selection.main.to).toBe(doc.length);
+    expect(menu.defaultPrevented).toBe(false);
+    expect(view.state.selection.main.toJSON()).toEqual(before);
     expect(document.activeElement).toBe(view.contentDOM);
   });
 
-  it("removes its checkbox and document listeners when destroyed", async () => {
+  it("removes its checkbox, document and window listeners when destroyed", async () => {
     const instance = mount("live");
     await settle();
     const input = checkboxes(instance.view)[0]!.querySelector("input")!;
-    const observe = vi.spyOn(MutationObserver.prototype, "observe");
-    input.focus();
-    const watched = observe.mock.calls.findIndex(
-      ([target, options]) =>
-        target === instance.view.dom &&
-        options?.childList === true &&
-        options.subtree === true,
-    );
-    expect(watched).toBeGreaterThanOrEqual(0);
-    const observer = observe.mock.contexts[watched] as MutationObserver;
     const remove = vi.spyOn(instance.view.contentDOM, "removeEventListener");
     const removeDocument = vi.spyOn(document, "removeEventListener");
-    const disconnect = vi.spyOn(observer, "disconnect");
+    const removeWindow = vi.spyOn(window, "removeEventListener");
+    input.focus();
     instance.destroy();
     editor = undefined as never;
 
@@ -1000,8 +1171,10 @@ describe("task checkbox", () => {
       expect.any(Function),
       true,
     );
-    expect(disconnect).toHaveBeenCalled();
-    observe.mockRestore();
+    expect(removeWindow).toHaveBeenCalledWith("focus", expect.any(Function));
+    remove.mockRestore();
+    removeDocument.mockRestore();
+    removeWindow.mockRestore();
   });
 });
 
