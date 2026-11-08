@@ -1396,12 +1396,35 @@ function markExternalState(tab: TabModel, next: "none" | "modified" | "deleted")
   }
 }
 
+/**
+ * Only the active tab has a mounted editor, and an IME only composes in a
+ * focused editable. Checking the live view here keeps a missed
+ * `compositionend` from freezing autosave: once that view is destroyed
+ * (tab switch, close, remount) or the editor loses focus, the tab saves
+ * normally again. CodeMirror keeps `compositionStarted` set until
+ * `compositionend`, so these are the ends we can still observe.
+ */
+function autosaveBlockedByComposition(tabId: number): boolean {
+  if (tabId !== activeTabId.value || editor === null) {
+    return false;
+  }
+  const view = editor.view;
+  return (view.compositionStarted || view.composing) && view.hasFocus;
+}
+
 function scheduleAutosave(tabId: number) {
   clearTabSaveTimer(tabId);
   saveTimers.set(
     tabId,
     setTimeout(() => {
       saveTimers.delete(tabId);
+      if (autosaveBlockedByComposition(tabId)) {
+        // Recheck periodically instead of dropping the save: a real
+        // composition end reschedules through handleEditorCompositionEnd,
+        // and this covers the ones that never report one.
+        scheduleAutosave(tabId);
+        return;
+      }
       void saveTab(tabId);
     }, AUTOSAVE_DELAY_MS),
   );
@@ -1428,6 +1451,15 @@ function handleEditorChange(tabId: number, text: string) {
   if (applyingExternal) {
     return;
   }
+  applyAutosaveState(tab);
+}
+
+/**
+ * Applies the autosave policy to the tab's current text. Shared by document
+ * changes and the end of a composition, which can happen without a change.
+ */
+function applyAutosaveState(tab: TabModel) {
+  const tabId = tab.id;
   if (tab.text === tab.originalText) {
     clearTabSaveTimer(tabId);
     if (tab.externalState === "deleted") {
@@ -1456,6 +1488,19 @@ function handleEditorChange(tabId: number, text: string) {
   }
   tab.savePhase = tab.saveError === null ? "editing" : "failed";
   scheduleAutosave(tabId);
+}
+
+/**
+ * A commit usually arrives with one more document change, which schedules by
+ * itself. This also restarts the delay for a composition that ends without
+ * one, so the save held back during the composition is not lost.
+ */
+function handleEditorCompositionEnd(tabId: number) {
+  const tab = findTab(tabId);
+  if (tab === null || tab.kind === "preview") {
+    return;
+  }
+  applyAutosaveState(tab);
 }
 
 function saveTab(
@@ -1781,6 +1826,7 @@ async function mountActive(focus = true) {
         : null,
     onPasteImage: (ticket) => imageInsertion.handlePaste(ticket),
     onChange: (text) => handleEditorChange(tab.id, text),
+    onCompositionEnd: () => handleEditorCompositionEnd(tab.id),
   });
   slashMenu = createSlashMenu({
     view: editor.view,

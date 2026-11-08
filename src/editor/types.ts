@@ -57,6 +57,13 @@ export interface CreateEditorOptions {
   resolveImage?: ImageResolver;
   onPasteImage?: PasteImageHandler;
   onChange?: (doc: string) => void;
+  /**
+   * Called when an IME composition ends, including a cancellation that
+   * leaves no document change. Not called when the view is destroyed during
+   * the composition; work deferred during a composition must also treat the
+   * view going away or losing focus as its end.
+   */
+  onCompositionEnd?: () => void;
 }
 
 export interface EditorHandle {
