@@ -14,7 +14,9 @@ export interface SavedSelection {
 /**
  * Everything a background tab keeps besides its text. Selection and history
  * are CodeMirror's JSON forms; the scroll position is the top visible line and
- * the pixel offset inside that line.
+ * the signed pixel offset inside that line. The offset is measured from the
+ * line's top, so the document's top padding makes it negative for the first
+ * lines at the top of the document.
  */
 export interface EditorRestoreState {
   selection: SavedSelection | null;

@@ -1810,6 +1810,11 @@ describe("multi-tab shell", () => {
           height: 14,
         } as never;
       });
+    // jsdom has no layout. Pin the padding instead of letting the new view
+    // measure a different value than the view that recorded the position.
+    const padding = vi
+      .spyOn(EditorView.prototype, "documentPadding", "get")
+      .mockReturnValue({ top: 48, bottom: 112 });
     try {
       const first = editorView();
       first.scrollDOM.scrollTop = 24;
@@ -1827,6 +1832,7 @@ describe("multi-tab shell", () => {
     } finally {
       height.mockRestore();
       block.mockRestore();
+      padding.mockRestore();
     }
   });
 
