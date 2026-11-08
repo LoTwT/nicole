@@ -1,6 +1,7 @@
+import { undo, undoDepth } from "@codemirror/commands";
 import { EditorSelection, StateEffect } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createEditor, type EditorHandle, type EditorMode } from "./index";
 
@@ -70,6 +71,15 @@ async function until(predicate: () => boolean, timeout = 5000) {
   }
 }
 
+function longDocumentForTest(linesCount: number) {
+  let text = "# 大文档\n\n";
+  for (let index = 0; index < linesCount; index++) {
+    text += `第${index}段正文内容，用来拉长文档。\n\n`;
+  }
+  text += "- 恢复列表\n";
+  return text;
+}
+
 beforeEach(() => {
   document.body.innerHTML = '<div id="host"></div>';
   parent = document.querySelector<HTMLElement>("#host")!;
@@ -78,6 +88,7 @@ beforeEach(() => {
 
 afterEach(() => {
   editor?.destroy();
+  vi.restoreAllMocks();
 });
 
 describe("immersive mode line-start boundaries", () => {
@@ -502,4 +513,279 @@ describe("immersive mode long-document corrections", () => {
     expect(editor.view.state.selection.main.head).toBe(list.from + 2);
     expect(editor.view.state.selection.main.goalColumn).toBe(1);
   });
+});
+
+describe("immersive mode second-round regressions", () => {
+  it("requests scrolling and keeps one undo step per Enter above a block", () => {
+    mount("immersive", "前一段\n\n# 标题文本\n");
+    const target = editor.view.state.doc.line(3);
+    editor.view.dispatch({ selection: { anchor: target.from + 2 } });
+    const scrollRequests: boolean[] = [];
+    editor.view.dispatch({
+      effects: StateEffect.appendConfig.of(
+        EditorView.updateListener.of((update) => {
+          if (update.docChanged) {
+            scrollRequests.push(
+              ...update.transactions.map((transaction) => transaction.scrollIntoView),
+            );
+          }
+        }),
+      ),
+    });
+
+    key(editor.view, "Enter");
+    key(editor.view, "Enter");
+
+    expect(scrollRequests).toEqual([true, true]);
+    const afterTwo = editor.view.state.doc.toString();
+    undo(editor.view);
+    expect(editor.view.state.doc.toString()).toBe("前一段\n\n\n# 标题文本\n");
+    undo(editor.view);
+    expect(editor.view.state.doc.toString()).toBe("前一段\n\n# 标题文本\n");
+    expect(afterTwo).toBe("前一段\n\n\n\n# 标题文本\n");
+  });
+
+  it("does not run the custom Enter during composition", () => {
+    mount("immersive", "# 标题文本\n");
+    editor.view.dispatch({ selection: { anchor: 2 } });
+    composition(editor.view, "compositionstart");
+
+    key(editor.view, "Enter");
+
+    // The custom command is skipped during composition; CodeMirror's default
+    // Enter remains available to the IME.
+    expect(editor.view.state.doc.toString()).toBe("# \n标题文本\n");
+    composition(editor.view, "compositionend");
+  });
+
+  it("leaves multi-cursor Enter to the editor", () => {
+    mount("immersive", "# 甲\n# 乙\n");
+    const first = editor.view.state.doc.line(1);
+    const second = editor.view.state.doc.line(2);
+    editor.view.dispatch({
+      selection: EditorSelection.create([
+        EditorSelection.cursor(first.from + 2),
+        EditorSelection.cursor(second.from + 2),
+      ]),
+    });
+
+    key(editor.view, "Enter");
+
+    expect(editor.view.state.doc.toString()).toBe("# \n甲\n# \n乙\n");
+  });
+
+  for (const modifiers of [{ ctrlKey: true }, { altKey: true }]) {
+    it(`moves group-left from a boundary with ${modifiers.ctrlKey ? "Ctrl" : "Alt"}-ArrowLeft`, () => {
+      mount("immersive", "上一段\n\n- 文本\n");
+      const target = editor.view.state.doc.line(3);
+      editor.view.dispatch({ selection: { anchor: target.from + 2 } });
+
+      key(editor.view, "ArrowLeft", modifiers);
+
+      expect(editor.view.state.selection.main.head).toBe(0);
+    });
+  }
+
+  it("collapses a non-empty selection to its left edge with Alt-ArrowLeft", () => {
+    mount("immersive", "上一段\n\n- 文本\n");
+    const target = editor.view.state.doc.line(3);
+    editor.view.dispatch({
+      selection: { anchor: target.to, head: target.from + 2 },
+    });
+
+    key(editor.view, "ArrowLeft", { altKey: true });
+
+    expect(editor.view.state.selection.main.empty).toBe(true);
+    expect(editor.view.state.selection.main.head).toBe(target.from + 2);
+  });
+
+  for (const [name, eventInit] of [
+    ["Shift-Enter", { shiftKey: true }],
+    ["Ctrl-O", { ctrlKey: true }],
+  ] as const) {
+    it(`inserts a blank line above a block with ${name} at the boundary`, () => {
+      mount("immersive", "上一段\n\n- 文本\n");
+      const target = editor.view.state.doc.line(3);
+      editor.view.dispatch({ selection: { anchor: target.from + 2 } });
+
+      key(editor.view, name === "Ctrl-O" ? "o" : "Enter", eventInit);
+
+      expect(editor.view.state.doc.toString()).toBe("上一段\n\n\n- 文本\n");
+      expect(editor.view.state.selection.main.head).toBe(target.from + 3);
+    });
+  }
+
+  it("requests scrolling when left leaves a block boundary", () => {
+    mount("immersive", "上一段\n\n- 文本\n");
+    const target = editor.view.state.doc.line(3);
+    editor.view.dispatch({ selection: { anchor: target.from + 2 } });
+    const requests: boolean[] = [];
+    editor.view.dispatch({
+      effects: StateEffect.appendConfig.of(
+        EditorView.updateListener.of((update) => {
+          if (update.selectionSet) {
+            requests.push(
+              ...update.transactions.map((transaction) => transaction.scrollIntoView),
+            );
+          }
+        }),
+      ),
+    });
+
+    key(editor.view, "ArrowLeft");
+
+    expect(requests).toContain(true);
+  });
+
+  it("keeps an ordered task marker hidden at the line start", () => {
+    mount("immersive", "1. [ ] 甲\n");
+    const line = editor.view.state.doc.line(1);
+    editor.view.dispatch({ selection: { anchor: line.from } });
+
+    expect(editor.view.state.selection.main.head).toBe(7);
+  });
+
+  it("deletes an ordered task marker as one unit with Backspace", () => {
+    mount("immersive", "1. [ ] 甲\n");
+    editor.view.dispatch({ selection: { anchor: 7 } });
+
+    key(editor.view, "Backspace");
+
+    expect(editor.view.state.doc.toString()).toBe("甲\n");
+  });
+
+  for (const text of ["* 文本", "+ 文本", "12. 文本"]) {
+    it(`recognizes the ${JSON.stringify(text)} prefix`, () => {
+      mount("immersive", `${text}\n`);
+      const line = editor.view.state.doc.line(1);
+      editor.view.dispatch({ selection: { anchor: line.from } });
+      const expectedStart = /^\d/.test(text) ? 0 : 2;
+      expect(editor.view.state.selection.main.head).toBe(expectedStart);
+
+      key(editor.view, "Enter");
+
+      expect(editor.view.state.doc.toString()).toBe(`\n${text}\n`);
+    });
+  }
+
+
+  it("schedules a restored selection on creation in a 1.5 MB document", async () => {
+    const text = longDocumentForTest(55000);
+    const offset = text.lastIndexOf("- 恢复列表");
+    editor = createEditor({
+      parent,
+      doc: text,
+      mode: "immersive",
+      restore: {
+        selection: { ranges: [{ anchor: offset }], main: 0 },
+        history: null,
+        scrollTopLine: null,
+        scrollTopOffset: null,
+      },
+    });
+    const target = editor.view.state.doc.lineAt(offset);
+    expect(editor.view.state.selection.main.head).toBe(offset);
+
+    await until(
+      () => editor.view.state.selection.main.head === target.from + 2,
+      10000,
+    );
+    expect(editor.view.state.selection.main.head).toBe(target.from + 2);
+  });
+
+  it("waits for composition before applying a far selection correction", async () => {
+    const text = longDocumentForTest(10000);
+    const offset = text.lastIndexOf("- 恢复列表");
+    mount("immersive", text);
+    const target = editor.view.state.doc.lineAt(offset);
+    editor.view.dispatch({ selection: { anchor: offset } });
+    composition(editor.view, "compositionstart");
+
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    expect(editor.view.state.selection.main.head).toBe(offset);
+
+    composition(editor.view, "compositionend");
+    await until(
+      () => editor.view.state.selection.main.head === target.from + 2,
+      10000,
+    );
+    expect(editor.view.state.selection.main.head).toBe(target.from + 2);
+  });
+
+  it("clears a pending parse timer when switching modes", async () => {
+    const text = longDocumentForTest(55000);
+    const offset = text.lastIndexOf("- 恢复列表");
+    mount("immersive", text);
+    editor.view.dispatch({ selection: { anchor: offset } });
+    editor.setMode("live");
+
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    expect(editor.view.state.selection.main.head).toBe(offset);
+  });
+
+  it("clears a pending parse timer when destroyed", () => {
+    const text = longDocumentForTest(55000);
+    const offset = text.lastIndexOf("- 恢复列表");
+    mount("immersive", text);
+    const setTimer = vi.spyOn(window, "setTimeout");
+    editor.view.dispatch({ selection: { anchor: offset } });
+    const parseTimers = setTimer.mock.calls.flatMap((call, index) => {
+      if (call[1] !== 0) return [];
+      return [setTimer.mock.results[index]?.value as number];
+    });
+    const clearTimer = vi.spyOn(window, "clearTimeout");
+
+    editor.destroy();
+
+    expect(parseTimers.length).toBeGreaterThan(0);
+    expect(
+      clearTimer.mock.calls.some(([timer]) => parseTimers.includes(timer as number)),
+    ).toBe(true);
+  });
+
+  it("does not scroll, change the document or add history while correcting", async () => {
+    const text = longDocumentForTest(55000);
+    const offset = text.lastIndexOf("- 恢复列表");
+    mount("immersive", text);
+    const target = editor.view.state.doc.lineAt(offset);
+    const changed: boolean[] = [];
+    const scrolled: boolean[] = [];
+    editor.view.dispatch({
+      effects: StateEffect.appendConfig.of(
+        EditorView.updateListener.of((update) => {
+          if (update.docChanged) changed.push(true);
+          scrolled.push(
+            ...update.transactions.map((transaction) => transaction.scrollIntoView),
+          );
+        }),
+      ),
+    });
+    editor.view.dispatch({ selection: { anchor: offset } });
+    editor.view.scrollDOM.scrollTop = 17;
+    const undoBefore = undoDepth(editor.view.state);
+    const scrollBefore = editor.view.scrollDOM.scrollTop;
+
+    await until(
+      () => editor.view.state.selection.main.head === target.from + 2,
+      10000,
+    );
+
+    expect(changed).toEqual([]);
+    expect(scrolled).not.toContain(true);
+    expect(editor.view.scrollDOM.scrollTop).toBe(scrollBefore);
+    expect(undoDepth(editor.view.state)).toBe(undoBefore);
+  });
+
+  it("does not block the event loop while correcting a far selection", async () => {
+    const text = longDocumentForTest(220000);
+    const offset = text.lastIndexOf("- 恢复列表");
+    mount("immersive", text);
+    const started = performance.now();
+
+    editor.view.dispatch({ selection: { anchor: offset } });
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    expect(performance.now() - started).toBeLessThan(400);
+  });
+
 });

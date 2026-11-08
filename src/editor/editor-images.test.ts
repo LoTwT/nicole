@@ -149,6 +149,32 @@ describe("image insertion", () => {
     instance.insertImages(ticket, ["![](a.png)"]);
 
     expect(view.state.doc.toString()).toBe("![](a.png)\n- [ ] 文本\n");
+    expect(view.state.selection.main.head).toBe(17);
+  });
+
+  for (const [name, source, at] of [
+    ["task", "- [ ] 甲\n", 1],
+    ["quote list", "> - 甲\n", 2],
+    ["nested quote", "> > 甲\n", 2],
+  ] as const) {
+    it(`puts an image above a ${name} when the point is inside its marker`, () => {
+      const instance = mount({ parent, doc: source });
+      const ticket = ticketAt(instance, at);
+
+      instance.insertImages(ticket, ["![](a.png)"]);
+
+      expect(instance.view.state.doc.toString()).toBe(`![](a.png)\n${source}`);
+    });
+  }
+
+  it("inserts an image inside an empty block instead of above it", () => {
+    const instance = mount({ parent, doc: "- \n" });
+    const ticket = ticketAt(instance, 2);
+
+    instance.insertImages(ticket, ["![](a.png)"]);
+
+    expect(instance.view.state.doc.toString()).toBe("- ![](a.png)\n");
+    expect(instance.view.state.selection.main.head).toBe(12);
   });
 
   it("maps a ticket through edits before the image arrives", () => {

@@ -1,12 +1,7 @@
 import { EditorView } from "@codemirror/view";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import {
-  CheckboxWidget,
-  createEditor,
-  type EditorHandle,
-  type EditorMode,
-} from "./index";
+import { createEditor, type EditorHandle, type EditorMode } from "./index";
 
 const doc = `# 标题
 
@@ -378,14 +373,6 @@ describe("task checkbox", () => {
     view.contentDOM.dispatchEvent(ordinary);
 
     expect(ordinary.defaultPrevented).toBe(false);
-  });
-
-  it("lets CodeMirror ignore keys but not mouse events on the widget", () => {
-    const widget = new CheckboxWidget(false);
-
-    expect(widget.ignoreEvent(new KeyboardEvent("keydown"))).toBe(true);
-    expect(widget.ignoreEvent(new MouseEvent("mousedown"))).toBe(false);
-    expect(widget.ignoreEvent(new MouseEvent("click"))).toBe(false);
   });
 
   it("does not take focus or the caret on mousedown", async () => {

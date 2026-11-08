@@ -1,22 +1,19 @@
 import {
-  deleteMarkupBackward,
   markdown,
   markdownLanguage,
+  deleteMarkupBackward,
 } from "@codemirror/lang-markdown";
 import {
   deleteCharBackward,
   deleteGroupBackward,
   isolateHistory,
-  redo as historyRedo,
-  undo as historyUndo,
-  historyField,
 } from "@codemirror/commands";
 import {
-  ensureSyntaxTree,
-  forceParsing,
   HighlightStyle,
   syntaxHighlighting,
   syntaxTree,
+  ensureSyntaxTree,
+  forceParsing,
   syntaxTreeAvailable,
 } from "@codemirror/language";
 import {
@@ -29,6 +26,11 @@ import {
   type Extension,
   type SelectionRange,
 } from "@codemirror/state";
+import {
+  historyField,
+  redo as historyRedo,
+  undo as historyUndo,
+} from "@codemirror/commands";
 import {
   Decoration,
   EditorView,
@@ -85,7 +87,7 @@ class BulletWidget extends WidgetType {
   }
 }
 
-export class CheckboxWidget extends WidgetType {
+class CheckboxWidget extends WidgetType {
   constructor(readonly checked: boolean) {
     super();
   }
@@ -423,6 +425,20 @@ function cursorGroupLeftImmersive(view: EditorView): boolean {
 }
 
 /**
+ * WKWebView can leave an element-level selection in the content DOM after a
+ * real mouse click. When the first line is shifted by a structural edit,
+ * CodeMirror's observer then reads that stale element offset back as the start
+ * of the document. Put the native caret on the text node we actually selected,
+ * so the observer cannot overwrite the transaction selection.
+ */
+function placeNativeCaret(view: EditorView, head: number) {
+  const selection = (view.root as Document).getSelection?.() ?? null;
+  if (!selection) return;
+  const position = view.domAtPos(head);
+  selection.collapse(position.node, position.offset);
+}
+
+/**
  * At the first visible character, insert an empty plain line above the block
  * and keep the caret before its original text. Empty blocks, mid-line carets,
  * empty selections with several ranges and other modes keep the default Enter
@@ -442,23 +458,46 @@ function insertLineAboveImmersive(view: EditorView): boolean {
     return false;
   }
   const head = selection.main.head;
+  const next = EditorSelection.cursor(
+    head + 1,
+    selection.main.assoc,
+    selection.main.bidiLevel ?? undefined,
+    selection.main.goalColumn,
+  );
   view.dispatch({
     changes: { from: line.from, insert: "\n" },
-    selection: EditorSelection.create([
-      EditorSelection.cursor(
-        head + 1,
-        selection.main.assoc,
-        selection.main.bidiLevel ?? undefined,
-        selection.main.goalColumn,
-      ),
-    ]),
+    selection: next,
+    scrollIntoView: true,
+    userEvent: "input",
   });
+  placeNativeCaret(view, next.head);
   return true;
 }
 
 /** Ctrl-H should match Backspace at a block boundary, not leave a prefix. */
 function deleteBackwardImmersive(view: EditorView): boolean {
   if (view.compositionStarted || view.composing) return false;
+  const selection = view.state.selection;
+  if (selection.ranges.length === 1 && selection.main.empty) {
+    const line = view.state.doc.lineAt(selection.main.head);
+    const info = leadingMarkInfo(view.state, line);
+    if (
+      info.block &&
+      line.to > info.contentStart &&
+      selection.main.head === info.contentStart
+    ) {
+      // Ordered task items expose their number and brackets to the parser, so
+      // deleteMarkupBackward would remove only one character of the combined
+      // prefix. Delete the whole leading marker as one unit instead.
+      view.dispatch({
+        changes: { from: line.from, to: info.contentStart },
+        selection: EditorSelection.cursor(line.from),
+        scrollIntoView: true,
+        userEvent: "delete.backward",
+      });
+      return true;
+    }
+  }
   return deleteMarkupBackward(view) || deleteCharBackward(view);
 }
 
@@ -577,10 +616,14 @@ function immersiveSelectionGuard(): Extension {
       keymap.of([
         { key: "ArrowLeft", run: cursorCharLeftImmersive },
         { mac: "Ctrl-b", run: cursorCharLeftImmersive },
-        { mac: "Alt-ArrowLeft", run: cursorGroupLeftImmersive },
+        { key: "Ctrl-ArrowLeft", run: cursorGroupLeftImmersive },
+        { key: "Alt-ArrowLeft", run: cursorGroupLeftImmersive },
+        { key: "Backspace", run: deleteBackwardImmersive },
         { mac: "Ctrl-h", run: deleteBackwardImmersive },
         { mac: "Alt-Backspace", run: deleteGroupBackwardImmersive },
         { key: "Enter", run: insertLineAboveImmersive },
+        { key: "Shift-Enter", run: insertLineAboveImmersive },
+        { key: "Ctrl-o", run: insertLineAboveImmersive },
       ]),
     ),
   ];
@@ -1166,17 +1209,29 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     // character of a block would glue the image to the existing text (and
     // break a heading or list); give it its own line above the block instead.
     const info = leadingMarkInfo(view.state, line);
-    const aboveBlock =
+    // A coordinate anywhere in a block's leading markup is ambiguous: putting
+    // the image at that character would split the marker. Treat the whole
+    // leading range as the block content start and insert above the block, but
+    // only when the block has content; an empty block receives the image.
+    const inLeadingMarkup =
       info.block &&
-      position === info.start &&
-      position > line.from &&
-      position < line.to;
-    const ownLine = aboveBlock || (position === line.from && line.length > 0);
-    const from = aboveBlock ? line.from : position;
+      (position < info.contentStart || position === info.start) &&
+      line.to > info.contentStart;
+    const ownLine =
+      inLeadingMarkup ||
+      (!info.block && position === line.from && line.length > 0);
+    const from = inLeadingMarkup
+      ? line.from
+      : info.block && position < info.contentStart
+        ? info.contentStart
+        : position;
     const insert = ownLine ? `${text}\n` : text;
+    const anchor = inLeadingMarkup
+      ? info.contentStart + insert.length
+      : from + insert.length;
     view.dispatch({
       changes: { from, insert },
-      selection: { anchor: from + insert.length },
+      selection: { anchor },
       // Keep every image insertion its own undo step, even when it follows
       // typing closely.
       annotations: isolateHistory.of("full"),
@@ -1338,6 +1393,28 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
       view.dom.contains(active)
     );
   };
+  // WKWebView performs Shift-Enter and Ctrl-O in its native editor before a
+  // normal keymap handler can claim them. Capture these two keys while the
+  // caret is at a block boundary, before WebKit inserts its own line break.
+  const onBoundaryInsertKey = (event: KeyboardEvent) => {
+    if (event.defaultPrevented || checkboxFocused()) return;
+    const shiftEnter =
+      event.key === "Enter" &&
+      event.shiftKey &&
+      !event.ctrlKey &&
+      !event.altKey &&
+      !event.metaKey;
+    const ctrlO =
+      event.key.toLowerCase() === "o" &&
+      event.ctrlKey &&
+      !event.shiftKey &&
+      !event.altKey &&
+      !event.metaKey;
+    if ((shiftEnter || ctrlO) && insertLineAboveImmersive(view)) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  };
   const onCheckboxKeydown = (event: KeyboardEvent) => {
     if (!checkboxFocused()) return;
     if (event.key === " " || event.key === "Tab" || event.key === "Escape") {
@@ -1352,6 +1429,7 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     event.stopPropagation();
   };
   const checkboxBlockedEvents = ["beforeinput", "paste", "cut"] as const;
+  view.contentDOM.addEventListener("keydown", onBoundaryInsertKey, true);
   view.contentDOM.addEventListener("keydown", onCheckboxKeydown, true);
   for (const type of checkboxBlockedEvents) {
     view.contentDOM.addEventListener(type, onCheckboxEditing, true);
@@ -1445,6 +1523,7 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     },
     destroy() {
       destroyed = true;
+      view.contentDOM.removeEventListener("keydown", onBoundaryInsertKey, true);
       view.contentDOM.removeEventListener("keydown", onCheckboxKeydown, true);
       for (const type of checkboxBlockedEvents) {
         view.contentDOM.removeEventListener(type, onCheckboxEditing, true);

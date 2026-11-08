@@ -1,6 +1,6 @@
 import type { EditorView } from "@codemirror/view";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // CodeMirror decides which modifier it calls "Mod" at module load time. Set the
 // platform before importing the editor so the macOS Cmd-ArrowLeft binding is
@@ -65,6 +65,7 @@ beforeEach(() => {
 afterEach(() => {
   destroy?.();
   destroy = null;
+  vi.restoreAllMocks();
 });
 
 describe("immersive mode on macOS", () => {
@@ -159,4 +160,93 @@ describe("immersive mode on macOS", () => {
 
     expect(view.state.selection.main.head).toBe(target.from + 2);
   });
+
+  it("moves Ctrl-ArrowLeft past the block at the boundary", () => {
+    const editor = createEditor({
+      parent,
+      doc: "上一段\n\n- 无序列内容\n",
+      mode: "immersive",
+    });
+    destroy = () => editor.destroy();
+    const view = editor.view;
+    const target = view.state.doc.line(3);
+    view.dispatch({ selection: { anchor: target.from + 2 } });
+
+    press(view, "ArrowLeft", { ctrlKey: true });
+
+    expect(view.state.selection.main.head).toBe(0);
+  });
+
+  for (const [name, eventInit] of [
+    ["Shift-Enter", { shiftKey: true }],
+    ["Ctrl-O", { ctrlKey: true }],
+  ] as const) {
+    it(`keeps the block intact with ${name} after Cmd-ArrowLeft`, () => {
+      const editor = createEditor({
+        parent,
+        doc: "前一段\n\n- 无序文本\n",
+        mode: "immersive",
+      });
+      destroy = () => editor.destroy();
+      const view = editor.view;
+      const target = view.state.doc.line(3);
+      view.dispatch({ selection: { anchor: target.to } });
+      cmdArrowLeft(view);
+
+      press(view, name === "Ctrl-O" ? "o" : "Enter", eventInit);
+
+      expect(view.state.doc.toString()).toBe("前一段\n\n\n- 无序文本\n");
+    });
+  }
+
+  it("leaves Alt-Backspace unchanged on the first document line", () => {
+    const editor = createEditor({
+      parent,
+      doc: "- 文本\n",
+      mode: "immersive",
+    });
+    destroy = () => editor.destroy();
+    const view = editor.view;
+    view.dispatch({ selection: { anchor: 2 } });
+    const dispatch = vi.spyOn(view, "dispatch");
+
+    press(view, "Backspace", { altKey: true });
+
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(view.state.doc.toString()).toBe("- 文本\n");
+    expect(view.state.selection.main.head).toBe(2);
+  });
+
+  it("merges the previous line on Alt-Backspace at a hidden boundary", () => {
+    const editor = createEditor({
+      parent,
+      doc: "上一行\n\n- 文本\n",
+      mode: "immersive",
+    });
+    destroy = () => editor.destroy();
+    const view = editor.view;
+    const target = view.state.doc.line(3);
+    view.dispatch({ selection: { anchor: target.from + 2 } });
+
+    press(view, "Backspace", { altKey: true });
+
+    expect(view.state.doc.toString()).toBe("上一行\n- 文本\n");
+    expect(view.state.selection.main.head).toBe(target.from + 1);
+  });
+
+  it("deletes an ordered task marker as one unit with Ctrl-H", () => {
+    const editor = createEditor({
+      parent,
+      doc: "1. [ ] 甲\n",
+      mode: "immersive",
+    });
+    destroy = () => editor.destroy();
+    const view = editor.view;
+    view.dispatch({ selection: { anchor: 7 } });
+
+    press(view, "h", { ctrlKey: true });
+
+    expect(view.state.doc.toString()).toBe("甲\n");
+  });
+
 });
