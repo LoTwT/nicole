@@ -149,6 +149,13 @@ describe("AppSidebar", () => {
     expect(search!.textContent?.replace(/\s+/g, "")).toBe("搜索工作区");
     expect(search!.getAttribute("title")).toContain("⇧⌘F");
     expect(search!.getAttribute("aria-label")).toContain("⇧⌘F");
+    expect(search!.disabled).toBe(true);
+    expect(search!.className).toContain("disabled:opacity-50");
+    const settings = host.querySelector<HTMLButtonElement>(
+      'button[aria-label^="设置"]',
+    )!;
+    expect(settings.disabled).toBe(true);
+    expect(settings.className).toContain("disabled:opacity-50");
     expect(
       host.querySelector('button[aria-label="切换到暗色主题"]'),
     ).not.toBeNull();

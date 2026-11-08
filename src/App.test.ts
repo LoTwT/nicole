@@ -550,7 +550,7 @@ describe("application shell", () => {
       recentFolders: ["/blocked"],
       expandedFolders: {},
     });
-    mocks.openFolder.mockRejectedValue(new Error("permission denied"));
+    mocks.openFolder.mockRejectedValue(new Error("open /blocked: permission denied"));
     await settle();
     app = createApp(App);
     app.mount(host);
@@ -562,7 +562,308 @@ describe("application shell", () => {
     expect(open.disabled).toBe(false);
     expect(open.getAttribute("aria-label")).not.toContain("已不存在");
     expect(host.textContent).not.toContain("上次打开的文件夹");
-    expect(host.textContent).toContain("打开失败：permission denied");
+    expect(host.textContent).toContain("没有权限打开这个文件夹");
+    expect(host.textContent).not.toContain("permission denied");
+    expect(
+      host
+        .querySelector<HTMLElement>("footer span[title]")
+        ?.getAttribute("title"),
+    ).toBe("open /blocked: permission denied");
+  });
+
+  it("maps every folder-open failure to Chinese and keeps the raw error", async () => {
+    app?.unmount();
+    mocks.getSettings.mockResolvedValue({
+      theme: "system",
+      sidebarWidth: 252,
+      recentFolders: ["/blocked"],
+      expandedFolders: {},
+      workspaceClosed: true,
+    });
+    app = createApp(App);
+    app.mount(host);
+    await settle();
+
+    const cases = [
+      ['workspace: not a folder: "/blocked"', "所选项目不是文件夹"],
+      [
+        'workspace: folder cannot be opened as a workspace: "/blocked"',
+        "不能把这个文件夹作为工作区",
+      ],
+      [
+        'workspace: folder was not chosen by the user: "/blocked"',
+        "无法打开这个文件夹",
+      ],
+      ['workspace: folder is not absolute: "blocked"', "无法打开这个文件夹"],
+      ["boom: unexpected failure", "打开文件夹失败，请稍后重试"],
+    ] as const;
+
+    for (const [error, message] of cases) {
+      mocks.openFolder.mockRejectedValueOnce(new Error(error));
+      host
+        .querySelector<HTMLButtonElement>(
+          '[data-recent-item] button[aria-label^="打开 "]',
+        )!
+        .click();
+      await settle();
+      const footer = host.querySelector<HTMLElement>("footer")!;
+      expect(footer.textContent).toContain(message);
+      expect(footer.textContent).not.toContain("workspace:");
+      expect(footer.textContent).not.toContain("boom:");
+      expect(
+        footer.querySelector("span[title]")?.getAttribute("title"),
+      ).toBe(error);
+    }
+  });
+
+  it("keeps a folder-open detail notice visible for eight seconds", async () => {
+    vi.useFakeTimers();
+    app?.unmount();
+    mocks.getSettings.mockResolvedValue({
+      theme: "system",
+      sidebarWidth: 252,
+      recentFolders: ["/blocked"],
+      expandedFolders: {},
+      workspaceClosed: true,
+    });
+    mocks.openFolder.mockRejectedValue(new Error("permission denied"));
+    app = createApp(App);
+    app.mount(host);
+    await settle();
+
+    host
+      .querySelector<HTMLButtonElement>(
+        '[data-recent-item] button[aria-label^="打开 "]',
+      )!
+      .click();
+    await settle();
+    expect(host.textContent).toContain("没有权限打开这个文件夹");
+
+    await vi.advanceTimersByTimeAsync(7999);
+    await settle();
+    expect(host.textContent).toContain("没有权限打开这个文件夹");
+
+    await vi.advanceTimersByTimeAsync(1);
+    await settle();
+    expect(host.textContent).not.toContain("没有权限打开这个文件夹");
+  });
+
+  it("keeps notices without a detail at three seconds", async () => {
+    vi.useFakeTimers();
+    await openFolder();
+    const reopen = pressAppShortcut("T", true);
+    await settle();
+    expect(reopen.defaultPrevented).toBe(true);
+    expect(host.textContent).toContain("没有可重新打开的标签页");
+
+    await vi.advanceTimersByTimeAsync(2999);
+    await settle();
+    expect(host.textContent).toContain("没有可重新打开的标签页");
+    await vi.advanceTimersByTimeAsync(1);
+    await settle();
+    expect(host.textContent).not.toContain("没有可重新打开的标签页");
+  });
+
+  it("clears an open-failure notice when the retry succeeds", async () => {
+    vi.useFakeTimers();
+    app?.unmount();
+    mocks.getSettings.mockResolvedValue({
+      theme: "system",
+      sidebarWidth: 252,
+      recentFolders: ["/blocked"],
+      expandedFolders: {},
+      workspaceClosed: true,
+    });
+    mocks.openFolder.mockRejectedValueOnce(new Error("permission denied"));
+    app = createApp(App);
+    app.mount(host);
+    await settle();
+
+    const recentOpen = () =>
+      host.querySelector<HTMLButtonElement>(
+        '[data-recent-item] button[aria-label^="打开 "]',
+      )!;
+
+    recentOpen().click();
+    await settle();
+    expect(host.textContent).toContain("没有权限打开这个文件夹");
+
+    await vi.advanceTimersByTimeAsync(1000);
+    await settle();
+    mocks.openFolder.mockResolvedValueOnce(folder("/blocked"));
+    recentOpen().click();
+    await settle();
+
+    expect(host.querySelector("aside")).not.toBeNull();
+    expect(host.textContent).not.toContain("没有权限打开这个文件夹");
+    expect(host.querySelector("footer span[title]")).toBeNull();
+
+    await vi.advanceTimersByTimeAsync(7000);
+    await settle();
+    expect(host.textContent).not.toContain("没有权限打开这个文件夹");
+  });
+
+  it("keeps an unrelated notice that replaces an open failure", async () => {
+    vi.useFakeTimers();
+    app?.unmount();
+    mocks.getSettings.mockResolvedValue({
+      theme: "system",
+      sidebarWidth: 252,
+      recentFolders: ["/blocked"],
+      expandedFolders: {},
+      workspaceClosed: true,
+    });
+    mocks.openFolder.mockRejectedValueOnce(new Error("permission denied"));
+    app = createApp(App);
+    app.mount(host);
+    await settle();
+
+    const recentOpen = () =>
+      host.querySelector<HTMLButtonElement>(
+        '[data-recent-item] button[aria-label^="打开 "]',
+      )!;
+
+    recentOpen().click();
+    await settle();
+    expect(host.textContent).toContain("没有权限打开这个文件夹");
+
+    dropHandler?.({ token: "image", x: 10, y: 10 });
+    await settle();
+    expect(host.textContent).toContain("只能拖入一个文件夹");
+    expect(host.textContent).not.toContain("没有权限打开这个文件夹");
+
+    mocks.openFolder.mockResolvedValueOnce(folder("/blocked"));
+    recentOpen().click();
+    await settle();
+    expect(host.querySelector("aside")).not.toBeNull();
+    expect(host.textContent).toContain("只能拖入一个文件夹");
+
+    await vi.advanceTimersByTimeAsync(2999);
+    await settle();
+    expect(host.textContent).toContain("只能拖入一个文件夹");
+    await vi.advanceTimersByTimeAsync(1);
+    await settle();
+    expect(host.textContent).not.toContain("只能拖入一个文件夹");
+  });
+
+  it("clears the old notice timer when a later notice is shown", async () => {
+    vi.useFakeTimers();
+    app?.unmount();
+    mocks.getSettings.mockResolvedValue({
+      theme: "system",
+      sidebarWidth: 252,
+      recentFolders: ["/blocked"],
+      expandedFolders: {},
+      workspaceClosed: true,
+    });
+    mocks.openFolder.mockRejectedValueOnce(new Error("permission denied"));
+    app = createApp(App);
+    app.mount(host);
+    await settle();
+
+    host
+      .querySelector<HTMLButtonElement>(
+        '[data-recent-item] button[aria-label^="打开 "]',
+      )!
+      .click();
+    await settle();
+    expect(host.textContent).toContain("没有权限打开这个文件夹");
+
+    await vi.advanceTimersByTimeAsync(1000);
+    await settle();
+    mocks.openFolder.mockResolvedValueOnce(folder("/blocked"));
+    host
+      .querySelector<HTMLButtonElement>(
+        '[data-recent-item] button[aria-label^="打开 "]',
+      )!
+      .click();
+    await settle();
+    expect(host.querySelector("aside")).not.toBeNull();
+    expect(host.textContent).not.toContain("没有权限打开这个文件夹");
+
+    await vi.advanceTimersByTimeAsync(5000);
+    await settle();
+    pressAppShortcut("T", true);
+    await settle();
+    expect(host.textContent).toContain("没有可重新打开的标签页");
+
+    await vi.advanceTimersByTimeAsync(2999);
+    await settle();
+    expect(host.textContent).toContain("没有可重新打开的标签页");
+    await vi.advanceTimersByTimeAsync(1);
+    await settle();
+    expect(host.textContent).not.toContain("没有可重新打开的标签页");
+  });
+
+  it("keeps an open-failure notice when the switch dialog is cancelled", async () => {
+    await openFolder();
+    mocks.pickFolder.mockRejectedValueOnce(
+      new Error("dialog: native picker failed"),
+    );
+    sidebarButton("切换文件夹").click();
+    await settle();
+    expect(host.textContent).toContain("打开文件夹失败，请稍后重试");
+
+    mocks.pickFolder.mockResolvedValueOnce({ path: "/second", canceled: false });
+    sidebarButton("切换文件夹").click();
+    await settle();
+    expect(dialog()?.textContent).toContain("切换到“second”");
+    dialogButton("取消").click();
+    await settle();
+
+    expect(host.querySelector("aside")).not.toBeNull();
+    expect(host.textContent).toContain("打开文件夹失败，请稍后重试");
+  });
+
+  it("clears a drag-open failure when a later drag succeeds", async () => {
+    await settle();
+    mocks.openDroppedFolder.mockRejectedValueOnce(
+      new Error('workspace: folder cannot be opened as a workspace: "/"'),
+    );
+    dropHandler?.({
+      token: "image",
+      folderToken: "folder-drop",
+      x: 10,
+      y: 10,
+    });
+    await settle();
+    expect(host.textContent).toContain("不能把这个文件夹作为工作区");
+    expect(host.textContent).not.toContain("folder cannot be opened");
+    expect(
+      host.querySelector<HTMLElement>("footer span[title]")?.getAttribute("title"),
+    ).toBe('workspace: folder cannot be opened as a workspace: "/"');
+
+    mocks.openDroppedFolder.mockResolvedValueOnce(folder("/dropped"));
+    dropHandler?.({
+      token: "image",
+      folderToken: "folder-drop",
+      x: 10,
+      y: 10,
+    });
+    await settle();
+    expect(host.querySelector("aside")).not.toBeNull();
+    expect(host.textContent).not.toContain("不能把这个文件夹作为工作区");
+  });
+
+  it("clears a picker failure when the picker later succeeds", async () => {
+    await settle();
+    mocks.pickFolder.mockRejectedValueOnce(
+      new Error("dialog: native picker failed"),
+    );
+    button("打开文件夹").click();
+    await settle();
+    expect(host.textContent).toContain("打开文件夹失败，请稍后重试");
+    expect(host.textContent).not.toContain("native picker failed");
+    expect(
+      host.querySelector<HTMLElement>("footer span[title]")?.getAttribute("title"),
+    ).toBe("dialog: native picker failed");
+
+    mocks.pickFolder.mockResolvedValueOnce({ path: "/notes", canceled: false });
+    mocks.openFolder.mockResolvedValueOnce(folder("/notes"));
+    button("打开文件夹").click();
+    await settle();
+    expect(host.querySelector("aside")).not.toBeNull();
+    expect(host.textContent).not.toContain("打开文件夹失败，请稍后重试");
   });
 
   it("confirms a folder switch and keeps the current file on cancel", async () => {
@@ -573,6 +874,10 @@ describe("application shell", () => {
     sidebarButton("切换文件夹").click();
     await settle();
     expect(dialog()?.textContent).toContain("切换到“second”");
+    expect(dialogButton("切换").className).toContain("button-primary");
+    expect(dialogButton("切换").className).not.toContain(
+      "border-[var(--accent-primary)]",
+    );
     dialogButton("取消").click();
     await settle();
 
@@ -1232,6 +1537,54 @@ describe("single files and dialogs", () => {
     );
   });
 
+  it("keeps the outline toggle and close-tab command for a single-file tab", async () => {
+    await settle();
+    expect(
+      host.querySelector('button[aria-label^="显示或隐藏大纲"]'),
+    ).toBeNull();
+
+    pendingFiles = ["/tmp/single.md"];
+    openHandler?.();
+    await settle();
+    dialogButton("只打开这个文件").click();
+    await settle();
+
+    expect(host.textContent).not.toContain("开始写作");
+    const outline = host.querySelector<HTMLButtonElement>(
+      'button[aria-label^="显示或隐藏大纲"]',
+    );
+    expect(outline).not.toBeNull();
+    expect(outline!.disabled).toBe(true);
+
+    pressPaletteShortcut("P");
+    await settle();
+    typePalette("标签页");
+    await settle();
+    expect(
+      paletteOptions().some((item) => item.textContent?.includes("关闭标签页")),
+    ).toBe(true);
+    expect(
+      paletteOptions().some((item) =>
+        item.textContent?.includes("重新打开关闭的标签页"),
+      ),
+    ).toBe(false);
+
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    );
+    await settle();
+
+    const close = pressAppShortcut("w");
+    await settle();
+    expect(close.defaultPrevented).toBe(true);
+    expect(host.querySelectorAll('[role="tab"]')).toHaveLength(0);
+    expect(mocks.releaseSingleFile).toHaveBeenCalledWith("/tmp/single.md");
+    expect(host.textContent).toContain("开始写作");
+    expect(
+      host.querySelector('button[aria-label^="显示或隐藏大纲"]'),
+    ).toBeNull();
+  });
+
   it("opens a single-file tab even when another tab has a save failure", async () => {
     vi.useFakeTimers();
     await openFile();
@@ -1497,6 +1850,22 @@ describe("theme and accessibility", () => {
     });
     window.dispatchEvent(outline);
     expect(outline.defaultPrevented).toBe(false);
+  });
+
+  it("swallows tab shortcuts when their commands cannot run", async () => {
+    await settle();
+    const startClose = pressAppShortcut("w");
+    const startReopen = pressAppShortcut("T", true);
+    await settle();
+    expect(startClose.defaultPrevented).toBe(true);
+    expect(startReopen.defaultPrevented).toBe(true);
+    expect(host.textContent).not.toContain("没有可重新打开的标签页");
+
+    await openFolder();
+    const emptyClose = pressAppShortcut("w");
+    await settle();
+    expect(emptyClose.defaultPrevented).toBe(true);
+    expect(host.querySelectorAll('[role="tab"]')).toHaveLength(0);
   });
 
   it("ignores Escape during composition when the sidebar is an overlay", async () => {
@@ -2956,6 +3325,9 @@ describe("command palette", () => {
 
   it("does not offer editor commands without a Markdown tab", async () => {
     await settle();
+    expect(
+      host.querySelector('button[aria-label^="显示或隐藏大纲"]'),
+    ).toBeNull();
     pressPaletteShortcut("P");
     await settle();
     expect(paletteOptions().some((item) => item.textContent?.includes("打开文件夹"))).toBe(
@@ -2964,6 +3336,28 @@ describe("command palette", () => {
     expect(paletteOptions().some((item) => item.textContent?.includes("加粗"))).toBe(
       false,
     );
+    expect(
+      paletteOptions().some((item) => item.textContent?.includes("关闭标签页")),
+    ).toBe(false);
+    expect(
+      paletteOptions().some((item) =>
+        item.textContent?.includes("重新打开关闭的标签页"),
+      ),
+    ).toBe(false);
+  });
+
+  it("offers tab commands once a tab is open", async () => {
+    await openFile();
+    pressPaletteShortcut("P");
+    await settle();
+    expect(
+      paletteOptions().some((item) => item.textContent?.includes("关闭标签页")),
+    ).toBe(true);
+    expect(
+      paletteOptions().some((item) =>
+        item.textContent?.includes("重新打开关闭的标签页"),
+      ),
+    ).toBe(true);
   });
 
   it("lists markdown files with recent ones first and reuses an open tab", async () => {
@@ -3724,6 +4118,10 @@ describe("crash recovery", () => {
     vi.useFakeTimers();
     await mountWithRecovery([recoveryItem()]);
 
+    expect(dialogButton("全部恢复").className).toContain("button-primary");
+    expect(dialogButton("全部恢复").className).not.toContain(
+      "border-[var(--accent-primary)]",
+    );
     dialogButton("全部恢复").click();
     await settle();
     expect(dialog()).toBeNull();
@@ -4561,7 +4959,13 @@ describe("start page and workspace lifecycle", () => {
     expect(mocks.saveRecovery.mock.calls.length).toBeGreaterThanOrEqual(2);
     expect(host.querySelector("aside")).not.toBeNull();
     expect(editorView().state.doc.toString()).toBe("# A changed\n");
-    expect(host.textContent).toContain("打开失败：permission denied");
+    expect(host.textContent).toContain("没有权限打开这个文件夹");
+    expect(host.textContent).not.toContain("permission denied");
+    expect(
+      host
+        .querySelector<HTMLElement>("footer span[title]")
+        ?.getAttribute("title"),
+    ).toBe("permission denied");
   });
 
   it("marks a recent folder missing for Go's fixed missing-folder error", async () => {
@@ -4695,7 +5099,13 @@ describe("start page and workspace lifecycle", () => {
 
     expect(missingButton.getAttribute("aria-label")).toContain("已不存在");
     expect(document.activeElement).toBe(missingButton);
-    expect(host.textContent).toContain("打开失败：permission denied");
+    expect(host.textContent).toContain("没有权限打开这个文件夹");
+    expect(host.textContent).not.toContain("permission denied");
+    expect(
+      host
+        .querySelector<HTMLElement>("footer span[title]")
+        ?.getAttribute("title"),
+    ).toBe("permission denied");
   });
 
   it("does not mark a localized not-found message or other open failures", async () => {

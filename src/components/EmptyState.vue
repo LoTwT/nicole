@@ -266,7 +266,7 @@ defineExpose({
       <button
         ref="openFolderButton"
         type="button"
-        class="focus-ring mt-5 inline-flex items-center gap-2 rounded-full bg-[var(--accent-primary)] px-4 py-2 text-[13px] font-medium text-[var(--accent-contrast)]"
+        class="button-primary focus-ring mt-5 inline-flex items-center gap-2 rounded-full px-4 py-2 text-[13px] font-medium"
         :aria-label="`打开文件夹 ${openFolderKey}`"
         :title="`打开文件夹 ${openFolderKey}`"
         @click="emit('open-folder')"

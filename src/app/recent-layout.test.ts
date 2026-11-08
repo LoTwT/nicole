@@ -59,6 +59,42 @@ describe("layoutRecentRows", () => {
     ).toEqual([3, 2]);
   });
 
+  it("tries a front-light balanced split before adding a third row", () => {
+    // 3+2 needs 143+132+198+2×16=505, but 2+3 needs at most
+    // 198+86+86+2×16=402. The last item must not stay alone.
+    expect(
+      layoutRecentRows(
+        [1, 2, 3, 4, 5],
+        [143, 132, 198, 86, 86],
+        420,
+        16,
+      ).map((row) => row.length),
+    ).toEqual([2, 3]);
+  });
+
+  it("keeps a balanced three-row split when both two-row splits fail", () => {
+    expect(
+      layoutRecentRows(
+        [1, 2, 3, 4, 5],
+        [143, 132, 198, 180, 180],
+        420,
+        16,
+      ).map((row) => row.length),
+    ).toEqual([2, 2, 1]);
+  });
+
+  it("tries every balanced allocation at a row count", () => {
+    // 2+2+1 and 1+2+2 do not fit, but the middle allocation 2+1+2 does.
+    expect(
+      layoutRecentRows(
+        [1, 2, 3, 4, 5],
+        [100, 100, 300, 100, 100],
+        320,
+        8,
+      ).map((row) => row.length),
+    ).toEqual([2, 1, 2]);
+  });
+
   it("counts the gaps between capsules", () => {
     expect(layoutRecentRows([1, 2, 3], [100, 100, 100], 312, 6)).toEqual([
       [1, 2, 3],

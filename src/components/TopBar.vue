@@ -33,6 +33,7 @@ const props = defineProps<{
   sidebarShown: boolean;
   showSidebarToggle: boolean;
   showOpenFolder: boolean;
+  showOutline: boolean;
   outlineEnabled: boolean;
   outlineOn: boolean;
 }>();
@@ -321,6 +322,7 @@ defineExpose({ closeModeMenu });
       </div>
 
       <button
+        v-if="showOutline"
         type="button"
         class="focus-ring grid size-7 shrink-0 place-items-center rounded-[var(--radius-control)] text-[var(--text-muted)] disabled:cursor-default disabled:opacity-40"
         :class="{ 'bg-[var(--surface-subtle)] text-[var(--text-primary)]': outlineOn }"

@@ -8,6 +8,7 @@ const props = defineProps<{
   saveStatus: SaveStatusPresentation | null;
   notice: string | null;
   noticeTone?: "success" | "danger" | "muted";
+  noticeDetail?: string;
   startTheme?: boolean;
   isDark?: boolean;
 }>();
@@ -51,6 +52,7 @@ const dotClass = computed(() => {
         <span class="size-[7px] shrink-0 rounded-full" :class="dotClass"></span>
         <span
           class="truncate"
+          :title="noticeDetail"
           :class="{
             'text-[var(--status-danger-fg)]': noticeTone === 'danger',
             'text-[var(--text-muted)]': noticeTone === 'muted',

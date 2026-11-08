@@ -35,7 +35,7 @@ import {
   readRecentCommandIds,
   rememberRecentCommandId,
 } from "./commands/search";
-import type { CommandContext } from "./commands/types";
+import type { CommandContext, CommandDefinition } from "./commands/types";
 import {
   createRecoveryTimers,
   formatRecoveryTime,
@@ -155,6 +155,7 @@ import { watchWorkspace, type WorkspaceWatcher } from "./services/watch";
 const AUTOSAVE_DELAY_MS = 1000;
 const SAVING_DISPLAY_DELAY_MS = 300;
 const NOTICE_DURATION_MS = 3000;
+const NOTICE_DETAIL_DURATION_MS = 8000;
 const PERSIST_TABS_DELAY_MS = 400;
 // Keep close/switch inside the same five-second budget as the window-close path.
 const RECOVERY_OPERATION_TIMEOUT_MS = 5000;
@@ -168,6 +169,10 @@ interface WorkspaceState {
 interface Notice {
   text: string;
   tone: "success" | "danger" | "muted";
+  /** Raw backend error; shown as a tooltip, not as the notice text. */
+  detail?: string;
+  /** Lets a later successful action dismiss only its own failure notice. */
+  kind?: "folder-open-failure";
 }
 
 interface DialogAction {
@@ -334,11 +339,19 @@ const currentPreview = computed<TabModel | null>(() => {
 });
 const isMarkdownOpen = computed(() => currentMarkdown.value !== null);
 
+/** Whether the current page state satisfies a command's runtime requirements. */
+function commandContextAllows(command: CommandDefinition): boolean {
+  return (
+    (!command.requiresWorkspace || hasWorkspace.value) &&
+    (!command.requiresOpenTab || tabs.value.length > 0)
+  );
+}
+
 const paletteCommands = computed(() =>
   commandRegistry.filter(
     (command) =>
       isCommandAvailable(command) &&
-      (!command.requiresWorkspace || hasWorkspace.value) &&
+      commandContextAllows(command) &&
       (command.scope === "app" ||
         (command.scope === "editor" && isMarkdownOpen.value && editor !== null)),
   ),
@@ -424,6 +437,46 @@ function isMissingFolderError(error: unknown): boolean {
   return errorText(error) === MISSING_FOLDER_ERROR;
 }
 
+/**
+ * Short Chinese text for a folder that could not be opened. The raw backend
+ * error is kept in the notice tooltip, matching save-failure banners.
+ */
+function folderOpenFailureMessage(error: unknown): string {
+  const text = errorText(error).toLowerCase();
+  if (
+    text.includes("permission denied") ||
+    text.includes("operation not permitted") ||
+    text.includes("access denied")
+  ) {
+    return "没有权限打开这个文件夹";
+  }
+  if (text.includes("not a folder") || text.includes("not a directory")) {
+    return "所选项目不是文件夹";
+  }
+  if (text.includes("folder cannot be opened")) {
+    return "不能把这个文件夹作为工作区";
+  }
+  if (
+    text.includes("folder was not chosen") ||
+    text.includes("folder is not absolute")
+  ) {
+    return "无法打开这个文件夹";
+  }
+  return "打开文件夹失败，请稍后重试";
+}
+
+function showFolderOpenFailure(error: unknown) {
+  // A notice with a raw-error tooltip needs more time to be read; showNotice
+  // extends detail notices automatically when no duration is given.
+  showNotice(
+    folderOpenFailureMessage(error),
+    "danger",
+    undefined,
+    errorText(error),
+    "folder-open-failure",
+  );
+}
+
 function findTab(id: number | null): TabModel | null {
   if (id === null) return null;
   return tabs.value.find((tab) => tab.id === id) ?? null;
@@ -497,19 +550,39 @@ function findOpenTabForWorkspacePath(
 function showNotice(
   text: string,
   tone: Notice["tone"] = "success",
-  duration = NOTICE_DURATION_MS,
+  duration?: number,
+  detail?: string,
+  kind?: Notice["kind"],
 ) {
+  const visibleFor =
+    duration ??
+    (detail === undefined ? NOTICE_DURATION_MS : NOTICE_DETAIL_DURATION_MS);
   if (noticeTimer !== null) {
     clearTimeout(noticeTimer);
     noticeTimer = null;
   }
-  notice.value = { text, tone };
-  if (duration > 0) {
+  const next: Notice = { text, tone };
+  if (detail !== undefined) next.detail = detail;
+  if (kind !== undefined) next.kind = kind;
+  notice.value = next;
+  if (visibleFor > 0) {
     noticeTimer = setTimeout(() => {
       notice.value = null;
       noticeTimer = null;
-    }, duration);
+    }, visibleFor);
   }
+}
+
+/** Clears one notice kind only; unrelated notices keep their own timer. */
+function clearNotice(kind: NonNullable<Notice["kind"]>) {
+  if (notice.value?.kind !== kind) {
+    return;
+  }
+  if (noticeTimer !== null) {
+    clearTimeout(noticeTimer);
+    noticeTimer = null;
+  }
+  notice.value = null;
 }
 
 function applyTheme() {
@@ -2007,6 +2080,9 @@ async function applyWorkspace(folder: {
   restoringTabs = true;
   try {
     applyWorkspaceState(folder);
+    // A folder is now open; an earlier open-failure notice is stale. Other
+    // notices (including their timers) are deliberately left alone.
+    clearNotice("folder-open-failure");
     closedTabs.value = [];
     tabs.value = [...singles];
     const restoreStartActiveId = keepSingle ? previous.id : null;
@@ -2137,7 +2213,7 @@ async function switchToFolder(
       }
       showNotice("文件夹已不存在", "danger");
     } else {
-      showNotice(`打开失败：${errorText(error)}`, "danger");
+      showFolderOpenFailure(error);
     }
     return false;
   }
@@ -2166,7 +2242,7 @@ async function chooseFolder() {
     try {
       picked = await pickFolder();
     } catch (error) {
-      showNotice(`打开失败：${errorText(error)}`, "danger");
+      showFolderOpenFailure(error);
       return false;
     }
     if (picked.canceled) {
@@ -2335,7 +2411,7 @@ async function restoreLastWorkspace() {
         missingLastFolder.value = last;
         markMissing(last);
       } else {
-        showNotice(`打开失败：${errorText(error)}`, "danger");
+        showFolderOpenFailure(error);
       }
       return false;
     }
@@ -3263,7 +3339,7 @@ function runAppCommand(id: string): boolean {
   ) {
     return false;
   }
-  if (command.requiresWorkspace && !hasWorkspace.value) {
+  if (!commandContextAllows(command)) {
     return false;
   }
   return command.run(commandContext(editor?.view ?? null));
@@ -3348,7 +3424,7 @@ async function handleFolderDrop(drop: AssetDrop) {
     try {
       folder = await openDroppedFolderInGo(drop.folderToken!);
     } catch (error) {
-      showNotice(`无法打开拖入的文件夹：${errorText(error)}`, "danger");
+      showFolderOpenFailure(error);
       return false;
     }
     const applied = await applyWorkspace(folder);
@@ -3569,7 +3645,7 @@ async function runPaletteCommand(id: string) {
   if (command === undefined || !isCommandAvailable(command)) {
     return;
   }
-  if (command.requiresWorkspace && !hasWorkspace.value) {
+  if (!commandContextAllows(command)) {
     return;
   }
   if (command.scope === "file-tree") {
@@ -3651,7 +3727,10 @@ function handleGlobalKeydown(event: KeyboardEvent) {
   if (command === null) {
     return;
   }
-  if (command.requiresWorkspace && !hasWorkspace.value) {
+  if (!commandContextAllows(command)) {
+    // The command stays registered for its shortcut, but it is not runnable
+    // here. Swallow the key so it does not reach WebView/system defaults.
+    event.preventDefault();
     return;
   }
   const handled = command.run(commandContext(editor?.view ?? null));
@@ -4132,6 +4211,7 @@ defineExpose({
         :sidebar-shown="sidebarShown"
         :show-sidebar-toggle="showSidebarToggle"
         :show-open-folder="!hasWorkspace && tabs.length > 0"
+        :show-outline="!startState"
         :outline-enabled="false"
         :outline-on="false"
         @close-tab="closeTab"
@@ -4201,6 +4281,7 @@ defineExpose({
         :save-status="saveStatus"
         :notice="notice?.text ?? null"
         :notice-tone="notice?.tone"
+        :notice-detail="notice?.detail"
         :start-theme="startState"
         :is-dark="isDark"
         @toggle-theme="toggleTheme"
@@ -4267,7 +4348,7 @@ defineExpose({
             action.primary
               ? action.danger
                 ? 'border-[var(--status-danger-border)] bg-[var(--status-danger-bg)] text-[var(--status-danger-fg)]'
-                : 'border-[var(--accent-primary)] bg-[var(--accent-primary)] text-[var(--accent-contrast)]'
+                : 'button-primary'
               : 'border-[var(--border-default)] text-[var(--text-secondary)] hover:bg-[var(--surface-subtle)]'
           "
           @click="resolveDialog(action.value)"
