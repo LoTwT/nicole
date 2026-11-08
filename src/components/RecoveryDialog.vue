@@ -86,7 +86,7 @@ const actionClass =
       <button
         type="button"
         :class="actionClass"
-        class="button-primary border-[var(--accent-primary)]"
+        class="button-primary"
         @click="emit('restore')"
       >
         全部恢复

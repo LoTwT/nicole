@@ -50,15 +50,70 @@ describe("floating layer contract", () => {
 });
 
 describe("primary button contract", () => {
-  it("switches the accent fill and its content color together", () => {
-    expect(styleCss).toMatch(
-      /\.button-primary\s*\{[^}]*background-color:\s*var\(--accent-primary\);[^}]*color:\s*var\(--accent-contrast\);/s,
+  const css = styleCss.replace(/\/\*[\s\S]*?\*\//g, "");
+
+  function rule(selector: string): string {
+    const start = css.indexOf(`${selector} {`);
+    if (start < 0) {
+      throw new Error(`missing selector: ${selector}`);
+    }
+    const end = css.indexOf("}", start);
+    return css.slice(start, end + 1);
+  }
+
+  function braceDepthAt(index: number): number {
+    let depth = 0;
+    for (let position = 0; position < index; position++) {
+      const character = css.charAt(position);
+      if (character === "{") depth++;
+      else if (character === "}") depth--;
+    }
+    return depth;
+  }
+
+  it("switches the accent fill, border and content color together", () => {
+    expect(rule(".button-primary")).toMatch(
+      /border-color:\s*var\(--accent-primary\);/,
     );
-    expect(styleCss).toMatch(
-      /\.button-primary:hover:not\(:disabled\)\s*\{[^}]*background-color:\s*var\(--accent-primary-hover\);[^}]*color:\s*var\(--accent-contrast-hover\);/s,
+    expect(rule(".button-primary")).toMatch(
+      /background-color:\s*var\(--accent-primary\);/,
     );
-    expect(styleCss).toMatch(
-      /\.button-primary:active:not\(:disabled\)\s*\{[^}]*background-color:\s*var\(--accent-primary-active\);[^}]*color:\s*var\(--accent-contrast-active\);/s,
+    expect(rule(".button-primary")).toMatch(
+      /color:\s*var\(--accent-contrast\);/,
     );
+    expect(rule(".button-primary:hover:not(:disabled)")).toMatch(
+      /border-color:\s*var\(--accent-primary-hover\);/,
+    );
+    expect(rule(".button-primary:hover:not(:disabled)")).toMatch(
+      /background-color:\s*var\(--accent-primary-hover\);/,
+    );
+    expect(rule(".button-primary:hover:not(:disabled)")).toMatch(
+      /color:\s*var\(--accent-contrast-hover\);/,
+    );
+    expect(rule(".button-primary:active:not(:disabled)")).toMatch(
+      /border-color:\s*var\(--accent-primary-active\);/,
+    );
+    expect(rule(".button-primary:active:not(:disabled)")).toMatch(
+      /background-color:\s*var\(--accent-primary-active\);/,
+    );
+    expect(rule(".button-primary:active:not(:disabled)")).toMatch(
+      /color:\s*var\(--accent-contrast-active\);/,
+    );
+    // Only the color is shared; width and style stay with the component so a
+    // borderless button does not gain a border or change size.
+    expect(rule(".button-primary")).not.toMatch(/border-(width|style):/);
+  });
+
+  it("keeps hover before active and both rules out of any layer", () => {
+    const base = css.indexOf(".button-primary {");
+    const hover = css.indexOf(".button-primary:hover:not(:disabled) {");
+    const active = css.indexOf(".button-primary:active:not(:disabled) {");
+    expect(base).toBeGreaterThan(-1);
+    expect(hover).toBeGreaterThan(base);
+    expect(active).toBeGreaterThan(hover);
+    // A depth of zero means the rules are not nested in @layer, @media, etc.
+    expect(braceDepthAt(base)).toBe(0);
+    expect(braceDepthAt(hover)).toBe(0);
+    expect(braceDepthAt(active)).toBe(0);
   });
 });

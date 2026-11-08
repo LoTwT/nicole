@@ -128,16 +128,19 @@ body {
  * component that renders a primary button.
  */
 .button-primary {
+  border-color: var(--accent-primary);
   background-color: var(--accent-primary);
   color: var(--accent-contrast);
 }
 
 .button-primary:hover:not(:disabled) {
+  border-color: var(--accent-primary-hover);
   background-color: var(--accent-primary-hover);
   color: var(--accent-contrast-hover);
 }
 
 .button-primary:active:not(:disabled) {
+  border-color: var(--accent-primary-active);
   background-color: var(--accent-primary-active);
   color: var(--accent-contrast-active);
 }

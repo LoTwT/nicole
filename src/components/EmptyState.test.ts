@@ -164,6 +164,7 @@ describe("EmptyState", () => {
     expect(primary.getAttribute("aria-label")).toBe("打开文件夹 ⌘O");
     expect(primary.getAttribute("title")).toBe("打开文件夹 ⌘O");
     expect(primary.className).toContain("button-primary");
+    expect(primary.className).not.toContain("border-[var(--accent-primary)]");
   });
 
   it("shows at most five recent folders as name-only capsules", () => {

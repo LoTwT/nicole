@@ -155,6 +155,7 @@ import { watchWorkspace, type WorkspaceWatcher } from "./services/watch";
 const AUTOSAVE_DELAY_MS = 1000;
 const SAVING_DISPLAY_DELAY_MS = 300;
 const NOTICE_DURATION_MS = 3000;
+const NOTICE_DETAIL_DURATION_MS = 8000;
 const PERSIST_TABS_DELAY_MS = 400;
 // Keep close/switch inside the same five-second budget as the window-close path.
 const RECOVERY_OPERATION_TIMEOUT_MS = 5000;
@@ -463,10 +464,12 @@ function folderOpenFailureMessage(error: unknown): string {
 }
 
 function showFolderOpenFailure(error: unknown) {
+  // A notice with a raw-error tooltip needs more time to be read; showNotice
+  // extends detail notices automatically when no duration is given.
   showNotice(
     folderOpenFailureMessage(error),
     "danger",
-    NOTICE_DURATION_MS,
+    undefined,
     errorText(error),
   );
 }
@@ -544,19 +547,22 @@ function findOpenTabForWorkspacePath(
 function showNotice(
   text: string,
   tone: Notice["tone"] = "success",
-  duration = NOTICE_DURATION_MS,
+  duration?: number,
   detail?: string,
 ) {
+  const visibleFor =
+    duration ??
+    (detail === undefined ? NOTICE_DURATION_MS : NOTICE_DETAIL_DURATION_MS);
   if (noticeTimer !== null) {
     clearTimeout(noticeTimer);
     noticeTimer = null;
   }
   notice.value = detail === undefined ? { text, tone } : { text, tone, detail };
-  if (duration > 0) {
+  if (visibleFor > 0) {
     noticeTimer = setTimeout(() => {
       notice.value = null;
       noticeTimer = null;
-    }, duration);
+    }, visibleFor);
   }
 }
 
@@ -3700,6 +3706,9 @@ function handleGlobalKeydown(event: KeyboardEvent) {
     return;
   }
   if (!commandContextAllows(command)) {
+    // The command stays registered for its shortcut, but it is not runnable
+    // here. Swallow the key so it does not reach WebView/system defaults.
+    event.preventDefault();
     return;
   }
   const handled = command.run(commandContext(editor?.view ?? null));
@@ -4180,7 +4189,7 @@ defineExpose({
         :sidebar-shown="sidebarShown"
         :show-sidebar-toggle="showSidebarToggle"
         :show-open-folder="!hasWorkspace && tabs.length > 0"
-        :show-outline="hasWorkspace"
+        :show-outline="!startState"
         :outline-enabled="false"
         :outline-on="false"
         @close-tab="closeTab"
@@ -4317,7 +4326,7 @@ defineExpose({
             action.primary
               ? action.danger
                 ? 'border-[var(--status-danger-border)] bg-[var(--status-danger-bg)] text-[var(--status-danger-fg)]'
-                : 'button-primary border-[var(--accent-primary)]'
+                : 'button-primary'
               : 'border-[var(--border-default)] text-[var(--text-secondary)] hover:bg-[var(--surface-subtle)]'
           "
           @click="resolveDialog(action.value)"

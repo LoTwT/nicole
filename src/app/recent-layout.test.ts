@@ -83,6 +83,18 @@ describe("layoutRecentRows", () => {
     ).toEqual([2, 2, 1]);
   });
 
+  it("tries every balanced allocation at a row count", () => {
+    // 2+2+1 and 1+2+2 do not fit, but the middle allocation 2+1+2 does.
+    expect(
+      layoutRecentRows(
+        [1, 2, 3, 4, 5],
+        [100, 100, 300, 100, 100],
+        320,
+        8,
+      ).map((row) => row.length),
+    ).toEqual([2, 1, 2]);
+  });
+
   it("counts the gaps between capsules", () => {
     expect(layoutRecentRows([1, 2, 3], [100, 100, 100], 312, 6)).toEqual([
       [1, 2, 3],
