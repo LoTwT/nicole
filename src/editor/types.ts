@@ -58,12 +58,15 @@ export interface CreateEditorOptions {
   onPasteImage?: PasteImageHandler;
   onChange?: (doc: string) => void;
   /**
-   * Called when an IME composition ends, including a cancellation that
-   * leaves no document change. Not called when the view is destroyed during
-   * the composition; work deferred during a composition must also treat the
-   * view going away or losing focus as its end.
+   * Called on the DOM compositionend event of this view, including a
+   * cancellation that leaves no document change. CodeMirror can also finish a
+   * composition internally (its Safari dead-key fallback) without dispatching
+   * that event, and destroying the view removes this listener; callers that
+   * defer work during a composition need their own recovery for those cases.
    */
   onCompositionEnd?: () => void;
+  /** Called on the DOM compositionstart event of this view. */
+  onCompositionStart?: () => void;
 }
 
 export interface EditorHandle {

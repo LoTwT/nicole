@@ -199,21 +199,30 @@ describe("IME composition", () => {
     expect(view.state.doc.toString()).toBe(`${doc}!`);
   });
 
-  it("reports the end of a composition even when it changes nothing", () => {
+  it("reports both ends of a composition even when it changes nothing", () => {
     document.body.innerHTML = '<div id="probe"></div>';
     const probe = document.querySelector<HTMLElement>("#probe")!;
+    const onCompositionStart = vi.fn();
     const onCompositionEnd = vi.fn();
-    const instance = createEditor({ parent: probe, doc, onCompositionEnd });
+    const instance = createEditor({
+      parent: probe,
+      doc,
+      onCompositionStart,
+      onCompositionEnd,
+    });
     const view = instance.view;
 
     composition(view, "compositionstart");
+    expect(onCompositionStart).toHaveBeenCalledTimes(1);
     expect(onCompositionEnd).not.toHaveBeenCalled();
     composition(view, "compositionend");
     expect(onCompositionEnd).toHaveBeenCalledTimes(1);
 
     composition(view, "compositionstart");
     instance.destroy();
+    composition(view, "compositionstart");
     composition(view, "compositionend");
+    expect(onCompositionStart).toHaveBeenCalledTimes(2);
     expect(onCompositionEnd).toHaveBeenCalledTimes(1);
   });
 

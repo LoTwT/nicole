@@ -641,6 +641,7 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     onPasteImage,
     onChange,
     onCompositionEnd,
+    onCompositionStart,
   } = options;
 
   const modeCompartment = new Compartment();
@@ -791,6 +792,10 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     tickets.delete(ticket.id);
   };
 
+  const handleCompositionStart = () => {
+    onCompositionStart?.();
+  };
+
   const handleCompositionEnd = () => {
     onCompositionEnd?.();
     if (pendingInsertions.length > 0) scheduleInsertion();
@@ -899,6 +904,7 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
         extensions,
       }),
   });
+  view.contentDOM.addEventListener("compositionstart", handleCompositionStart);
   view.contentDOM.addEventListener("compositionend", handleCompositionEnd);
 
   if (restore?.scrollTopLine != null) {
@@ -971,6 +977,10 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
       stopScrollRestore = null;
       pendingInsertions.length = 0;
       tickets.clear();
+      view.contentDOM.removeEventListener(
+        "compositionstart",
+        handleCompositionStart,
+      );
       view.contentDOM.removeEventListener("compositionend", handleCompositionEnd);
       view.destroy();
     },
