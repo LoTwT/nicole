@@ -171,6 +171,8 @@ interface Notice {
   tone: "success" | "danger" | "muted";
   /** Raw backend error; shown as a tooltip, not as the notice text. */
   detail?: string;
+  /** Lets a later successful action dismiss only its own failure notice. */
+  kind?: "folder-open-failure";
 }
 
 interface DialogAction {
@@ -471,6 +473,7 @@ function showFolderOpenFailure(error: unknown) {
     "danger",
     undefined,
     errorText(error),
+    "folder-open-failure",
   );
 }
 
@@ -549,6 +552,7 @@ function showNotice(
   tone: Notice["tone"] = "success",
   duration?: number,
   detail?: string,
+  kind?: Notice["kind"],
 ) {
   const visibleFor =
     duration ??
@@ -557,13 +561,28 @@ function showNotice(
     clearTimeout(noticeTimer);
     noticeTimer = null;
   }
-  notice.value = detail === undefined ? { text, tone } : { text, tone, detail };
+  const next: Notice = { text, tone };
+  if (detail !== undefined) next.detail = detail;
+  if (kind !== undefined) next.kind = kind;
+  notice.value = next;
   if (visibleFor > 0) {
     noticeTimer = setTimeout(() => {
       notice.value = null;
       noticeTimer = null;
     }, visibleFor);
   }
+}
+
+/** Clears one notice kind only; unrelated notices keep their own timer. */
+function clearNotice(kind: NonNullable<Notice["kind"]>) {
+  if (notice.value?.kind !== kind) {
+    return;
+  }
+  if (noticeTimer !== null) {
+    clearTimeout(noticeTimer);
+    noticeTimer = null;
+  }
+  notice.value = null;
 }
 
 function applyTheme() {
@@ -2061,6 +2080,9 @@ async function applyWorkspace(folder: {
   restoringTabs = true;
   try {
     applyWorkspaceState(folder);
+    // A folder is now open; an earlier open-failure notice is stale. Other
+    // notices (including their timers) are deliberately left alone.
+    clearNotice("folder-open-failure");
     closedTabs.value = [];
     tabs.value = [...singles];
     const restoreStartActiveId = keepSingle ? previous.id : null;

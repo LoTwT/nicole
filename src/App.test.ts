@@ -639,11 +639,11 @@ describe("application shell", () => {
     await settle();
     expect(host.textContent).toContain("没有权限打开这个文件夹");
 
-    await vi.advanceTimersByTimeAsync(3000);
+    await vi.advanceTimersByTimeAsync(7999);
     await settle();
     expect(host.textContent).toContain("没有权限打开这个文件夹");
 
-    await vi.advanceTimersByTimeAsync(5000);
+    await vi.advanceTimersByTimeAsync(1);
     await settle();
     expect(host.textContent).not.toContain("没有权限打开这个文件夹");
   });
@@ -656,9 +656,67 @@ describe("application shell", () => {
     expect(reopen.defaultPrevented).toBe(true);
     expect(host.textContent).toContain("没有可重新打开的标签页");
 
-    await vi.advanceTimersByTimeAsync(3000);
+    await vi.advanceTimersByTimeAsync(2999);
+    await settle();
+    expect(host.textContent).toContain("没有可重新打开的标签页");
+    await vi.advanceTimersByTimeAsync(1);
     await settle();
     expect(host.textContent).not.toContain("没有可重新打开的标签页");
+  });
+
+  it("clears an open-failure notice when the retry succeeds", async () => {
+    vi.useFakeTimers();
+    app?.unmount();
+    mocks.getSettings.mockResolvedValue({
+      theme: "system",
+      sidebarWidth: 252,
+      recentFolders: ["/blocked"],
+      expandedFolders: {},
+      workspaceClosed: true,
+    });
+    mocks.openFolder.mockRejectedValueOnce(new Error("permission denied"));
+    app = createApp(App);
+    app.mount(host);
+    await settle();
+
+    const recentOpen = () =>
+      host.querySelector<HTMLButtonElement>(
+        '[data-recent-item] button[aria-label^="打开 "]',
+      )!;
+
+    recentOpen().click();
+    await settle();
+    expect(host.textContent).toContain("没有权限打开这个文件夹");
+
+    await vi.advanceTimersByTimeAsync(1000);
+    await settle();
+    mocks.openFolder.mockResolvedValueOnce(folder("/blocked"));
+    recentOpen().click();
+    await settle();
+
+    expect(host.querySelector("aside")).not.toBeNull();
+    expect(host.textContent).not.toContain("没有权限打开这个文件夹");
+    expect(host.querySelector("footer span[title]")).toBeNull();
+
+    await vi.advanceTimersByTimeAsync(7000);
+    await settle();
+    expect(host.textContent).not.toContain("没有权限打开这个文件夹");
+  });
+
+  it("does not clear unrelated notices when a folder opens", async () => {
+    vi.useFakeTimers();
+    await settle();
+    dropHandler?.({ token: "image", x: 10, y: 10 });
+    await settle();
+    expect(host.textContent).toContain("只能拖入一个文件夹");
+
+    await openFolder();
+    expect(host.querySelector("aside")).not.toBeNull();
+    expect(host.textContent).toContain("只能拖入一个文件夹");
+
+    await vi.advanceTimersByTimeAsync(3000);
+    await settle();
+    expect(host.textContent).not.toContain("只能拖入一个文件夹");
   });
 
   it("confirms a folder switch and keeps the current file on cancel", async () => {
