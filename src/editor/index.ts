@@ -32,6 +32,12 @@ import { basicSetup } from "codemirror";
 import type { AppPlatform } from "../app/platform";
 import { commandRegistry } from "../commands/registry";
 import { createCommandKeymap } from "./keymap";
+import {
+  scrollAnchor,
+  scrollTopForAnchor,
+  visibleTopHeight,
+  type ScrollAnchor,
+} from "./scroll";
 import type {
   CreateEditorOptions,
   EditorHandle,
@@ -650,6 +656,44 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
   let nextTicketID = 1;
   let insertionScheduled = false;
   let view: EditorView;
+  let destroyed = false;
+  let scrollRestoreGeneration = 0;
+
+  const anchorLine = (lineNumber: number) =>
+    view.state.doc.line(
+      Math.min(Math.max(1, lineNumber), view.state.doc.lines),
+    );
+
+  /**
+   * Scrolls a line back to an in-line offset. The first assignment paints the
+   * position right away, then a few animation frames correct it against the
+   * measured blocks: before the first measurement the top padding is still
+   * zero and lines outside the viewport only have estimated heights, and
+   * CodeMirror re-anchors estimated positions while it measures. Both would
+   * otherwise move the restored line by several lines.
+   */
+  const scrollToAnchor = (anchor: ScrollAnchor) => {
+    const generation = ++scrollRestoreGeneration;
+    const targetTop = () =>
+      scrollTopForAnchor(
+        anchor,
+        view.documentPadding.top,
+        view.lineBlockAt(anchorLine(anchor.line).from).top,
+      );
+    view.scrollDOM.scrollTop = targetTop();
+    let frames = 0;
+    let stable = 0;
+    const settle = () => {
+      if (destroyed || generation !== scrollRestoreGeneration) return;
+      if (frames++ >= 6) return;
+      const before = view.scrollDOM.scrollTop;
+      view.scrollDOM.scrollTop = targetTop();
+      stable =
+        Math.abs(view.scrollDOM.scrollTop - before) < 0.5 ? stable + 1 : 0;
+      if (stable < 2) requestAnimationFrame(settle);
+    };
+    requestAnimationFrame(settle);
+  };
 
   const createTicketAt = (at: number): InsertionTicket => {
     const ticket: TicketState = { id: nextTicketID++, at };
@@ -734,12 +778,25 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
       },
       current.length,
     );
-    const ranges = view.visibleRanges;
-    const top = ranges.length > 0 ? ranges[0]!.from : 0;
-    const mappedTop = changes.mapPos(top, 1);
-    view.dispatch({
-      changes,
-      effects: EditorView.scrollIntoView(mappedTop, { y: "start" }),
+    const scrollTop = view.scrollDOM.scrollTop;
+    const paddingTop = view.documentPadding.top;
+    const block = view.lineBlockAtHeight(
+      visibleTopHeight(scrollTop, paddingTop),
+    );
+    const topLine = view.state.doc.lineAt(block.from);
+    const anchor = scrollAnchor(
+      scrollTop,
+      paddingTop,
+      topLine.number,
+      block.top,
+    );
+    const mappedTop = changes.mapPos(topLine.from, 1);
+    view.dispatch({ changes });
+    // The top line keeps its text across an edit elsewhere, so it is the
+    // stable reference for both the selection and the visible area.
+    scrollToAnchor({
+      line: view.state.doc.lineAt(mappedTop).number,
+      offset: anchor.offset,
     });
   };
 
@@ -801,28 +858,9 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
   view.contentDOM.addEventListener("compositionend", onCompositionEnd);
 
   if (restore?.scrollTopLine != null) {
-    const lineNumber = restore.scrollTopLine;
-    const offset = restore.scrollTopOffset ?? 0;
-    const targetLine = () =>
-      view.state.doc.line(
-        Math.min(Math.max(1, lineNumber), view.state.doc.lines),
-      );
-    // Set it once for the first paint; the measure pass below corrects it
-    // after the viewport has a real height and line blocks exist.
-    view.scrollDOM.scrollTop = Math.max(
-      0,
-      view.lineBlockAt(targetLine().from).top + offset,
-    );
-    view.requestMeasure({
-      read(current) {
-        const line = current.state.doc.line(
-          Math.min(Math.max(1, lineNumber), current.state.doc.lines),
-        );
-        return current.lineBlockAt(line.from).top + offset;
-      },
-      write(top) {
-        view.scrollDOM.scrollTop = Math.max(0, top);
-      },
+    scrollToAnchor({
+      line: restore.scrollTopLine,
+      offset: restore.scrollTopOffset ?? 0,
     });
   }
 
@@ -860,22 +898,31 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     },
     insertImages,
     getRestoreState() {
-      const block = view.lineBlockAtHeight(view.scrollDOM.scrollTop);
+      const scrollTop = view.scrollDOM.scrollTop;
+      const paddingTop = view.documentPadding.top;
+      const block = view.lineBlockAtHeight(
+        visibleTopHeight(scrollTop, paddingTop),
+      );
       const line = view.state.doc.lineAt(block.from);
+      const anchor = scrollAnchor(
+        scrollTop,
+        paddingTop,
+        line.number,
+        block.top,
+      );
       const stateJSON = view.state.toJSON({ history: historyField });
       return {
         selection: view.state.selection.toJSON() as SavedSelection,
         history: stateJSON.history ?? null,
-        scrollTopLine: line.number,
-        // Signed: the document's top padding can put the first line below
-        // the viewport top, and restoring must keep that scroll offset.
-        scrollTopOffset: view.scrollDOM.scrollTop - block.top,
+        scrollTopLine: anchor.line,
+        scrollTopOffset: anchor.offset,
       };
     },
     focus() {
       view.focus();
     },
     destroy() {
+      destroyed = true;
       pendingInsertions.length = 0;
       tickets.clear();
       view.contentDOM.removeEventListener("compositionend", onCompositionEnd);

@@ -1,5 +1,5 @@
-import type { EditorView } from "@codemirror/view";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { EditorView } from "@codemirror/view";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createEditor, type EditorHandle, type EditorMode } from "./index";
 
@@ -352,5 +352,113 @@ describe("background restore state", () => {
     editor = createEditor({ parent, doc: "short", restore });
     expect(editor.view.state.selection.main.from).toBe(5);
     expect(editor.view.state.selection.main.to).toBe(5);
+  });
+
+  it("records and restores the anchor below the document's top padding", async () => {
+    const blockAtHeight = vi
+      .spyOn(EditorView.prototype, "lineBlockAtHeight")
+      .mockImplementation(function (this: EditorView) {
+        const line = this.state.doc.line(2);
+        return {
+          from: line.from,
+          to: line.to,
+          top: 10,
+          bottom: 24,
+          height: 14,
+        } as never;
+      });
+    const blockAt = vi
+      .spyOn(EditorView.prototype, "lineBlockAt")
+      .mockImplementation(function (this: EditorView, pos: number) {
+        const line = this.state.doc.lineAt(pos);
+        return {
+          from: line.from,
+          to: line.to,
+          top: 10,
+          bottom: 24,
+          height: 14,
+        } as never;
+      });
+    const padding = vi
+      .spyOn(EditorView.prototype, "documentPadding", "get")
+      .mockReturnValue({ top: 48, bottom: 112 });
+
+    try {
+      editor = createEditor({ parent, doc: "one\ntwo\nthree" });
+      editor.view.scrollDOM.scrollTop = 70;
+      const restore = editor.getRestoreState();
+
+      // 70 - 48 padding, plus one pixel to stay on the line at the edge.
+      expect(blockAtHeight).toHaveBeenCalledWith(23);
+      expect(restore.scrollTopLine).toBe(2);
+      expect(restore.scrollTopOffset).toBe(12);
+
+      editor.destroy();
+      editor = createEditor({
+        parent,
+        doc: "one\ntwo\nthree",
+        restore: {
+          selection: null,
+          history: null,
+          scrollTopLine: restore.scrollTopLine,
+          scrollTopOffset: restore.scrollTopOffset,
+        },
+      });
+      expect(editor.view.scrollDOM.scrollTop).toBe(70);
+      await settle();
+      expect(editor.view.scrollDOM.scrollTop).toBe(70);
+    } finally {
+      blockAtHeight.mockRestore();
+      blockAt.mockRestore();
+      padding.mockRestore();
+    }
+  });
+
+  it("keeps the top line and its offset when the disk text is reloaded", async () => {
+    const blockForLine = (view: EditorView, lineNumber: number) => {
+      const line = view.state.doc.line(
+        Math.min(Math.max(1, lineNumber), view.state.doc.lines),
+      );
+      const top = (line.number - 1) * 20;
+      return {
+        from: line.from,
+        to: line.to,
+        top,
+        bottom: top + 20,
+        height: 20,
+      } as never;
+    };
+    const blockAtHeight = vi
+      .spyOn(EditorView.prototype, "lineBlockAtHeight")
+      .mockImplementation(function (this: EditorView, height: number) {
+        return blockForLine(this, Math.floor(Math.max(0, height) / 20) + 1);
+      });
+    const blockAt = vi
+      .spyOn(EditorView.prototype, "lineBlockAt")
+      .mockImplementation(function (this: EditorView, pos: number) {
+        return blockForLine(this, this.state.doc.lineAt(pos).number);
+      });
+    const padding = vi
+      .spyOn(EditorView.prototype, "documentPadding", "get")
+      .mockReturnValue({ top: 48, bottom: 112 });
+
+    try {
+      editor = createEditor({ parent, doc: "a\nb\nc\nd" });
+      editor.view.scrollDOM.scrollTop = 100;
+      // Line 3 ("c") is the top line, 12px into it.
+      const top = blockForLine(editor.view, 3) as { from: number };
+      expect(editor.view.state.doc.lineAt(top.from).text).toBe("c");
+
+      editor.replaceDocument("x\na\nb\nc\nd");
+      // One line moved above the anchor, so the same text is line 4 now and
+      // the scroll offset follows it.
+      expect(editor.view.scrollDOM.scrollTop).toBe(120);
+      await settle();
+      expect(editor.view.scrollDOM.scrollTop).toBe(120);
+    } finally {
+      blockAtHeight.mockRestore();
+      blockAt.mockRestore();
+      padding.mockRestore();
+    }
   });
 });
