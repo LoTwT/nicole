@@ -11,7 +11,7 @@ export function appPlatform(os: string): AppPlatform {
 }
 
 export function isMac(platform: AppPlatform): boolean {
-  return platform === "macos";
+  return platform.startsWith("mac");
 }
 
 export function revealLabel(platform: AppPlatform): string {

@@ -159,11 +159,12 @@ describe("editor selection color", () => {
       editor = createEditor({ parent, doc: "选中的文字\n", mode: "live" });
 
       const target = editor.view.contentDOM.querySelector(".cm-line")!;
+      const native = rulesFor(target, true).filter(
+        (rule) =>
+          rule.value === "var(--nicole-selection)" && !rule.important,
+      );
       expect(
-        rulesFor(target, true).some(
-          (rule) =>
-            rule.value === "var(--nicole-selection)" && !rule.important,
-        ),
+        native.some((rule) => /^\S+ ::selection$/.test(rule.selector.trim())),
       ).toBe(true);
     });
   }
@@ -180,20 +181,110 @@ describe("selection variables", () => {
     "utf8",
   );
 
-  function block(selector: string) {
-    const start = styleCss.indexOf(`${selector} {`);
-    if (start < 0) throw new Error(`missing ${selector}`);
-    const end = styleCss.indexOf("}", start);
-    return styleCss.slice(start, end + 1);
+  interface CascadeRule {
+    value: string;
+    selector: string;
+    specificity: [number, number, number];
+    important: boolean;
+    order: number;
   }
 
-  it("uses lavender-200 on Paper and accent-soft on Ink", () => {
-    expect(block(":root")).toMatch(
-      /--nicole-selection:\s*var\(--reading-selection,\s*var\(--color-lavender-200\)\)/,
+  function mediaIsActive(conditions: string[]): boolean {
+    return conditions.every((condition) => {
+      const query = condition.trim().toLowerCase();
+      return (
+        query === "" ||
+        query === "all" ||
+        query === "screen" ||
+        query.includes("screen")
+      );
+    });
+  }
+
+  function selectionVariableRules(): CascadeRule[] {
+    const style = document.createElement("style");
+    style.textContent = styleCss.replace(/^@import[^;]+;\s*$/gm, "");
+    document.head.append(style);
+    try {
+      const rules: CascadeRule[] = [];
+      let order = 0;
+      const visit = (ruleList: CSSRuleList, media: string[]) => {
+        for (const rule of Array.from(ruleList)) {
+          if ("selectorText" in rule) {
+            const cssRule = rule as CSSStyleRule;
+            const matchingSelectors = cssRule.selectorText
+              .split(",")
+              .map((selector) => selector.trim())
+              .filter((selector) => document.documentElement.matches(selector));
+            const value = cssRule.style.getPropertyValue("--nicole-selection");
+            if (matchingSelectors.length > 0 && value) {
+              matchingSelectors.sort((a, b) =>
+                compare(specificity(a), specificity(b)),
+              );
+              rules.push({
+                value,
+                selector: matchingSelectors.at(-1)!,
+                specificity: specificity(matchingSelectors.at(-1)!),
+                important:
+                  cssRule.style.getPropertyPriority("--nicole-selection") ===
+                  "important",
+                order: order++,
+              });
+            }
+            continue;
+          }
+          if ("cssRules" in rule) {
+            const mediaRule = rule as CSSMediaRule;
+            const condition = mediaRule.conditionText ?? "";
+            if (mediaIsActive([...media, condition])) {
+              visit(mediaRule.cssRules, [...media, condition]);
+            }
+            order++;
+          }
+        }
+      };
+      visit(style.sheet!.cssRules, []);
+      return rules.filter((rule) => rule.selector);
+    } finally {
+      style.remove();
+    }
+  }
+
+  function winningSelectionRule(): CascadeRule {
+    let winner: CascadeRule | null = null;
+    for (const rule of selectionVariableRules()) {
+      if (
+        winner === null ||
+        (rule.important !== winner.important
+          ? rule.important
+          : compare(rule.specificity, winner.specificity) >= 0)
+      ) {
+        winner = rule;
+      }
+    }
+    if (winner === null) throw new Error("no --nicole-selection rule matched");
+    return winner;
+  }
+
+  function normalized(value: string) {
+    return value.replace(/\s+/g, "");
+  }
+
+  it("uses lavender-200 on Paper and accent-soft on Ink through the cascade", () => {
+    document.documentElement.classList.remove("dark");
+    const light = winningSelectionRule();
+    expect(normalized(light.value)).toBe(
+      "var(--reading-selection,var(--color-lavender-200))",
     );
-    expect(block(".dark")).toMatch(
-      /--nicole-selection:\s*var\(--reading-selection,\s*var\(--accent-soft\)\)/,
+    expect(light.important).toBe(false);
+
+    document.documentElement.classList.add("dark");
+    const dark = winningSelectionRule();
+    expect(normalized(dark.value)).toBe(
+      "var(--reading-selection,var(--accent-soft))",
     );
+    expect(dark.important).toBe(false);
+
     expect(themeColors).toMatch(/--color-lavender-200:\s*#ded4ff;/);
     expect(themeDark).toMatch(/--accent-soft:\s*#2c2644;/);
   });

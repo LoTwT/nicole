@@ -16,6 +16,7 @@ import {
 import {
   historyField,
   redo as historyRedo,
+  selectAll,
   undo as historyUndo,
 } from "@codemirror/commands";
 import {
@@ -23,13 +24,14 @@ import {
   EditorView,
   ViewPlugin,
   WidgetType,
+  runScopeHandlers,
   type DecorationSet,
   type ViewUpdate,
 } from "@codemirror/view";
 import { tags } from "@lezer/highlight";
 import { basicSetup } from "codemirror";
 
-import type { AppPlatform } from "../app/platform";
+import { isMac, type AppPlatform } from "../app/platform";
 import { commandRegistry } from "../commands/registry";
 import { createCommandKeymap } from "./keymap";
 import {
@@ -456,14 +458,15 @@ const editorTheme = EditorView.theme({
     borderLeftColor: "var(--nicole-caret)",
     borderLeftWidth: "2px",
   },
-  // CodeMirror's base theme paints the focused selection layer with a
-  // five-class selector (`.cm-editor.cm-focused > .cm-scroller >
-  // .cm-selectionLayer .cm-selectionBackground`). A plain `.cm-focused
-  // .cm-selectionBackground` rule loses the cascade, which made the dark theme
-  // fall back to the base theme's light lavender. This selector has the same
-  // specificity and the app theme is installed later, so it wins without
-  // !important. The `::selection` part keeps native selections on the same
-  // variable.
+  // CodeMirror's base theme paints the focused selection layer with
+  // `&light.cm-focused > .cm-scroller > .cm-selectionLayer
+  // .cm-selectionBackground`. It compiles to five classes: the generated light
+  // scope class, `.cm-focused`, and three descendants. A plain `.cm-focused
+  // .cm-selectionBackground` rule loses that cascade, which made the dark theme
+  // fall back to the base theme's light lavender. This selector compiles to the
+  // same five classes with the generated app scope class, and the app theme is
+  // installed later, so it wins without !important. The `::selection` part
+  // keeps native selections on the same variable.
   "&.cm-editor > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, ::selection":
     {
       backgroundColor: "var(--nicole-selection)",
@@ -925,23 +928,130 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
       view.dom.contains(active)
     );
   };
-  const onCheckboxFocusIn = () => {
+  const editorDocument = view.contentDOM.ownerDocument;
+  const focusEditor = () => {
+    if (destroyed) return;
+    view.focus();
+  };
+  const isTaskCheckbox = (
+    target: EventTarget | null,
+  ): target is HTMLInputElement =>
+    target instanceof HTMLInputElement &&
+    target.classList.contains("cm-nicole-checkbox-input");
+  let leftCheckbox = false;
+  let selectAllPending = false;
+  let focusedCheckbox: HTMLInputElement | null = null;
+  let checkboxObserver: MutationObserver | null = null;
+  const stopWatchingCheckbox = () => {
+    checkboxObserver?.disconnect();
+    checkboxObserver = null;
+    focusedCheckbox = null;
+  };
+  const watchCheckbox = (checkbox: HTMLInputElement) => {
+    focusedCheckbox = checkbox;
+    if (checkboxObserver !== null) return;
+    checkboxObserver = new MutationObserver(() => {
+      const removed = focusedCheckbox;
+      if (removed === null || removed.isConnected) return;
+      // WebKit drops focus to BODY without firing focusout when the focused
+      // box is removed by replaceDocument, undo or virtualization.
+      window.setTimeout(() => {
+        if (
+          destroyed ||
+          focusedCheckbox !== removed ||
+          removed.isConnected ||
+          !editorDocument.hasFocus()
+        ) {
+          return;
+        }
+        const active = editorDocument.activeElement;
+        if (
+          active !== null &&
+          active !== editorDocument.body &&
+          active !== editorDocument.documentElement
+        ) {
+          return;
+        }
+        stopWatchingCheckbox();
+        focusEditor();
+      }, 0);
+    });
+    checkboxObserver.observe(view.dom, { childList: true, subtree: true });
+  };
+  const onCheckboxFocusOut = (event: FocusEvent) => {
+    const checkbox = event.target;
+    if (!isTaskCheckbox(checkbox)) return;
+    leftCheckbox = true;
+    selectAllPending = true;
+    window.setTimeout(() => {
+      selectAllPending = false;
+    }, 0);
+    // A task box can be removed by replaceDocument, undo or virtualization.
+    // In that case no focusin follows. Hand keyboard ownership back after the
+    // current update, but not when another control or window took focus.
+    window.setTimeout(() => {
+      if (destroyed || checkbox.isConnected || !view.dom.isConnected) return;
+      if (!editorDocument.hasFocus()) return;
+      const active = editorDocument.activeElement;
+      if (active !== null && active !== editorDocument.body) return;
+      leftCheckbox = false;
+      stopWatchingCheckbox();
+      focusEditor();
+    }, 0);
+    // If focus moved to another control, the box may stay in the document;
+    // stop observing once this focus change has settled.
+    window.setTimeout(() => {
+      if (destroyed || document.activeElement === checkbox) return;
+      if (focusedCheckbox === checkbox && checkbox.isConnected) {
+        stopWatchingCheckbox();
+      }
+    }, 0);
+  };
+  const onCheckboxFocusIn = (event: FocusEvent) => {
+    if (event.target === view.contentDOM && leftCheckbox) {
+      leftCheckbox = false;
+      // WebKit focuses a cleared contentEditable at the start and scrolls
+      // there before CodeMirror can write its selection back.
+      focusEditor();
+      return;
+    }
+    leftCheckbox = false;
     if (!checkboxFocused()) return;
-    view.contentDOM.ownerDocument.getSelection()?.removeAllRanges();
+    if (event.target instanceof HTMLInputElement) {
+      watchCheckbox(event.target);
+    }
+    editorDocument.getSelection()?.removeAllRanges();
   };
   const onCheckboxKeydown = (event: KeyboardEvent) => {
     if (!checkboxFocused()) return;
-    // Space and Tab stay native, Command shortcuts must reach the native menu,
-    // and Escape stays available to the app. Everything else is an editing
-    // command aimed at the editor behind the checkbox.
-    if (
-      event.metaKey ||
-      event.key === " " ||
-      event.key === "Tab" ||
-      event.key === "Escape"
-    ) {
+    // A bare Space toggles the checkbox natively. Any modified Space is an
+    // editing/IME/system shortcut, not a task toggle.
+    if (event.key === " ") {
+      if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
+        event.preventDefault();
+      }
       return;
     }
+    const primaryModifier = isMac(platform) ? event.metaKey : event.ctrlKey;
+    if (primaryModifier) {
+      // Find, find-next and select-all are editor commands, not menu actions.
+      // Give the editor focus, then run the same keymap CodeMirror would have
+      // run if the event had targeted the contentEditable.
+      const key = event.key.toLowerCase();
+      if (
+        !event.altKey &&
+        !event.shiftKey &&
+        (key === "f" || key === "g" || key === "a")
+      ) {
+        event.preventDefault();
+        focusEditor();
+        runScopeHandlers(view, event, "editor");
+      }
+      return;
+    }
+    // Tab and Escape stay native. Everything else is blocked; on macOS the
+    // control modifier is not the primary modifier and must not reach CodeMirror.
+    if (event.key === "Tab" || event.key === "Escape") return;
     // Do not stop propagation: window-level shortcut listeners still need the
     // event, and preventDefault is enough to keep CodeMirror from handling it.
     event.preventDefault();
@@ -950,7 +1060,26 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     if (!checkboxFocused()) return;
     event.preventDefault();
   };
+  // macOS routes the native Select All menu action to selectstart on the body
+  // after keyboard focus leaves the checkbox. The cleared native selection
+  // gives that action nothing to select, so run the editor command explicitly.
+  const onSelectStart = (event: Event) => {
+    if (!selectAllPending && !checkboxFocused()) return;
+    const target = event.target;
+    if (
+      target !== editorDocument.body &&
+      target !== editorDocument.documentElement
+    ) {
+      return;
+    }
+    selectAllPending = false;
+    event.preventDefault();
+    focusEditor();
+    selectAll(view);
+  };
   const checkboxBlockedEvents = ["beforeinput", "paste", "cut"] as const;
+  editorDocument.addEventListener("selectstart", onSelectStart, true);
+  view.contentDOM.addEventListener("focusout", onCheckboxFocusOut, true);
   view.contentDOM.addEventListener("focusin", onCheckboxFocusIn, true);
   view.contentDOM.addEventListener("keydown", onCheckboxKeydown, true);
   for (const type of checkboxBlockedEvents) {
@@ -1023,6 +1152,9 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     },
     destroy() {
       destroyed = true;
+      editorDocument.removeEventListener("selectstart", onSelectStart, true);
+      stopWatchingCheckbox();
+      view.contentDOM.removeEventListener("focusout", onCheckboxFocusOut, true);
       view.contentDOM.removeEventListener("focusin", onCheckboxFocusIn, true);
       view.contentDOM.removeEventListener("keydown", onCheckboxKeydown, true);
       for (const type of checkboxBlockedEvents) {
