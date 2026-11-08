@@ -1,7 +1,12 @@
 import { EditorView } from "@codemirror/view";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { createEditor, type EditorHandle, type EditorMode } from "./index";
+import {
+  CheckboxWidget,
+  createEditor,
+  type EditorHandle,
+  type EditorMode,
+} from "./index";
 
 const doc = `# 标题
 
@@ -325,6 +330,12 @@ describe("task checkbox", () => {
         cancelable: true,
       }),
       new KeyboardEvent("keydown", {
+        key: "a",
+        code: "KeyA",
+        bubbles: true,
+        cancelable: true,
+      }),
+      new KeyboardEvent("keydown", {
         key: "b",
         code: "KeyB",
         metaKey: navigator.platform.startsWith("Mac"),
@@ -334,12 +345,68 @@ describe("task checkbox", () => {
       }),
     ]) {
       input.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(true);
     }
     await settle();
 
     expect(view.state.doc.toString()).toBe(before);
     expect(view.state.selection.main.toJSON()).toEqual(beforeSelection);
     expect(document.activeElement).toBe(input);
+  });
+
+  it("blocks native editing events while the checkbox has focus", async () => {
+    const instance = mount("live");
+    const view = instance.view;
+    await settle();
+    const input = checkboxes(view)[0]!.querySelector("input")!;
+    input.focus();
+
+    for (const type of ["beforeinput", "paste", "cut"]) {
+      const event =
+        type === "beforeinput"
+          ? new InputEvent(type, { bubbles: true, cancelable: true })
+          : new Event(type, { bubbles: true, cancelable: true });
+      view.contentDOM.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(true);
+    }
+
+    view.focus();
+    const ordinary = new InputEvent("beforeinput", {
+      bubbles: true,
+      cancelable: true,
+    });
+    view.contentDOM.dispatchEvent(ordinary);
+
+    expect(ordinary.defaultPrevented).toBe(false);
+  });
+
+  it("lets CodeMirror ignore keys but not mouse events on the widget", () => {
+    const widget = new CheckboxWidget(false);
+
+    expect(widget.ignoreEvent(new KeyboardEvent("keydown"))).toBe(true);
+    expect(widget.ignoreEvent(new MouseEvent("mousedown"))).toBe(false);
+    expect(widget.ignoreEvent(new MouseEvent("click"))).toBe(false);
+  });
+
+  it("does not take focus or the caret on mousedown", async () => {
+    const instance = mount("live");
+    const view = instance.view;
+    await settle();
+    const box = checkboxes(view)[0]!;
+    const input = box.querySelector("input")!;
+    const at = doc.indexOf("加粗");
+    view.dispatch({ selection: { anchor: at } });
+    view.focus();
+
+    const event = new MouseEvent("mousedown", {
+      bubbles: true,
+      cancelable: true,
+    });
+    box.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(document.activeElement).not.toBe(input);
+    expect(view.state.selection.main.head).toBe(at);
   });
 
   it("leaves Space and Tab to the checkbox", async () => {
@@ -378,10 +445,19 @@ describe("task checkbox", () => {
       cancelable: true,
     });
     input.dispatchEvent(shiftTab);
+    const optionTab = new KeyboardEvent("keydown", {
+      key: "Tab",
+      code: "Tab",
+      altKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    input.dispatchEvent(optionTab);
 
     expect(space.defaultPrevented).toBe(false);
     expect(tab.defaultPrevented).toBe(false);
     expect(shiftTab.defaultPrevented).toBe(false);
+    expect(optionTab.defaultPrevented).toBe(false);
     expect(view.state.doc.toString()).toContain("- [x] 待办");
   });
 });

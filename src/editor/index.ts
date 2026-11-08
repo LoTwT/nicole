@@ -1,15 +1,23 @@
-import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import {
-  cursorCharLeft,
+  deleteMarkupBackward,
+  markdown,
+  markdownLanguage,
+} from "@codemirror/lang-markdown";
+import {
+  deleteCharBackward,
+  deleteGroupBackward,
   isolateHistory,
   redo as historyRedo,
   undo as historyUndo,
   historyField,
 } from "@codemirror/commands";
 import {
+  ensureSyntaxTree,
+  forceParsing,
   HighlightStyle,
   syntaxHighlighting,
   syntaxTree,
+  syntaxTreeAvailable,
 } from "@codemirror/language";
 import {
   ChangeSet,
@@ -77,7 +85,7 @@ class BulletWidget extends WidgetType {
   }
 }
 
-class CheckboxWidget extends WidgetType {
+export class CheckboxWidget extends WidgetType {
   constructor(readonly checked: boolean) {
     super();
   }
@@ -184,9 +192,8 @@ class HorizontalRuleWidget extends WidgetType {
 
 const hide = Decoration.replace({});
 
-// Structural Markdown markers that immersive mode hides or replaces at the
-// start of a line. Emphasis and link marks are intentionally absent: typing
-// before them does not change the block structure.
+// Structural Markdown markers that can start a line. Emphasis and link marks
+// are intentionally absent: typing before them does not change the block.
 const leadingMarkNames = new Set([
   "HeaderMark",
   "QuoteMark",
@@ -194,36 +201,85 @@ const leadingMarkNames = new Set([
   "TaskMarker",
 ]);
 
-/**
- * Position just after the structural markers at the start of `line` and the
- * spaces separating them from the text. In immersive mode the caret must not
- * stop before this position: typing there would insert text before the hidden
- * marker and turn the block into plain text. Ordered-list numbers are not
- * hidden (see buildDecorations), but they are structural markers too, so the
- * same boundary applies to them.
- */
-function leadingContentStart(
+interface LeadingMarkInfo {
+  /** First position the caret may occupy without entering hidden markup. */
+  start: number;
+  /** First position after every leading marker, including visible ones. */
+  contentStart: number;
+  /** Whether the line starts with a heading, quote, list or task marker. */
+  block: boolean;
+}
+
+interface LeadingMark {
+  to: number;
+  hidden: boolean;
+}
+
+function mayHaveLeadingMark(
   state: EditorState,
   line: { from: number; to: number },
-): number {
-  const marks = new Map<number, number>();
-  syntaxTree(state).iterate({
+) {
+  let pos = line.from;
+  while (
+    pos < line.to &&
+    (state.sliceDoc(pos, pos + 1) === " " ||
+      state.sliceDoc(pos, pos + 1) === "\t")
+  ) {
+    pos++;
+  }
+  if (pos >= line.to) return false;
+  const first = state.sliceDoc(pos, pos + 1);
+  return (
+    first === "#" ||
+    first === ">" ||
+    first === "-" ||
+    first === "*" ||
+    first === "+" ||
+    first === "[" ||
+    first === "=" ||
+    (first >= "0" && first <= "9")
+  );
+}
+
+/**
+ * Classifies the structural markers at the start of a line. Heading, quote,
+ * bullet and task markers are hidden or replaced by widgets, so the caret
+ * skips them. An ordered-list number stays visible and can be edited, so it
+ * only contributes to `contentStart` (used to tell empty blocks from blocks
+ * with content).
+ */
+function leadingMarkInfo(
+  state: EditorState,
+  line: { from: number; to: number },
+): LeadingMarkInfo {
+  const none: LeadingMarkInfo = {
+    start: line.from,
+    contentStart: line.from,
+    block: false,
+  };
+  if (!mayHaveLeadingMark(state, line)) return none;
+
+  const tree = ensureSyntaxTree(state, line.to, 20) ?? syntaxTree(state);
+  const marks = new Map<number, LeadingMark>();
+  tree.iterate({
     from: line.from,
     to: line.to,
     enter: (node) => {
-      if (
-        node.from >= line.from &&
-        node.from <= line.to &&
-        leadingMarkNames.has(node.name) &&
-        !marks.has(node.from)
-      ) {
-        marks.set(node.from, node.to);
+      if (node.from < line.from || node.from > line.to) return;
+      if (!leadingMarkNames.has(node.name)) return;
+      let hidden = true;
+      if (node.name === "ListMark") {
+        const text = state.sliceDoc(node.from, node.to);
+        const task = node.node.parent?.getChild("Task") !== null;
+        hidden = task || /[-*+]/.test(text);
       }
+      if (!marks.has(node.from)) marks.set(node.from, { to: node.to, hidden });
     },
   });
 
   let pos = line.from;
-  let found = false;
+  let contentStart = line.from;
+  let block = false;
   for (;;) {
     while (
       pos < line.to &&
@@ -232,14 +288,37 @@ function leadingContentStart(
     ) {
       pos++;
     }
-    const end = marks.get(pos);
-    if (end === undefined) return found ? pos : line.from;
-    found = true;
-    pos = end;
+    contentStart = pos;
+    const mark = marks.get(pos);
+    if (mark === undefined) {
+      return { start: block ? pos : line.from, contentStart, block };
+    }
+    block = true;
+    if (!mark.hidden) {
+      // A visible ordered-list number: the caret may stop before it, but the
+      // block still has no content when only the marker and spaces follow.
+      let scan = mark.to;
+      for (;;) {
+        while (
+          scan < line.to &&
+          (state.sliceDoc(scan, scan + 1) === " " ||
+            state.sliceDoc(scan, scan + 1) === "\t")
+        ) {
+          scan++;
+        }
+        const next = marks.get(scan);
+        if (next === undefined || !next.hidden) {
+          return { start: pos, contentStart: scan, block: true };
+        }
+        scan = next.to;
+      }
+    }
+    pos = mark.to;
+    contentStart = pos;
   }
 }
 
-/** Keeps empty selections out of the hidden line-leading markers. */
+/** Keeps empty selections out of hidden line-leading markers. */
 function clampImmersiveSelection(
   state: EditorState,
   selection: EditorSelection,
@@ -248,36 +327,65 @@ function clampImmersiveSelection(
   for (let index = 0; index < selection.ranges.length; index++) {
     const range = selection.ranges[index]!;
     if (!range.empty) continue;
-    const start = leadingContentStart(state, state.doc.lineAt(range.head));
+    const line = state.doc.lineAt(range.head);
+    const { start } = leadingMarkInfo(state, line);
     if (range.head >= start) continue;
     ranges ??= selection.ranges.slice();
-    ranges[index] = EditorSelection.cursor(start);
+    ranges[index] = EditorSelection.cursor(
+      start,
+      range.assoc,
+      range.bidiLevel ?? undefined,
+      range.goalColumn,
+    );
   }
   return ranges === null
     ? selection
     : EditorSelection.create(ranges, selection.mainIndex);
 }
 
+function boundaryAt(
+  state: EditorState,
+  range: SelectionRange,
+): { line: { from: number; to: number }; start: number } | null {
+  if (!range.empty) return null;
+  const line = state.doc.lineAt(range.head);
+  const { start } = leadingMarkInfo(state, line);
+  if (start === line.from || range.head !== start) return null;
+  return { line, start };
+}
+
 /**
- * Arrow-Left at the first visible character would otherwise be pulled back to
- * the start of the line by the atomic range and then clamped to the same place
- * again. Move to the end of the previous line instead; on the first line the
- * caret stays put. Non-empty selections keep the standard behavior.
+ * Leftward motions at the first visible character would otherwise be pulled
+ * back to the line start by the atomic range and then clamped to the same place
+ * again. Move past the whole block instead. Non-empty ranges collapse to their
+ * left edge, and other ranges use CodeMirror's normal character motion.
  */
 function cursorCharLeftImmersive(view: EditorView): boolean {
+  if (view.compositionStarted || view.composing) return false;
   const selection = view.state.selection;
-  if (selection.ranges.length !== 1 || !selection.main.empty) {
-    return cursorCharLeft(view);
-  }
-  const line = view.state.doc.lineAt(selection.main.head);
-  const start = leadingContentStart(view.state, line);
-  // A line without hidden leading markers keeps CodeMirror's behavior.
-  if (start === line.from || selection.main.head !== start) {
-    return cursorCharLeft(view);
-  }
-  if (line.from === 0) return true;
+  const ranges = selection.ranges.map((range) => {
+    if (!range.empty) return EditorSelection.cursor(range.from);
+    const boundary = boundaryAt(view.state, range);
+    if (!boundary) return view.moveByChar(range, false);
+    if (boundary.line.from === 0) {
+      return EditorSelection.cursor(
+        boundary.start,
+        range.assoc,
+        range.bidiLevel ?? undefined,
+        range.goalColumn,
+      );
+    }
+    return EditorSelection.cursor(
+      boundary.line.from - 1,
+      1,
+      range.bidiLevel ?? undefined,
+      range.goalColumn,
+    );
+  });
+  const next = EditorSelection.create(ranges, selection.mainIndex);
+  if (next.eq(selection, true)) return true;
   view.dispatch({
-    selection: EditorSelection.cursor(line.from - 1, 1),
+    selection: next,
     scrollIntoView: true,
     userEvent: "select",
   });
@@ -285,10 +393,169 @@ function cursorCharLeftImmersive(view: EditorView): boolean {
 }
 
 /**
+ * Word/group-left from a block boundary should continue from the position a
+ * standard caret would have at the line start, where CodeMirror can move to
+ * the previous group instead of being pulled back by the atomic range.
+ */
+function cursorGroupLeftImmersive(view: EditorView): boolean {
+  if (view.compositionStarted || view.composing) return false;
+  const selection = view.state.selection;
+  const ranges = selection.ranges.map((range) => {
+    if (!range.empty) return EditorSelection.cursor(range.from);
+    const boundary = boundaryAt(view.state, range);
+    if (!boundary) return view.moveByGroup(range, false);
+    const fromStart = EditorSelection.cursor(
+      boundary.line.from,
+      range.assoc,
+      range.bidiLevel ?? undefined,
+      range.goalColumn,
+    );
+    return view.moveByGroup(fromStart, false);
+  });
+  const next = EditorSelection.create(ranges, selection.mainIndex);
+  if (next.eq(selection, true)) return true;
+  view.dispatch({
+    selection: next,
+    scrollIntoView: true,
+    userEvent: "select",
+  });
+  return true;
+}
+
+/**
+ * At the first visible character, insert an empty plain line above the block
+ * and keep the caret before its original text. Empty blocks, mid-line carets,
+ * empty selections with several ranges and other modes keep the default Enter
+ * behavior.
+ */
+function insertLineAboveImmersive(view: EditorView): boolean {
+  if (view.compositionStarted || view.composing) return false;
+  const selection = view.state.selection;
+  if (selection.ranges.length !== 1 || !selection.main.empty) return false;
+  const line = view.state.doc.lineAt(selection.main.head);
+  const info = leadingMarkInfo(view.state, line);
+  if (
+    !info.block ||
+    selection.main.head !== info.start ||
+    line.to <= info.contentStart
+  ) {
+    return false;
+  }
+  const head = selection.main.head;
+  view.dispatch({
+    changes: { from: line.from, insert: "\n" },
+    selection: EditorSelection.create([
+      EditorSelection.cursor(
+        head + 1,
+        selection.main.assoc,
+        selection.main.bidiLevel ?? undefined,
+        selection.main.goalColumn,
+      ),
+    ]),
+  });
+  return true;
+}
+
+/** Ctrl-H should match Backspace at a block boundary, not leave a prefix. */
+function deleteBackwardImmersive(view: EditorView): boolean {
+  if (view.compositionStarted || view.composing) return false;
+  return deleteMarkupBackward(view) || deleteCharBackward(view);
+}
+
+/**
+ * Option-Backspace at a block boundary merges with the previous line, which is
+ * what the same key does from line.from in live and source modes.
+ */
+function deleteGroupBackwardImmersive(view: EditorView): boolean {
+  if (view.compositionStarted || view.composing) return false;
+  const selection = view.state.selection;
+  if (selection.ranges.length !== 1 || !selection.main.empty) {
+    return deleteGroupBackward(view);
+  }
+  const boundary = boundaryAt(view.state, selection.main);
+  if (!boundary) return deleteGroupBackward(view);
+  if (boundary.line.from === 0) return true;
+  view.dispatch({
+    changes: { from: boundary.line.from - 1, to: boundary.line.from },
+    selection: EditorSelection.cursor(boundary.line.from - 1),
+    scrollIntoView: true,
+    userEvent: "delete.backward",
+  });
+  return true;
+}
+
+function selectionNeedsParsing(state: EditorState) {
+  for (const range of state.selection.ranges) {
+    if (!range.empty) continue;
+    const line = state.doc.lineAt(range.head);
+    if (mayHaveLeadingMark(state, line) && !syntaxTreeAvailable(state, line.to)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+const parseRetries = new WeakMap<
+  EditorView,
+  { timer: number | null; attempts: number }
+>();
+
+/**
+ * The syntax tree is not guaranteed to cover a restored or programmatically
+ * selected position. Parse only up to the selected lines in short slices, then
+ * apply the selection correction once the tree reaches them.
+ */
+function scheduleImmersiveParsing(view: EditorView) {
+  if (view.dom.isConnected === false) return;
+  let retry = parseRetries.get(view);
+  if (retry?.timer != null) return;
+  if (retry === undefined) {
+    retry = { timer: null, attempts: 0 };
+    parseRetries.set(view, retry);
+  }
+  const tick = () => {
+    retry!.timer = null;
+    if (view.dom.isConnected === false) {
+      parseRetries.delete(view);
+      return;
+    }
+    if (view.compositionStarted || view.composing) {
+      retry!.timer = window.setTimeout(tick, 20);
+      return;
+    }
+    let upto = 0;
+    for (const range of view.state.selection.ranges) {
+      if (!range.empty) continue;
+      const line = view.state.doc.lineAt(range.head);
+      if (
+        mayHaveLeadingMark(view.state, line) &&
+        !syntaxTreeAvailable(view.state, line.to)
+      ) {
+        upto = Math.max(upto, line.to);
+      }
+    }
+    if (upto > 0) forceParsing(view, upto, 50);
+    const adjusted = clampImmersiveSelection(
+      view.state,
+      view.state.selection,
+    );
+    if (adjusted !== view.state.selection) {
+      view.dispatch({ selection: adjusted, userEvent: "select" });
+    }
+    if (selectionNeedsParsing(view.state) && retry!.attempts++ < 80) {
+      retry!.timer = window.setTimeout(tick, 20);
+    } else {
+      parseRetries.delete(view);
+    }
+  };
+  retry.timer = window.setTimeout(tick, 0);
+}
+
+/**
  * Immersive-mode selection guard. An update listener corrects keyboard,
  * pointer and programmatic selections after they are applied, and the key
- * binding adds the left-arrow boundary behavior. Neither touches decorations,
- * so an active IME composition is not disturbed.
+ * bindings add the boundary behavior. None of this touches decorations, so an
+ * active IME composition is not disturbed.
  */
 function immersiveSelectionGuard(): Extension {
   return [
@@ -302,8 +569,20 @@ function immersiveSelectionGuard(): Extension {
       if (adjusted !== update.state.selection) {
         update.view.dispatch({ selection: adjusted, userEvent: "select" });
       }
+      if (selectionNeedsParsing(update.state)) {
+        scheduleImmersiveParsing(update.view);
+      }
     }),
-    Prec.highest(keymap.of([{ key: "ArrowLeft", run: cursorCharLeftImmersive }])),
+    Prec.highest(
+      keymap.of([
+        { key: "ArrowLeft", run: cursorCharLeftImmersive },
+        { mac: "Ctrl-b", run: cursorCharLeftImmersive },
+        { mac: "Alt-ArrowLeft", run: cursorGroupLeftImmersive },
+        { mac: "Ctrl-h", run: deleteBackwardImmersive },
+        { mac: "Alt-Backspace", run: deleteGroupBackwardImmersive },
+        { key: "Enter", run: insertLineAboveImmersive },
+      ]),
+    ),
   ];
 }
 
@@ -594,10 +873,6 @@ const editorTheme = EditorView.theme({
   "&.cm-editor > .cm-scroller > .cm-selectionLayer .cm-selectionBackground": {
     backgroundColor: "var(--nicole-selection)",
   },
-  "&.cm-editor.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground":
-    {
-      backgroundColor: "var(--nicole-selection)",
-    },
   ".cm-activeLine": { backgroundColor: "transparent" },
   ".cm-gutters": { display: "none" },
   ".cm-nicole-h1": {
@@ -887,12 +1162,21 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
   const insertTextAt = (at: number, text: string) => {
     const position = Math.max(0, Math.min(at, view.state.doc.length));
     const line = view.state.doc.lineAt(position);
-    // Starting at the beginning of a non-empty line would glue the image to
-    // the existing text (and break a heading); give it its own line instead.
-    const insert = position === line.from && line.length > 0 ? `${text}\n` : text;
+    // Starting at the beginning of a non-empty line or at the first visible
+    // character of a block would glue the image to the existing text (and
+    // break a heading or list); give it its own line above the block instead.
+    const info = leadingMarkInfo(view.state, line);
+    const aboveBlock =
+      info.block &&
+      position === info.start &&
+      position > line.from &&
+      position < line.to;
+    const ownLine = aboveBlock || (position === line.from && line.length > 0);
+    const from = aboveBlock ? line.from : position;
+    const insert = ownLine ? `${text}\n` : text;
     view.dispatch({
-      changes: { from: position, insert },
-      selection: { anchor: position + insert.length },
+      changes: { from, insert },
+      selection: { anchor: from + insert.length },
       // Keep every image insertion its own undo step, even when it follows
       // typing closely.
       annotations: isolateHistory.of("full"),
@@ -1042,6 +1326,37 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
   });
   view.contentDOM.addEventListener("compositionend", onCompositionEnd);
 
+  // A focused task checkbox owns the keyboard. WebKit can keep its native
+  // selection in the contentEditable underneath, so stopping CodeMirror alone
+  // is not enough: the native editing commands and menu actions still target
+  // the old caret. Space and Tab stay native, and Escape still reaches the app.
+  const checkboxFocused = () => {
+    const active = view.root.activeElement;
+    return (
+      active instanceof HTMLInputElement &&
+      active.classList.contains("cm-nicole-checkbox-input") &&
+      view.dom.contains(active)
+    );
+  };
+  const onCheckboxKeydown = (event: KeyboardEvent) => {
+    if (!checkboxFocused()) return;
+    if (event.key === " " || event.key === "Tab" || event.key === "Escape") {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+  };
+  const onCheckboxEditing = (event: Event) => {
+    if (!checkboxFocused()) return;
+    event.preventDefault();
+    event.stopPropagation();
+  };
+  const checkboxBlockedEvents = ["beforeinput", "paste", "cut"] as const;
+  view.contentDOM.addEventListener("keydown", onCheckboxKeydown, true);
+  for (const type of checkboxBlockedEvents) {
+    view.contentDOM.addEventListener(type, onCheckboxEditing, true);
+  }
+
   // Reconfiguring a compartment is not filtered by the newly installed
   // compartment, and an initial or restored selection is not a transaction at
   // all. Normalize both cases explicitly so entering immersive mode never
@@ -1053,6 +1368,7 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     if (adjusted !== view.state.selection) {
       view.dispatch({ selection: adjusted, userEvent: "select" });
     }
+    if (selectionNeedsParsing(view.state)) scheduleImmersiveParsing(view);
   };
   if (mode === "immersive") normalizeImmersiveSelection();
 
@@ -1078,7 +1394,13 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
           modeExtension(next, resolveImage),
         ),
       });
-      if (next === "immersive") normalizeImmersiveSelection();
+      if (next === "immersive") {
+        normalizeImmersiveSelection();
+      } else {
+        const retry = parseRetries.get(view);
+        if (retry?.timer != null) clearTimeout(retry.timer);
+        parseRetries.delete(view);
+      }
     },
     replaceDocument,
     undo() {
@@ -1123,6 +1445,13 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     },
     destroy() {
       destroyed = true;
+      view.contentDOM.removeEventListener("keydown", onCheckboxKeydown, true);
+      for (const type of checkboxBlockedEvents) {
+        view.contentDOM.removeEventListener(type, onCheckboxEditing, true);
+      }
+      const retry = parseRetries.get(view);
+      if (retry?.timer != null) clearTimeout(retry.timer);
+      parseRetries.delete(view);
       stopScrollRestore?.();
       stopScrollRestore = null;
       pendingInsertions.length = 0;

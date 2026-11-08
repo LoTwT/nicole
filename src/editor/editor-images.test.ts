@@ -140,6 +140,17 @@ describe("image insertion", () => {
     expect(view.state.doc.toString()).toBe(doc);
   });
 
+  it("puts an image above a block when the ticket is at its content start", () => {
+    const instance = mount({ parent, doc: "- [ ] 文本\n" });
+    const view = instance.view;
+    view.dispatch({ selection: { anchor: 6 } });
+    const ticket = ticketAt(instance, 6);
+
+    instance.insertImages(ticket, ["![](a.png)"]);
+
+    expect(view.state.doc.toString()).toBe("![](a.png)\n- [ ] 文本\n");
+  });
+
   it("maps a ticket through edits before the image arrives", () => {
     const instance = mount();
     const view = instance.view;

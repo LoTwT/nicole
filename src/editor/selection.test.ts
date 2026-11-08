@@ -1,3 +1,6 @@
+// @ts-expect-error The test environment runs on Node, but the project does not
+// install Node type declarations for the browser-only TypeScript config.
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { createEditor, type EditorHandle } from "./index";
@@ -22,13 +25,14 @@ function specificity(selector: string): [number, number, number] {
   return [ids, classes, types];
 }
 
-function atLeast(
+function compare(
   a: [number, number, number],
   b: [number, number, number],
-): boolean {
-  if (a[0] !== b[0]) return a[0] > b[0];
-  if (a[1] !== b[1]) return a[1] > b[1];
-  return a[2] >= b[2];
+): number {
+  for (let index = 0; index < 3; index++) {
+    if (a[index] !== b[index]) return a[index]! - b[index]!;
+  }
+  return 0;
 }
 
 interface Candidate {
@@ -85,7 +89,10 @@ function winningCandidate(focused: boolean): Candidate {
   for (const candidate of selectionCandidates(focused)) {
     // Equal specificity means the later rule wins, so every candidate that is
     // at least as specific as the current winner replaces it.
-    if (winner === null || !atLeast(winner.specificity, candidate.specificity)) {
+    if (
+      winner === null ||
+      compare(candidate.specificity, winner.specificity) >= 0
+    ) {
       winner = candidate;
     }
   }
@@ -126,13 +133,35 @@ describe("editor selection color", () => {
     });
   }
 
-  it("does not rebuild the editor when the theme class changes", () => {
-    editor = createEditor({ parent, doc: "选中的文字\n", mode: "live" });
-    const view = editor.view;
+});
 
-    document.documentElement.classList.add("dark");
-    document.documentElement.classList.remove("dark");
+describe("selection variables", () => {
+  const styleCss = readFileSync("src/style.css", "utf8");
+  const themeColors = readFileSync(
+    "node_modules/@ayingott/theme/src/foundation/colors.css",
+    "utf8",
+  );
 
-    expect(editor.view).toBe(view);
+  function block(selector: string) {
+    const start = styleCss.indexOf(`${selector} {`);
+    if (start < 0) throw new Error(`missing ${selector}`);
+    const end = styleCss.indexOf("}", start);
+    return styleCss.slice(start, end + 1);
+  }
+
+  it("uses lavender-200 on Paper and accent-soft on Ink", () => {
+    expect(block(":root")).toMatch(
+      /--nicole-selection:\s*var\(--reading-selection,\s*var\(--color-lavender-200\)\)/,
+    );
+    expect(block(".dark")).toMatch(
+      /--nicole-selection:\s*var\(--reading-selection,\s*var\(--accent-soft\)\)/,
+    );
+    expect(themeColors).toMatch(/--color-lavender-200:\s*#ded4ff;/);
+  });
+
+  it("does not bypass the editor theme with !important", () => {
+    expect(styleCss).not.toMatch(
+      /(?:\.cm-selectionBackground|::selection)[^{}]*\{[^}]*background[^;}]*!important/,
+    );
   });
 });

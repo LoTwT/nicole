@@ -29,23 +29,31 @@ const lines = [
   { text: "# 一级标题", contentStart: 2 },
   { text: "> 引用内容", contentStart: 2 },
   { text: "- 无序列内容", contentStart: 2 },
-  { text: "1. 有序内容", contentStart: 3 },
+  { text: "1. 有序内容", contentStart: 0 },
   { text: "- [ ] 任务内容", contentStart: 6 },
 ] as const;
 
 let parent: HTMLElement;
 let destroy: (() => void) | null = null;
 
-function cmdArrowLeft(view: EditorView) {
+function press(
+  view: EditorView,
+  key: string,
+  modifiers: KeyboardEventInit = {},
+) {
   view.contentDOM.dispatchEvent(
     new KeyboardEvent("keydown", {
-      key: "ArrowLeft",
-      code: "ArrowLeft",
-      metaKey: true,
+      key,
+      code: key,
       bubbles: true,
       cancelable: true,
+      ...modifiers,
     }),
   );
+}
+
+function cmdArrowLeft(view: EditorView) {
+  press(view, "ArrowLeft", { metaKey: true });
 }
 
 beforeEach(() => {
@@ -75,6 +83,70 @@ describe("immersive mode on macOS", () => {
       );
     });
   }
+
+  it("moves Ctrl-B past a hidden bullet at the boundary", () => {
+    const editor = createEditor({
+      parent,
+      doc: "上一段\n\n- 无序列内容\n",
+      mode: "immersive",
+    });
+    destroy = () => editor.destroy();
+    const view = editor.view;
+    const target = view.state.doc.line(3);
+    view.dispatch({ selection: { anchor: target.from } });
+
+    press(view, "b", { ctrlKey: true });
+
+    expect(view.state.selection.main.head).toBe(target.from - 1);
+  });
+
+  it("moves Alt-ArrowLeft past the whole block at the boundary", () => {
+    const editor = createEditor({
+      parent,
+      doc: "上一段\n\n- 无序列内容\n",
+      mode: "immersive",
+    });
+    destroy = () => editor.destroy();
+    const view = editor.view;
+    const target = view.state.doc.line(3);
+    view.dispatch({ selection: { anchor: target.from } });
+
+    press(view, "ArrowLeft", { altKey: true });
+
+    expect(view.state.selection.main.head).toBe(0);
+  });
+
+  it("makes Ctrl-H delete the whole marker like Backspace", () => {
+    const editor = createEditor({
+      parent,
+      doc: "- 无序列内容\n",
+      mode: "immersive",
+    });
+    destroy = () => editor.destroy();
+    const view = editor.view;
+
+    press(view, "h", { ctrlKey: true });
+
+    expect(view.state.doc.line(1).text).toBe("无序列内容");
+    expect(view.state.selection.main.head).toBe(0);
+  });
+
+  it("merges the previous line on Alt-Backspace at the boundary", () => {
+    const editor = createEditor({
+      parent,
+      doc: "上一行\n1. 有序文本\n",
+      mode: "immersive",
+    });
+    destroy = () => editor.destroy();
+    const view = editor.view;
+    const target = view.state.doc.line(2);
+    view.dispatch({ selection: { anchor: target.from } });
+
+    press(view, "Backspace", { altKey: true });
+
+    expect(view.state.doc.toString()).toBe("上一行1. 有序文本\n");
+    expect(view.state.selection.main.head).toBe(3);
+  });
 
   it("keeps Cmd-ArrowLeft inside the line at the boundary", () => {
     const editor = createEditor({ parent, doc, mode: "immersive" });
