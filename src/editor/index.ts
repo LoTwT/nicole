@@ -658,22 +658,37 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
   let view: EditorView;
   let destroyed = false;
   let scrollRestoreGeneration = 0;
+  let stopScrollRestore: (() => void) | null = null;
 
   const anchorLine = (lineNumber: number) =>
     view.state.doc.line(
       Math.min(Math.max(1, lineNumber), view.state.doc.lines),
     );
 
+  const cancelScrollRestore = () => {
+    scrollRestoreGeneration++;
+    stopScrollRestore?.();
+    stopScrollRestore = null;
+  };
+
   /**
    * Scrolls a line back to an in-line offset. The first assignment paints the
-   * position right away, then a few animation frames correct it against the
-   * measured blocks: before the first measurement the top padding is still
+   * position right away, then up to six animation frames correct it against
+   * the measured blocks: before the first measurement the top padding is still
    * zero and lines outside the viewport only have estimated heights, and
    * CodeMirror re-anchors estimated positions while it measures. Both would
    * otherwise move the restored line by several lines.
+   *
+   * The correction yields as soon as the user scrolls or types, the document
+   * changes, the view is destroyed, or a newer anchor request arrives. The
+   * alternative, mapping the anchor through every transaction, would make the
+   * window in which the editor overrides the caret's own scrollIntoView and
+   * the user's scroll longer; a new edit or external reload is the better
+   * owner of the viewport, and reloads install a fresh anchor anyway.
    */
   const scrollToAnchor = (anchor: ScrollAnchor) => {
-    const generation = ++scrollRestoreGeneration;
+    cancelScrollRestore();
+    const generation = scrollRestoreGeneration;
     const targetTop = () =>
       scrollTopForAnchor(
         anchor,
@@ -681,16 +696,41 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
         view.lineBlockAt(anchorLine(anchor.line).from).top,
       );
     view.scrollDOM.scrollTop = targetTop();
+
+    const userEvents = ["wheel", "touchstart", "pointerdown", "keydown"];
+    const listenOptions = { capture: true, passive: true };
+    const onUserInput = () => cancelScrollRestore();
+    for (const event of userEvents) {
+      view.dom.addEventListener(event, onUserInput, listenOptions);
+    }
+    let stopped = false;
+    const stop = () => {
+      if (stopped) return;
+      stopped = true;
+      for (const event of userEvents) {
+        view.dom.removeEventListener(event, onUserInput, listenOptions);
+      }
+      if (stopScrollRestore === stop) stopScrollRestore = null;
+    };
+    stopScrollRestore = stop;
+
     let frames = 0;
     let stable = 0;
     const settle = () => {
-      if (destroyed || generation !== scrollRestoreGeneration) return;
-      if (frames++ >= 6) return;
+      if (destroyed || generation !== scrollRestoreGeneration) {
+        stop();
+        return;
+      }
+      if (frames++ >= 6) {
+        stop();
+        return;
+      }
       const before = view.scrollDOM.scrollTop;
       view.scrollDOM.scrollTop = targetTop();
       stable =
         Math.abs(view.scrollDOM.scrollTop - before) < 0.5 ? stable + 1 : 0;
       if (stable < 2) requestAnimationFrame(settle);
+      else stop();
     };
     requestAnimationFrame(settle);
   };
@@ -810,6 +850,8 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     imageHandlers(onPasteImage, createTicketAt),
     EditorView.updateListener.of((update) => {
       if (update.docChanged) {
+        // The edit, not the pending restore, owns the viewport now.
+        cancelScrollRestore();
         for (const ticket of tickets.values()) {
           ticket.at = update.changes.mapPos(ticket.at, 1);
         }
@@ -923,6 +965,8 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     },
     destroy() {
       destroyed = true;
+      stopScrollRestore?.();
+      stopScrollRestore = null;
       pendingInsertions.length = 0;
       tickets.clear();
       view.contentDOM.removeEventListener("compositionend", onCompositionEnd);
