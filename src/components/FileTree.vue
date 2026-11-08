@@ -498,6 +498,14 @@ function remapTreePath(oldPath: string, newPath: string) {
   }
 }
 
+async function refreshFolder(path: string) {
+  try {
+    await reloadFolder(path);
+  } catch (error) {
+    emit("status", `刷新文件夹失败：${errorText(error)}`);
+  }
+}
+
 async function refreshFromEvents(events: readonly WorkspaceFileEvent[]) {
   const changed = new Set<string>();
   for (const event of events) {
@@ -512,11 +520,7 @@ async function refreshFromEvents(events: readonly WorkspaceFileEvent[]) {
     }
   }
   for (const path of changed) {
-    try {
-      await reloadFolder(path);
-    } catch (error) {
-      emit("status", `刷新文件夹失败：${errorText(error)}`);
-    }
+    await refreshFolder(path);
   }
   persistExpanded();
   if (focusedPath.value === "" && nodes.value[0]) {
@@ -774,6 +778,7 @@ watch(
 
 defineExpose({
   refresh: loadRoot,
+  refreshFolder,
   refreshFromEvents,
   reveal,
   removePath,
