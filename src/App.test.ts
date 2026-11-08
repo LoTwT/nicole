@@ -703,20 +703,167 @@ describe("application shell", () => {
     expect(host.textContent).not.toContain("没有权限打开这个文件夹");
   });
 
-  it("does not clear unrelated notices when a folder opens", async () => {
+  it("keeps an unrelated notice that replaces an open failure", async () => {
     vi.useFakeTimers();
+    app?.unmount();
+    mocks.getSettings.mockResolvedValue({
+      theme: "system",
+      sidebarWidth: 252,
+      recentFolders: ["/blocked"],
+      expandedFolders: {},
+      workspaceClosed: true,
+    });
+    mocks.openFolder.mockRejectedValueOnce(new Error("permission denied"));
+    app = createApp(App);
+    app.mount(host);
     await settle();
+
+    const recentOpen = () =>
+      host.querySelector<HTMLButtonElement>(
+        '[data-recent-item] button[aria-label^="打开 "]',
+      )!;
+
+    recentOpen().click();
+    await settle();
+    expect(host.textContent).toContain("没有权限打开这个文件夹");
+
     dropHandler?.({ token: "image", x: 10, y: 10 });
     await settle();
     expect(host.textContent).toContain("只能拖入一个文件夹");
+    expect(host.textContent).not.toContain("没有权限打开这个文件夹");
 
-    await openFolder();
+    mocks.openFolder.mockResolvedValueOnce(folder("/blocked"));
+    recentOpen().click();
+    await settle();
     expect(host.querySelector("aside")).not.toBeNull();
     expect(host.textContent).toContain("只能拖入一个文件夹");
 
-    await vi.advanceTimersByTimeAsync(3000);
+    await vi.advanceTimersByTimeAsync(2999);
+    await settle();
+    expect(host.textContent).toContain("只能拖入一个文件夹");
+    await vi.advanceTimersByTimeAsync(1);
     await settle();
     expect(host.textContent).not.toContain("只能拖入一个文件夹");
+  });
+
+  it("clears the old notice timer when a later notice is shown", async () => {
+    vi.useFakeTimers();
+    app?.unmount();
+    mocks.getSettings.mockResolvedValue({
+      theme: "system",
+      sidebarWidth: 252,
+      recentFolders: ["/blocked"],
+      expandedFolders: {},
+      workspaceClosed: true,
+    });
+    mocks.openFolder.mockRejectedValueOnce(new Error("permission denied"));
+    app = createApp(App);
+    app.mount(host);
+    await settle();
+
+    host
+      .querySelector<HTMLButtonElement>(
+        '[data-recent-item] button[aria-label^="打开 "]',
+      )!
+      .click();
+    await settle();
+    expect(host.textContent).toContain("没有权限打开这个文件夹");
+
+    await vi.advanceTimersByTimeAsync(1000);
+    await settle();
+    mocks.openFolder.mockResolvedValueOnce(folder("/blocked"));
+    host
+      .querySelector<HTMLButtonElement>(
+        '[data-recent-item] button[aria-label^="打开 "]',
+      )!
+      .click();
+    await settle();
+    expect(host.querySelector("aside")).not.toBeNull();
+    expect(host.textContent).not.toContain("没有权限打开这个文件夹");
+
+    await vi.advanceTimersByTimeAsync(5000);
+    await settle();
+    pressAppShortcut("T", true);
+    await settle();
+    expect(host.textContent).toContain("没有可重新打开的标签页");
+
+    await vi.advanceTimersByTimeAsync(2999);
+    await settle();
+    expect(host.textContent).toContain("没有可重新打开的标签页");
+    await vi.advanceTimersByTimeAsync(1);
+    await settle();
+    expect(host.textContent).not.toContain("没有可重新打开的标签页");
+  });
+
+  it("keeps an open-failure notice when the switch dialog is cancelled", async () => {
+    await openFolder();
+    mocks.pickFolder.mockRejectedValueOnce(
+      new Error("dialog: native picker failed"),
+    );
+    sidebarButton("切换文件夹").click();
+    await settle();
+    expect(host.textContent).toContain("打开文件夹失败，请稍后重试");
+
+    mocks.pickFolder.mockResolvedValueOnce({ path: "/second", canceled: false });
+    sidebarButton("切换文件夹").click();
+    await settle();
+    expect(dialog()?.textContent).toContain("切换到“second”");
+    dialogButton("取消").click();
+    await settle();
+
+    expect(host.querySelector("aside")).not.toBeNull();
+    expect(host.textContent).toContain("打开文件夹失败，请稍后重试");
+  });
+
+  it("clears a drag-open failure when a later drag succeeds", async () => {
+    await settle();
+    mocks.openDroppedFolder.mockRejectedValueOnce(
+      new Error('workspace: folder cannot be opened as a workspace: "/"'),
+    );
+    dropHandler?.({
+      token: "image",
+      folderToken: "folder-drop",
+      x: 10,
+      y: 10,
+    });
+    await settle();
+    expect(host.textContent).toContain("不能把这个文件夹作为工作区");
+    expect(host.textContent).not.toContain("folder cannot be opened");
+    expect(
+      host.querySelector<HTMLElement>("footer span[title]")?.getAttribute("title"),
+    ).toBe('workspace: folder cannot be opened as a workspace: "/"');
+
+    mocks.openDroppedFolder.mockResolvedValueOnce(folder("/dropped"));
+    dropHandler?.({
+      token: "image",
+      folderToken: "folder-drop",
+      x: 10,
+      y: 10,
+    });
+    await settle();
+    expect(host.querySelector("aside")).not.toBeNull();
+    expect(host.textContent).not.toContain("不能把这个文件夹作为工作区");
+  });
+
+  it("clears a picker failure when the picker later succeeds", async () => {
+    await settle();
+    mocks.pickFolder.mockRejectedValueOnce(
+      new Error("dialog: native picker failed"),
+    );
+    button("打开文件夹").click();
+    await settle();
+    expect(host.textContent).toContain("打开文件夹失败，请稍后重试");
+    expect(host.textContent).not.toContain("native picker failed");
+    expect(
+      host.querySelector<HTMLElement>("footer span[title]")?.getAttribute("title"),
+    ).toBe("dialog: native picker failed");
+
+    mocks.pickFolder.mockResolvedValueOnce({ path: "/notes", canceled: false });
+    mocks.openFolder.mockResolvedValueOnce(folder("/notes"));
+    button("打开文件夹").click();
+    await settle();
+    expect(host.querySelector("aside")).not.toBeNull();
+    expect(host.textContent).not.toContain("打开文件夹失败，请稍后重试");
   });
 
   it("confirms a folder switch and keeps the current file on cancel", async () => {

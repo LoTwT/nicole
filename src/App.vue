@@ -2242,7 +2242,7 @@ async function chooseFolder() {
     try {
       picked = await pickFolder();
     } catch (error) {
-      showNotice(`打开失败：${errorText(error)}`, "danger");
+      showFolderOpenFailure(error);
       return false;
     }
     if (picked.canceled) {
@@ -3424,7 +3424,7 @@ async function handleFolderDrop(drop: AssetDrop) {
     try {
       folder = await openDroppedFolderInGo(drop.folderToken!);
     } catch (error) {
-      showNotice(`无法打开拖入的文件夹：${errorText(error)}`, "danger");
+      showFolderOpenFailure(error);
       return false;
     }
     const applied = await applyWorkspace(folder);
