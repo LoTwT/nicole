@@ -86,7 +86,7 @@ const actionClass =
       <button
         type="button"
         :class="actionClass"
-        class="border-[var(--accent-primary)] bg-[var(--accent-primary)] text-[var(--accent-contrast)]"
+        class="button-primary border-[var(--accent-primary)]"
         @click="emit('restore')"
       >
         全部恢复

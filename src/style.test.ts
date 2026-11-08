@@ -48,3 +48,17 @@ describe("floating layer contract", () => {
     expect(computedPosition("sidebar sidebar--overlay")).toBe("absolute");
   });
 });
+
+describe("primary button contract", () => {
+  it("switches the accent fill and its content color together", () => {
+    expect(styleCss).toMatch(
+      /\.button-primary\s*\{[^}]*background-color:\s*var\(--accent-primary\);[^}]*color:\s*var\(--accent-contrast\);/s,
+    );
+    expect(styleCss).toMatch(
+      /\.button-primary:hover:not\(:disabled\)\s*\{[^}]*background-color:\s*var\(--accent-primary-hover\);[^}]*color:\s*var\(--accent-contrast-hover\);/s,
+    );
+    expect(styleCss).toMatch(
+      /\.button-primary:active:not\(:disabled\)\s*\{[^}]*background-color:\s*var\(--accent-primary-active\);[^}]*color:\s*var\(--accent-contrast-active\);/s,
+    );
+  });
+});

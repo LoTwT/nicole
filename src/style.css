@@ -120,3 +120,24 @@ body {
   outline-offset: -1px;
   box-shadow: var(--focus-ring-shadow);
 }
+
+/*
+ * Primary action fill. The theme pairs each surface token with its own
+ * content token, so hover and pressed states must switch both to keep the
+ * accent readable. Defined once here instead of repeating the pair in every
+ * component that renders a primary button.
+ */
+.button-primary {
+  background-color: var(--accent-primary);
+  color: var(--accent-contrast);
+}
+
+.button-primary:hover:not(:disabled) {
+  background-color: var(--accent-primary-hover);
+  color: var(--accent-contrast-hover);
+}
+
+.button-primary:active:not(:disabled) {
+  background-color: var(--accent-primary-active);
+  color: var(--accent-contrast-active);
+}

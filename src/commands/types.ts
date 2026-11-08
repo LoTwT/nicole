@@ -98,5 +98,11 @@ export interface CommandDefinition {
    * it and key dispatch does not run it while there is no root.
    */
   requiresWorkspace?: boolean;
+  /**
+   * True when the command needs at least one open tab. The palette does not
+   * list it and key dispatch does not run it on the start page or when the
+   * last tab was closed.
+   */
+  requiresOpenTab?: boolean;
   run: (context: CommandContext) => boolean;
 }

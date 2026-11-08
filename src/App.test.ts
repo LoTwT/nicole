@@ -550,7 +550,7 @@ describe("application shell", () => {
       recentFolders: ["/blocked"],
       expandedFolders: {},
     });
-    mocks.openFolder.mockRejectedValue(new Error("permission denied"));
+    mocks.openFolder.mockRejectedValue(new Error("open /blocked: permission denied"));
     await settle();
     app = createApp(App);
     app.mount(host);
@@ -562,7 +562,13 @@ describe("application shell", () => {
     expect(open.disabled).toBe(false);
     expect(open.getAttribute("aria-label")).not.toContain("已不存在");
     expect(host.textContent).not.toContain("上次打开的文件夹");
-    expect(host.textContent).toContain("打开失败：permission denied");
+    expect(host.textContent).toContain("没有权限打开这个文件夹");
+    expect(host.textContent).not.toContain("permission denied");
+    expect(
+      host
+        .querySelector<HTMLElement>("footer span[title]")
+        ?.getAttribute("title"),
+    ).toBe("open /blocked: permission denied");
   });
 
   it("confirms a folder switch and keeps the current file on cancel", async () => {
@@ -573,6 +579,7 @@ describe("application shell", () => {
     sidebarButton("切换文件夹").click();
     await settle();
     expect(dialog()?.textContent).toContain("切换到“second”");
+    expect(dialogButton("切换").className).toContain("button-primary");
     dialogButton("取消").click();
     await settle();
 
@@ -2956,6 +2963,9 @@ describe("command palette", () => {
 
   it("does not offer editor commands without a Markdown tab", async () => {
     await settle();
+    expect(
+      host.querySelector('button[aria-label^="显示或隐藏大纲"]'),
+    ).toBeNull();
     pressPaletteShortcut("P");
     await settle();
     expect(paletteOptions().some((item) => item.textContent?.includes("打开文件夹"))).toBe(
@@ -2964,6 +2974,28 @@ describe("command palette", () => {
     expect(paletteOptions().some((item) => item.textContent?.includes("加粗"))).toBe(
       false,
     );
+    expect(
+      paletteOptions().some((item) => item.textContent?.includes("关闭标签页")),
+    ).toBe(false);
+    expect(
+      paletteOptions().some((item) =>
+        item.textContent?.includes("重新打开关闭的标签页"),
+      ),
+    ).toBe(false);
+  });
+
+  it("offers tab commands once a tab is open", async () => {
+    await openFile();
+    pressPaletteShortcut("P");
+    await settle();
+    expect(
+      paletteOptions().some((item) => item.textContent?.includes("关闭标签页")),
+    ).toBe(true);
+    expect(
+      paletteOptions().some((item) =>
+        item.textContent?.includes("重新打开关闭的标签页"),
+      ),
+    ).toBe(true);
   });
 
   it("lists markdown files with recent ones first and reuses an open tab", async () => {
@@ -3724,6 +3756,7 @@ describe("crash recovery", () => {
     vi.useFakeTimers();
     await mountWithRecovery([recoveryItem()]);
 
+    expect(dialogButton("全部恢复").className).toContain("button-primary");
     dialogButton("全部恢复").click();
     await settle();
     expect(dialog()).toBeNull();
@@ -4561,7 +4594,13 @@ describe("start page and workspace lifecycle", () => {
     expect(mocks.saveRecovery.mock.calls.length).toBeGreaterThanOrEqual(2);
     expect(host.querySelector("aside")).not.toBeNull();
     expect(editorView().state.doc.toString()).toBe("# A changed\n");
-    expect(host.textContent).toContain("打开失败：permission denied");
+    expect(host.textContent).toContain("没有权限打开这个文件夹");
+    expect(host.textContent).not.toContain("permission denied");
+    expect(
+      host
+        .querySelector<HTMLElement>("footer span[title]")
+        ?.getAttribute("title"),
+    ).toBe("permission denied");
   });
 
   it("marks a recent folder missing for Go's fixed missing-folder error", async () => {
@@ -4695,7 +4734,13 @@ describe("start page and workspace lifecycle", () => {
 
     expect(missingButton.getAttribute("aria-label")).toContain("已不存在");
     expect(document.activeElement).toBe(missingButton);
-    expect(host.textContent).toContain("打开失败：permission denied");
+    expect(host.textContent).toContain("没有权限打开这个文件夹");
+    expect(host.textContent).not.toContain("permission denied");
+    expect(
+      host
+        .querySelector<HTMLElement>("footer span[title]")
+        ?.getAttribute("title"),
+    ).toBe("permission denied");
   });
 
   it("does not mark a localized not-found message or other open failures", async () => {

@@ -217,6 +217,7 @@ export const appCommands: readonly CommandDefinition[] = [
     group: "app",
     scope: "app",
     keys: [{ key: "Mod-w" }],
+    requiresOpenTab: true,
     run: ({ app }) => {
       void app?.closeActiveTab();
       return app !== undefined;
@@ -228,6 +229,7 @@ export const appCommands: readonly CommandDefinition[] = [
     group: "app",
     scope: "app",
     keys: [{ key: "Shift-Mod-t" }],
+    requiresWorkspace: true,
     run: ({ app }) => {
       void app?.reopenClosedTab();
       return app !== undefined;

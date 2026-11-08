@@ -220,7 +220,7 @@ defineExpose({
 
     <button
       type="button"
-      class="focus-ring mx-2.5 mb-2 flex shrink-0 items-center gap-1.5 rounded-[var(--radius-control)] bg-[var(--surface-subtle)] px-2 py-1.5 text-[12px] text-[var(--text-muted)] disabled:cursor-default"
+      class="focus-ring mx-2.5 mb-2 flex shrink-0 items-center gap-1.5 rounded-[var(--radius-control)] bg-[var(--surface-subtle)] px-2 py-1.5 text-[12px] text-[var(--text-muted)] disabled:cursor-default disabled:opacity-50"
       disabled
       :title="`搜索工作区 ${commandShortcut('nav.search', platform)}，将在后续版本提供`"
       :aria-label="`搜索工作区 ${commandShortcut('nav.search', platform)}，将在后续版本提供`"

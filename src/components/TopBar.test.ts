@@ -22,7 +22,11 @@ async function settle() {
   for (let index = 0; index < 6; index++) await nextTick();
 }
 
-function mount(tabList: TopBarTab[], activeTabId: number | null) {
+function mount(
+  tabList: TopBarTab[],
+  activeTabId: number | null,
+  showOutline = true,
+) {
   const emitted: {
     activate: number[];
     close: number[];
@@ -40,6 +44,7 @@ function mount(tabList: TopBarTab[], activeTabId: number | null) {
           sidebarShown: true,
           showSidebarToggle: false,
           showOpenFolder: false,
+          showOutline,
           outlineEnabled: false,
           outlineOn: false,
           onActivateTab: (id: number) => emitted.activate.push(id),
@@ -179,5 +184,21 @@ describe("TopBar tabs", () => {
         }),
       );
     expect(emitted.menu).toEqual([[1, 42, 17]]);
+  });
+
+  it("hides the outline toggle when there is no workspace", async () => {
+    mount([], null, false);
+    await settle();
+    expect(
+      host.querySelector('button[aria-label^="显示或隐藏大纲"]'),
+    ).toBeNull();
+
+    app?.unmount();
+    app = null;
+    mount([], null, true);
+    await settle();
+    expect(
+      host.querySelector('button[aria-label^="显示或隐藏大纲"]'),
+    ).not.toBeNull();
   });
 });
