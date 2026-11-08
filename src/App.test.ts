@@ -997,15 +997,20 @@ describe("external changes", () => {
     expect(mocks.writeFile).toHaveBeenCalledWith("a.md", "# Mine\n", 1);
   });
 
-  it("shows the deletion banner and recreates the file", async () => {
+  it("shows the deletion banner and puts the recreated file back in the tree", async () => {
     await openFile();
+    tree = [];
     watchEvents?.([{ op: "remove", path: "a.md", isDir: false }]);
     await settle();
     expect(host.textContent).toContain("此文件已在磁盘上被删除或移走");
+    expect(host.querySelector('[data-tree-path="a.md"]')).toBeNull();
+
+    tree = [entry("a.md", "a.md")];
     button("重新保存").click();
     await settle();
     expect(mocks.writeFile).toHaveBeenCalledWith("a.md", "# A\n", 1);
     expect(host.textContent).not.toContain("此文件已在磁盘上被删除或移走");
+    expect(host.querySelector('[data-tree-path="a.md"]')).not.toBeNull();
   });
 });
 

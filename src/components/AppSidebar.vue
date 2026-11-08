@@ -172,6 +172,9 @@ onBeforeUnmount(() => {
 });
 
 defineExpose({
+  refreshFolder(path: string) {
+    return tree.value?.refreshFolder(path);
+  },
   refreshFromEvents(events: readonly WorkspaceFileEvent[]) {
     return tree.value?.refreshFromEvents(events);
   },

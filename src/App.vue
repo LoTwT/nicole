@@ -2735,7 +2735,13 @@ async function resaveDeleted() {
     return;
   }
   const revision = tab.revision;
-  await saveTab(tab.id, true, revision);
+  const saved = await saveTab(tab.id, true, revision);
+  if (!saved || tab.kind !== "workspace") {
+    return;
+  }
+  // The watcher drops the create event for this app's own write, so the tree
+  // would keep hiding the file that just came back. Reload its folder here.
+  await sidebar.value?.refreshFolder(parentOfRelative(tab.path));
 }
 
 async function handleBannerAction(
