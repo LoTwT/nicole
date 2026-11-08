@@ -134,8 +134,13 @@ class CheckboxWidget extends WidgetType {
     return box;
   }
 
-  override ignoreEvent() {
-    return false;
+  // Keyboard events belong to the checkbox: Space toggles it natively and Tab
+  // moves focus. Letting CodeMirror handle the rest would run its keymap
+  // against the editor's last caret position, so Enter would split the
+  // document while the user is on the task box. Mouse events stay with the
+  // editor so clicking the box can be handled by its own listeners.
+  override ignoreEvent(event: Event) {
+    return event.type.startsWith("key");
   }
 }
 
@@ -451,7 +456,15 @@ const editorTheme = EditorView.theme({
     borderLeftColor: "var(--nicole-caret)",
     borderLeftWidth: "2px",
   },
-  ".cm-selectionBackground, &.cm-focused .cm-selectionBackground, ::selection":
+  // CodeMirror's base theme paints the focused selection layer with a
+  // five-class selector (`.cm-editor.cm-focused > .cm-scroller >
+  // .cm-selectionLayer .cm-selectionBackground`). A plain `.cm-focused
+  // .cm-selectionBackground` rule loses the cascade, which made the dark theme
+  // fall back to the base theme's light lavender. This selector has the same
+  // specificity and the app theme is installed later, so it wins without
+  // !important. The `::selection` part keeps native selections on the same
+  // variable.
+  "&.cm-editor > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, ::selection":
     {
       backgroundColor: "var(--nicole-selection)",
     },
@@ -899,6 +912,51 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
   });
   view.contentDOM.addEventListener("compositionend", onCompositionEnd);
 
+  // A focused task checkbox owns the keyboard. WebKit can keep its native
+  // selection in the contentEditable underneath, so stopping CodeMirror alone
+  // is not enough: IME text and native editing commands still target the old
+  // caret. Clear that selection when the box takes focus; CodeMirror keeps its
+  // own selection in state, so focusing the editor restores the caret.
+  const checkboxFocused = () => {
+    const active = view.root.activeElement;
+    return (
+      active instanceof HTMLInputElement &&
+      active.classList.contains("cm-nicole-checkbox-input") &&
+      view.dom.contains(active)
+    );
+  };
+  const onCheckboxFocusIn = () => {
+    if (!checkboxFocused()) return;
+    view.contentDOM.ownerDocument.getSelection()?.removeAllRanges();
+  };
+  const onCheckboxKeydown = (event: KeyboardEvent) => {
+    if (!checkboxFocused()) return;
+    // Space and Tab stay native, Command shortcuts must reach the native menu,
+    // and Escape stays available to the app. Everything else is an editing
+    // command aimed at the editor behind the checkbox.
+    if (
+      event.metaKey ||
+      event.key === " " ||
+      event.key === "Tab" ||
+      event.key === "Escape"
+    ) {
+      return;
+    }
+    // Do not stop propagation: window-level shortcut listeners still need the
+    // event, and preventDefault is enough to keep CodeMirror from handling it.
+    event.preventDefault();
+  };
+  const onCheckboxEditing = (event: Event) => {
+    if (!checkboxFocused()) return;
+    event.preventDefault();
+  };
+  const checkboxBlockedEvents = ["beforeinput", "paste", "cut"] as const;
+  view.contentDOM.addEventListener("focusin", onCheckboxFocusIn, true);
+  view.contentDOM.addEventListener("keydown", onCheckboxKeydown, true);
+  for (const type of checkboxBlockedEvents) {
+    view.contentDOM.addEventListener(type, onCheckboxEditing, true);
+  }
+
   if (restore?.scrollTopLine != null) {
     scrollToAnchor({
       line: restore.scrollTopLine,
@@ -965,6 +1023,11 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     },
     destroy() {
       destroyed = true;
+      view.contentDOM.removeEventListener("focusin", onCheckboxFocusIn, true);
+      view.contentDOM.removeEventListener("keydown", onCheckboxKeydown, true);
+      for (const type of checkboxBlockedEvents) {
+        view.contentDOM.removeEventListener(type, onCheckboxEditing, true);
+      }
       stopScrollRestore?.();
       stopScrollRestore = null;
       pendingInsertions.length = 0;

@@ -1,3 +1,4 @@
+import { StateEffect } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -292,6 +293,280 @@ describe("task checkbox", () => {
     expect(box.querySelector("input")).toBe(input);
     expect(input.checked).toBe(true);
     expect(document.activeElement).toBe(input);
+  });
+
+  it("keeps editing keys away from the document while the checkbox has focus", async () => {
+    const instance = mount("live");
+    const view = instance.view;
+    await settle();
+    const input = checkboxes(view)[0]!.querySelector("input")!;
+    const at = doc.indexOf("加粗");
+    view.dispatch({ selection: { anchor: at } });
+    const before = view.state.doc.toString();
+    const beforeSelection = view.state.selection.main.toJSON();
+    input.focus();
+
+    const blocked = [
+      { key: "a", code: "KeyA" },
+      { key: "Backspace", code: "Backspace" },
+      { key: "Delete", code: "Delete" },
+      { key: "Enter", code: "Enter" },
+      { key: "ArrowLeft", code: "ArrowLeft" },
+      { key: "ArrowRight", code: "ArrowRight" },
+      { key: "ArrowUp", code: "ArrowUp" },
+      { key: "ArrowDown", code: "ArrowDown" },
+      { key: "Backspace", code: "Backspace", altKey: true },
+      { key: "k", code: "KeyK", ctrlKey: true },
+      { key: "h", code: "KeyH", ctrlKey: true },
+      { key: "d", code: "KeyD", ctrlKey: true },
+      { key: "t", code: "KeyT", ctrlKey: true },
+      { key: "o", code: "KeyO", ctrlKey: true },
+    ];
+    for (const init of blocked) {
+      const event = new KeyboardEvent("keydown", {
+        bubbles: true,
+        cancelable: true,
+        ...init,
+      });
+      input.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(true);
+    }
+    await settle();
+
+    expect(view.state.doc.toString()).toBe(before);
+    expect(view.state.selection.main.toJSON()).toEqual(beforeSelection);
+    expect(document.activeElement).toBe(input);
+  });
+
+  it("lets native keys and menu shortcuts through while the checkbox has focus", async () => {
+    const instance = mount("live");
+    const view = instance.view;
+    await settle();
+    const input = checkboxes(view)[0]!.querySelector("input")!;
+    input.focus();
+
+    const allowed = [
+      { key: " ", code: "Space" },
+      { key: "Tab", code: "Tab" },
+      { key: "Tab", code: "Tab", altKey: true },
+      { key: "Escape", code: "Escape" },
+      ...["q", "m", "h", "n", ","].map((key) => ({
+        key,
+        code: key === "," ? "Comma" : `Key${key.toUpperCase()}`,
+        metaKey: true,
+      })),
+    ];
+    for (const init of allowed) {
+      const event = new KeyboardEvent("keydown", {
+        bubbles: true,
+        cancelable: true,
+        ...init,
+      });
+      input.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(false);
+    }
+    expect(document.activeElement).toBe(input);
+  });
+
+  it("does not swallow blocked keys before window-level listeners", async () => {
+    const instance = mount("live");
+    const view = instance.view;
+    await settle();
+    const input = checkboxes(view)[0]!.querySelector("input")!;
+    input.focus();
+    const windowKeydown = vi.fn();
+    window.addEventListener("keydown", windowKeydown);
+    try {
+      const event = new KeyboardEvent("keydown", {
+        key: "a",
+        code: "KeyA",
+        bubbles: true,
+        cancelable: true,
+      });
+      input.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(true);
+      expect(windowKeydown).toHaveBeenCalledOnce();
+    } finally {
+      window.removeEventListener("keydown", windowKeydown);
+    }
+  });
+
+  it("clears the native selection when the checkbox gains focus", async () => {
+    const instance = mount("live");
+    const view = instance.view;
+    await settle();
+    const line = view.contentDOM.querySelector(".cm-line")!;
+    const text = line.firstChild;
+    if (!text) throw new Error("expected a text node in the rendered line");
+    const range = document.createRange();
+    range.setStart(text, 0);
+    range.setEnd(text, Math.min(2, text.textContent?.length ?? 0));
+    const selection = document.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    expect(selection.rangeCount).toBe(1);
+
+    const at = doc.indexOf("加粗");
+    view.dispatch({ selection: { anchor: at } });
+    const input = checkboxes(view)[0]!.querySelector("input")!;
+    input.focus();
+
+    expect(selection.rangeCount).toBe(0);
+    expect(view.state.selection.main.head).toBe(at);
+    expect(document.activeElement).toBe(input);
+
+    view.focus();
+    expect(document.activeElement).not.toBe(input);
+    expect(view.state.selection.main.head).toBe(at);
+  });
+
+  it("blocks native editing events while the checkbox has focus", async () => {
+    const instance = mount("live");
+    const view = instance.view;
+    await settle();
+    const input = checkboxes(view)[0]!.querySelector("input")!;
+    input.focus();
+
+    for (const type of ["beforeinput", "paste", "cut"]) {
+      const event =
+        type === "beforeinput"
+          ? new InputEvent(type, { bubbles: true, cancelable: true })
+          : new Event(type, { bubbles: true, cancelable: true });
+      view.contentDOM.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(true);
+    }
+
+    view.focus();
+    for (const type of ["beforeinput", "paste", "cut"]) {
+      const event =
+        type === "beforeinput"
+          ? new InputEvent(type, { bubbles: true, cancelable: true })
+          : new Event(type, { bubbles: true, cancelable: true });
+      view.contentDOM.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(false);
+    }
+  });
+
+  it("does not take focus or the caret on mousedown", async () => {
+    const instance = mount("live");
+    const view = instance.view;
+    await settle();
+    const box = checkboxes(view)[0]!;
+    const input = box.querySelector("input")!;
+    const at = doc.indexOf("加粗");
+    view.dispatch({ selection: { anchor: at } });
+    view.focus();
+
+    const event = new MouseEvent("mousedown", {
+      bubbles: true,
+      cancelable: true,
+    });
+    box.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(document.activeElement).not.toBe(input);
+    expect(view.state.selection.main.head).toBe(at);
+  });
+
+  it("only owns keys from the checkbox, not other page inputs", async () => {
+    const instance = mount("live");
+    const view = instance.view;
+    await settle();
+
+    const ordinary = document.createElement("input");
+    view.contentDOM.append(ordinary);
+    ordinary.focus();
+    const ordinaryKey = new KeyboardEvent("keydown", {
+      key: "a",
+      code: "KeyA",
+      bubbles: true,
+      cancelable: true,
+    });
+    ordinary.dispatchEvent(ordinaryKey);
+    expect(ordinaryKey.defaultPrevented).toBe(false);
+
+    const outside = document.createElement("input");
+    outside.className = "cm-nicole-checkbox-input";
+    document.body.append(outside);
+    outside.focus();
+    const outsideKey = new KeyboardEvent("keydown", {
+      key: "a",
+      code: "KeyA",
+      bubbles: true,
+      cancelable: true,
+    });
+    view.contentDOM.dispatchEvent(outsideKey);
+    expect(outsideKey.defaultPrevented).toBe(false);
+    outside.remove();
+  });
+
+  it("lets CodeMirror see mouse events on the widget", async () => {
+    let clicks = 0;
+    const instance = mount("live");
+    const view = instance.view;
+    await settle();
+    view.dispatch({
+      effects: StateEffect.appendConfig.of(
+        EditorView.domEventHandlers({
+          click: () => {
+            clicks += 1;
+            return false;
+          },
+        }),
+      ),
+    });
+    const box = checkboxes(view)[0]!;
+    box.dispatchEvent(
+      new MouseEvent("click", { bubbles: true, cancelable: true }),
+    );
+    expect(clicks).toBe(1);
+  });
+
+  it("does not run an editor keymap binding for Space on the widget", async () => {
+    const runSpace = vi.fn(() => true);
+    const instance = createEditor({
+      parent,
+      doc,
+      mode: "live",
+      commands: [
+        {
+          id: "test.space",
+          label: "Space",
+          group: "insert",
+          scope: "editor",
+          keys: [{ key: "Space" }],
+          run: runSpace,
+        },
+      ],
+    });
+    editor = instance;
+    const view = instance.view;
+    await settle();
+    const input = checkboxes(view)[0]!.querySelector("input")!;
+    input.focus();
+
+    const event = new KeyboardEvent("keydown", {
+      key: " ",
+      code: "Space",
+      bubbles: true,
+      cancelable: true,
+    });
+    input.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(runSpace).not.toHaveBeenCalled();
+  });
+
+  it("removes its checkbox listeners when the editor is destroyed", async () => {
+    const instance = mount("live");
+    await settle();
+    const remove = vi.spyOn(instance.view.contentDOM, "removeEventListener");
+    instance.destroy();
+    editor = undefined as never;
+
+    for (const type of ["focusin", "keydown", "beforeinput", "paste", "cut"]) {
+      expect(remove).toHaveBeenCalledWith(type, expect.any(Function), true);
+    }
   });
 });
 

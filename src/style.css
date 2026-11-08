@@ -14,7 +14,8 @@
   /* 0.4.0 makes --accent-primary a fill surface (1.73:1 on Paper). A caret is
      a standalone indicator, so fall back to --text-accent like checkboxes. */
   --nicole-caret: var(--reading-caret, var(--text-accent));
-  --nicole-selection: var(--reading-selection, var(--accent-soft));
+  /* Paper needs lavender-200; Ink keeps the darker accent-soft. */
+  --nicole-selection: var(--reading-selection, var(--color-lavender-200));
   --nicole-quote-border: var(--reading-quote-border, var(--border-default));
   /* Task boxes need 3:1 against the canvas in both Paper and Ink. The theme
      package has no reading-checkbox layer yet, so each value keeps its
@@ -27,6 +28,10 @@
   --nicole-checkbox-checked-bg: var(--reading-checkbox-checked-bg, var(--text-accent));
   --nicole-checkbox-mark: var(--reading-checkbox-mark, var(--surface-canvas));
   --nicole-checkbox-focus: var(--reading-checkbox-focus, var(--reading-focus));
+}
+
+.dark {
+  --nicole-selection: var(--reading-selection, var(--accent-soft));
 }
 
 html,
