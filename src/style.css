@@ -63,6 +63,13 @@ body {
   padding-left: calc(0.5rem + var(--mygo-titlebar-inset-left, 0px));
 }
 
+/* Keep this before .sidebar--overlay. Both are single-class selectors, so a
+   later base rule would win the cascade and put the floating sidebar back in
+   the layout. */
+.sidebar {
+  position: relative;
+}
+
 .sidebar--overlay {
   position: absolute;
   inset: 0 auto 0 0;
@@ -112,8 +119,4 @@ body {
   outline: 2px solid var(--focus-ring-color);
   outline-offset: -1px;
   box-shadow: var(--focus-ring-shadow);
-}
-
-.sidebar {
-  position: relative;
 }

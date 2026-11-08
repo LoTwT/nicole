@@ -17,6 +17,23 @@ function zIndex(name: string): number {
   return Number(match[1]);
 }
 
+// jsdom does not resolve Vite's CSS imports; the rest of the stylesheet is
+// enough to let its cascade decide the sidebar's position.
+const cascadeCss = styleCss.replace(/^@import[^;]+;\s*$/gm, "");
+
+function computedPosition(classNames: string): string {
+  const style = document.createElement("style");
+  style.textContent = cascadeCss;
+  document.head.append(style);
+  const aside = document.createElement("aside");
+  aside.className = classNames;
+  document.body.append(aside);
+  const position = getComputedStyle(aside).position;
+  aside.remove();
+  style.remove();
+  return position;
+}
+
 describe("floating layer contract", () => {
   it("keeps the overlay sidebar below the palette scrim and dialogs", () => {
     expect(styleCss).toMatch(
@@ -24,5 +41,10 @@ describe("floating layer contract", () => {
     );
     expect(zIndex("--z-header")).toBeLessThan(zIndex("--z-overlay"));
     expect(zIndex("--z-header")).toBeLessThan(zIndex("--z-modal"));
+  });
+
+  it("keeps the overlay sidebar out of the layout cascade", () => {
+    expect(computedPosition("sidebar")).toBe("relative");
+    expect(computedPosition("sidebar sidebar--overlay")).toBe("absolute");
   });
 });
