@@ -293,6 +293,97 @@ describe("task checkbox", () => {
     expect(input.checked).toBe(true);
     expect(document.activeElement).toBe(input);
   });
+
+  it("does not let other keys reach the editor while the checkbox has focus", async () => {
+    const instance = mount("live");
+    const view = instance.view;
+    await settle();
+    const input = checkboxes(view)[0]!.querySelector("input")!;
+    const selection = { anchor: doc.indexOf("加粗") };
+    view.dispatch({ selection });
+    const before = view.state.doc.toString();
+    const beforeSelection = view.state.selection.main.toJSON();
+    input.focus();
+
+    for (const event of [
+      new KeyboardEvent("keydown", {
+        key: "Enter",
+        code: "Enter",
+        bubbles: true,
+        cancelable: true,
+      }),
+      new KeyboardEvent("keydown", {
+        key: "ArrowLeft",
+        code: "ArrowLeft",
+        bubbles: true,
+        cancelable: true,
+      }),
+      new KeyboardEvent("keydown", {
+        key: "Backspace",
+        code: "Backspace",
+        bubbles: true,
+        cancelable: true,
+      }),
+      new KeyboardEvent("keydown", {
+        key: "b",
+        code: "KeyB",
+        metaKey: navigator.platform.startsWith("Mac"),
+        ctrlKey: !navigator.platform.startsWith("Mac"),
+        bubbles: true,
+        cancelable: true,
+      }),
+    ]) {
+      input.dispatchEvent(event);
+    }
+    await settle();
+
+    expect(view.state.doc.toString()).toBe(before);
+    expect(view.state.selection.main.toJSON()).toEqual(beforeSelection);
+    expect(document.activeElement).toBe(input);
+  });
+
+  it("leaves Space and Tab to the checkbox", async () => {
+    const instance = mount("live");
+    const view = instance.view;
+    await settle();
+    const input = checkboxes(view)[0]!.querySelector("input")!;
+    input.focus();
+
+    const space = new KeyboardEvent("keydown", {
+      key: " ",
+      code: "Space",
+      bubbles: true,
+      cancelable: true,
+    });
+    input.dispatchEvent(space);
+    // jsdom does not perform the native checkbox activation that a browser
+    // does after an untaken keydown, so dispatch the click it would produce.
+    input.dispatchEvent(
+      new MouseEvent("click", { bubbles: true, cancelable: true }),
+    );
+    await settle();
+
+    const tab = new KeyboardEvent("keydown", {
+      key: "Tab",
+      code: "Tab",
+      bubbles: true,
+      cancelable: true,
+    });
+    input.dispatchEvent(tab);
+    const shiftTab = new KeyboardEvent("keydown", {
+      key: "Tab",
+      code: "Tab",
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    input.dispatchEvent(shiftTab);
+
+    expect(space.defaultPrevented).toBe(false);
+    expect(tab.defaultPrevented).toBe(false);
+    expect(shiftTab.defaultPrevented).toBe(false);
+    expect(view.state.doc.toString()).toContain("- [x] 待办");
+  });
 });
 
 describe("background restore state", () => {

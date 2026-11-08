@@ -1,5 +1,11 @@
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
-import { isolateHistory } from "@codemirror/commands";
+import {
+  cursorCharLeft,
+  isolateHistory,
+  redo as historyRedo,
+  undo as historyUndo,
+  historyField,
+} from "@codemirror/commands";
 import {
   HighlightStyle,
   syntaxHighlighting,
@@ -10,19 +16,17 @@ import {
   Compartment,
   EditorSelection,
   EditorState,
+  Prec,
   RangeSetBuilder,
   type Extension,
+  type SelectionRange,
 } from "@codemirror/state";
-import {
-  historyField,
-  redo as historyRedo,
-  undo as historyUndo,
-} from "@codemirror/commands";
 import {
   Decoration,
   EditorView,
   ViewPlugin,
   WidgetType,
+  keymap,
   type DecorationSet,
   type ViewUpdate,
 } from "@codemirror/view";
@@ -134,8 +138,12 @@ class CheckboxWidget extends WidgetType {
     return box;
   }
 
-  override ignoreEvent() {
-    return false;
+  // Keyboard events belong to the checkbox: Space toggles it natively and Tab
+  // moves focus. Letting CodeMirror handle the rest would run its keymap
+  // against the editor's last caret position, so Enter would split the
+  // document while the user is on the task box.
+  override ignoreEvent(event: Event) {
+    return event.type.startsWith("key");
   }
 }
 
@@ -175,6 +183,129 @@ class HorizontalRuleWidget extends WidgetType {
 }
 
 const hide = Decoration.replace({});
+
+// Structural Markdown markers that immersive mode hides or replaces at the
+// start of a line. Emphasis and link marks are intentionally absent: typing
+// before them does not change the block structure.
+const leadingMarkNames = new Set([
+  "HeaderMark",
+  "QuoteMark",
+  "ListMark",
+  "TaskMarker",
+]);
+
+/**
+ * Position just after the structural markers at the start of `line` and the
+ * spaces separating them from the text. In immersive mode the caret must not
+ * stop before this position: typing there would insert text before the hidden
+ * marker and turn the block into plain text. Ordered-list numbers are not
+ * hidden (see buildDecorations), but they are structural markers too, so the
+ * same boundary applies to them.
+ */
+function leadingContentStart(
+  state: EditorState,
+  line: { from: number; to: number },
+): number {
+  const marks = new Map<number, number>();
+  syntaxTree(state).iterate({
+    from: line.from,
+    to: line.to,
+    enter: (node) => {
+      if (
+        node.from >= line.from &&
+        node.from <= line.to &&
+        leadingMarkNames.has(node.name) &&
+        !marks.has(node.from)
+      ) {
+        marks.set(node.from, node.to);
+      }
+    },
+  });
+
+  let pos = line.from;
+  let found = false;
+  for (;;) {
+    while (
+      pos < line.to &&
+      (state.sliceDoc(pos, pos + 1) === " " ||
+        state.sliceDoc(pos, pos + 1) === "\t")
+    ) {
+      pos++;
+    }
+    const end = marks.get(pos);
+    if (end === undefined) return found ? pos : line.from;
+    found = true;
+    pos = end;
+  }
+}
+
+/** Keeps empty selections out of the hidden line-leading markers. */
+function clampImmersiveSelection(
+  state: EditorState,
+  selection: EditorSelection,
+): EditorSelection {
+  let ranges: SelectionRange[] | null = null;
+  for (let index = 0; index < selection.ranges.length; index++) {
+    const range = selection.ranges[index]!;
+    if (!range.empty) continue;
+    const start = leadingContentStart(state, state.doc.lineAt(range.head));
+    if (range.head >= start) continue;
+    ranges ??= selection.ranges.slice();
+    ranges[index] = EditorSelection.cursor(start);
+  }
+  return ranges === null
+    ? selection
+    : EditorSelection.create(ranges, selection.mainIndex);
+}
+
+/**
+ * Arrow-Left at the first visible character would otherwise be pulled back to
+ * the start of the line by the atomic range and then clamped to the same place
+ * again. Move to the end of the previous line instead; on the first line the
+ * caret stays put. Non-empty selections keep the standard behavior.
+ */
+function cursorCharLeftImmersive(view: EditorView): boolean {
+  const selection = view.state.selection;
+  if (selection.ranges.length !== 1 || !selection.main.empty) {
+    return cursorCharLeft(view);
+  }
+  const line = view.state.doc.lineAt(selection.main.head);
+  const start = leadingContentStart(view.state, line);
+  // A line without hidden leading markers keeps CodeMirror's behavior.
+  if (start === line.from || selection.main.head !== start) {
+    return cursorCharLeft(view);
+  }
+  if (line.from === 0) return true;
+  view.dispatch({
+    selection: EditorSelection.cursor(line.from - 1, 1),
+    scrollIntoView: true,
+    userEvent: "select",
+  });
+  return true;
+}
+
+/**
+ * Immersive-mode selection guard. An update listener corrects keyboard,
+ * pointer and programmatic selections after they are applied, and the key
+ * binding adds the left-arrow boundary behavior. Neither touches decorations,
+ * so an active IME composition is not disturbed.
+ */
+function immersiveSelectionGuard(): Extension {
+  return [
+    EditorView.updateListener.of((update) => {
+      if (update.view.compositionStarted || update.view.composing) return;
+      if (!update.selectionSet && !update.docChanged) return;
+      const adjusted = clampImmersiveSelection(
+        update.state,
+        update.state.selection,
+      );
+      if (adjusted !== update.state.selection) {
+        update.view.dispatch({ selection: adjusted, userEvent: "select" });
+      }
+    }),
+    Prec.highest(keymap.of([{ key: "ArrowLeft", run: cursorCharLeftImmersive }])),
+  ];
+}
 
 function activeLines(state: EditorState) {
   const lines = new Set<number>();
@@ -390,7 +521,7 @@ function modeExtension(
     case "live":
       return preview(true, resolveImage);
     case "immersive":
-      return preview(false, resolveImage);
+      return [preview(false, resolveImage), immersiveSelectionGuard()];
   }
 }
 
@@ -451,7 +582,19 @@ const editorTheme = EditorView.theme({
     borderLeftColor: "var(--nicole-caret)",
     borderLeftWidth: "2px",
   },
-  ".cm-selectionBackground, &.cm-focused .cm-selectionBackground, ::selection":
+  // CodeMirror's base theme paints the focused selection layer with a
+  // five-class selector (`.cm-editor.cm-focused > .cm-scroller >
+  // .cm-selectionLayer .cm-selectionBackground`). A plain `.cm-focused
+  // .cm-selectionBackground` rule loses the cascade, which is what made the
+  // dark theme fall back to the base theme's light lavender. Match the wrapper
+  // element explicitly so both the focused and unfocused rules outrank it.
+  ".cm-selectionBackground, ::selection": {
+    backgroundColor: "var(--nicole-selection)",
+  },
+  "&.cm-editor > .cm-scroller > .cm-selectionLayer .cm-selectionBackground": {
+    backgroundColor: "var(--nicole-selection)",
+  },
+  "&.cm-editor.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground":
     {
       backgroundColor: "var(--nicole-selection)",
     },
@@ -899,6 +1042,20 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
   });
   view.contentDOM.addEventListener("compositionend", onCompositionEnd);
 
+  // Reconfiguring a compartment is not filtered by the newly installed
+  // compartment, and an initial or restored selection is not a transaction at
+  // all. Normalize both cases explicitly so entering immersive mode never
+  // leaves the caret inside hidden markup. A live composition keeps its
+  // selection untouched.
+  const normalizeImmersiveSelection = () => {
+    if (view.compositionStarted || view.composing) return;
+    const adjusted = clampImmersiveSelection(view.state, view.state.selection);
+    if (adjusted !== view.state.selection) {
+      view.dispatch({ selection: adjusted, userEvent: "select" });
+    }
+  };
+  if (mode === "immersive") normalizeImmersiveSelection();
+
   if (restore?.scrollTopLine != null) {
     scrollToAnchor({
       line: restore.scrollTopLine,
@@ -921,6 +1078,7 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
           modeExtension(next, resolveImage),
         ),
       });
+      if (next === "immersive") normalizeImmersiveSelection();
     },
     replaceDocument,
     undo() {

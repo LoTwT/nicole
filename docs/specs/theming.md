@@ -50,6 +50,7 @@ CodeMirror 6 的主题直接使用 `var(--text-primary)` 这类 CSS 变量。切
 - `src/style.css` 在 `@theme` 中覆盖字体变量，并定义 `--nicole-syntax-mark`、`--nicole-caret`、`--nicole-selection`、`--nicole-quote-border`，缺失的阅读层变量回退到主题包现有变量。0.4.0 把 `--accent-primary` 定义为只承载 `--accent-contrast` 的填充面，因此编辑器光标和任务框这类独立指示色回退到 `--text-accent`，不随填充色变浅。
 - 任务框变量同样在 `src/style.css` 定义：`--nicole-checkbox-border`、`--nicole-checkbox-bg`、`--nicole-checkbox-checked-border`、`--nicole-checkbox-checked-bg`、`--nicole-checkbox-mark` 和 `--nicole-checkbox-focus`。每个变量写成 `var(--reading-checkbox-*, …)`，主题包 0.4.0 仍未提供 `reading-checkbox-*` 时分别回退到 `--text-muted`、`transparent`、`--text-accent`、`--text-accent`、`--surface-canvas` 和 `--reading-focus`，满足[任务框](ui.md#任务框)的对比度要求。
 - `src/editor/index.ts` 的 `EditorView.theme` 和 `HighlightStyle` 只引用这些变量，不读主题状态，因此切换主题不会触发 `EditorView` 重建。
+- 选区背景由 CodeMirror 的选择层绘制，基础主题在聚焦时用 `.cm-editor.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground` 设置浅紫色。`editorTheme` 必须用同等或更高优先级的规则覆盖聚焦和失焦两种状态，否则 `--nicole-selection` 在聚焦时会被基础主题盖住。`selection.test.ts` 按实际样式表和选择器优先级验证这一点。
 - `window_options.go` 的 `BackgroundColor` 直接写 Paper 和 Ink 的 `--surface-canvas` 值，避免窗口创建到页面绘制之间闪出旧底色；主题包调整画布颜色时需要同步。
 - 没有引入 `@ayingott/theme/fonts.css`，构建产物里没有字体文件。
 
