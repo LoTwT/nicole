@@ -140,6 +140,132 @@ describe("image insertion", () => {
     expect(view.state.doc.toString()).toBe(doc);
   });
 
+  it("puts an image above a block when the ticket is at its content start", () => {
+    const instance = mount({ parent, doc: "- [ ] 文本\n", mode: "immersive" });
+    const view = instance.view;
+    view.dispatch({ selection: { anchor: 6 } });
+    const ticket = ticketAt(instance, 6);
+
+    instance.insertImages(ticket, ["![](a.png)"]);
+
+    expect(view.state.doc.toString()).toBe("![](a.png)\n- [ ] 文本\n");
+    expect(view.state.selection.main.head).toBe(17);
+  });
+
+  for (const [name, source, at] of [
+    ["task", "- [ ] 甲\n", 1],
+    ["quote list", "> - 甲\n", 2],
+    ["nested quote", "> > 甲\n", 2],
+  ] as const) {
+    it(`puts an image above a ${name} when the point is inside its marker`, () => {
+      const instance = mount({ parent, doc: source, mode: "immersive" });
+      const ticket = ticketAt(instance, at);
+
+      instance.insertImages(ticket, ["![](a.png)"]);
+
+      expect(instance.view.state.doc.toString()).toBe(`![](a.png)\n${source}`);
+    });
+  }
+
+  it("puts an image above an ordered-list block at the content start", () => {
+    const instance = mount({ parent, doc: "1. 文本\n", mode: "immersive" });
+    const ticket = ticketAt(instance, 3);
+
+    instance.insertImages(ticket, ["![](a.png)"]);
+
+    expect(instance.view.state.doc.toString()).toBe("![](a.png)\n1. 文本\n");
+    expect(instance.view.state.selection.main.head).toBe(14);
+  });
+
+  for (const mode of ["live", "source"] as const) {
+    it(`keeps baseline image placement in ${mode} mode`, () => {
+      const instance = mount({ parent, doc: "- 文本\n", mode });
+      const ticket = ticketAt(instance, 2);
+
+      instance.insertImages(ticket, ["![](a.png)"]);
+
+      expect(instance.view.state.doc.toString()).toBe("- ![](a.png)文本\n");
+    });
+  }
+
+  for (const [name, doc, lineNumber, offset, expected] of [
+    [
+      "a loose continuation list item",
+      "- 甲\n\n- 乙\n",
+      3,
+      2,
+      "- 甲\n\n- ![](a.png)乙\n",
+    ],
+    [
+      "a continuation quote line",
+      "> 甲\n>\n> 乙\n",
+      3,
+      2,
+      "> 甲\n>\n> ![](a.png)乙\n",
+    ],
+    [
+      "an indented continuation list item",
+      "- 甲\n  - 乙\n",
+      2,
+      4,
+      "- 甲\n  - ![](a.png)乙\n",
+    ],
+  ] as const) {
+    it(`keeps baseline image placement on ${name}`, () => {
+      const instance = mount({ parent, doc, mode: "immersive" });
+      const line = instance.view.state.doc.line(lineNumber);
+      const ticket = ticketAt(instance, line.from + offset);
+
+      instance.insertImages(ticket, ["![](a.png)"]);
+
+      expect(instance.view.state.doc.toString()).toBe(expected);
+    });
+  }
+
+  for (const [name, doc, lineNumber, offset, expected] of [
+    [
+      "an ordered continuation item at the line left",
+      "1. 甲\n2. 乙\n",
+      2,
+      0,
+      "1. 甲\n2. ![](a.png)乙\n",
+    ],
+    [
+      "an ordered continuation item inside its number",
+      "1. 甲\n12. 乙\n",
+      2,
+      1,
+      "1. 甲\n12. ![](a.png)乙\n",
+    ],
+    [
+      "a bullet continuation item at the line left",
+      "- 甲\n- 乙\n",
+      2,
+      0,
+      "- 甲\n- ![](a.png)乙\n",
+    ],
+  ] as const) {
+    it(`does not split ${name} when placing an image`, () => {
+      const instance = mount({ parent, doc, mode: "immersive" });
+      const line = instance.view.state.doc.line(lineNumber);
+      const ticket = ticketAt(instance, line.from + offset);
+
+      instance.insertImages(ticket, ["![](a.png)"]);
+
+      expect(instance.view.state.doc.toString()).toBe(expected);
+    });
+  }
+
+  it("inserts an image inside an empty block instead of above it", () => {
+    const instance = mount({ parent, doc: "- \n" });
+    const ticket = ticketAt(instance, 2);
+
+    instance.insertImages(ticket, ["![](a.png)"]);
+
+    expect(instance.view.state.doc.toString()).toBe("- ![](a.png)\n");
+    expect(instance.view.state.selection.main.head).toBe(12);
+  });
+
   it("maps a ticket through edits before the image arrives", () => {
     const instance = mount();
     const view = instance.view;
