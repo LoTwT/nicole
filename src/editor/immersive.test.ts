@@ -341,6 +341,22 @@ describe("immersive mode Enter at the first visible character", () => {
     });
   }
 
+  for (const [name, text, start] of [
+    ["ordered task", "1. [ ] 甲\n", 0],
+    ["indented heading", "  # 甲\n", 4],
+    ["indented quote", "  > 甲\n", 4],
+  ] as const) {
+    it(`inserts an empty line above an ${name} first line`, () => {
+      mount("immersive", text);
+      const target = editor.view.state.doc.line(1);
+      editor.view.dispatch({ selection: { anchor: target.from + start } });
+
+      key(editor.view, "Enter");
+
+      expect(editor.view.state.doc.toString()).toBe(`\n${text}`);
+    });
+  }
+
   it("inserts an empty line above a non-first block", () => {
     mount("immersive", "上一段\n\n- 无序列内容\n");
     const target = editor.view.state.doc.line(3);
@@ -716,6 +732,40 @@ describe("immersive mode second-round regressions", () => {
     });
   }
 
+  for (const [name, text, lineNumber, offset, expected] of [
+    [
+      "an indented continuation list item",
+      "- 甲\n  - 乙\n",
+      2,
+      4,
+      "- 甲\n  乙\n",
+    ],
+    [
+      "a loose continuation list item",
+      "- 甲\n\n- 乙\n",
+      3,
+      2,
+      "- 甲\n\n  乙\n",
+    ],
+    [
+      "a list inside a continuation quote",
+      "> 甲\n> - 乙\n",
+      2,
+      4,
+      "> 甲\n> 乙\n",
+    ],
+  ] as const) {
+    it(`uses baseline Backspace deletion on ${name}`, () => {
+      mount("immersive", text);
+      const line = editor.view.state.doc.line(lineNumber);
+      editor.view.dispatch({ selection: { anchor: line.from + offset } });
+
+      key(editor.view, "Backspace");
+
+      expect(editor.view.state.doc.toString()).toBe(expected);
+    });
+  }
+
   it("keeps syntax-left motion for a mid-line Alt-ArrowLeft on Linux", () => {
     mount(
       "immersive",
@@ -772,6 +822,21 @@ describe("immersive mode second-round regressions", () => {
       expect(editor.view.state.doc.toString()).toBe(expected);
     });
   }
+
+  it("places the native caret after inserting above a block", () => {
+    mount("immersive", "# 标题文本\n");
+    const target = editor.view.state.doc.line(1);
+    editor.view.dispatch({ selection: { anchor: target.from + 2 } });
+    const collapse = vi.fn();
+    const selection = vi
+      .spyOn(document, "getSelection")
+      .mockReturnValue({ collapse } as unknown as Selection);
+
+    key(editor.view, "Enter");
+
+    expect(collapse).toHaveBeenCalledTimes(1);
+    selection.mockRestore();
+  });
 
   it("requests scrolling when left leaves a block boundary", () => {
     mount("immersive", "上一段\n\n- 文本\n");

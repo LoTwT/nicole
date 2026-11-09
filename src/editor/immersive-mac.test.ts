@@ -219,6 +219,47 @@ describe("immersive mode on macOS", () => {
     });
   }
 
+  for (const [name, text, lineNumber, offset, expected] of [
+    [
+      "an indented continuation list item",
+      "- 甲\n  - 乙\n",
+      2,
+      4,
+      "- 甲\n  -乙\n",
+    ],
+    [
+      "a loose continuation list item",
+      "- 甲\n\n- 乙\n",
+      3,
+      2,
+      "- 甲\n\n-乙\n",
+    ],
+    [
+      "a list inside a continuation quote",
+      "> 甲\n> - 乙\n",
+      2,
+      4,
+      "> 甲\n> -乙\n",
+    ],
+  ] as const) {
+    it(`uses baseline Ctrl-H deletion on ${name}`, () => {
+      const editor = createEditor({
+        parent,
+        doc: text,
+        mode: "immersive",
+        platform: "macos",
+      });
+      destroy = () => editor.destroy();
+      const view = editor.view;
+      const line = view.state.doc.line(lineNumber);
+      view.dispatch({ selection: { anchor: line.from + offset } });
+
+      press(view, "h", { ctrlKey: true });
+
+      expect(view.state.doc.toString()).toBe(expected);
+    });
+  }
+
   it("leaves Alt-Backspace unchanged on the first document line", () => {
     const editor = createEditor({
       parent,

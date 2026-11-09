@@ -188,6 +188,40 @@ describe("image insertion", () => {
     });
   }
 
+  for (const [name, doc, lineNumber, offset, expected] of [
+    [
+      "a loose continuation list item",
+      "- 甲\n\n- 乙\n",
+      3,
+      2,
+      "- 甲\n\n- ![](a.png)乙\n",
+    ],
+    [
+      "a continuation quote line",
+      "> 甲\n>\n> 乙\n",
+      3,
+      2,
+      "> 甲\n>\n> ![](a.png)乙\n",
+    ],
+    [
+      "an indented continuation list item",
+      "- 甲\n  - 乙\n",
+      2,
+      4,
+      "- 甲\n  - ![](a.png)乙\n",
+    ],
+  ] as const) {
+    it(`keeps baseline image placement on ${name}`, () => {
+      const instance = mount({ parent, doc, mode: "immersive" });
+      const line = instance.view.state.doc.line(lineNumber);
+      const ticket = ticketAt(instance, line.from + offset);
+
+      instance.insertImages(ticket, ["![](a.png)"]);
+
+      expect(instance.view.state.doc.toString()).toBe(expected);
+    });
+  }
+
   it("inserts an image inside an empty block instead of above it", () => {
     const instance = mount({ parent, doc: "- \n" });
     const ticket = ticketAt(instance, 2);

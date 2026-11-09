@@ -348,8 +348,11 @@ function startsBlockAtLine(
   line: { from: number; to: number },
 ) {
   const tree = ensureSyntaxTree(state, line.to, 20) ?? syntaxTree(state);
+  const text = state.sliceDoc(line.from, line.to);
+  const firstContent = line.from + (text.length - text.trimStart().length);
   // Iteration is pre-order, so the first matching block node is the outermost
-  // one containing this line.
+  // one containing this line. Indented headings and quotes start at
+  // `firstContent`, not at `line.from`.
   const outermost = { from: -1 };
   tree.iterate({
     from: line.from,
@@ -357,11 +360,11 @@ function startsBlockAtLine(
     enter: (node) => {
       if (outermost.from !== -1) return;
       if (!blockNodeNames.has(node.name)) return;
-      if (node.from > line.from || node.to <= line.from) return;
+      if (node.from > firstContent || node.to <= line.from) return;
       outermost.from = node.from;
     },
   });
-  return outermost.from === line.from;
+  return outermost.from >= line.from;
 }
 
 /** Keeps empty selections out of hidden line-leading markers. */
@@ -474,11 +477,12 @@ function cursorGroupLeftImmersive(view: EditorView): boolean {
 }
 
 /**
- * WKWebView can leave an element-level selection in the content DOM after a
- * real mouse click. When the first line is shifted by a structural edit,
- * CodeMirror's observer then reads that stale element offset back as the start
- * of the document. Put the native caret on the text node we actually selected,
- * so the observer cannot overwrite the transaction selection.
+ * WKWebView can leave a stale element-level selection in the content DOM after
+ * an editor view is rebuilt (for example a tab switch or restore) and a key is
+ * handled before the user makes a real click. When the first line is shifted by
+ * a structural edit, CodeMirror's observer then reads that stale element offset
+ * back as the start of the document. Put the native caret on the text node we
+ * actually selected, so the observer cannot overwrite the transaction selection.
  */
 function placeNativeCaret(view: EditorView, head: number) {
   const selection = (view.root as Document).getSelection?.() ?? null;
@@ -536,6 +540,7 @@ function deleteMarkerImmersive(view: EditorView): boolean {
       line.to > info.contentStart &&
       selection.main.head === info.contentStart
     ) {
+      if (!startsBlockAtLine(view.state, line)) return false;
       // Ordered task items expose their number and brackets to the parser, so
       // deleteMarkupBackward would remove only one character of the combined
       // prefix. Delete the whole leading marker as one unit instead.
@@ -554,6 +559,15 @@ function deleteMarkerImmersive(view: EditorView): boolean {
 /** Ctrl-H keeps its existing fallback when no whole marker is being deleted. */
 function deleteBackwardImmersive(view: EditorView): boolean {
   if (view.compositionStarted || view.composing) return false;
+  const selection = view.state.selection;
+  if (selection.ranges.length === 1 && selection.main.empty) {
+    const line = view.state.doc.lineAt(selection.main.head);
+    if (leadingMarkInfo(view.state, line).block && !startsBlockAtLine(view.state, line)) {
+      // Continuation lines keep the baseline Ctrl-H behavior, which is not
+      // the whole-marker deletion used on a block's first line.
+      return false;
+    }
+  }
   return (
     deleteMarkerImmersive(view) ||
     deleteMarkupBackward(view) ||
@@ -1286,7 +1300,10 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     // leading range as the block content start and insert above the block, but
     // only when the block has content; an empty block receives the image.
     const inLeadingMarkup =
-      info.block && position <= info.contentStart && line.to > info.contentStart;
+      info.block &&
+      position <= info.contentStart &&
+      line.to > info.contentStart &&
+      startsBlockAtLine(view.state, line);
     const ownLine =
       inLeadingMarkup ||
       (!info.block && position === line.from && line.length > 0);
