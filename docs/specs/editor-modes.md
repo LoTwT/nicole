@@ -85,6 +85,9 @@
 - `preview(reveal)` 生成一个 `ViewPlugin`；文档、视口或选区变化时，在可见范围内重建 decorations。组合输入期间跳过重建，只做位置映射，见[中文输入法](#中文输入法)。
 - 遍历语法树：隐藏 `HeaderMark`、`EmphasisMark`、`CodeMark`、`StrikethroughMark`、`QuoteMark`、任务项的列表符号和链接的 URL；把列表符号、任务框、图片、分割线替换成 widget；标题和引用用行级 decoration。
 - 任务框自绘：`appearance: none` 的 `<input type="checkbox">` 覆盖在容器上，负责点击和键盘操作；外框、背景和勾选标记都由容器上的 CSS 绘制，读取 `--nicole-checkbox-*` 变量，回退见 `src/editor/index.ts` 的 `editorTheme`，因此亮暗切换不需要重建编辑器。任务框 widget 的 `eq` 只比较勾选状态，`updateDOM` 原地更新勾选样式以保留焦点；点击时用 `view.posAtDOM` 和文档内容取当前位置与状态，避免在前面输入文字时重建任务框。
+- 任务框聚焦时，裸空格切换勾选；任一修饰键加空格（⌃、⇧、⌥、⌘）属于编辑或系统快捷键，不会切换勾选。Tab / ⌥Tab 移动焦点。主修饰键加 F/G/A 和 ⇧G（macOS 为 ⌘，Windows/Linux 为 ⌃）先交回编辑器焦点再执行查找、查找下一个、查找上一个和全选；其他编辑键、输入法组合和提交、paste/cut 及原生编辑动作不能落到正文，焦点也不被抢回正文。
+- 任务框获得焦点时清除 WebKit 可能留在正文 contentEditable 里的原生选区，这是挡住不可取消的输入法提交的关键；CodeMirror 的选区仍保存在编辑器状态中。焦点回到正文时先调用 `view.focus()` 恢复 CodeMirror 的选区，避免 WebKit 在清空后的 contentEditable 起点写入光标并把长文档滚回顶部。原生 Select All 菜单动作在 `selectstart` 落在页面背景时显式执行编辑器的全选，不再依赖这段被清空的原生选区；焦点不在任务框时不会拦截 `selectstart`。
+- 聚焦的任务框被 `replaceDocument`、撤销或虚拟化移除、WebKit 把焦点直接丢到 BODY 时，编辑器在文档或视口更新、任务框失焦后的定时器、窗口重新获得焦点三处检查并交还焦点。焦点已转到其他控件、窗口仍失焦或编辑器已销毁时不抢焦点；窗口失焦期间移除的任务框会等到窗口重新激活后再恢复。点击任务框不抢焦点，光标留在原处，之后的按键再进入正文。
 - 沉浸模式额外注册 `EditorView.atomicRanges`，让光标跳过隐藏的符号。
 - 用 ⌘B（CodeMirror 的 `Mod-b`）切换加粗；光标折叠时插入一对空标记，选中文本时在两侧加 `**`。
 - 图片 widget 只在 `resolveImage` 返回地址时替换原文，否则保留 Markdown；应用层按当前文件和 generation 生成协议地址（见[工作区与文件](workspace.md#图片)）。
