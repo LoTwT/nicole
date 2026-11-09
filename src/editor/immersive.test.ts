@@ -834,7 +834,9 @@ describe("immersive mode second-round regressions", () => {
 
     key(editor.view, "Enter");
 
+    const expected = editor.view.domAtPos(target.from + 3);
     expect(collapse).toHaveBeenCalledTimes(1);
+    expect(collapse).toHaveBeenCalledWith(expected.node, expected.offset);
     selection.mockRestore();
   });
 

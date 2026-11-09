@@ -339,9 +339,10 @@ const blockNodeNames = new Set([
 
 /**
  * A multi-line quote or list is one block even though every continuation line
- * starts with its own marker. The special Enter rule belongs only to the first
- * line of the outermost syntax block; later lines keep the normal Markdown
- * continuation behavior. Nested blocks inherit the same outer-block check.
+ * starts with its own marker. The special block-first-line rules (Enter,
+ * Backspace/Ctrl-H, and image placement) belong only to the first line of the
+ * outermost syntax block; later lines keep the normal Markdown behavior.
+ * Nested blocks inherit the same outer-block check.
  */
 function startsBlockAtLine(
   state: EditorState,
@@ -1296,9 +1297,10 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
 
     const info = leadingMarkInfo(view.state, line);
     // A coordinate anywhere in a block's leading markup is ambiguous: putting
-    // the image at that character would split the marker. Treat the whole
-    // leading range as the block content start and insert above the block, but
-    // only when the block has content; an empty block receives the image.
+    // the image at that character would split the marker. Only on the block's
+    // first line, treat the whole leading range as the block content start and
+    // insert above the block; continuation lines keep the marker and place the
+    // image after it. Empty blocks still receive the image after the marker.
     const inLeadingMarkup =
       info.block &&
       position <= info.contentStart &&

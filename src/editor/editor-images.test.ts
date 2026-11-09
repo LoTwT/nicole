@@ -222,6 +222,40 @@ describe("image insertion", () => {
     });
   }
 
+  for (const [name, doc, lineNumber, offset, expected] of [
+    [
+      "an ordered continuation item at the line left",
+      "1. 甲\n2. 乙\n",
+      2,
+      0,
+      "1. 甲\n2. ![](a.png)乙\n",
+    ],
+    [
+      "an ordered continuation item inside its number",
+      "1. 甲\n12. 乙\n",
+      2,
+      1,
+      "1. 甲\n12. ![](a.png)乙\n",
+    ],
+    [
+      "a bullet continuation item at the line left",
+      "- 甲\n- 乙\n",
+      2,
+      0,
+      "- 甲\n- ![](a.png)乙\n",
+    ],
+  ] as const) {
+    it(`does not split ${name} when placing an image`, () => {
+      const instance = mount({ parent, doc, mode: "immersive" });
+      const line = instance.view.state.doc.line(lineNumber);
+      const ticket = ticketAt(instance, line.from + offset);
+
+      instance.insertImages(ticket, ["![](a.png)"]);
+
+      expect(instance.view.state.doc.toString()).toBe(expected);
+    });
+  }
+
   it("inserts an image inside an empty block instead of above it", () => {
     const instance = mount({ parent, doc: "- \n" });
     const ticket = ticketAt(instance, 2);
