@@ -280,7 +280,7 @@ let recentSelfRename:
   | null = null;
 const saveTimers = new Map<number, ReturnType<typeof setTimeout>>();
 // Tabs whose composition flag CodeMirror never cleared; a real key press
-// proves the IME is gone, until the next composition starts.
+// proves the IME is gone, until the next composition start or end.
 const invalidatedCompositions = new Set<number>();
 const savingTimers = new Map<number, ReturnType<typeof setTimeout>>();
 const writesInFlight = new Map<number, number>();

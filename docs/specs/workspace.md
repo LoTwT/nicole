@@ -236,8 +236,8 @@ Go 的 `Workspace` 服务通过 `mygo.Bind` 暴露，前端经 `src/services/wor
 - 只有活动标签的视图能处于组合状态，其他标签的自动保存照常到点写入。
 - 组合结束没有事件时（视图被销毁、窗口或编辑器失焦、WebKit 漏发 `compositionend`）：保存被挡下时按 1 秒复查；活动视图被销毁或编辑器失焦后，复查会照常保存当前文本。
 - 按键兜底：按键监听在窗口上；收到 `isComposing` 为 false 且 `keyCode` 不是 229 的按键（单独的修饰键不算）时，把当前标签的这次组合视为已结束，自动保存不再等它。下一次 `compositionstart` 或 `compositionend` 会清除这个标记。这个信号只用于自动保存，不修改 CodeMirror 状态，也不影响渲染。
-- 2026-11-08 用鼠须管（Rime）和真实 WKWebView 实测的事件顺序：组合中的 keydown（字母、方向键、Tab、⌘S、⌘Z、F5、Home/End 等）都是 `keyCode=229` 且 `isComposing=true`；上屏或取消时 `compositionend` 先触发，随后同一按键的 keydown 是 `keyCode=229`、`isComposing=false`；窗口失焦时先 `window blur`，随后 `compositionend` 提交未上屏文字。实测没有观察到 `compositionend` 丢失，所以按键兜底在实测序列上不会触发。其他输入法没有实测。
-- 剩余局限：组合没有结束事件、视图未销毁也未失焦，且之后没有任何按键时，自动保存不会恢复；恢复副本继续按原节奏写入，内容不会丢。CodeMirror 对 Safari dead-key 组合的内部收尾只调用自己的处理函数，不派发 DOM `compositionend`，所以 `onCompositionEnd` 不会被调用；这种情况靠下一次 1 秒复查恢复，等待时间为 0 到 1 秒。
+- 2026-11-08 的事件顺序探测使用裸 `contenteditable` + WKWebView；之后在完整应用里用鼠须管复测：组合中停顿、切换候选、部分选词、⌘S、Home、End 都不写拼音；上屏约 1 秒后保存；Esc 不写盘；组合中按 ⌘Q 不退出，从菜单退出会写入拼音。事件顺序为：组合中的 keydown（字母、方向键、Tab、⌘S、⌘Z、F5、Home/End 等）都是 `keyCode=229` 且 `isComposing=true`；上屏或取消时 `compositionend` 先触发，随后同一按键的 keydown 是 `keyCode=229`、`isComposing=false`；窗口失焦时先 `window blur`，随后 `compositionend` 提交未上屏文字。实测没有观察到 `compositionend` 丢失，所以按键兜底在实测序列上不会触发。其他输入法没有实测。
+- 剩余局限：组合没有结束事件、视图未销毁也未失焦，且之后没有符合上述条件的按键时，自动保存不会恢复；恢复副本继续按原节奏写入，内容不会丢。CodeMirror 对 Safari dead-key 组合的内部收尾只调用自己的处理函数，不派发 DOM `compositionend`，所以 `onCompositionEnd` 不会被调用；这种情况靠下一次 1 秒复查恢复，等待时间为 0 到 1 秒。
 - 关闭标签、切换文件夹、关窗和页面隐藏走显式保存，不受组合状态限制；⌘S 等全局按键在组合期间仍按现有规则提前返回。
 - 保存失败、换行风格混合、外部修改或删除造成的暂停保持原样。一次没有文档变化的组合结束只重新处理已有被挡计时器或已回到原样的文本，不会重试保存失败的标签；新输入仍会触发下一次自动保存。
 
