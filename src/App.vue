@@ -279,6 +279,9 @@ let recentSelfRename:
   | { oldPath: string; newPath: string; at: number }
   | null = null;
 const saveTimers = new Map<number, ReturnType<typeof setTimeout>>();
+// Tabs whose composition flag CodeMirror never cleared; a real key press
+// proves the IME is gone, until the next composition start or end.
+const invalidatedCompositions = new Set<number>();
 const savingTimers = new Map<number, ReturnType<typeof setTimeout>>();
 const writesInFlight = new Map<number, number>();
 const externalReadSequence = new Map<number, number>();
@@ -1396,13 +1399,81 @@ function markExternalState(tab: TabModel, next: "none" | "modified" | "deleted")
   }
 }
 
+/**
+ * Only the active tab has a mounted editor, and an IME only composes in a
+ * focused editable. Checking the live view here keeps a missed
+ * `compositionend` from freezing autosave: once that view is destroyed
+ * (tab switch, close, remount) or the editor loses focus, the tab saves
+ * normally again. `invalidatedCompositions` covers the remaining case where
+ * CodeMirror's flag never clears while the view stays focused.
+ */
+function autosaveBlockedByComposition(tabId: number): boolean {
+  if (tabId !== activeTabId.value || editor === null) {
+    return false;
+  }
+  if (invalidatedCompositions.has(tabId)) {
+    return false;
+  }
+  const view = editor.view;
+  return (view.compositionStarted || view.composing) && view.hasFocus;
+}
+
+/** Keys that only change modifier state; a live composition can still send them. */
+const LONE_MODIFIER_KEYS = new Set([
+  "Shift",
+  "Control",
+  "Alt",
+  "Meta",
+  "CapsLock",
+  "AltGraph",
+  "OS",
+]);
+
+/**
+ * A fallback for a composition whose CodeMirror flag never clears while the
+ * editor keeps focus; the 2026-11-08 Rime/WKWebView probe did not observe a
+ * lost `compositionend`, so this is not a confirmed platform behavior. A key
+ * that is neither part of a composition nor a lone modifier proves the IME
+ * no longer owns the editor: ignore the stale flag for autosave until the
+ * next composition start or end. This changes only the save decision;
+ * CodeMirror's state and rendering stay untouched.
+ */
+function noteCompositionEndKey(event: KeyboardEvent) {
+  if (event.isComposing || event.keyCode === 229) {
+    return;
+  }
+  if (LONE_MODIFIER_KEYS.has(event.key)) {
+    return;
+  }
+  const tab = findTab(activeTabId.value);
+  if (tab === null || editor === null) {
+    return;
+  }
+  const view = editor.view;
+  if (!view.compositionStarted && !view.composing) {
+    return;
+  }
+  invalidatedCompositions.add(tab.id);
+}
+
+function handleEditorCompositionStart(tabId: number) {
+  invalidatedCompositions.delete(tabId);
+}
+
 function scheduleAutosave(tabId: number) {
   clearTabSaveTimer(tabId);
   saveTimers.set(
     tabId,
     setTimeout(() => {
       saveTimers.delete(tabId);
-      void saveTab(tabId);
+      if (autosaveBlockedByComposition(tabId)) {
+        // Recheck periodically instead of dropping the save: a real
+        // composition end reschedules through handleEditorCompositionEnd,
+        // and this covers the ones that never report one.
+        scheduleAutosave(tabId);
+        return;
+      }
+      void saveTab(tabId, false, undefined, "autosave");
     }, AUTOSAVE_DELAY_MS),
   );
 }
@@ -1428,6 +1499,15 @@ function handleEditorChange(tabId: number, text: string) {
   if (applyingExternal) {
     return;
   }
+  applyAutosaveState(tab);
+}
+
+/**
+ * Applies the autosave policy to the tab's current text. Shared by document
+ * changes and the end of a composition, which can happen without a change.
+ */
+function applyAutosaveState(tab: TabModel) {
+  const tabId = tab.id;
   if (tab.text === tab.originalText) {
     clearTabSaveTimer(tabId);
     if (tab.externalState === "deleted") {
@@ -1458,10 +1538,30 @@ function handleEditorChange(tabId: number, text: string) {
   scheduleAutosave(tabId);
 }
 
+/**
+ * A commit usually arrives with one more document change, which schedules by
+ * itself. Ending a composition without a change still restarts a save that
+ * was waiting or clears text that returned to the baseline, but it must not
+ * retry a failed save; only new input does that (see ui.md).
+ */
+function handleEditorCompositionEnd(tabId: number) {
+  const tab = findTab(tabId);
+  if (tab === null || tab.kind === "preview") {
+    return;
+  }
+  invalidatedCompositions.delete(tabId);
+  if (saveTimers.has(tabId) || tab.text === tab.originalText) {
+    applyAutosaveState(tab);
+  }
+}
+
+type SaveTrigger = "autosave" | "explicit";
+
 function saveTab(
   tabId: number,
   force = false,
   revisionAtRequest?: number,
+  trigger: SaveTrigger = "explicit",
 ): Promise<boolean> {
   const tab = findTab(tabId);
   if (tab === null) {
@@ -1473,7 +1573,9 @@ function saveTab(
     return Promise.resolve(false);
   }
   const revision = revisionAtRequest ?? tab.revision;
-  const next = saveQueue.then(() => saveTabNow(tabId, force, revision));
+  const next = saveQueue.then(() =>
+    saveTabNow(tabId, force, revision, trigger),
+  );
   saveQueue = next.then(
     (saved) => saved,
     () => false,
@@ -1509,6 +1611,7 @@ async function saveTabNow(
   tabId: number,
   force: boolean,
   revisionAtRequest: number,
+  trigger: SaveTrigger,
 ): Promise<boolean> {
   let tab = findTab(tabId);
   if (tab === null) {
@@ -1546,6 +1649,14 @@ async function saveTabNow(
     }
     if (!force && tab.externalState !== "none") {
       tab.savePhase = tab.saveError === null ? "editing" : "failed";
+      return false;
+    }
+    // The composition can start while this save waits in the queue, or
+    // between loop iterations after an earlier write landed, so recheck
+    // before every actual write instead of only when the timer fires.
+    if (trigger === "autosave" && autosaveBlockedByComposition(tabId)) {
+      tab.savePhase = tab.saveError === null ? "editing" : "failed";
+      scheduleAutosave(tabId);
       return false;
     }
     const edit = {
@@ -1781,6 +1892,8 @@ async function mountActive(focus = true) {
         : null,
     onPasteImage: (ticket) => imageInsertion.handlePaste(ticket),
     onChange: (text) => handleEditorChange(tab.id, text),
+    onCompositionStart: () => handleEditorCompositionStart(tab.id),
+    onCompositionEnd: () => handleEditorCompositionEnd(tab.id),
   });
   slashMenu = createSlashMenu({
     view: editor.view,
@@ -3694,6 +3807,7 @@ async function jumpToPaletteHeading(position: number) {
 }
 
 function handleGlobalKeydown(event: KeyboardEvent) {
+  noteCompositionEndKey(event);
   if (event.isComposing || event.keyCode === 229) {
     return;
   }

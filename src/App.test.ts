@@ -1056,6 +1056,718 @@ describe("saving and status", () => {
   });
 });
 
+describe("autosave during IME composition", () => {
+  function startComposition() {
+    const view = editorView();
+    view.focus();
+    view.contentDOM.dispatchEvent(
+      new CompositionEvent("compositionstart", { bubbles: true }),
+    );
+    return view;
+  }
+
+  function endComposition() {
+    editorView().contentDOM.dispatchEvent(
+      new CompositionEvent("compositionend", { bubbles: true }),
+    );
+  }
+
+  it("holds a due save while composing and restarts the delay after it ends", async () => {
+    vi.useFakeTimers();
+    await openFile();
+    startComposition();
+    replaceEditorText("# 光X标\n");
+    await settle();
+    expect(host.querySelector("footer")?.textContent).toContain("编辑中");
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+    // The retry keeps rechecking instead of dropping the save.
+    await vi.advanceTimersByTimeAsync(4500);
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+    expect(host.querySelector("footer")?.textContent).toContain("编辑中");
+
+    endComposition();
+    await settle();
+    // Restarted from the composition end, not from the pending recheck.
+    await vi.advanceTimersByTimeAsync(999);
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(mocks.writeFile).toHaveBeenCalledWith("a.md", "# 光X标\n", 1);
+    await settle();
+    expect(host.querySelector("footer")?.textContent).toContain("已保存");
+  });
+
+  it("does not save when a cancelled composition restores the disk text", async () => {
+    vi.useFakeTimers();
+    await openFile();
+    const view = startComposition();
+    const at = view.state.doc.length;
+    view.dispatch({
+      changes: { from: at, insert: "拼" },
+      selection: { anchor: at + 1 },
+      userEvent: "input.type.compose",
+    });
+    await settle();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+
+    view.dispatch({
+      changes: { from: at, to: at + 1 },
+      userEvent: "input.type.compose",
+    });
+    await settle();
+    endComposition();
+    await settle();
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+    expect(host.querySelector("footer")?.textContent).toContain("已保存");
+  });
+
+  it("only holds the composing tab, not another tab's autosave", async () => {
+    vi.useFakeTimers();
+    await setupWorkspace({ "a.md": "# A\n", "b.md": "# B\n" });
+    await openPath("/notes/a.md");
+    await openPath("/notes/b.md");
+
+    replaceEditorText("# B changed\n");
+    tabNamed("a.md").click();
+    await settle();
+    startComposition();
+    replaceEditorText("# A changed\n");
+    await settle();
+
+    await vi.advanceTimersByTimeAsync(1000);
+    await settle();
+    expect(mocks.writeFile).toHaveBeenCalledTimes(1);
+    expect(mocks.writeFile).toHaveBeenCalledWith("b.md", "# B changed\n", 1);
+
+    endComposition();
+    await settle();
+    await vi.advanceTimersByTimeAsync(1000);
+    await settle();
+    expect(mocks.writeFile).toHaveBeenCalledWith("a.md", "# A changed\n", 1);
+    expect(mocks.writeFile).toHaveBeenCalledTimes(2);
+  });
+
+  it("resumes saving after a tab switch when compositionend never arrives", async () => {
+    vi.useFakeTimers();
+    await setupWorkspace({ "a.md": "# A\n", "b.md": "# B\n" });
+    await openPath("/notes/a.md");
+    await openPath("/notes/b.md");
+    tabNamed("a.md").click();
+    await settle();
+    startComposition();
+    replaceEditorText("# 拼\n");
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+
+    // The view is destroyed while CodeMirror still reports a composition;
+    // no compositionend ever comes for it.
+    tabNamed("b.md").click();
+    await settle();
+    await vi.advanceTimersByTimeAsync(1000);
+    await settle();
+    expect(mocks.writeFile).toHaveBeenCalledWith("a.md", "# 拼\n", 1);
+  });
+
+  it("resumes saving after the editor loses focus without compositionend", async () => {
+    vi.useFakeTimers();
+    await openFile();
+    const view = startComposition();
+    replaceEditorText("# 拼\n");
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+
+    view.contentDOM.blur();
+    await vi.advanceTimersByTimeAsync(1000);
+    await settle();
+    expect(mocks.writeFile).toHaveBeenCalledWith("a.md", "# 拼\n", 1);
+  });
+
+  it("saves the composing text when the tab closes", async () => {
+    vi.useFakeTimers();
+    await openFile();
+    startComposition();
+    replaceEditorText("# 拼\n");
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+
+    tabNamed("a.md")
+      .querySelector<HTMLButtonElement>('button[aria-label^="关闭"]')!
+      .click();
+    await settle();
+    expect(mocks.writeFile).toHaveBeenCalledWith("a.md", "# 拼\n", 1);
+    expect(tabElements()).toHaveLength(0);
+  });
+
+  it("saves the composing text when switching folders", async () => {
+    vi.useFakeTimers();
+    await openFile();
+    startComposition();
+    replaceEditorText("# 拼\n");
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+
+    const pick = deferred<{ path: string; canceled: boolean }>();
+    mocks.pickFolder.mockImplementation(() => pick.promise);
+    mocks.openFolder.mockResolvedValue(folder("/second", 2));
+    sidebarButton("切换文件夹").click();
+    await settle();
+    pick.resolve({ path: "/second", canceled: false });
+    await settle();
+
+    expect(mocks.writeFile).toHaveBeenCalledWith("a.md", "# 拼\n", 1);
+    expect(dialog()?.textContent).toContain("切换到“second”");
+    dialogButton("取消").click();
+    await settle();
+  });
+
+  it("saves the composing text when the page hides", async () => {
+    vi.useFakeTimers();
+    await openFile();
+    startComposition();
+    replaceEditorText("# 拼\n");
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+
+    window.dispatchEvent(new Event("pagehide"));
+    await settle();
+    expect(mocks.writeFile).toHaveBeenCalledWith("a.md", "# 拼\n", 1);
+  });
+
+  it("saves the composing text when the window close is requested", async () => {
+    vi.useFakeTimers();
+    await openFile();
+    startComposition();
+    replaceEditorText("# 拼\n");
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+
+    await closeHandler?.(31);
+    await settle();
+    expect(mocks.writeFile).toHaveBeenCalledWith("a.md", "# 拼\n", 1);
+    expect(mocks.finishClose).toHaveBeenCalledWith(31, true);
+  });
+
+  it("keeps writing recovery copies with the composing text", async () => {
+    vi.useFakeTimers();
+    await openFile();
+    startComposition();
+    replaceEditorText("# 拼\n");
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(mocks.saveRecovery).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "# 拼\n" }),
+      1,
+    );
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+  });
+
+  it("keeps external-modification pausing in effect across a composition", async () => {
+    vi.useFakeTimers();
+    await openFile();
+    startComposition();
+    replaceEditorText("# 拼\n");
+    watchEvents?.([{ op: "write", path: "a.md", isDir: false }]);
+    await settle();
+    expect(host.textContent).toContain("此文件已在 Nicole 之外被修改");
+
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+    endComposition();
+    await settle();
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+    expect(host.textContent).toContain("此文件已在 Nicole 之外被修改");
+  });
+
+  it("leaves the global shortcut behavior during composition unchanged", async () => {
+    vi.useFakeTimers();
+    await openFile();
+    startComposition();
+    replaceEditorText("# 拼\n");
+
+    const save = new KeyboardEvent("keydown", {
+      key: "s",
+      metaKey: true,
+      isComposing: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    window.dispatchEvent(save);
+    await settle();
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+  });
+
+  it("holds a timer that was armed before the composition started", async () => {
+    vi.useFakeTimers();
+    await openFile();
+    replaceEditorText("# 已上屏\n");
+    await settle();
+    startComposition();
+
+    await vi.advanceTimersByTimeAsync(999);
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+  });
+
+  it("rechecks composition before a second write in the same save", async () => {
+    vi.useFakeTimers();
+    await openFile();
+    const first = deferred<void>();
+    mocks.writeFile.mockImplementationOnce(() => first.promise);
+    replaceEditorText("# 已上屏\n");
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(mocks.writeFile).toHaveBeenCalledTimes(1);
+
+    startComposition();
+    replaceEditorText("# 已上屏 pin\n");
+    await settle();
+    first.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    await settle();
+
+    expect(mocks.writeFile).toHaveBeenCalledTimes(1);
+    expect(mocks.writeFile).not.toHaveBeenCalledWith("a.md", "# 已上屏 pin\n", 1);
+    expect(host.querySelector("footer")?.textContent).toContain("编辑中");
+
+    // The first write kept the on-screen baseline; the committed text saves
+    // once the composition ends.
+    endComposition();
+    await settle();
+    await vi.advanceTimersByTimeAsync(1000);
+    await settle();
+    expect(mocks.writeFile).toHaveBeenCalledWith("a.md", "# 已上屏 pin\n", 1);
+    expect(mocks.writeFile).toHaveBeenCalledTimes(2);
+  });
+
+  it("rechecks composition when an autosave was queued behind another tab", async () => {
+    vi.useFakeTimers();
+    await setupWorkspace({ "a.md": "# A\n", "b.md": "# B\n" });
+    await openPath("/notes/a.md");
+    await openPath("/notes/b.md");
+    const slow = deferred<void>();
+    mocks.writeFile.mockImplementationOnce(() => slow.promise);
+
+    replaceEditorText("# B2\n");
+    tabNamed("a.md").click();
+    await settle();
+    await vi.advanceTimersByTimeAsync(600);
+    replaceEditorText("# A2\n");
+    await vi.advanceTimersByTimeAsync(400);
+    expect(mocks.writeFile).toHaveBeenCalledTimes(1);
+    // A's timer has fired while B's write is still holding the queue.
+    await vi.advanceTimersByTimeAsync(600);
+    startComposition();
+    replaceEditorText("# A2 pin\n");
+    await settle();
+    slow.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    await settle();
+
+    expect(mocks.writeFile).toHaveBeenCalledTimes(1);
+    expect(mocks.writeFile).not.toHaveBeenCalledWith("a.md", "# A2 pin\n", 1);
+
+    endComposition();
+    await settle();
+    await vi.advanceTimersByTimeAsync(1000);
+    await settle();
+    expect(mocks.writeFile).toHaveBeenCalledWith("a.md", "# A2 pin\n", 1);
+    expect(mocks.writeFile).toHaveBeenCalledTimes(2);
+  });
+
+  it("treats a plain key as the end of a stale composition", async () => {
+    vi.useFakeTimers();
+    await openFile();
+    const view = startComposition();
+    replaceEditorText("# 拼\n");
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+
+    for (const key of ["Shift", "Meta", "Alt", "Control", "CapsLock"]) {
+      view.contentDOM.dispatchEvent(
+        new KeyboardEvent("keydown", { key, bubbles: true }),
+      );
+    }
+    const composingKey = new KeyboardEvent("keydown", {
+      key: "a",
+      bubbles: true,
+    });
+    Object.defineProperty(composingKey, "keyCode", { value: 229 });
+    view.contentDOM.dispatchEvent(composingKey);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+
+    view.contentDOM.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "a", bubbles: true }),
+    );
+    await vi.advanceTimersByTimeAsync(1000);
+    await settle();
+    expect(mocks.writeFile).toHaveBeenCalledWith("a.md", "# 拼\n", 1);
+  });
+
+  it("resumes after refocus with a key and starts a new composition fresh", async () => {
+    vi.useFakeTimers();
+    await openFile();
+    const view = startComposition();
+    replaceEditorText("# 拼\n");
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+
+    view.contentDOM.blur();
+    await vi.advanceTimersByTimeAsync(1000);
+    await settle();
+    expect(mocks.writeFile).toHaveBeenCalledTimes(1);
+
+    // Focus is back but CodeMirror's flag is still set; a real key ends it.
+    view.focus();
+    replaceEditorText("# 拼 再输入\n");
+    await settle();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(mocks.writeFile).toHaveBeenCalledTimes(1);
+    view.contentDOM.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "a", bubbles: true }),
+    );
+    await vi.advanceTimersByTimeAsync(1000);
+    await settle();
+    expect(mocks.writeFile).toHaveBeenCalledWith(
+      "a.md",
+      "# 拼 再输入\n",
+      1,
+    );
+
+    // A new composition clears the invalidation and holds its text again.
+    view.contentDOM.dispatchEvent(
+      new CompositionEvent("compositionstart", { bubbles: true }),
+    );
+    replaceEditorText("# 拼 再输入 pin\n");
+    await settle();
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(mocks.writeFile).toHaveBeenCalledTimes(2);
+  });
+
+  it("waits for a real pause across back-to-back compositions", async () => {
+    vi.useFakeTimers();
+    await openFile();
+    startComposition();
+    replaceEditorText("# 一\n");
+    for (let step = 0; step < 6; step++) {
+      await vi.advanceTimersByTimeAsync(600);
+      endComposition();
+      await settle();
+      replaceEditorText(`# 一${step}\n`);
+      await vi.advanceTimersByTimeAsync(600);
+      startComposition();
+      replaceEditorText(`# 一${step} pin\n`);
+      await settle();
+      await vi.advanceTimersByTimeAsync(1200);
+      expect(mocks.writeFile).not.toHaveBeenCalled();
+    }
+    endComposition();
+    await settle();
+    await vi.advanceTimersByTimeAsync(1000);
+    await settle();
+    expect(mocks.writeFile).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps refreshing recovery copies during a long composition", async () => {
+    vi.useFakeTimers();
+    await openFile();
+    startComposition();
+    replaceEditorText("# 拼1\n");
+    await vi.advanceTimersByTimeAsync(2000);
+    replaceEditorText("# 拼2\n");
+    await vi.advanceTimersByTimeAsync(5000);
+    replaceEditorText("# 拼3\n");
+    await vi.advanceTimersByTimeAsync(5000);
+
+    const texts = mocks.saveRecovery.mock.calls.map((call) => call[0].text);
+    expect(texts).toContain("# 拼2\n");
+    expect(texts).toContain("# 拼3\n");
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+  });
+
+  it("keeps failed and mixed save states when a composition ends unchanged", async () => {
+    vi.useFakeTimers();
+    await setupWorkspace({ "a.md": "# A\n", "mixed.md": "a\r\nb\nc\r\n" });
+    await openPath("/notes/a.md");
+    mocks.writeFile.mockRejectedValueOnce(new Error("permission denied"));
+    replaceEditorText("# A changed\n");
+    await vi.advanceTimersByTimeAsync(1000);
+    await settle();
+    expect(host.querySelector("footer")?.textContent).toContain("保存失败");
+    expect(mocks.writeFile).toHaveBeenCalledTimes(1);
+
+    startComposition();
+    endComposition();
+    await settle();
+    expect(host.querySelector("footer")?.textContent).toContain("保存失败");
+    await vi.advanceTimersByTimeAsync(3000);
+    await settle();
+    expect(mocks.writeFile).toHaveBeenCalledTimes(1);
+    expect(host.querySelector("footer")?.textContent).toContain("保存失败");
+
+    await openPath("/notes/mixed.md");
+    replaceEditorText("a\r\nb\nc\r\nd\r\n");
+    await settle();
+    expect(host.textContent).toContain("换行风格混合");
+    startComposition();
+    endComposition();
+    await settle();
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(mocks.writeFile).toHaveBeenCalledTimes(1);
+    expect(host.textContent).toContain("换行风格混合");
+  });
+
+  it("does not retry a failed save when a composition ends without changes", async () => {
+    vi.useFakeTimers();
+    await openFile();
+    mocks.writeFile.mockRejectedValueOnce(new Error("permission denied"));
+    replaceEditorText("# X\n");
+    await vi.advanceTimersByTimeAsync(1000);
+    await settle();
+    expect(host.querySelector("footer")?.textContent).toContain("保存失败");
+    expect(mocks.writeFile).toHaveBeenCalledTimes(1);
+
+    startComposition();
+    endComposition();
+    await settle();
+    await vi.advanceTimersByTimeAsync(3000);
+    await settle();
+    expect(mocks.writeFile).toHaveBeenCalledTimes(1);
+    expect(host.querySelector("footer")?.textContent).toContain("保存失败");
+  });
+
+  it("treats window blur as the end of a composition", async () => {
+    vi.useFakeTimers();
+    await openFile();
+    startComposition();
+    replaceEditorText("# 拼\n");
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    await vi.advanceTimersByTimeAsync(1000);
+    await settle();
+    expect(mocks.writeFile).toHaveBeenCalledWith("a.md", "# 拼\n", 1);
+    hasFocus.mockRestore();
+  });
+
+  it("resumes a queued autosave after a composition with no document change", async () => {
+    vi.useFakeTimers();
+    await setupWorkspace({ "a.md": "# A\n", "b.md": "# B\n" });
+    await openPath("/notes/a.md");
+    await openPath("/notes/b.md");
+    const slow = deferred<void>();
+    mocks.writeFile.mockImplementationOnce(() => slow.promise);
+
+    replaceEditorText("# B2\n");
+    tabNamed("a.md").click();
+    await settle();
+    await vi.advanceTimersByTimeAsync(600);
+    replaceEditorText("# A2\n");
+    await vi.advanceTimersByTimeAsync(400);
+    expect(mocks.writeFile).toHaveBeenCalledTimes(1);
+    // A's timer has fired while B's write holds the queue.
+    await vi.advanceTimersByTimeAsync(600);
+
+    startComposition();
+    slow.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    await settle();
+    expect(mocks.writeFile).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(mocks.writeFile).toHaveBeenCalledTimes(1);
+    expect(host.querySelector("footer")?.textContent).toContain("编辑中");
+
+    endComposition();
+    await settle();
+    await vi.advanceTimersByTimeAsync(1000);
+    await settle();
+    expect(mocks.writeFile).toHaveBeenLastCalledWith("a.md", "# A2\n", 1);
+    expect(mocks.writeFile).toHaveBeenCalledTimes(2);
+    expect(host.querySelector("footer")?.textContent).toContain("已保存");
+  });
+
+  it("keeps a failed save failed when a queued autosave is blocked", async () => {
+    vi.useFakeTimers();
+    await setupWorkspace({ "a.md": "# A\n", "b.md": "# B\n" });
+    await openPath("/notes/b.md");
+    await openPath("/notes/a.md");
+    mocks.writeFile.mockRejectedValueOnce(new Error("permission denied"));
+    replaceEditorText("# A1\n");
+    await vi.advanceTimersByTimeAsync(1000);
+    await settle();
+    expect(host.querySelector("footer")?.textContent).toContain("保存失败");
+
+    tabNamed("b.md").click();
+    await settle();
+    const slow = deferred<void>();
+    mocks.writeFile.mockImplementationOnce(() => slow.promise);
+    replaceEditorText("# B2\n");
+    tabNamed("a.md").click();
+    await settle();
+    await vi.advanceTimersByTimeAsync(600);
+    replaceEditorText("# A2\n");
+    await vi.advanceTimersByTimeAsync(1000);
+    startComposition();
+    slow.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    await settle();
+
+    expect(mocks.writeFile).toHaveBeenCalledTimes(2);
+    expect(host.querySelector("footer")?.textContent).toContain("保存失败");
+  });
+
+  it("keeps a restored paused tab paused after a composition ends", async () => {
+    vi.useFakeTimers();
+    app?.unmount();
+    app = null;
+    mocks.getSettings.mockResolvedValue({
+      theme: "system",
+      sidebarWidth: 252,
+      recentFolders: ["/notes"],
+      expandedFolders: {},
+    });
+    mocks.openFolder.mockResolvedValue(folder("/notes"));
+    mocks.listRecovery.mockResolvedValue({
+      items: [
+        {
+          id: "0123456789abcdef",
+          kind: "workspace",
+          root: "/notes",
+          path: "a.md",
+          name: "a.md",
+          savedAt: new Date().toISOString(),
+          lineEnding: "\n",
+          text: "# A\nmore\n",
+          diskText: "# A\n",
+          diskState: "same",
+          restorable: true,
+        },
+      ],
+      otherFolders: 0,
+    });
+    app = createApp(App);
+    app.mount(host);
+    await settle();
+    dialogButton("逐个查看").click();
+    await settle();
+    expect(host.querySelector("footer")?.textContent).toContain("已暂停自动保存");
+
+    startComposition();
+    endComposition();
+    await settle();
+    expect(host.querySelector("footer")?.textContent).toContain("已暂停自动保存");
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+  });
+
+  it("does not let one tab's invalidation release another tab's composition", async () => {
+    vi.useFakeTimers();
+    await setupWorkspace({ "a.md": "# A\n", "b.md": "# B\n" });
+    await openPath("/notes/a.md");
+    const view = startComposition();
+    replaceEditorText("# A 拼\n");
+    await settle();
+    view.contentDOM.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "a", bubbles: true }),
+    );
+    tabNamed("a.md")
+      .querySelector<HTMLButtonElement>('button[aria-label^="关闭"]')!
+      .click();
+    await settle();
+
+    await openPath("/notes/b.md");
+    startComposition();
+    replaceEditorText("# B 拼\n");
+    await settle();
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(mocks.writeFile).not.toHaveBeenCalledWith("b.md", "# B 拼\n", 1);
+  });
+
+  it("follows the measured WKWebView sequence without writing pinyin", async () => {
+    vi.useFakeTimers();
+    await openFile();
+    const view = editorView();
+    view.focus();
+
+    const update = (data: string) => {
+      view.contentDOM.dispatchEvent(
+        new CompositionEvent("compositionupdate", { data, bubbles: true }),
+      );
+      view.contentDOM.dispatchEvent(
+        new InputEvent("input", {
+          bubbles: true,
+          inputType: "insertCompositionText",
+          isComposing: true,
+          data,
+        }),
+      );
+    };
+    const press = (
+      key: string,
+      keyCode: number,
+      composing: boolean,
+      metaKey = false,
+    ) => {
+      const event = new KeyboardEvent("keydown", {
+        key,
+        metaKey,
+        isComposing: composing,
+        bubbles: true,
+        cancelable: true,
+      });
+      Object.defineProperty(event, "keyCode", { value: keyCode });
+      view.contentDOM.dispatchEvent(event);
+    };
+
+    // Measured order for the first letter: composition events and the
+    // document update come before its 229/isComposing=true keydown.
+    view.contentDOM.dispatchEvent(
+      new CompositionEvent("compositionstart", { bubbles: true }),
+    );
+    update("n");
+    replaceEditorText("# A n\n");
+    press("n", 229, true);
+    await settle();
+
+    await vi.advanceTimersByTimeAsync(500);
+    update("nihao");
+    replaceEditorText("# A nihao\n");
+    press("o", 229, true);
+    // Shortcuts and navigation inside the composition are still 229/true.
+    press("s", 229, true, true);
+    press("Home", 229, true);
+    press("F5", 229, true);
+    await settle();
+    await vi.advanceTimersByTimeAsync(1500);
+    await settle();
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+
+    // Commit: the text lands, compositionend, then the same key as a
+    // 229/isComposing=false keydown.
+    replaceEditorText("# A 你好\n");
+    view.contentDOM.dispatchEvent(
+      new CompositionEvent("compositionend", { data: "你好", bubbles: true }),
+    );
+    press(" ", 229, false);
+    await settle();
+    await vi.advanceTimersByTimeAsync(999);
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await settle();
+    expect(mocks.writeFile).toHaveBeenCalledTimes(1);
+    expect(mocks.writeFile).toHaveBeenCalledWith("a.md", "# A 你好\n", 1);
+
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(mocks.writeFile).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("external changes", () => {
   it("reloads an unedited file and ignores image create events for the document", async () => {
     mocks.listDirectory.mockImplementation(async (path: string) => ({
