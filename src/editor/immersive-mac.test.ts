@@ -149,6 +149,25 @@ describe("immersive mode on macOS", () => {
     expect(view.state.selection.main.head).toBe(3);
   });
 
+  it("keeps syntax-left motion for a mid-line Ctrl-ArrowLeft", () => {
+    const editor = createEditor({
+      parent,
+      doc: "前缀 **粗体** 中间 [链接](http://a.b) 后缀 `code` 尾巴 foo(bar, baz)\n",
+      mode: "immersive",
+      platform: "macos",
+    });
+    destroy = () => editor.destroy();
+    const view = editor.view;
+    const target = view.state.doc.line(1);
+    view.dispatch({ selection: { anchor: target.to } });
+
+    for (let index = 0; index < 5; index++) {
+      press(view, "ArrowLeft", { ctrlKey: true });
+    }
+
+    expect(view.state.selection.main.head).toBe(17);
+  });
+
   it("keeps Cmd-ArrowLeft inside the line at the boundary", () => {
     const editor = createEditor({ parent, doc, mode: "immersive" });
     destroy = () => editor.destroy();
@@ -186,6 +205,7 @@ describe("immersive mode on macOS", () => {
         parent,
         doc: "前一段\n\n- 无序文本\n",
         mode: "immersive",
+        platform: "macos",
       });
       destroy = () => editor.destroy();
       const view = editor.view;

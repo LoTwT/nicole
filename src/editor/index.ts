@@ -323,6 +323,47 @@ function leadingMarkInfo(
   }
 }
 
+const blockNodeNames = new Set([
+  "Blockquote",
+  "BulletList",
+  "OrderedList",
+  "ATXHeading1",
+  "ATXHeading2",
+  "ATXHeading3",
+  "ATXHeading4",
+  "ATXHeading5",
+  "ATXHeading6",
+  "SetextHeading1",
+  "SetextHeading2",
+]);
+
+/**
+ * A multi-line quote or list is one block even though every continuation line
+ * starts with its own marker. The special Enter rule belongs only to the first
+ * line of the outermost syntax block; later lines keep the normal Markdown
+ * continuation behavior. Nested blocks inherit the same outer-block check.
+ */
+function startsBlockAtLine(
+  state: EditorState,
+  line: { from: number; to: number },
+) {
+  const tree = ensureSyntaxTree(state, line.to, 20) ?? syntaxTree(state);
+  // Iteration is pre-order, so the first matching block node is the outermost
+  // one containing this line.
+  const outermost = { from: -1 };
+  tree.iterate({
+    from: line.from,
+    to: line.to,
+    enter: (node) => {
+      if (outermost.from !== -1) return;
+      if (!blockNodeNames.has(node.name)) return;
+      if (node.from > line.from || node.to <= line.from) return;
+      outermost.from = node.from;
+    },
+  });
+  return outermost.from === line.from;
+}
+
 /** Keeps empty selections out of hidden line-leading markers. */
 function clampImmersiveSelection(
   state: EditorState,
@@ -405,6 +446,11 @@ function cursorCharLeftImmersive(view: EditorView): boolean {
 function cursorGroupLeftImmersive(view: EditorView): boolean {
   if (view.compositionStarted || view.composing) return false;
   const selection = view.state.selection;
+  // Only the boundary needs the special path. Off-boundary selections keep
+  // CodeMirror's default cursorSyntaxLeft behavior.
+  if (!selection.ranges.some((range) => boundaryAt(view.state, range))) {
+    return false;
+  }
   const ranges = selection.ranges.map((range) => {
     if (!range.empty) return EditorSelection.cursor(range.from);
     const boundary = boundaryAt(view.state, range);
@@ -456,7 +502,8 @@ function insertLineAboveImmersive(view: EditorView): boolean {
   if (
     !info.block ||
     selection.main.head !== info.start ||
-    line.to <= info.contentStart
+    line.to <= info.contentStart ||
+    !startsBlockAtLine(view.state, line)
   ) {
     return false;
   }
@@ -477,8 +524,8 @@ function insertLineAboveImmersive(view: EditorView): boolean {
   return true;
 }
 
-/** Ctrl-H should match Backspace at a block boundary, not leave a prefix. */
-function deleteBackwardImmersive(view: EditorView): boolean {
+/** Delete a whole hidden leading marker as one unit at a block boundary. */
+function deleteMarkerImmersive(view: EditorView): boolean {
   if (view.compositionStarted || view.composing) return false;
   const selection = view.state.selection;
   if (selection.ranges.length === 1 && selection.main.empty) {
@@ -501,7 +548,17 @@ function deleteBackwardImmersive(view: EditorView): boolean {
       return true;
     }
   }
-  return deleteMarkupBackward(view) || deleteCharBackward(view);
+  return false;
+}
+
+/** Ctrl-H keeps its existing fallback when no whole marker is being deleted. */
+function deleteBackwardImmersive(view: EditorView): boolean {
+  if (view.compositionStarted || view.composing) return false;
+  return (
+    deleteMarkerImmersive(view) ||
+    deleteMarkupBackward(view) ||
+    deleteCharBackward(view)
+  );
 }
 
 /**
@@ -621,12 +678,10 @@ function immersiveSelectionGuard(): Extension {
         { mac: "Ctrl-b", run: cursorCharLeftImmersive },
         { key: "Ctrl-ArrowLeft", run: cursorGroupLeftImmersive },
         { key: "Alt-ArrowLeft", run: cursorGroupLeftImmersive },
-        { key: "Backspace", run: deleteBackwardImmersive },
+        { key: "Backspace", run: deleteMarkerImmersive },
         { mac: "Ctrl-h", run: deleteBackwardImmersive },
         { mac: "Alt-Backspace", run: deleteGroupBackwardImmersive },
         { key: "Enter", run: insertLineAboveImmersive },
-        { key: "Shift-Enter", run: insertLineAboveImmersive },
-        { key: "Ctrl-o", run: insertLineAboveImmersive },
       ]),
     ),
   ];
@@ -1211,18 +1266,27 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
   const insertTextAt = (at: number, text: string) => {
     const position = Math.max(0, Math.min(at, view.state.doc.length));
     const line = view.state.doc.lineAt(position);
-    // Starting at the beginning of a non-empty line or at the first visible
-    // character of a block would glue the image to the existing text (and
-    // break a heading or list); give it its own line above the block instead.
+    // Live and source modes keep the baseline placement: an image at the
+    // beginning of a non-empty line gets its own line, otherwise it stays at
+    // the cursor.
+    if (mode !== "immersive") {
+      const insert =
+        position === line.from && line.length > 0 ? `${text}\n` : text;
+      view.dispatch({
+        changes: { from: position, insert },
+        selection: { anchor: position + insert.length },
+        annotations: isolateHistory.of("full"),
+      });
+      return;
+    }
+
     const info = leadingMarkInfo(view.state, line);
     // A coordinate anywhere in a block's leading markup is ambiguous: putting
     // the image at that character would split the marker. Treat the whole
     // leading range as the block content start and insert above the block, but
     // only when the block has content; an empty block receives the image.
     const inLeadingMarkup =
-      info.block &&
-      (position < info.contentStart || position === info.start) &&
-      line.to > info.contentStart;
+      info.block && position <= info.contentStart && line.to > info.contentStart;
     const ownLine =
       inLeadingMarkup ||
       (!info.block && position === line.from && line.length > 0);
@@ -1415,7 +1479,13 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
   // normal keymap handler can claim them. Capture these two keys while the
   // caret is at a block boundary, before WebKit inserts its own line break.
   const onBoundaryInsertKey = (event: KeyboardEvent) => {
-    if (event.defaultPrevented || checkboxFocused()) return;
+    if (
+      mode !== "immersive" ||
+      event.defaultPrevented ||
+      checkboxFocused()
+    ) {
+      return;
+    }
     const shiftEnter =
       event.key === "Enter" &&
       event.shiftKey &&
@@ -1423,6 +1493,7 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
       !event.altKey &&
       !event.metaKey;
     const ctrlO =
+      isMac(platform) &&
       event.key.toLowerCase() === "o" &&
       event.ctrlKey &&
       !event.shiftKey &&

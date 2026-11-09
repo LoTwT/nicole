@@ -3,7 +3,12 @@ import { EditorSelection, StateEffect } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { createEditor, type EditorHandle, type EditorMode } from "./index";
+import {
+  createEditor,
+  type CreateEditorOptions,
+  type EditorHandle,
+  type EditorMode,
+} from "./index";
 
 const doc = `# 一级标题
 
@@ -30,8 +35,12 @@ const lines = {
 let parent: HTMLElement;
 let editor: EditorHandle;
 
-function mount(mode: EditorMode = "immersive", text = doc) {
-  editor = createEditor({ parent, doc: text, mode });
+function mount(
+  mode: EditorMode = "immersive",
+  text = doc,
+  options: Partial<CreateEditorOptions> = {},
+) {
+  editor = createEditor({ parent, doc: text, mode, ...options });
   return editor;
 }
 
@@ -599,12 +608,12 @@ describe("immersive mode second-round regressions", () => {
     expect(editor.view.state.selection.main.head).toBe(target.from + 2);
   });
 
-  for (const [name, eventInit] of [
-    ["Shift-Enter", { shiftKey: true }],
-    ["Ctrl-O", { ctrlKey: true }],
+  for (const [name, eventInit, platform] of [
+    ["Shift-Enter", { shiftKey: true }, undefined],
+    ["Ctrl-O", { ctrlKey: true }, "macos" as const],
   ] as const) {
     it(`inserts a blank line above a block with ${name} at the boundary`, () => {
-      mount("immersive", "上一段\n\n- 文本\n");
+      mount("immersive", "上一段\n\n- 文本\n", { platform });
       const target = editor.view.state.doc.line(3);
       editor.view.dispatch({ selection: { anchor: target.from + 2 } });
 
@@ -612,6 +621,155 @@ describe("immersive mode second-round regressions", () => {
 
       expect(editor.view.state.doc.toString()).toBe("上一段\n\n\n- 文本\n");
       expect(editor.view.state.selection.main.head).toBe(target.from + 3);
+    });
+  }
+
+  for (const mode of ["live", "source"] as const) {
+    it(`keeps the ${mode} Shift-Enter behavior`, () => {
+      mount(mode, "# 标题文本\n");
+      const target = editor.view.state.doc.line(1);
+      editor.view.dispatch({ selection: { anchor: target.from + 2 } });
+
+      const event = key(editor.view, "Enter", { shiftKey: true });
+
+      expect(editor.view.state.doc.toString()).toBe("# \n标题文本\n");
+      expect(event.defaultPrevented).toBe(true);
+    });
+
+    it(`does not capture Ctrl-O in ${mode} mode`, () => {
+      mount(mode, "# 标题文本\n", { platform: "macos" });
+      const target = editor.view.state.doc.line(1);
+      editor.view.dispatch({ selection: { anchor: target.from + 2 } });
+      const seen: string[] = [];
+      const onKey = (event: KeyboardEvent) => seen.push(event.key);
+      window.addEventListener("keydown", onKey);
+
+      const event = key(editor.view, "o", { ctrlKey: true });
+      window.removeEventListener("keydown", onKey);
+
+      expect(editor.view.state.doc.toString()).toBe("# 标题文本\n");
+      expect(seen).toContain("o");
+      expect(event.defaultPrevented).toBe(false);
+    });
+  }
+
+  for (const platform of ["linux", "windows"] as const) {
+    it(`leaves Ctrl-O to the application on ${platform}`, () => {
+      mount("immersive", "# 标题文本\n", { platform });
+      const target = editor.view.state.doc.line(1);
+      editor.view.dispatch({ selection: { anchor: target.from + 2 } });
+      const seen: string[] = [];
+      const onKey = (event: KeyboardEvent) => seen.push(event.key);
+      window.addEventListener("keydown", onKey);
+
+      const event = key(editor.view, "o", { ctrlKey: true });
+      window.removeEventListener("keydown", onKey);
+
+      expect(editor.view.state.doc.toString()).toBe("# 标题文本\n");
+      expect(seen).toContain("o");
+      expect(event.defaultPrevented).toBe(false);
+    });
+  }
+
+  it("prevents the native default when the capture handler inserts a line", () => {
+    mount("immersive", "上一段\n\n- 文本\n");
+    const target = editor.view.state.doc.line(3);
+    editor.view.dispatch({ selection: { anchor: target.from + 2 } });
+
+    const event = key(editor.view, "Enter", { shiftKey: true });
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(editor.view.state.doc.toString()).toBe("上一段\n\n\n- 文本\n");
+  });
+
+  for (const [name, eventInit, platform] of [
+    ["Shift-Enter", { shiftKey: true }, undefined],
+    ["Ctrl-O", { ctrlKey: true }, "macos" as const],
+  ] as const) {
+    it(`keeps checkbox focus authoritative for ${name}`, () => {
+      mount("immersive", "- [ ] 文本\n\n正文\n", { platform });
+      const line = editor.view.state.doc.line(1);
+      const checkbox =
+        editor.view.contentDOM.querySelector<HTMLInputElement>(
+          "input.cm-nicole-checkbox-input",
+        );
+      if (!checkbox) throw new Error("checkbox was not rendered");
+      editor.view.dispatch({ selection: { anchor: line.from + 6 } });
+      checkbox.focus();
+
+      key(editor.view, name === "Ctrl-O" ? "o" : "Enter", eventInit);
+
+      expect(editor.view.state.doc.toString()).toBe("- [ ] 文本\n\n正文\n");
+      expect(editor.view.contentDOM.contains(document.activeElement)).toBe(true);
+    });
+  }
+
+  for (const pair of ["()", "[]", "{}", "\"\"", "''"]) {
+    it(`deletes a matching ${pair} pair with Backspace`, () => {
+      mount("immersive", `前${pair}后\n`);
+      editor.view.dispatch({ selection: { anchor: 2 } });
+
+      key(editor.view, "Backspace");
+
+      expect(editor.view.state.doc.toString()).toBe("前后\n");
+      expect(editor.view.state.selection.main.head).toBe(1);
+    });
+  }
+
+  it("keeps syntax-left motion for a mid-line Alt-ArrowLeft on Linux", () => {
+    mount(
+      "immersive",
+      "前缀 **粗体** 中间 [链接](http://a.b) 后缀 `code` 尾巴 foo(bar, baz)\n",
+      { platform: "linux" },
+    );
+    const target = editor.view.state.doc.line(1);
+    editor.view.dispatch({ selection: { anchor: target.to } });
+
+    for (let index = 0; index < 5; index++) {
+      key(editor.view, "ArrowLeft", { altKey: true });
+    }
+
+    expect(editor.view.state.selection.main.head).toBe(17);
+  });
+
+  for (const [name, text, lineNumber, offset, expected] of [
+    [
+      "a continuation quote line",
+      "> 甲\n> 乙\n",
+      2,
+      2,
+      "> 甲\n>\n> 乙\n",
+    ],
+    [
+      "a continuation list item",
+      "- 甲\n- 乙\n",
+      2,
+      2,
+      "- 甲\n-\n- 乙\n",
+    ],
+    [
+      "a nested list inside a quote",
+      "> 甲\n> - 乙\n",
+      2,
+      4,
+      "> 甲\n> -\n> - 乙\n",
+    ],
+    [
+      "a nested list inside a list",
+      "- 甲\n  - 乙\n",
+      2,
+      4,
+      "- 甲\n  -\n  - 乙\n",
+    ],
+  ] as const) {
+    it(`keeps the baseline Enter behavior on ${name}`, () => {
+      mount("immersive", text);
+      const line = editor.view.state.doc.line(lineNumber);
+      editor.view.dispatch({ selection: { anchor: line.from + offset } });
+
+      key(editor.view, "Enter");
+
+      expect(editor.view.state.doc.toString()).toBe(expected);
     });
   }
 
@@ -712,15 +870,24 @@ describe("immersive mode second-round regressions", () => {
     expect(editor.view.state.selection.main.head).toBe(target.from + 2);
   });
 
-  it("clears a pending parse timer when switching modes", async () => {
+  it("clears a pending parse timer when switching modes", () => {
     const text = longDocumentForTest(55000);
     const offset = text.lastIndexOf("- 恢复列表");
     mount("immersive", text);
+    const setTimer = vi.spyOn(window, "setTimeout");
     editor.view.dispatch({ selection: { anchor: offset } });
+    const parseTimers = setTimer.mock.calls.flatMap((call, index) => {
+      if (call[1] !== 0) return [];
+      return [setTimer.mock.results[index]?.value as number];
+    });
+    const clearTimer = vi.spyOn(window, "clearTimeout");
+
     editor.setMode("live");
 
-    await new Promise<void>((resolve) => setTimeout(resolve, 100));
-    expect(editor.view.state.selection.main.head).toBe(offset);
+    expect(parseTimers.length).toBeGreaterThan(0);
+    expect(
+      clearTimer.mock.calls.some(([timer]) => parseTimers.includes(timer as number)),
+    ).toBe(true);
   });
 
   it("clears a pending parse timer when destroyed", () => {

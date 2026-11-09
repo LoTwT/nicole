@@ -141,7 +141,7 @@ describe("image insertion", () => {
   });
 
   it("puts an image above a block when the ticket is at its content start", () => {
-    const instance = mount({ parent, doc: "- [ ] 文本\n" });
+    const instance = mount({ parent, doc: "- [ ] 文本\n", mode: "immersive" });
     const view = instance.view;
     view.dispatch({ selection: { anchor: 6 } });
     const ticket = ticketAt(instance, 6);
@@ -158,12 +158,33 @@ describe("image insertion", () => {
     ["nested quote", "> > 甲\n", 2],
   ] as const) {
     it(`puts an image above a ${name} when the point is inside its marker`, () => {
-      const instance = mount({ parent, doc: source });
+      const instance = mount({ parent, doc: source, mode: "immersive" });
       const ticket = ticketAt(instance, at);
 
       instance.insertImages(ticket, ["![](a.png)"]);
 
       expect(instance.view.state.doc.toString()).toBe(`![](a.png)\n${source}`);
+    });
+  }
+
+  it("puts an image above an ordered-list block at the content start", () => {
+    const instance = mount({ parent, doc: "1. 文本\n", mode: "immersive" });
+    const ticket = ticketAt(instance, 3);
+
+    instance.insertImages(ticket, ["![](a.png)"]);
+
+    expect(instance.view.state.doc.toString()).toBe("![](a.png)\n1. 文本\n");
+    expect(instance.view.state.selection.main.head).toBe(14);
+  });
+
+  for (const mode of ["live", "source"] as const) {
+    it(`keeps baseline image placement in ${mode} mode`, () => {
+      const instance = mount({ parent, doc: "- 文本\n", mode });
+      const ticket = ticketAt(instance, 2);
+
+      instance.insertImages(ticket, ["![](a.png)"]);
+
+      expect(instance.view.state.doc.toString()).toBe("- ![](a.png)文本\n");
     });
   }
 
