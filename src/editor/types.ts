@@ -57,6 +57,16 @@ export interface CreateEditorOptions {
   resolveImage?: ImageResolver;
   onPasteImage?: PasteImageHandler;
   onChange?: (doc: string) => void;
+  /**
+   * Called on the DOM compositionend event of this view, including a
+   * cancellation that leaves no document change. CodeMirror can also finish a
+   * composition internally (its Safari dead-key fallback) without dispatching
+   * that event, and destroying the view removes this listener; callers that
+   * defer work during a composition need their own recovery for those cases.
+   */
+  onCompositionEnd?: () => void;
+  /** Called on the DOM compositionstart event of this view. */
+  onCompositionStart?: () => void;
 }
 
 export interface EditorHandle {
