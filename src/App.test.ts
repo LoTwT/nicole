@@ -2369,28 +2369,87 @@ describe("single files and dialogs", () => {
 });
 
 describe("theme and accessibility", () => {
-  it("toggles an explicit theme from the sidebar footer", async () => {
+  it("keeps exactly one theme toggle as the sidebar shows and hides", async () => {
+    const themeToggles = () =>
+      [
+        ...host.querySelectorAll<HTMLButtonElement>(
+          'button[aria-label^="切换到"]',
+        ),
+      ];
+    const statusToggle = () =>
+      host.querySelector<HTMLButtonElement>('footer button[aria-label^="切换到"]');
+
     await settle();
-    const startTheme = host.querySelector<HTMLButtonElement>(
-      'button[aria-label="切换到暗色主题"]',
-    );
-    expect(startTheme).not.toBeNull();
     expect(host.querySelector("aside")).toBeNull();
+    expect(statusToggle()).not.toBeNull();
+    expect(themeToggles()).toHaveLength(1);
+
     await openFile();
-    expect(
-      host.querySelector('aside button[aria-label="切换到暗色主题"]'),
-    ).not.toBeNull();
-    const themeButtons = host.querySelectorAll<HTMLButtonElement>(
-      'button[aria-label="切换到暗色主题"]',
-    );
-    expect(themeButtons).toHaveLength(1);
-    expect(
-      host.querySelector('footer button[aria-label^="切换到"]'),
-    ).toBeNull();
-    themeButtons[0]!.click();
+    expect(host.querySelector("aside")).not.toBeNull();
+    expect(statusToggle()).toBeNull();
+    expect(themeToggles()).toHaveLength(1);
+
+    sidebarButton("隐藏侧栏").click();
+    await settle();
+    expect(host.querySelector("aside")).toBeNull();
+    expect(statusToggle()).not.toBeNull();
+    expect(themeToggles()).toHaveLength(1);
+
+    const originalWidth = window.innerWidth;
+    try {
+      window.innerWidth = 800;
+      window.dispatchEvent(new Event("resize"));
+      await settle();
+      expect(host.querySelector("aside")).toBeNull();
+      expect(statusToggle()).not.toBeNull();
+      expect(themeToggles()).toHaveLength(1);
+
+      host.querySelector<HTMLButtonElement>("[data-sidebar-toggle]")!.click();
+      await settle();
+      expect(host.querySelector("aside")).not.toBeNull();
+      expect(statusToggle()).toBeNull();
+      expect(themeToggles()).toHaveLength(1);
+      expect(themeToggles()[0]!.closest("aside")).not.toBeNull();
+
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      );
+      await settle();
+      expect(host.querySelector("aside")).toBeNull();
+      expect(statusToggle()).not.toBeNull();
+      expect(themeToggles()).toHaveLength(1);
+    } finally {
+      window.innerWidth = originalWidth;
+      window.dispatchEvent(new Event("resize"));
+      await settle();
+    }
+
+    statusToggle()!.click();
     await settle();
     expect(document.documentElement.classList.contains("dark")).toBe(true);
     expect(mocks.setTheme).toHaveBeenCalledWith("dark");
+    expect(
+      statusToggle()!.getAttribute("aria-label"),
+    ).toBe("切换到亮色主题");
+  });
+
+  it("puts the only theme toggle in the status bar for a single-file tab", async () => {
+    await settle();
+    pendingFiles = ["/tmp/single.md"];
+    openHandler?.();
+    await settle();
+    dialogButton("只打开这个文件").click();
+    await settle();
+
+    expect(host.querySelector("aside")).toBeNull();
+    const toggles = [
+      ...host.querySelectorAll<HTMLButtonElement>(
+        'button[aria-label="切换到暗色主题"]',
+      ),
+    ];
+    expect(toggles).toHaveLength(1);
+    expect(toggles[0]!.closest("footer")).not.toBeNull();
+    expect(toggles[0]!.className).toContain("size-6");
   });
 
   it("keeps the sidebar theme toggle on a non-Markdown placeholder", async () => {

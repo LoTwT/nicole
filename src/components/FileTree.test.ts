@@ -195,6 +195,34 @@ describe("FileTree", () => {
     expect(host.textContent).toContain("b.md");
   });
 
+  it("expands an empty folder without a placeholder and still starts new files", async () => {
+    const emptyFolder = {
+      name: "empty",
+      path: "empty",
+      isDir: true,
+      isMarkdown: false,
+      size: 0,
+    };
+    mocks.listDirectory.mockImplementation(async (path: string) => ({
+      path,
+      entries: path === "." ? [emptyFolder] : [],
+    }));
+    mountTree();
+    await settle();
+
+    row("empty").click();
+    await settle();
+    expect(mocks.listDirectory).toHaveBeenCalledWith("empty");
+    expect(row("empty").getAttribute("aria-expanded")).toBe("true");
+    expect(host.textContent).not.toContain("空文件夹");
+
+    await treeApi!.startCreate("create-file", "empty");
+    await settle();
+    expect(
+      host.querySelector<HTMLInputElement>('input[aria-label="新建文件"]'),
+    ).not.toBeNull();
+  });
+
   it("uses the native menu for a file and starts an inline rename", async () => {
     mocks.popupNativeMenu.mockResolvedValue("rename");
     mountTree();

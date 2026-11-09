@@ -131,11 +131,15 @@ describe("EmptyState", () => {
     expect(quick.getAttribute("aria-label")).toBe("快速打开 ⌘P");
     expect(quick.getAttribute("title")).toBe("快速打开 ⌘P");
     expect(quick.querySelector("svg")).not.toBeNull();
-    expect(quick.className).toContain("border-[var(--border-default)]");
-    expect(quick.className).toContain("bg-[var(--surface-elevated)]");
+    expect(quick.className).toContain("border-[var(--border-strong)]");
+    expect(quick.className).toContain("bg-[var(--surface-subtle)]");
     expect(quick.className).toContain("text-[var(--text-primary)]");
+    expect(quick.className).toContain("hover:bg-[var(--surface-muted)]");
     expect(quick.className).toContain("px-[14px]");
     expect(quick.className).toContain("py-[7px]");
+    expect(quick.querySelector("svg")!.getAttribute("class")).toContain(
+      "text-[var(--text-secondary)]",
+    );
     quick.click();
     expect(calls.quickOpen).toBe(1);
 

@@ -369,22 +369,22 @@ defineExpose({
       <div class="mt-3 flex flex-wrap items-center justify-center gap-2.5">
         <button
           type="button"
-          class="focus-ring inline-flex items-center gap-1.5 rounded-[var(--radius-control)] border border-[var(--border-default)] bg-[var(--surface-elevated)] px-[14px] py-[7px] text-[12px] text-[var(--text-primary)] hover:bg-[var(--surface-subtle)]"
+          class="focus-ring inline-flex items-center gap-1.5 rounded-[var(--radius-control)] border border-[var(--border-strong)] bg-[var(--surface-subtle)] px-[14px] py-[7px] text-[12px] text-[var(--text-primary)] hover:bg-[var(--surface-muted)]"
           :aria-label="`新建文件 ${newFileKey}`"
           :title="`新建文件 ${newFileKey}`"
           @click="emit('new-file')"
         >
-          <AppIcon name="file-plus" :size="14" class="text-[var(--text-muted)]" />
+          <AppIcon name="file-plus" :size="14" class="text-[var(--text-secondary)]" />
           新建文件
         </button>
         <button
           type="button"
-          class="focus-ring inline-flex items-center gap-1.5 rounded-[var(--radius-control)] border border-[var(--border-default)] bg-[var(--surface-elevated)] px-[14px] py-[7px] text-[12px] text-[var(--text-primary)] hover:bg-[var(--surface-subtle)]"
+          class="focus-ring inline-flex items-center gap-1.5 rounded-[var(--radius-control)] border border-[var(--border-strong)] bg-[var(--surface-subtle)] px-[14px] py-[7px] text-[12px] text-[var(--text-primary)] hover:bg-[var(--surface-muted)]"
           :aria-label="`快速打开 ${quickOpenKey}`"
           :title="`快速打开 ${quickOpenKey}`"
           @click="emit('quick-open')"
         >
-          <AppIcon name="search" :size="14" class="text-[var(--text-muted)]" />
+          <AppIcon name="search" :size="14" class="text-[var(--text-secondary)]" />
           快速打开
         </button>
       </div>

@@ -4396,7 +4396,7 @@ defineExpose({
         :notice="notice?.text ?? null"
         :notice-tone="notice?.tone"
         :notice-detail="notice?.detail"
-        :start-theme="startState"
+        :show-theme-toggle="!sidebarShown"
         :is-dark="isDark"
         @toggle-theme="toggleTheme"
       />

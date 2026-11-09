@@ -16,7 +16,18 @@
   --nicole-caret: var(--reading-caret, var(--text-accent));
   /* Paper needs lavender-200; Ink keeps the darker accent-soft. */
   --nicole-selection: var(--reading-selection, var(--color-lavender-200));
+  /* Paper's accent-soft is only 1.07:1 on the sidebar; the file tree keeps a
+     stronger selected row here without changing the global accent token. */
+  --nicole-file-tree-selected: var(--color-lavender-200);
   --nicole-quote-border: var(--reading-quote-border, var(--border-default));
+  /* @ayingott/theme pairs each accent fill with its own content color. The
+     primary button keeps that pairing, but the dark theme overrides it below. */
+  --nicole-primary-fill: var(--accent-primary);
+  --nicole-primary-fill-hover: var(--accent-primary-hover);
+  --nicole-primary-fill-active: var(--accent-primary-active);
+  --nicole-primary-content: var(--accent-contrast);
+  --nicole-primary-content-hover: var(--accent-contrast-hover);
+  --nicole-primary-content-active: var(--accent-contrast-active);
   /* Task boxes need 3:1 against the canvas in both Paper and Ink. The theme
      package has no reading-checkbox layer yet, so each value keeps its
      --reading-checkbox-* hook and falls back to a semantic variable.
@@ -32,6 +43,17 @@
 
 .dark {
   --nicole-selection: var(--reading-selection, var(--accent-soft));
+  --nicole-file-tree-selected: var(--accent-soft);
+  /* Ink's accent fill is lavender-700 (2.98:1 against the canvas) and its
+     hover is darker still (2.2:1). A light fill is more visible on the dark
+     canvas and keeps lavender-900 content at 6.19:1; hover and pressed states
+     only get lighter. Readability beats keeping the theme's dim pairing. */
+  --nicole-primary-fill: var(--color-lavender-300);
+  --nicole-primary-fill-hover: var(--color-lavender-200);
+  --nicole-primary-fill-active: var(--color-lavender-100);
+  --nicole-primary-content: var(--color-lavender-900);
+  --nicole-primary-content-hover: var(--color-lavender-900);
+  --nicole-primary-content-active: var(--color-lavender-900);
 }
 
 html,
@@ -133,19 +155,19 @@ body {
  * component that renders a primary button.
  */
 .button-primary {
-  border-color: var(--accent-primary);
-  background-color: var(--accent-primary);
-  color: var(--accent-contrast);
+  border-color: var(--nicole-primary-fill);
+  background-color: var(--nicole-primary-fill);
+  color: var(--nicole-primary-content);
 }
 
 .button-primary:hover:not(:disabled) {
-  border-color: var(--accent-primary-hover);
-  background-color: var(--accent-primary-hover);
-  color: var(--accent-contrast-hover);
+  border-color: var(--nicole-primary-fill-hover);
+  background-color: var(--nicole-primary-fill-hover);
+  color: var(--nicole-primary-content-hover);
 }
 
 .button-primary:active:not(:disabled) {
-  border-color: var(--accent-primary-active);
-  background-color: var(--accent-primary-active);
-  color: var(--accent-contrast-active);
+  border-color: var(--nicole-primary-fill-active);
+  background-color: var(--nicole-primary-fill-active);
+  color: var(--nicole-primary-content-active);
 }

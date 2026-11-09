@@ -11,7 +11,7 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
-function mount(startTheme: boolean, isDark = false) {
+function mount(showThemeToggle: boolean, isDark = false) {
   const onToggle = vi.fn();
   document.body.innerHTML = '<div id="app"></div>';
   app = createApp(
@@ -20,7 +20,7 @@ function mount(startTheme: boolean, isDark = false) {
         h(StatusBar, {
           saveStatus: null,
           notice: null,
-          startTheme,
+          showThemeToggle,
           isDark,
           onToggleTheme: onToggle,
         }),
@@ -31,7 +31,7 @@ function mount(startTheme: boolean, isDark = false) {
 }
 
 describe("StatusBar", () => {
-  it("puts the start-page theme toggle in the bottom row below the divider", () => {
+  it("puts the fallback theme toggle in the bottom row below the divider", () => {
     const { host, onToggle } = mount(true);
     const footer = host.querySelector("footer")!;
     const theme = footer.querySelector<HTMLButtonElement>(
@@ -51,5 +51,15 @@ describe("StatusBar", () => {
     app?.unmount();
     const { host } = mount(false);
     expect(host.querySelector("button")).toBeNull();
+  });
+
+  it("keeps the toggle from squeezing or overlapping status text", () => {
+    const { host } = mount(true);
+    const footer = host.querySelector("footer")!;
+    const toggleRow = footer.querySelector<HTMLElement>("div")!;
+    const statusRow = footer.querySelector<HTMLElement>("span")!;
+    expect(toggleRow.className).toContain("shrink-0");
+    expect(statusRow.className).toContain("min-w-0");
+    expect(statusRow.className).toContain("flex-1");
   });
 });
