@@ -1024,8 +1024,6 @@ const codeBlockBackground = layer({
 });
 
 interface SelectionClipGeometry {
-  width: number;
-  height: number;
   left: number;
   right: number;
 }
@@ -1033,7 +1031,9 @@ interface SelectionClipGeometry {
 // CodeMirror's selection rectangles span the whole content box, including its
 // 32px side padding. Clip the layer to the same 16px inset as the code
 // backgrounds so a multi-line selection does not extend past their rounded
-// edges. The layer has no intrinsic size, so give it the scroll size first.
+// edges. Keep the layer at its natural zero size: sizing it would enlarge the
+// scroller. A polygon with a very tall vertical range clips every line without
+// giving the element a box.
 const selectionLayerClip = ViewPlugin.fromClass(
   class {
     private readonly request = {
@@ -1044,16 +1044,10 @@ const selectionLayerClip = ViewPlugin.fromClass(
         const content = view.contentDOM.getBoundingClientRect();
         const scroller = view.scrollDOM.getBoundingClientRect();
         const baseLeft = scroller.left - view.scrollDOM.scrollLeft * view.scaleX;
-        const width = view.scrollDOM.scrollWidth;
-        const height = view.scrollDOM.scrollHeight;
-        if (width <= 0 || height <= 0 || content.width <= 0) return null;
-        const left = content.left - baseLeft + CODE_BLOCK_SIDE_MARGIN;
+        if (content.width <= 0) return null;
         return {
-          width,
-          height,
-          left,
-          right:
-            width - (content.right - baseLeft) + CODE_BLOCK_SIDE_MARGIN,
+          left: content.left - baseLeft + CODE_BLOCK_SIDE_MARGIN,
+          right: content.right - baseLeft - CODE_BLOCK_SIDE_MARGIN,
         };
       },
       write: (geometry: SelectionClipGeometry | null, view: EditorView) => {
@@ -1061,11 +1055,9 @@ const selectionLayerClip = ViewPlugin.fromClass(
         const layer =
           view.scrollDOM.querySelector<HTMLElement>(".cm-selectionLayer");
         if (!layer) return;
-        const width = `${geometry.width}px`;
-        const height = `${geometry.height}px`;
-        const clip = `inset(0px ${Math.max(0, geometry.right)}px 0px ${Math.max(0, geometry.left)}px)`;
-        if (layer.style.width !== width) layer.style.width = width;
-        if (layer.style.height !== height) layer.style.height = height;
+        const left = geometry.left;
+        const right = Math.max(left, geometry.right);
+        const clip = `polygon(${left}px -1e7px, ${right}px -1e7px, ${right}px 1e7px, ${left}px 1e7px)`;
         if (layer.style.clipPath !== clip) layer.style.clipPath = clip;
       },
     };
@@ -1075,11 +1067,7 @@ const selectionLayerClip = ViewPlugin.fromClass(
     }
 
     update(update: ViewUpdate) {
-      if (
-        update.geometryChanged ||
-        update.docChanged ||
-        update.viewportChanged
-      ) {
+      if (update.geometryChanged || update.viewportChanged) {
         update.view.requestMeasure(this.request);
       }
     }
@@ -1244,9 +1232,6 @@ const editorTheme = EditorView.theme({
     {
       backgroundColor: "var(--nicole-selection)",
     },
-  // The selection layer is given the full scroll size to clip it; it must not
-  // become a hit target in the content margins.
-  ".cm-selectionLayer": { pointerEvents: "none" },
   ".cm-activeLine": { backgroundColor: "transparent" },
   ".cm-gutters": { display: "none" },
   ".cm-nicole-h1": {

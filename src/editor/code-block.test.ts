@@ -281,7 +281,7 @@ it("insets backgrounds and follows the text start inside a quote", async () => {
   ).toBe(584);
 });
 
-it("clips the selection layer to the same horizontal band", async () => {
+it("clips the zero-sized selection layer with a polygon", async () => {
   editor = createEditor({ parent, doc, mode: "live" });
   const view = editor.view;
   await settle();
@@ -292,14 +292,6 @@ it("clips the selection layer to the same horizontal band", async () => {
   vi.spyOn(view.scrollDOM, "getBoundingClientRect").mockReturnValue(
     rect(0, 700),
   );
-  Object.defineProperty(view.scrollDOM, "scrollWidth", {
-    configurable: true,
-    value: 700,
-  });
-  Object.defineProperty(view.scrollDOM, "scrollHeight", {
-    configurable: true,
-    value: 600,
-  });
 
   view.dispatch({ changes: { from: view.state.doc.length, insert: "\n" } });
   await settle();
@@ -308,17 +300,21 @@ it("clips the selection layer to the same horizontal band", async () => {
   const layer = view.scrollDOM.querySelector<HTMLElement>(
     ".cm-selectionLayer",
   )!;
-  expect(layer.style.width).toBe("700px");
-  expect(layer.style.height).toBe("600px");
-  const insets = (value: string) =>
-    (value.match(/-?\d+(?:\.\d+)?/g) ?? []).map(Number);
-  expect(insets(layer.style.clipPath)).toEqual([0, 116, 0, 116]);
+  expect(layer.style.width).toBe("");
+  expect(layer.style.height).toBe("");
+  const polygonX = (value: string) => {
+    const numbers = (
+      value.match(/-?\d+(?:\.\d+)?(?:e[+-]?\d+)?/gi) ?? []
+    ).map(Number);
+    return [numbers[0], numbers[2], numbers[4], numbers[6]];
+  };
+  expect(polygonX(layer.style.clipPath)).toEqual([116, 584, 584, 116]);
 
   content.mockReturnValue(rect(120, 620));
   view.dispatch({ changes: { from: view.state.doc.length, insert: "\n" } });
   await settle();
   await settle();
-  expect(insets(layer.style.clipPath)).toEqual([0, 96, 0, 136]);
+  expect(polygonX(layer.style.clipPath)).toEqual([136, 604, 604, 136]);
 });
 
 it("decorates only code lines inside the visible ranges", async () => {
