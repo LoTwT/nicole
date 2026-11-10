@@ -269,7 +269,10 @@ describe("immersive mode line-start boundaries", () => {
 
     editor.view.dispatch({ changes: { from: 0, insert: "- " } });
 
-    await until(() => editor.view.state.selection.main.head === 2);
+    await until(
+      () => editor.view.state.selection.main.head === 2,
+      "the corrected selection",
+    );
     expect(editor.view.state.selection.main.head).toBe(2);
   });
 
@@ -459,6 +462,7 @@ describe("immersive mode long-document corrections", () => {
 
     await until(
       () => editor.view.state.selection.main.head === target.from + 2,
+      "the corrected selection",
     );
     expect(editor.view.state.selection.main.head).toBe(target.from + 2);
   });
@@ -473,6 +477,7 @@ describe("immersive mode long-document corrections", () => {
 
     await until(
       () => editor.view.state.selection.main.head === target.from + 2,
+      "the corrected selection",
     );
     expect(editor.view.state.selection.main.head).toBe(target.from + 2);
   });
@@ -487,6 +492,7 @@ describe("immersive mode long-document corrections", () => {
 
     await until(
       () => editor.view.state.selection.main.head === target.from + 2,
+      "the corrected selection",
       10000,
     );
     expect(editor.view.state.selection.main.head).toBe(target.from + 2);
@@ -505,7 +511,10 @@ describe("immersive mode long-document corrections", () => {
     editor.view.dispatch({ effects: StateEffect.appendConfig.of(observer) });
     editor.view.dispatch({ selection: { anchor: heading.from } });
 
-    await until(() => editor.view.state.selection.main.head === 2);
+    await until(
+      () => editor.view.state.selection.main.head === 2,
+      "the corrected selection",
+    );
     expect(editor.view.scrollDOM.scrollTop).toBe(120);
     expect(transactions).not.toContain(true);
   });
@@ -904,6 +913,7 @@ describe("immersive mode second-round regressions", () => {
 
     await until(
       () => editor.view.state.selection.main.head === target.from + 2,
+      "the corrected selection",
       10000,
     );
     expect(editor.view.state.selection.main.head).toBe(target.from + 2);
@@ -923,6 +933,7 @@ describe("immersive mode second-round regressions", () => {
     composition(editor.view, "compositionend");
     await until(
       () => editor.view.state.selection.main.head === target.from + 2,
+      "the corrected selection",
       10000,
     );
     expect(editor.view.state.selection.main.head).toBe(target.from + 2);
@@ -992,6 +1003,7 @@ describe("immersive mode second-round regressions", () => {
 
     await until(
       () => editor.view.state.selection.main.head === target.from + 2,
+      "the corrected selection",
       10000,
     );
 

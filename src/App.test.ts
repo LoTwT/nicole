@@ -1770,24 +1770,30 @@ describe("autosave during IME composition", () => {
     });
     app = createApp(App);
     app.mount(host);
-    await vi.waitFor(() => {
-      expect(dialogButton("逐个查看")).toBeTruthy();
-    });
+    // vi.waitFor advances fake timers by its interval on every check, so
+    // queued editor timers run while the condition is being awaited.
+    await vi.waitFor(
+      () => {
+        expect(dialogButton("逐个查看")).toBeTruthy();
+      },
+      { timeout: 5000 },
+    );
     dialogButton("逐个查看").click();
-    await vi.waitFor(() => {
-      expect(host.querySelector("footer")?.textContent).toContain(
-        "已暂停自动保存",
-      );
-    });
+    await vi.waitFor(
+      () => {
+        expect(host.querySelector("footer")?.textContent).toContain(
+          "已暂停自动保存",
+        );
+      },
+      { timeout: 5000 },
+    );
 
     startComposition();
     endComposition();
-    await vi.waitFor(() => {
-      expect(host.querySelector("footer")?.textContent).toContain(
-        "已暂停自动保存",
-      );
-    });
+    await settle();
+    expect(host.querySelector("footer")?.textContent).toContain("已暂停自动保存");
     await vi.advanceTimersByTimeAsync(3000);
+    expect(host.querySelector("footer")?.textContent).toContain("已暂停自动保存");
     expect(mocks.writeFile).not.toHaveBeenCalled();
   });
 
