@@ -35,9 +35,11 @@ import {
 import {
   Decoration,
   EditorView,
+  RectangleMarker,
   ViewPlugin,
   WidgetType,
   keymap,
+  layer,
   runScopeHandlers,
   type DecorationSet,
   type ViewUpdate,
@@ -851,6 +853,227 @@ function buildDecorations(
   return builder.finish();
 }
 
+interface CodeBlockChunk {
+  /** Start of the first visible line of this chunk. */
+  from: number;
+  /** End of the last visible line of this chunk. */
+  to: number;
+  startsBlock: boolean;
+  endsBlock: boolean;
+}
+
+const CODE_BLOCK_SIDE_MARGIN = 16;
+
+export function collectCodeBlocks(
+  view: EditorView,
+  tree = syntaxTree(view.state),
+): {
+  decorations: DecorationSet;
+  chunks: readonly CodeBlockChunk[];
+} {
+  const { state } = view;
+  // A node that ends at the parse frontier may still grow as the background
+  // parser continues, so its bottom corner must not be rounded yet.
+  const treeComplete = tree.length >= state.doc.length;
+  const lines: { from: number; decoration: Decoration }[] = [];
+  const chunks: CodeBlockChunk[] = [];
+  const codeLine = Decoration.line({ class: "cm-nicole-code-line" });
+
+  for (const visible of view.visibleRanges) {
+    if (visible.from >= visible.to) continue;
+    const visibleFirst = state.doc.lineAt(visible.from).number;
+    const visibleLast = state.doc.lineAt(visible.to - 1).number;
+
+    tree.iterate({
+      from: visible.from,
+      to: visible.to,
+      enter: (node) => {
+        if (node.name !== "FencedCode" && node.name !== "CodeBlock") return;
+        const blockFirst = state.doc.lineAt(node.from).number;
+        const blockLast = state.doc.lineAt(
+          Math.max(node.from, node.to - 1),
+        ).number;
+        const first = Math.max(blockFirst, visibleFirst);
+        const last = Math.min(blockLast, visibleLast);
+        if (last < first) return false;
+
+        for (let number = first; number <= last; number++) {
+          const line = state.doc.line(number);
+          lines.push({ from: line.from, decoration: codeLine });
+        }
+        chunks.push({
+          from: state.doc.line(first).from,
+          to: state.doc.line(last).to,
+          startsBlock: first === blockFirst,
+          endsBlock:
+            last === blockLast && (node.to < tree.length || treeComplete),
+        });
+        return false;
+      },
+    });
+  }
+
+  lines.sort((a, b) => a.from - b.from);
+  const builder = new RangeSetBuilder<Decoration>();
+  for (const line of lines) {
+    builder.add(line.from, line.from, line.decoration);
+  }
+  return { decorations: builder.finish(), chunks };
+}
+
+const codeBlockPlugin = ViewPlugin.fromClass(
+  class {
+    decorations: DecorationSet;
+    chunks: readonly CodeBlockChunk[];
+    // Mirrors preview(): a composition must not rebuild the line under the
+    // candidate window, so map what is already drawn and refresh afterwards.
+    private stale = false;
+
+    constructor(view: EditorView) {
+      const built = collectCodeBlocks(view);
+      this.decorations = built.decorations;
+      this.chunks = built.chunks;
+    }
+
+    update(update: ViewUpdate) {
+      const treeChanged =
+        syntaxTree(update.startState) !== syntaxTree(update.state);
+      const rebuild =
+        update.docChanged || update.viewportChanged || treeChanged;
+
+      if (update.view.compositionStarted) {
+        if (update.docChanged) {
+          this.decorations = this.decorations.map(update.changes);
+          this.chunks = this.chunks
+            .map((chunk) => ({
+              ...chunk,
+              from: update.changes.mapPos(chunk.from, 1),
+              to: update.changes.mapPos(chunk.to, -1),
+            }))
+            .filter((chunk) => chunk.from <= chunk.to);
+        }
+        this.stale ||= rebuild;
+        return;
+      }
+
+      if (this.stale || rebuild) {
+        this.stale = false;
+        const built = collectCodeBlocks(update.view);
+        this.decorations = built.decorations;
+        this.chunks = built.chunks;
+      }
+    }
+  },
+  { decorations: (value) => value.decorations },
+);
+
+// A layer is painted behind the content and, because it is registered after
+// CodeMirror's selection layer, behind the selection too. Line backgrounds
+// would otherwise cover a selection that crosses a code block.
+const codeBlockBackground = layer({
+  above: false,
+  class: "cm-nicole-code-bg-layer",
+  update(update) {
+    return (
+      update.docChanged ||
+      update.viewportChanged ||
+      syntaxTree(update.startState) !== syntaxTree(update.state)
+    );
+  },
+  markers(view) {
+    const chunks = view.plugin(codeBlockPlugin)?.chunks ?? [];
+    if (chunks.length === 0) return [];
+    const content = view.contentDOM.getBoundingClientRect();
+    const scroller = view.scrollDOM.getBoundingClientRect();
+    const baseLeft = scroller.left - view.scrollDOM.scrollLeft * view.scaleX;
+    const baseTop = scroller.top - view.scrollDOM.scrollTop * view.scaleY;
+    // lineBlockAt() is relative to the document, before the content's top
+    // padding; the layer is positioned against the content box in the viewport.
+    const contentTop = content.top + view.documentPadding.top;
+    const right = content.right - CODE_BLOCK_SIDE_MARGIN;
+    const markers: RectangleMarker[] = [];
+
+    for (const chunk of chunks) {
+      const first = view.lineBlockAt(chunk.from);
+      const last = view.lineBlockAt(chunk.to);
+      // Keep 16px between the text and the outer edge of the background. A
+      // blockquote line has its border and gutter before the text, so measuring
+      // from the line start also keeps the quote rule outside the background.
+      const textLeft =
+        view.coordsAtPos(chunk.from, 1)?.left ?? content.left + 32;
+      const left = textLeft - CODE_BLOCK_SIDE_MARGIN;
+      const className = [
+        "cm-nicole-code-bg",
+        chunk.startsBlock ? "cm-nicole-code-bg-start" : "",
+        chunk.endsBlock ? "cm-nicole-code-bg-end" : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
+      markers.push(
+        new RectangleMarker(
+          className,
+          left - baseLeft,
+          contentTop + first.top - baseTop,
+          Math.max(0, right - left),
+          last.bottom - first.top,
+        ),
+      );
+    }
+    return markers;
+  },
+});
+
+interface SelectionClipGeometry {
+  left: number;
+  right: number;
+}
+
+// CodeMirror's selection rectangles span the whole content box, including its
+// 32px side padding. Clip the layer to the same 16px inset as the code
+// backgrounds so a multi-line selection does not extend past their rounded
+// edges. Keep the layer at its natural zero size: sizing it would enlarge the
+// scroller. A polygon with a very tall vertical range clips every line without
+// giving the element a box.
+const selectionLayerClip = ViewPlugin.fromClass(
+  class {
+    private readonly request = {
+      read: (view: EditorView): SelectionClipGeometry | null => {
+        const layer =
+          view.scrollDOM.querySelector<HTMLElement>(".cm-selectionLayer");
+        if (!layer) return null;
+        const content = view.contentDOM.getBoundingClientRect();
+        const scroller = view.scrollDOM.getBoundingClientRect();
+        const baseLeft = scroller.left - view.scrollDOM.scrollLeft * view.scaleX;
+        if (content.width <= 0) return null;
+        return {
+          left: content.left - baseLeft + CODE_BLOCK_SIDE_MARGIN,
+          right: content.right - baseLeft - CODE_BLOCK_SIDE_MARGIN,
+        };
+      },
+      write: (geometry: SelectionClipGeometry | null, view: EditorView) => {
+        if (!geometry) return;
+        const layer =
+          view.scrollDOM.querySelector<HTMLElement>(".cm-selectionLayer");
+        if (!layer) return;
+        const left = geometry.left;
+        const right = Math.max(left, geometry.right);
+        const clip = `polygon(${left}px -1e7px, ${right}px -1e7px, ${right}px 1e7px, ${left}px 1e7px)`;
+        if (layer.style.clipPath !== clip) layer.style.clipPath = clip;
+      },
+    };
+
+    constructor(view: EditorView) {
+      view.requestMeasure(this.request);
+    }
+
+    update(update: ViewUpdate) {
+      if (update.geometryChanged || update.viewportChanged) {
+        update.view.requestMeasure(this.request);
+      }
+    }
+  },
+);
+
 function preview(reveal: boolean, resolveImage: ImageResolver): Extension {
   const plugin = ViewPlugin.fromClass(
     class {
@@ -973,6 +1196,25 @@ const editorTheme = EditorView.theme({
   },
   "&.cm-focused": { outline: "none" },
   ".cm-line": { padding: "0" },
+  // Code blocks are monospace as a whole, including fences, language labels
+  // and the indentation of indented code.
+  ".cm-nicole-code-line": { fontFamily: "var(--reading-font-mono)" },
+  // The background itself is drawn in a layer below the selection layer. This
+  // only clears the inline-code style on ordinary spans; search, selection-match
+  // and bracket-match highlights keep their own background.
+  ".cm-nicole-code-line span:not(.cm-searchMatch):not(.cm-searchMatch-selected):not(.cm-selectionMatch):not(.cm-matchingBracket):not(.cm-nonmatchingBracket)":
+    { backgroundColor: "transparent" },
+  ".cm-nicole-code-bg": {
+    backgroundColor: "var(--reading-code-bg)",
+  },
+  ".cm-nicole-code-bg-start": {
+    borderTopLeftRadius: "var(--radius-control)",
+    borderTopRightRadius: "var(--radius-control)",
+  },
+  ".cm-nicole-code-bg-end": {
+    borderBottomLeftRadius: "var(--radius-control)",
+    borderBottomRightRadius: "var(--radius-control)",
+  },
   ".cm-cursor, .cm-dropCursor": {
     borderLeftColor: "var(--nicole-caret)",
     borderLeftWidth: "2px",
@@ -1423,6 +1665,9 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     EditorView.lineWrapping,
     markdown({ base: markdownLanguage }),
     syntaxHighlighting(highlightStyle),
+    codeBlockPlugin,
+    codeBlockBackground,
+    selectionLayerClip,
     editorTheme,
     createCommandKeymap(enabledCommands, platform),
     imageHandlers(onPasteImage, createTicketAt),
