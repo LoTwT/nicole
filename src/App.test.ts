@@ -576,7 +576,7 @@ beforeEach(async () => {
   // mocks; otherwise the old instance keeps reading the new values.
   await vi.waitFor(
     () => expect(mocks.takePendingOpenedFiles).toHaveBeenCalled(),
-    { interval: 1, timeout: 5000 },
+    { interval: 1, timeout: 4000 },
   );
 });
 
@@ -1776,7 +1776,7 @@ describe("autosave during IME composition", () => {
       () => {
         expect(dialogButton("逐个查看")).toBeTruthy();
       },
-      { timeout: 5000 },
+      { timeout: 4000 },
     );
     dialogButton("逐个查看").click();
     await vi.waitFor(
@@ -1785,7 +1785,7 @@ describe("autosave during IME composition", () => {
           "已暂停自动保存",
         );
       },
-      { timeout: 5000 },
+      { timeout: 4000 },
     );
 
     startComposition();

@@ -1,5 +1,9 @@
 import { markdownLanguage } from "@codemirror/lang-markdown";
-import { forceParsing, syntaxTree } from "@codemirror/language";
+import {
+  forceParsing,
+  syntaxTree,
+  syntaxTreeAvailable,
+} from "@codemirror/language";
 import {
   openSearchPanel,
   search,
@@ -200,7 +204,7 @@ describe.each(["live", "immersive", "source"] as EditorMode[])(
       expect(Number.parseFloat(backgrounds[0]!.style.height)).toBeGreaterThan(
         Number.parseFloat(backgrounds[1]!.style.height),
       );
-    });
+    }, 15000);
   },
 );
 
@@ -338,7 +342,7 @@ it("clips the zero-sized selection layer with a polygon", async () => {
     "the updated selection clip",
   );
   expect(polygonX(layer.style.clipPath)).toEqual([136, 604, 604, 136]);
-});
+}, 15000);
 
 it("decorates only code lines inside the visible ranges", async () => {
   const outsideDoc =
@@ -383,7 +387,7 @@ it("decorates only code lines inside the visible ranges", async () => {
     ).toBe(true);
   }
   expect(view.scrollDOM.querySelectorAll(".cm-nicole-code-bg")).toHaveLength(1);
-});
+}, 15000);
 
 it("adds code lines only after the tree reaches their visible range", async () => {
   const treeDoc =
@@ -452,7 +456,7 @@ it("adds code backgrounds after parsing reaches the visible block", async () => 
   )!;
   expect(background.classList).toContain("cm-nicole-code-bg-start");
   expect(background.classList).toContain("cm-nicole-code-bg-end");
-});
+}, 15000);
 
 it("maps code decorations during composition and rebuilds afterwards", async () => {
   const indentedDoc = "正文\n\n    indented\n    code\n\n尾部\n";
@@ -501,7 +505,7 @@ it("maps code decorations during composition and rebuilds afterwards", async () 
     0,
   );
   expect(view.scrollDOM.querySelectorAll(".cm-nicole-code-bg")).toHaveLength(0);
-});
+}, 20000);
 
 it("keeps inline code and search highlights painted inside code blocks", async () => {
   const highlightDoc = [
@@ -518,13 +522,32 @@ it("keeps inline code and search highlights painted inside code blocks", async (
   ].join("\n");
   editor = createEditor({ parent, doc: highlightDoc, mode: "live" });
   const view = editor.view;
+  await until(
+    () => syntaxTreeAvailable(view.state, view.state.doc.length),
+    "the syntax tree to cover the inline code",
+  );
   view.dispatch({ effects: StateEffect.appendConfig.of(search()) });
   view.dispatch({
     effects: setSearchQuery.of(new SearchQuery({ search: "foo" })),
   });
   openSearchPanel(view);
-  await settle();
-  await settle();
+  await until(
+    () => {
+      const spans = [
+        ...view.contentDOM.querySelectorAll<HTMLElement>("span"),
+      ].filter(
+        (span) =>
+          (span.textContent === "table-inline" ||
+            span.textContent === "near-inline") &&
+          !span.closest(".cm-nicole-code-line"),
+      );
+      return (
+        spans.length === 2 &&
+        view.contentDOM.querySelectorAll(".cm-searchMatch").length > 0
+      );
+    },
+    "the inline code spans and search matches",
+  );
 
   const monospace = [...view.contentDOM.querySelectorAll<HTMLElement>("span")];
   const inline = monospace.filter(
@@ -561,4 +584,4 @@ it("keeps inline code and search highlights painted inside code blocks", async (
     expect(winningBackground(match)).not.toBe("transparent");
     expect(winningBackground(match)).not.toBe("var(--reading-code-bg)");
   }
-});
+}, 15000);

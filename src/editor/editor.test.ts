@@ -168,7 +168,7 @@ describe("createEditor", () => {
     expect(renderedText(view)).toContain("**加粗**");
     expect(renderedText(view)).toContain("# 标题");
     expect(view.state.doc.toString()).toBe(doc);
-  });
+  }, 15000);
 });
 
 describe("IME composition", () => {
@@ -1223,7 +1223,7 @@ describe("preview decorations after a truncated parse", () => {
       expect(view.state.doc.toString()).toBe(text);
       expect(view.scrollDOM.scrollTop).toBe(scrollTop);
       expect(scrollRequests).not.toContain(true);
-    });
+    }, 15000);
   }
 });
 

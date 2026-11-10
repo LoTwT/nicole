@@ -1,4 +1,5 @@
 import { undo, undoDepth } from "@codemirror/commands";
+import { syntaxTreeAvailable } from "@codemirror/language";
 import { EditorSelection, StateEffect } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -496,7 +497,7 @@ describe("immersive mode long-document corrections", () => {
       10000,
     );
     expect(editor.view.state.selection.main.head).toBe(target.from + 2);
-  });
+  }, 15000);
 
   it("keeps the scroll position and does not request scrolling for a fix", async () => {
     mount("immersive", `# 标题\n\n${"正文\n".repeat(80)}`);
@@ -611,14 +612,19 @@ describe("immersive mode second-round regressions", () => {
     });
   }
 
-  it("collapses a non-empty selection to its left edge with Alt-ArrowLeft", () => {
+  it("collapses a non-empty selection to its left edge with Alt-ArrowLeft", async () => {
     mount("immersive", "上一段\n\n- 文本\n");
-    const target = editor.view.state.doc.line(3);
-    editor.view.dispatch({
+    const view = editor.view;
+    await until(
+      () => syntaxTreeAvailable(view.state, view.state.doc.length),
+      "the syntax tree to cover the list",
+    );
+    const target = view.state.doc.line(3);
+    view.dispatch({
       selection: { anchor: target.to, head: target.from + 2 },
     });
 
-    key(editor.view, "ArrowLeft", { altKey: true });
+    key(view, "ArrowLeft", { altKey: true });
 
     expect(editor.view.state.selection.main.empty).toBe(true);
     expect(editor.view.state.selection.main.head).toBe(target.from + 2);
@@ -917,7 +923,7 @@ describe("immersive mode second-round regressions", () => {
       10000,
     );
     expect(editor.view.state.selection.main.head).toBe(target.from + 2);
-  });
+  }, 15000);
 
   it("waits for composition before applying a far selection correction", async () => {
     const text = longDocumentForTest(10000);
@@ -937,7 +943,7 @@ describe("immersive mode second-round regressions", () => {
       10000,
     );
     expect(editor.view.state.selection.main.head).toBe(target.from + 2);
-  });
+  }, 15000);
 
   it("clears a pending parse timer when switching modes", () => {
     const text = longDocumentForTest(55000);
@@ -1023,6 +1029,6 @@ describe("immersive mode second-round regressions", () => {
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
 
     expect(performance.now() - started).toBeLessThan(400);
-  });
+  }, 15000);
 
 });

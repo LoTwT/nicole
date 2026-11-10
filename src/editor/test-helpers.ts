@@ -2,7 +2,7 @@
 export async function until(
   predicate: () => boolean,
   description: string,
-  timeout = 5000,
+  timeout = 4000,
 ) {
   const started = Date.now();
   while (!predicate()) {
