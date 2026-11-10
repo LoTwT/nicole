@@ -4566,6 +4566,29 @@ describe("command palette", () => {
     }
   });
 
+  it("hides save while a preview tab is active", async () => {
+    await setupWorkspace({ "a.md": "# A\n", "cover.png": "png" });
+    await openPath("/notes/a.md");
+    pressPaletteShortcut("P");
+    await settle();
+    expect(paletteOffers("立即保存")).toBe(true);
+    await closePalette();
+
+    treeRow("cover.png").click();
+    await settle();
+    expect(tabNamed("cover.png").getAttribute("aria-selected")).toBe("true");
+    pressPaletteShortcut("P");
+    await settle();
+    expect(paletteOffers("立即保存")).toBe(false);
+    await closePalette();
+
+    tabNamed("a.md").click();
+    await settle();
+    pressPaletteShortcut("P");
+    await settle();
+    expect(paletteOffers("立即保存")).toBe(true);
+  });
+
   it("keeps save for a single-file Markdown tab without a workspace", async () => {
     await settle();
     pendingFiles = ["/tmp/single.md"];
