@@ -417,8 +417,10 @@ function focusAfterRemovedSidebarControl(
 // was before it replaced that part of the page. Esc and outside clicks are
 // dismissed by the user, not by toggling the sidebar, and return there first.
 let overlaySidebarReturnFocus: HTMLElement | null = null;
-let dismissedOverlayReturnFocus: HTMLElement | null = null;
-let restoreOverlayReturnFocus = false;
+let overlayDismissal: {
+  origin: HTMLElement | null;
+  removed: HTMLElement | null;
+} | null = null;
 
 watch(overlaySidebar, (open) => {
   if (open) {
@@ -427,26 +429,46 @@ watch(overlaySidebar, (open) => {
 });
 
 function dismissOverlaySidebar() {
-  restoreOverlayReturnFocus = true;
-  dismissedOverlayReturnFocus = overlaySidebarReturnFocus;
+  if (!overlaySidebar.value || isWide.value) {
+    return;
+  }
+  // The dismissal owns its focus restoration. It runs even when closing and
+  // reopening the overlay in one tick leaves sidebarShown unchanged, so no
+  // stale origin can be applied to a later visibility change.
+  const dismissal = {
+    origin: overlaySidebarReturnFocus,
+    removed: focusedControl(),
+  };
+  overlayDismissal = dismissal;
   overlaySidebar.value = false;
+  void nextTick().then(() => {
+    if (overlayDismissal !== dismissal) {
+      return;
+    }
+    overlayDismissal = null;
+    if (overlaySidebar.value) {
+      return;
+    }
+    if (focusedControl() !== null) {
+      return;
+    }
+    if (dismissal.origin?.isConnected) {
+      dismissal.origin.focus();
+      return;
+    }
+    focusAfterRemovedSidebarControl(dismissal.removed);
+  });
 }
 
 watch(sidebarShown, () => {
   const removed = focusedControl();
   void nextTick().then(() => {
-    const origin = restoreOverlayReturnFocus
-      ? dismissedOverlayReturnFocus
-      : undefined;
-    const returnToOrigin = restoreOverlayReturnFocus;
-    restoreOverlayReturnFocus = false;
-    dismissedOverlayReturnFocus = null;
-    // A palette input or an inline create field may already own focus now.
-    if (focusedControl() !== null) {
+    // The dismissal handler owns Esc and outside clicks. The command palette
+    // focuses its input on mount and restores its own opener when it closes.
+    if (overlayDismissal !== null || paletteSession.value !== null) {
       return;
     }
-    if (returnToOrigin && origin != null && origin.isConnected) {
-      origin.focus();
+    if (focusedControl() !== null) {
       return;
     }
     focusAfterRemovedSidebarControl(removed);
@@ -809,9 +831,9 @@ function markMissing(folder: string) {
 
 function handleResize() {
   viewportWidth.value = window.innerWidth;
-  if (!isWide.value) {
-    overlaySidebar.value = false;
-  }
+  // The overlay only exists in the narrow layout. Clear it on every resize so
+  // widening cannot leave a stale overlay flag for later dismissals.
+  overlaySidebar.value = false;
 }
 
 function toggleSidebar() {
@@ -3929,7 +3951,7 @@ function handleGlobalKeydown(event: KeyboardEvent) {
     return;
   }
   if (event.key === "Escape") {
-    if (overlaySidebar.value) {
+    if (overlaySidebar.value && !isWide.value) {
       event.preventDefault();
       dismissOverlaySidebar();
     }

@@ -3063,6 +3063,105 @@ describe("sidebar focus", () => {
     expect(view.state.selection.eq(selection)).toBe(true);
   });
 
+  it("does not reuse a dismissal origin after the window widens", async () => {
+    await openFile();
+    const view = editorView();
+    view.focus();
+    await withViewportWidth(800, async () => {
+      pressSidebarShortcut();
+      await settle();
+      await resizeTo(1024);
+      expect(host.querySelector("aside")).not.toBeNull();
+
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await settle();
+      expect(host.querySelector("aside")).not.toBeNull();
+      expect(document.activeElement).toBe(view.contentDOM);
+
+      treeRow("a.md").focus();
+      pressSidebarShortcut();
+      await settle();
+      expect(host.querySelector("aside")).toBeNull();
+      expect(document.activeElement).toBe(sidebarToggle("show"));
+    });
+  });
+
+  it("does not keep a dismissal target when the overlay reopens in the same tick", async () => {
+    await openFile();
+    await withViewportWidth(800, async () => {
+      pressSidebarShortcut();
+      await settle();
+      const row = treeRow("a.md");
+      row.focus();
+
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      pressSidebarShortcut();
+      await settle();
+      expect(host.querySelector("aside")).not.toBeNull();
+      expect(document.activeElement).toBe(row);
+
+      pressSidebarShortcut();
+      await settle();
+      expect(host.querySelector("aside")).toBeNull();
+      expect(document.activeElement).toBe(sidebarToggle("show"));
+    });
+  });
+
+  it("leaves focus in the editor when pointer clicks toggle the sidebar", async () => {
+    await openFile();
+    const view = editorView();
+    view.focus();
+
+    sidebarToggle("hide").click();
+    await settle();
+    expect(host.querySelector("aside")).toBeNull();
+    expect(document.activeElement).toBe(view.contentDOM);
+
+    sidebarToggle("show").click();
+    await settle();
+    expect(host.querySelector("aside")).not.toBeNull();
+    expect(document.activeElement).toBe(view.contentDOM);
+  });
+
+  it("does not pass focus through the show button when the palette opens", async () => {
+    await openFile();
+    await withViewportWidth(800, async () => {
+      pressSidebarShortcut();
+      await settle();
+      treeRow("a.md").focus();
+
+      const seen: Element[] = [];
+      const record = (event: FocusEvent) => {
+        if (event.target instanceof Element) {
+          seen.push(event.target);
+        }
+      };
+      document.addEventListener("focusin", record);
+      try {
+        pressPaletteShortcut("p");
+        await settle();
+      } finally {
+        document.removeEventListener("focusin", record);
+      }
+      expect(
+        seen.some((element) => element.matches("[data-sidebar-toggle]")),
+      ).toBe(false);
+      expect(seen.at(-1)).toBe(paletteInput());
+    });
+  });
+
   it("returns focus to the overlay fallback after the palette closes", async () => {
     await openFile();
     await withViewportWidth(800, async () => {
