@@ -99,6 +99,16 @@ describe("TopBar tabs", () => {
     expect(scrollIntoView).toHaveBeenCalled();
   });
 
+  it("keeps tabs out of text selection", async () => {
+    mount(tabs(1), 1);
+    await settle();
+    expect(
+      host.querySelector<HTMLElement>('[role="tab"]')?.classList.contains(
+        "select-none",
+      ),
+    ).toBe(true);
+  });
+
   it("moves focus with arrows and switches only on Enter or Space", async () => {
     const emitted = mount(tabs(3), 1);
     await settle();
