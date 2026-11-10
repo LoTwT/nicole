@@ -11,11 +11,11 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
-function mount(shortcut: string) {
+function mount(shortcut: string, tone?: "muted" | "secondary") {
   document.body.innerHTML = '<div id="app"></div>';
   app = createApp(
     defineComponent({
-      render: () => h(KeyHint, { shortcut }),
+      render: () => h(KeyHint, { shortcut, tone }),
     }),
   );
   app.mount("#app");
@@ -38,5 +38,11 @@ describe("KeyHint", () => {
 
   it("keeps the platform shortcut text as one string", () => {
     expect(mount("Ctrl+Shift+F").textContent?.trim()).toBe("Ctrl+Shift+F");
+  });
+
+  it("uses the secondary text color on selected rows", () => {
+    const hint = mount("⌘I", "secondary");
+    expect(hint.className).toContain("text-[var(--text-secondary)]");
+    expect(hint.className).not.toContain("text-[var(--text-muted)]");
   });
 });

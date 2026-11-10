@@ -339,7 +339,7 @@ A 红绿灯（macOS）　B 隐藏侧栏　C 标签页　D 模式切换与大纲�
 |---|---|---|
 | 未打开文件夹（首次启动，关闭工作区后，或上次的文件夹已不存在） | 隐藏 | 居中显示标题“开始写作”，说明“打开一个文件夹作为工作区，里面的文件就是你的文章”，主按钮“打开文件夹”只显示文字，快捷键只写在悬停提示里，下方显示[最近打开](#最近打开)。主题按钮见[侧栏](#侧栏)。可以把一个文件夹拖进窗口打开，见[拖入文件夹](#拖入文件夹) |
 | 文件夹是空的 | 显示工具行和文件树，文件树中写“这个文件夹是空的”，以及“新建文件”按钮 | 同下一行 |
-| 已打开文件夹，没有打开的标签页 | 正常显示 | 居中显示“选择一个文件开始写作”，下面是“新建文件”和“快速打开”两个带图标的中性描边次要按钮：背景 `--surface-subtle`、边框 `--border-strong`、文字 `--text-primary`、图标 `--text-secondary`，圆角 `--radius-control`，内边距约 7px 14px，间距约 10px，悬停背景 `--surface-muted`，使用 `focus-ring`。原先的 `--surface-elevated` 背景在暗色下对画布只有 1.16:1，浅色下也几乎与画布同色；改用更明显的底色和 3:1 以上的边框后，两种主题下都能直接认出是按钮，悬停仍可区分。按钮上都不显示快捷键，悬停提示和无障碍名称里带快捷键。“快速打开”打开命令面板的文件模式 |
+| 已打开文件夹，没有打开的标签页 | 正常显示 | 居中显示“选择一个文件开始写作”，下面是“新建文件”和“快速打开”两个带图标的中性描边次要按钮，使用统一的 `.button-secondary`（见[视觉与动效](#视觉与动效)），图标 `--text-secondary`，圆角 `--radius-control`，内边距约 7px 14px，间距约 10px，使用 `focus-ring`。按钮上都不显示快捷键，悬停提示和无障碍名称里带快捷键。“快速打开”打开命令面板的文件模式 |
 
 上次的文件夹已不存在时，在“开始写作”标题上方加一行说明，例如：上次打开的文件夹“写作”已不存在。
 
@@ -647,7 +647,7 @@ A 红绿灯（macOS）　B 隐藏侧栏　C 标签页　D 模式切换与大纲�
 - **K-3** 焦点在文件树时按 ⌘B，不改变正文。
 - **K-4** 在 macOS 上按 ⌘R 不会重新载入页面；在 Windows 和 Linux 上按 Ctrl+W 只关闭标签页，不关闭窗口。
 - **K-5** 编辑器中按 ⌘I 切换斜体，不扩选语法节点；在 Windows 上按 Ctrl+Shift+L 切换大纲，不选中相同的文字。
-- **K-6** 界面中不出现 `kbd` 键帽。命令面板、slash 菜单和顶栏模式菜单每行右侧用 11px 的 `--text-muted` 纯文字显示快捷键，右对齐，没有边框和底色；选中行的文字与 `--accent-soft` 背景对比度不低于 4.5:1。按钮和空状态不显示快捷键，悬停提示与 `aria-label` 仍包含连续文本；侧栏“搜索工作区”不显示快捷键，悬停提示和无障碍名称保留 ⇧⌘F（Windows/Linux 为 Ctrl+Shift+F）。
+- **K-6** 界面中不出现 `kbd` 键帽。命令面板、slash 菜单和顶栏模式菜单每行右侧默认用 11px 的 `--text-muted` 纯文字显示快捷键，右对齐，没有边框和底色；选中行的文字与 `--nicole-selected-row` 背景对比度不低于 4.5:1；选中行的 `KeyHint` 和次要文字从 `--text-muted` 改为 `--text-secondary`，避免浅色选中行上的小字低于 4.5:1。按钮和空状态不显示快捷键，悬停提示与 `aria-label` 仍包含连续文本；侧栏“搜索工作区”不显示快捷键，悬停提示和无障碍名称保留 ⇧⌘F（Windows/Linux 为 Ctrl+Shift+F）。
 
 ## 设置
 
@@ -681,8 +681,9 @@ A 红绿灯（macOS）　B 隐藏侧栏　C 标签页　D 模式切换与大纲�
 
 - **界面文字**：`--font-sans`，13px；次要文字 12px；工具行的工作区名称 11px 半粗体。正文只使用 `reading-*` 变量。
 - **表面**：侧栏使用 `--surface-panel`；顶栏、编辑区和状态栏使用 `--surface-canvas` / `--reading-bg`；分隔线使用 `--border-subtle`。
-- **交互态**：悬停默认使用 `--surface-subtle`；文件树选中项使用 `--nicole-file-tree-selected`。键盘焦点使用主题包的 `focus-ring` 工具类。主按钮统一使用 `button-primary` 类，颜色从 `--nicole-primary-*` 读取：静止时背景和边框 `--nicole-primary-fill`、文字 `--nicole-primary-content`，悬停时用对应的 `-hover`，按下时用对应的 `-active`。Paper 沿用主题的 `--accent-primary-*` / `--accent-contrast-*` 成对 token；Ink 的主题填充 `lavender-700` 对画布只有 2.98:1，悬停 `lavender-800` 反而降到 2.2:1，因此项目覆盖为 `lavender-300` 填充配 `lavender-900` 文字（6.19:1），悬停 `lavender-200`、按下 `lavender-100`，文字保持 `lavender-900`，默认、悬停和按下都不低于 4.5:1。填充面与内容色必须成对切换；开始写作页的“打开文件夹”、对话框的主按钮和恢复对话框的“全部恢复”共用这一处定义。
-- **文件树选中**：Paper 的 `--accent-soft`（`lavender-100`）对侧栏只有 1.07:1，选中项改用 `lavender-200`（1.25:1）；Ink 保持 `--accent-soft`。这个覆盖只作用于文件树，不改变全局 `--accent-soft`，格式工具栏和命令面板等使用 `--accent-soft` 的地方不变。
+- **交互态**：悬停默认使用 `--surface-subtle`；文件树、命令面板和 slash 菜单的选中行使用 `--nicole-selected-row`。键盘焦点使用主题包的 `focus-ring` 工具类。主按钮统一使用 `button-primary` 类，颜色从 `--nicole-primary-*` 读取：静止时背景和边框 `--nicole-primary-fill`、文字 `--nicole-primary-content`，悬停时用对应的 `-hover`，按下时用对应的 `-active`。Paper 沿用主题的 `--accent-primary-*` / `--accent-contrast-*` 成对 token；Ink 的主题填充 `lavender-700` 对画布只有 2.98:1，悬停 `lavender-800` 反而降到 2.2:1，因此项目覆盖为 `lavender-300` 填充配 `lavender-900` 文字（6.19:1），悬停 `lavender-200`、按下 `lavender-100`，文字保持 `lavender-900`，默认、悬停和按下都不低于 4.5:1。填充面与内容色必须成对切换；开始写作页的“打开文件夹”、对话框的主按钮和恢复对话框的“全部恢复”共用这一处定义。主按钮的 `:focus-visible` 使用主题包的 on-accent 焦点环 token，避免 Ink 下焦点环与新填充同色；高对比度和强制颜色回退仍由 `focus-ring` 负责。
+- **次要按钮**：中性描边按钮统一使用 `button-secondary` 类：背景 `--surface-subtle`、边框 `--border-default`、文字 `--text-primary`，悬停背景 `--surface-muted`。空状态的“新建文件”“快速打开”、非 Markdown 占位页的两个按钮、对话框的“取消”和恢复对话框的“逐个查看”共用这一处定义；危险变体仍使用 `--status-danger-*`，图标颜色由各组件决定。
+- **选中行**：Paper 的 `--accent-soft`（`lavender-100`）对侧栏只有 1.07:1，改用 `lavender-200`（1.25:1）；Ink 的 `--accent-soft` 与悬停 `--surface-subtle` 只有 1.01:1，改用 `lavender-900`（对侧栏 1.54:1、对悬停 1.25:1，`--text-primary` 在其上 9.24:1）。这个覆盖作用于文件树、命令面板和 slash 菜单，不改变全局 `--accent-soft`，格式工具栏等其他使用 `--accent-soft` 的地方不变。选中行上的 `KeyHint` 和次要文字使用 `--text-secondary`，其余快捷键提示仍为 `--text-muted`。
 - **图标**：内联 SVG，取自 Lucide 1.66.0，统一 24×24 网格、`stroke-width="1.75"`、16px 显示尺寸，颜色为 `currentColor`；不引入图标字体或运行时图标库。ISC 许可与 Feather 来源的 MIT 许可见根目录 [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md)，开发说明见[开发](../development.md#第三方声明)。
 - **禁用的效果**：不使用 `backdrop-filter`、窗口 `Vibrancy` 或 `Transparent`，因为它们会增加 GPU 和合成层的开销；不使用常驻的 `will-change`。
 - **动效**：只有浮层的出现和消失使用透明度或位移过渡，时长不超过 `--duration-normal`；文件树展开、标签页切换和侧栏显示都没有动画。没有无限循环的动画，“保存中”也是静态的。`prefers-reduced-motion: reduce` 时取消全部过渡。
@@ -690,7 +691,7 @@ A 红绿灯（macOS）　B 隐藏侧栏　C 标签页　D 模式切换与大纲�
 
 验收：
 
-- **V-1** Paper 和 Ink 下，所有界面文字对其背景的对比度不低于 4.5:1，图标、状态圆点和控件边框不低于 3:1。0.4.0 实测真正的最低值：`--text-muted` 在 `--accent-soft` 上 Paper 5.04:1、Ink 5.73:1；在 `--surface-subtle` 上 Paper 5.17:1、Ink 5.70:1。`--border-strong` 在 `--surface-panel` 上 Paper 3.38:1（Ink 4.07:1）。
+- **V-1** Paper 和 Ink 下，所有界面文字对其背景的对比度不低于 4.5:1，图标、状态圆点和控件边框不低于 3:1。0.4.0 实测真正的最低值：`--text-muted` 在 `--accent-soft` 上 Paper 5.04:1、Ink 5.73:1；在 `--surface-subtle` 上 Paper 5.17:1、Ink 5.70:1。`--border-strong` 在 `--surface-panel` 上 Paper 3.38:1（Ink 4.07:1）。次要按钮是已批准的例外：边框 `--border-default` 低于 3:1，按钮靠 `--surface-subtle` 填充（对画布和对话框底色 1.09–1.30:1）与 `--text-primary` 文字区分；其他控件边框仍遵守 3:1。
 - **V-2** 界面 CSS 中没有 `backdrop-filter`、无限循环的 `animation`，也没有常驻的 `will-change`。
 - **V-3** 开启“减弱动态效果”后，浮层出现时没有过渡。
 

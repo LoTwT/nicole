@@ -21,7 +21,7 @@
 
 - **强调色分工**：`--accent-primary` 改为填充面，只承载 `--accent-contrast` 内容；独立指示色（勾选框、进度、选中下划线等）使用 `--text-accent`。Paper 的 `--accent-primary` 从 `lavender-500` 改为 `lavender-300`，`--accent-contrast` 改为 `lavender-900`；Ink 的 `--accent-primary` 改为 `lavender-700`，`--accent-contrast` 改为 `#ffffff`。
 - **z-index 顺序**：`--z-popover` 400→1000，`--z-tooltip` 500→1100，`--z-toast` 1000→1200；`--z-overlay` 800 和 `--z-modal` 900 不变。现在 popover 在 modal 之上。
-- **颜色**：Ink 从偏紫的暖色 surface 改为中性冷灰；Paper 的 neutral 和 surface 色阶也调了；`--border-strong` 改为不透明色并保证至少 3:1；`--text-muted` 亮暗都变了。Ink 的 `--accent-soft` 从半透明 `rgb(156 143 217 / 0.18)` 改为不透明 `#2c2644`；Nicole 的选区和活动行读取这个变量。
+- **颜色**：Ink 从偏紫的暖色 surface 改为中性冷灰；Paper 的 neutral 和 surface 色阶也调了；`--border-strong` 改为不透明色并保证至少 3:1；`--text-muted` 亮暗都变了。Ink 的 `--accent-soft` 从半透明 `rgb(156 143 217 / 0.18)` 改为不透明 `#2c2644`；Nicole 的编辑器选区读取这个变量。
 - **交互与阅读状态**：`--accent-primary-hover` / `--accent-primary-active` 在 Paper 改为 `lavender-400` / `lavender-500`，在 Ink 改为 `lavender-800` / `lavender-900`；`--accent-contrast-hover` / `--accent-contrast-active` 在 Paper 改为 `lavender-950`，在 Ink 随 `--accent-contrast` 改为 `#ffffff`。`--reading-link-hover` 在 Paper 改为直接读取 `--color-lavender-800`，不再跟随 `--accent-primary-active`；Ink 仍为 `--color-lavender-200`。Ink 的 `--focus-ring-on-accent-shadow` 从深紫改为 `rgb(199 182 245 / 0.22)`；Paper 不变。
 - **代码高亮**：新增 Ink 的 `--color-syntax-*`，Paper 的 syntax 色加深。
 - **其他 token**：`--opacity-*` 改为百分比；移除 `--container-xs` 到 `--container-2xl`（Tailwind 默认 container scale 继续可用）；`--ease-emphasized` 曲线改变；新增 `--shadow-2xs` / `--shadow-2xl`，`--shadow-card` / `--shadow-panel` 改为读取运行时变量。
@@ -31,8 +31,9 @@
 
 | 变化 | Nicole 的处理 |
 |---|---|
-| `--accent-primary` 变成填充面 | 主按钮继续用 `--accent-primary` 背景和 `--accent-contrast` 文字；编辑器光标从 `--accent-primary` 改为回退到 `--text-accent`。 |
+| `--accent-primary` 变成填充面 | Nicole 的主按钮颜色改由 `--nicole-primary-*` 承载：Paper 沿用 `--accent-primary-*` / `--accent-contrast-*`，Ink 因对比度改用 `lavender-300` 填充配 `lavender-900` 文字，焦点环改用 on-accent token；取值和依据见[界面与交互](../specs/ui.md#视觉与动效)。编辑器光标从 `--accent-primary` 改为回退到 `--text-accent`。 |
 | Paper 的浅色选区对画布太淡 | Nicole 只在 `src/style.css` 把 Paper 的 `--nicole-selection` 回退改为 `--color-lavender-200`（`#ded4ff`），Ink 继续用 `--accent-soft`（`#2c2644`）；不改主题包。 |
+| Paper 的选中行对侧栏太淡 | Nicole 用 `--nicole-selected-row`：Paper 为 `lavender-200`，Ink 为 `lavender-900`，文件树、命令面板和 slash 菜单共用；不改变全局 `--accent-soft`。取值见[界面与交互](../specs/ui.md#视觉与动效)。 |
 | 任务框的独立指示色 | `--nicole-checkbox-checked-*` 和勾选标记继续回退到 `--text-accent` / `--surface-canvas`，不随 `--accent-primary` 变浅。 |
 | popover 高于 overlay 和 modal | 打开命令面板前关闭 popover 层和浮出侧栏；对话框只关闭 slash 菜单和模式菜单，浮出侧栏保持打开并使用 `--z-header` 位于对话框之下。 |
 | `--opacity-*` 改为百分比 | Nicole 只用 Tailwind 的 `opacity-0`、`opacity-40`、`opacity-50`、`opacity-100`，不引用主题包的 `--opacity-*` token。 |

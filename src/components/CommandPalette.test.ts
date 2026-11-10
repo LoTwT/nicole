@@ -155,11 +155,17 @@ describe("CommandPalette", () => {
       options()[0]?.id,
     );
     expect(options()[0]?.getAttribute("aria-selected")).toBe("true");
+    expect(options()[0]?.className).toContain(
+      "bg-[var(--nicole-selected-row)]",
+    );
     expect(options()[0]?.tabIndex).toBe(-1);
     expect(options()[0]?.querySelector("kbd")).toBeNull();
     expect(options()[0]?.textContent).toContain("⌘I");
     expect(options()[0]?.querySelector("span.text-right")?.textContent?.trim()).toBe(
       "⌘I",
+    );
+    expect(options()[0]?.querySelector("span.text-right")?.className).toContain(
+      "text-[var(--text-secondary)]",
     );
   });
 
@@ -543,7 +549,7 @@ describe("CommandPalette", () => {
     const option = options()[0]!;
     expect(option.textContent).toContain("空标题");
     expect(option.querySelector(".block.truncate")?.className).toContain(
-      "text-[var(--text-muted)]",
+      "text-[var(--text-secondary)]",
     );
     expect(document.body.textContent).toContain(
       "文档较大，部分标题尚未解析",

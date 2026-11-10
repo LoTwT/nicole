@@ -108,6 +108,23 @@ describe("primary button contract", () => {
     return depth;
   }
 
+  function declaration(block: string, name: string): string {
+    const match = block.match(new RegExp(`${name}:\\s*([^;]+);`));
+    if (!match) {
+      throw new Error(`missing ${name}`);
+    }
+    return match[1]!.trim();
+  }
+
+  function themeColor(block: string, name: string): string {
+    const value = declaration(block, name);
+    const token = value.match(/^var\((--color-[a-z0-9-]+)\)$/);
+    if (!token) {
+      throw new Error(`${name} must reference a theme color, got ${value}`);
+    }
+    return cssVariable(themeColorsCss, token[1]!);
+  }
+
   it("switches the accent fill, border and content color together", () => {
     expect(rule(".button-primary")).toMatch(
       /border-color:\s*var\(--nicole-primary-fill\);/,
@@ -141,64 +158,125 @@ describe("primary button contract", () => {
     expect(rule(".button-primary")).not.toMatch(/border-(width|style):/);
   });
 
+  it("maps the light primary button to the theme accent pair", () => {
+    const root = rule(":root");
+    expect(declaration(root, "--nicole-primary-fill")).toBe(
+      "var(--accent-primary)",
+    );
+    expect(declaration(root, "--nicole-primary-fill-hover")).toBe(
+      "var(--accent-primary-hover)",
+    );
+    expect(declaration(root, "--nicole-primary-fill-active")).toBe(
+      "var(--accent-primary-active)",
+    );
+    expect(declaration(root, "--nicole-primary-content")).toBe(
+      "var(--accent-contrast)",
+    );
+    expect(declaration(root, "--nicole-primary-content-hover")).toBe(
+      "var(--accent-contrast-hover)",
+    );
+    expect(declaration(root, "--nicole-primary-content-active")).toBe(
+      "var(--accent-contrast-active)",
+    );
+  });
+
   it("keeps the dark primary button readable and never dimmer when pressed", () => {
     const dark = rule(".dark");
-    expect(dark).toMatch(
-      /--nicole-primary-fill:\s*var\(--color-lavender-300\);/,
+    const fill = themeColor(dark, "--nicole-primary-fill");
+    const hoverFill = themeColor(dark, "--nicole-primary-fill-hover");
+    const activeFill = themeColor(dark, "--nicole-primary-fill-active");
+    const content = themeColor(dark, "--nicole-primary-content");
+    const contentHover = themeColor(
+      dark,
+      "--nicole-primary-content-hover",
     );
-    expect(dark).toMatch(
-      /--nicole-primary-fill-hover:\s*var\(--color-lavender-200\);/,
-    );
-    expect(dark).toMatch(
-      /--nicole-primary-fill-active:\s*var\(--color-lavender-100\);/,
-    );
-    expect(dark).toMatch(
-      /--nicole-primary-content:\s*var\(--color-lavender-900\);/,
+    const contentActive = themeColor(
+      dark,
+      "--nicole-primary-content-active",
     );
 
     const canvas = cssVariable(themeDarkCss, "--surface-canvas");
-    const fill = cssVariable(themeColorsCss, "--color-lavender-300");
-    const hoverFill = cssVariable(themeColorsCss, "--color-lavender-200");
-    const activeFill = cssVariable(themeColorsCss, "--color-lavender-100");
-    const content = cssVariable(themeColorsCss, "--color-lavender-900");
-
     // The old dark fill was lavender-700 on the same canvas; this one is
     // clearly brighter, not just a different hue.
     const oldFill = cssVariable(themeColorsCss, "--color-lavender-700");
     expect(contrast(fill, canvas)).toBeGreaterThan(contrast(oldFill, canvas));
     expect(contrast(fill, canvas)).toBeGreaterThanOrEqual(4.5);
     expect(contrast(fill, content)).toBeGreaterThanOrEqual(4.5);
-    expect(contrast(hoverFill, content)).toBeGreaterThanOrEqual(4.5);
-    expect(contrast(activeFill, content)).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(hoverFill, contentHover)).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(activeFill, contentActive)).toBeGreaterThanOrEqual(4.5);
     expect(luminance(hoverFill)).toBeGreaterThan(luminance(fill));
     expect(luminance(activeFill)).toBeGreaterThanOrEqual(luminance(fill));
   });
 
-  it("strengthens only the light file tree selection", () => {
-    const selected = rule(":root");
-    expect(selected).toMatch(
-      /--nicole-file-tree-selected:\s*var\(--color-lavender-200\);/,
+  it("keeps the on-accent focus ring on primary buttons in both themes", () => {
+    const focus = rule(".button-primary:focus-visible");
+    expect(focus).toMatch(
+      /--focus-ring-color:\s*var\(--focus-ring-on-accent-color\);/,
     );
-    expect(rule(".dark")).toMatch(
-      /--nicole-file-tree-selected:\s*var\(--accent-soft\);/,
+    expect(focus).toMatch(
+      /--focus-ring-shadow:\s*var\(--focus-ring-on-accent-shadow\);/,
+    );
+    // The utility owns outline width and the contrast/forced-colors fallbacks.
+    expect(focus).not.toMatch(/outline|box-shadow/);
+
+    expect(declaration(themeLightCss, "--focus-ring-on-accent-color")).toBe(
+      "var(--accent-contrast)",
+    );
+    expect(declaration(themeDarkCss, "--focus-ring-on-accent-color")).toBe(
+      "var(--accent-contrast)",
+    );
+  });
+
+  it("shares a stronger selected-row color across list surfaces", () => {
+    const root = rule(":root");
+    const dark = rule(".dark");
+    expect(declaration(root, "--nicole-selected-row")).toBe(
+      "var(--color-lavender-200)",
+    );
+    expect(declaration(dark, "--nicole-selected-row")).toBe(
+      "var(--color-lavender-900)",
     );
     expect(css).not.toMatch(/--accent-soft\s*:/);
 
     const sidebar = cssVariable(themeColorsCss, "--color-surface-1");
     const oldSelection = cssVariable(themeColorsCss, "--color-lavender-100");
-    const newSelection = cssVariable(themeColorsCss, "--color-lavender-200");
-    expect(contrast(newSelection, sidebar)).toBeGreaterThan(
+    const lightSelection = themeColor(root, "--nicole-selected-row");
+    expect(contrast(lightSelection, sidebar)).toBeGreaterThan(
       contrast(oldSelection, sidebar),
     );
+
+    const darkSelection = themeColor(dark, "--nicole-selected-row");
+    const darkPanel = cssVariable(themeDarkCss, "--surface-panel");
+    const darkHover = cssVariable(themeDarkCss, "--surface-subtle");
+    const darkText = cssVariable(themeDarkCss, "--text-primary");
+    expect(contrast(darkSelection, darkPanel)).toBeGreaterThanOrEqual(1.5);
+    expect(contrast(darkSelection, darkHover)).toBeGreaterThanOrEqual(1.2);
+    expect(contrast(darkText, darkSelection)).toBeGreaterThanOrEqual(4.5);
   });
 
-  it("keeps the secondary button border visible on its new fill", () => {
-    const lightBorder = cssVariable(themeLightCss, "--border-strong");
-    const darkBorder = cssVariable(themeDarkCss, "--border-strong");
+  it("defines one shared secondary button fill in both themes", () => {
+    const base = rule(".button-secondary");
+    expect(base).toMatch(/border-color:\s*var\(--border-default\);/);
+    expect(base).toMatch(/background-color:\s*var\(--surface-subtle\);/);
+    expect(base).toMatch(/color:\s*var\(--text-primary\);/);
+    expect(rule(".button-secondary:hover:not(:disabled)")).toMatch(
+      /background-color:\s*var\(--surface-muted\);/,
+    );
+
     const lightFill = cssVariable(themeColorsCss, "--color-surface-3");
-    expect(contrast(lightBorder, lightFill)).toBeGreaterThanOrEqual(3);
-    expect(contrast(darkBorder, cssVariable(themeDarkCss, "--surface-subtle")))
-      .toBeGreaterThanOrEqual(3);
+    const darkFill = cssVariable(themeDarkCss, "--surface-subtle");
+    const lightCanvas = cssVariable(themeColorsCss, "--color-surface-0");
+    const lightDialog = cssVariable(themeColorsCss, "--color-surface-2");
+    const darkCanvas = cssVariable(themeDarkCss, "--surface-canvas");
+    const darkDialog = cssVariable(themeDarkCss, "--surface-elevated");
+    for (const [fill, background] of [
+      [lightFill, lightCanvas],
+      [lightFill, lightDialog],
+      [darkFill, darkCanvas],
+      [darkFill, darkDialog],
+    ] as const) {
+      expect(contrast(fill, background)).toBeGreaterThan(1);
+    }
   });
 
   it("keeps hover before active and both rules out of any layer", () => {

@@ -103,7 +103,7 @@ watch(
           class="flex h-8 w-full items-center gap-2 px-2 text-left outline-none"
           :class="
             index === state.selectedIndex
-              ? 'bg-[var(--accent-soft)]'
+              ? 'bg-[var(--nicole-selected-row)]'
               : 'hover:bg-[var(--surface-subtle)]'
           "
           :aria-selected="index === state.selectedIndex"
@@ -120,7 +120,11 @@ watch(
             {{ item.glyph }}
           </span>
           <span class="min-w-0 flex-1 truncate">{{ item.label }}</span>
-          <KeyHint v-if="item.shortcut" :shortcut="item.shortcut" />
+          <KeyHint
+            v-if="item.shortcut"
+            :shortcut="item.shortcut"
+            :tone="index === state.selectedIndex ? 'secondary' : 'muted'"
+          />
         </button>
       </div>
     </div>

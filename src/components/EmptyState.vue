@@ -356,7 +356,7 @@ defineExpose({
       <div
         v-if="dropActive"
         data-drop-hint
-        class="pointer-events-none absolute inset-2 flex items-center justify-center rounded-[var(--radius-card)] border-2 border-dashed border-[var(--accent-primary)] bg-[var(--accent-soft)]/40"
+        class="pointer-events-none absolute inset-2 flex items-center justify-center rounded-[var(--radius-card)] border-2 border-dashed border-[var(--nicole-primary-fill)] bg-[var(--accent-soft)]/40"
       >
         <p class="m-0 text-[13px] font-medium text-[var(--text-primary)]">
           松开以打开文件夹
@@ -369,7 +369,7 @@ defineExpose({
       <div class="mt-3 flex flex-wrap items-center justify-center gap-2.5">
         <button
           type="button"
-          class="focus-ring inline-flex items-center gap-1.5 rounded-[var(--radius-control)] border border-[var(--border-strong)] bg-[var(--surface-subtle)] px-[14px] py-[7px] text-[12px] text-[var(--text-primary)] hover:bg-[var(--surface-muted)]"
+          class="button-secondary focus-ring inline-flex items-center gap-1.5 rounded-[var(--radius-control)] border px-[14px] py-[7px] text-[12px]"
           :aria-label="`新建文件 ${newFileKey}`"
           :title="`新建文件 ${newFileKey}`"
           @click="emit('new-file')"
@@ -379,7 +379,7 @@ defineExpose({
         </button>
         <button
           type="button"
-          class="focus-ring inline-flex items-center gap-1.5 rounded-[var(--radius-control)] border border-[var(--border-strong)] bg-[var(--surface-subtle)] px-[14px] py-[7px] text-[12px] text-[var(--text-primary)] hover:bg-[var(--surface-muted)]"
+          class="button-secondary focus-ring inline-flex items-center gap-1.5 rounded-[var(--radius-control)] border px-[14px] py-[7px] text-[12px]"
           :aria-label="`快速打开 ${quickOpenKey}`"
           :title="`快速打开 ${quickOpenKey}`"
           @click="emit('quick-open')"

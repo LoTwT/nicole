@@ -878,6 +878,7 @@ describe("application shell", () => {
     expect(dialogButton("切换").className).not.toContain(
       "border-[var(--accent-primary)]",
     );
+    expect(dialogButton("取消").className).toContain("button-secondary");
     dialogButton("取消").click();
     await settle();
 
@@ -910,6 +911,8 @@ describe("application shell", () => {
     expect(host.textContent).toContain("无法预览此类型的文件");
     expect(host.textContent).toContain("cover.png · 2.0 KB");
     expect(host.querySelector('[role="tab"]')?.textContent).toContain("cover.png");
+    expect(button("用默认应用打开").className).toContain("button-secondary");
+    expect(buttons("显示")[0]!.className).toContain("button-secondary");
 
     button("用默认应用打开").click();
     await settle();
@@ -4893,6 +4896,7 @@ describe("crash recovery", () => {
     expect(dialogButton("全部恢复").className).not.toContain(
       "border-[var(--accent-primary)]",
     );
+    expect(dialogButton("逐个查看").className).toContain("button-secondary");
     dialogButton("全部恢复").click();
     await settle();
     expect(dialog()).toBeNull();
@@ -6205,7 +6209,7 @@ describe("start page and workspace lifecycle", () => {
     expect(host.textContent).not.toContain("松开以打开文件夹");
   });
 
-  it("shows shortcuts as plain muted text in menus and the palette", async () => {
+  it("shows shortcuts as plain text in menus and the palette", async () => {
     await openFile();
     pressPaletteShortcut("P");
     await settle();
@@ -6213,8 +6217,17 @@ describe("start page and workspace lifecycle", () => {
     expect(command.querySelector("kbd")).toBeNull();
     const hint = command.querySelector<HTMLElement>(".text-right");
     expect(hint?.textContent?.trim()).toMatch(/[⌘⇧⌃]|Ctrl/);
-    expect(hint?.className).toContain("text-[var(--text-muted)]");
+    expect(hint?.className).toContain("text-[var(--text-secondary)]");
     expect(hint?.className).not.toContain("border");
+
+    const unselectedHint = paletteOptions()[1]?.querySelector<HTMLElement>(
+      ".text-right",
+    );
+    if (unselectedHint) {
+      expect(unselectedHint.className).toContain(
+        "text-[var(--text-muted)]",
+      );
+    }
     expect(command.getAttribute("aria-label")).toContain(
       hint?.textContent?.trim(),
     );

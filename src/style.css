@@ -16,9 +16,9 @@
   --nicole-caret: var(--reading-caret, var(--text-accent));
   /* Paper needs lavender-200; Ink keeps the darker accent-soft. */
   --nicole-selection: var(--reading-selection, var(--color-lavender-200));
-  /* Paper's accent-soft is only 1.07:1 on the sidebar; the file tree keeps a
-     stronger selected row here without changing the global accent token. */
-  --nicole-file-tree-selected: var(--color-lavender-200);
+  /* Paper's accent-soft is only 1.07:1 on the sidebar; selected rows keep a
+     stronger fill here without changing the global accent token. */
+  --nicole-selected-row: var(--color-lavender-200);
   --nicole-quote-border: var(--reading-quote-border, var(--border-default));
   /* @ayingott/theme pairs each accent fill with its own content color. The
      primary button keeps that pairing, but the dark theme overrides it below. */
@@ -43,7 +43,9 @@
 
 .dark {
   --nicole-selection: var(--reading-selection, var(--accent-soft));
-  --nicole-file-tree-selected: var(--accent-soft);
+  /* Ink's hover fill is only 1.01:1 off accent-soft, so selected rows need a
+     stronger surface than the theme's accent token. */
+  --nicole-selected-row: var(--color-lavender-900);
   /* Ink's accent fill is lavender-700 (2.98:1 against the canvas) and its
      hover is darker still (2.2:1). A light fill is more visible on the dark
      canvas and keeps lavender-900 content at 6.19:1; hover and pressed states
@@ -170,4 +172,26 @@ body {
   border-color: var(--nicole-primary-fill-active);
   background-color: var(--nicole-primary-fill-active);
   color: var(--nicole-primary-content-active);
+}
+
+/* The theme's default ring matches --nicole-primary-fill in Ink. Overriding
+   the ring tokens here keeps the outline distinct while the focus-ring
+   utility still owns the high-contrast and forced-colors fallbacks. */
+.button-primary:focus-visible {
+  --focus-ring-color: var(--focus-ring-on-accent-color);
+  --focus-ring-shadow: var(--focus-ring-on-accent-shadow);
+}
+
+/*
+ * Neutral action fill shared by secondary buttons. Components keep their own
+ * border width, radius, padding and icon color.
+ */
+.button-secondary {
+  border-color: var(--border-default);
+  background-color: var(--surface-subtle);
+  color: var(--text-primary);
+}
+
+.button-secondary:hover:not(:disabled) {
+  background-color: var(--surface-muted);
 }

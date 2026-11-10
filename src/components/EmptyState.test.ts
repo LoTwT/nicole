@@ -131,10 +131,8 @@ describe("EmptyState", () => {
     expect(quick.getAttribute("aria-label")).toBe("快速打开 ⌘P");
     expect(quick.getAttribute("title")).toBe("快速打开 ⌘P");
     expect(quick.querySelector("svg")).not.toBeNull();
-    expect(quick.className).toContain("border-[var(--border-strong)]");
-    expect(quick.className).toContain("bg-[var(--surface-subtle)]");
-    expect(quick.className).toContain("text-[var(--text-primary)]");
-    expect(quick.className).toContain("hover:bg-[var(--surface-muted)]");
+    expect(quick.className).toContain("button-secondary");
+    expect(quick.className).toContain("border");
     expect(quick.className).toContain("px-[14px]");
     expect(quick.className).toContain("py-[7px]");
     expect(quick.querySelector("svg")!.getAttribute("class")).toContain(
@@ -148,6 +146,7 @@ describe("EmptyState", () => {
     expect(newFile.getAttribute("aria-label")).toBe("新建文件 ⌘N");
     expect(newFile.getAttribute("title")).toBe("新建文件 ⌘N");
     expect(newFile.querySelector("svg")).not.toBeNull();
+    expect(newFile.className).toContain("button-secondary");
     expect(host.querySelectorAll("kbd")).toHaveLength(0);
   });
 
@@ -519,6 +518,9 @@ describe("EmptyState", () => {
 
   it("shows the drop hint only while a drop is active", () => {
     const { host } = mount("macos", { mode: "start", dropActive: true });
+    expect(host.querySelector("[data-drop-hint]")?.className).toContain(
+      "border-[var(--nicole-primary-fill)]",
+    );
     expect(host.querySelector("[data-drop-hint]")?.textContent).toContain(
       "松开以打开文件夹",
     );

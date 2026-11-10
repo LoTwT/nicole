@@ -178,6 +178,14 @@ describe("FileTree", () => {
     );
   });
 
+  it("marks the selected row with the shared selected-row color", async () => {
+    mountTree([], "macos", "a.md");
+    await settle();
+    expect(row("a.md").className).toContain(
+      "bg-[var(--nicole-selected-row)]",
+    );
+  });
+
   it("reads a folder on first expansion and remembers it", async () => {
     mountTree();
     await settle();
