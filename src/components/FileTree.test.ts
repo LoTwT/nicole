@@ -644,6 +644,18 @@ describe("FileTree", () => {
     expect(createRow.firstElementChild?.tagName).toBe("SPAN");
     expect(createRow.firstElementChild?.classList.contains("w-3")).toBe(true);
     expect(createRow.classList.contains("gap-1.5")).toBe(true);
+
+    await treeApi!.startCreate("create-file", ".");
+    await settle();
+    const rootCreateInput = host.querySelector<HTMLInputElement>(
+      'input[aria-label="新建文件"]',
+    )!;
+    const rootCreateRow = rootCreateInput.parentElement!;
+    expect(rootCreateRow.firstElementChild?.tagName).toBe("SPAN");
+    expect(rootCreateRow.firstElementChild?.classList.contains("w-3")).toBe(
+      true,
+    );
+    expect(rootCreateRow.classList.contains("gap-1.5")).toBe(true);
   });
 
   it("disables text selection on rows but keeps inline inputs selectable", async () => {

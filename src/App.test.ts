@@ -965,6 +965,24 @@ describe("application shell", () => {
     expect(host.querySelector("aside")).not.toBeNull();
   });
 
+  it("switches folders without confirmation when only a single-file tab is open", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    await openPath("/tmp/single.md");
+    dialogButton("只打开这个文件").click();
+    await settle();
+
+    mocks.pickFolder.mockResolvedValue({ path: "/second", canceled: false });
+    mocks.openFolder.mockResolvedValue(folder("/second", 2));
+    sidebarButton("切换文件夹").click();
+    await settle();
+
+    expect(dialog()).toBeNull();
+    expect(mocks.openFolder).toHaveBeenLastCalledWith("/second");
+    expect(host.querySelectorAll('[role="tab"]')).toHaveLength(1);
+    expect(tabNamed("single.md")).toBeDefined();
+    expect(editorView().state.doc.toString()).toBe("# Single\n");
+  });
+
   it("opens a non-Markdown file as a placeholder with system actions", async () => {
     tree = [
       entry("cover.png", "assets/cover.png", {
