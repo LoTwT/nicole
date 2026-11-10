@@ -57,13 +57,16 @@ function rect(left: number, right: number, top = 0, bottom = 600): DOMRect {
 }
 
 function specificity(selector: string): [number, number, number] {
-  const ids = (selector.match(/#[^.#\s>+~:[\],]+/g) ?? []).length;
+  // `:not()` adds no specificity of its own; only its argument counts, so
+  // `.a:not(.b)` scores two classes rather than three.
+  const counted = selector.replace(/:not\(([^()]*)\)/g, " $1 ");
+  const ids = (counted.match(/#[^.#\s>+~:[\],]+/g) ?? []).length;
   const classes =
-    (selector.match(/\.[^.#\s>+~:[\],]+/g) ?? []).length +
-    (selector.match(/\[[^\]]+\]/g) ?? []).length +
-    (selector.match(/:(?!:)[\w-]+/g) ?? []).length;
+    (counted.match(/\.[^.#\s>+~:[\],]+/g) ?? []).length +
+    (counted.match(/\[[^\]]+\]/g) ?? []).length +
+    (counted.match(/:(?!:)[\w-]+/g) ?? []).length;
   const types = (
-    selector
+    counted
       .replace(/#[^.#\s>+~:[\],]+/g, " ")
       .replace(/\.[^.#\s>+~:[\],]+/g, " ")
       .replace(/\[[^\]]+\]/g, " ")
@@ -302,13 +305,18 @@ it("clips the zero-sized selection layer with a polygon", async () => {
   )!;
   expect(layer.style.width).toBe("");
   expect(layer.style.height).toBe("");
+  const polygonPoints = (value: string) =>
+    (value.match(/-?\d+(?:\.\d+)?(?:e[+-]?\d+)?/gi) ?? []).map(Number);
   const polygonX = (value: string) => {
-    const numbers = (
-      value.match(/-?\d+(?:\.\d+)?(?:e[+-]?\d+)?/gi) ?? []
-    ).map(Number);
+    const numbers = polygonPoints(value);
     return [numbers[0], numbers[2], numbers[4], numbers[6]];
   };
+  const points = polygonPoints(layer.style.clipPath);
   expect(polygonX(layer.style.clipPath)).toEqual([116, 584, 584, 116]);
+  // CodeMirror caps the rendered document height at MaxDOMHeight (7,000,000
+  // px), so this vertical span always reaches past every visible line.
+  expect(points[1]).toBeLessThanOrEqual(-7e6);
+  expect(points[5]).toBeGreaterThanOrEqual(7e6);
 
   content.mockReturnValue(rect(120, 620));
   view.dispatch({ changes: { from: view.state.doc.length, insert: "\n" } });
