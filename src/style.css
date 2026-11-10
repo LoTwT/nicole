@@ -19,6 +19,9 @@
   /* Paper's accent-soft is only 1.07:1 on the sidebar; selected rows keep a
      stronger fill here without changing the global accent token. */
   --nicole-selected-row: var(--color-lavender-200);
+  /* Paper's default hover is only 1.04:1 on the sidebar; the file tree needs
+     its own hover fill, while other components keep --surface-subtle. */
+  --nicole-file-tree-hover: var(--surface-muted);
   --nicole-quote-border: var(--reading-quote-border, var(--border-default));
   /* @ayingott/theme pairs each accent fill with its own content color. The
      primary button keeps that pairing, but the dark theme overrides it below. */
@@ -44,8 +47,10 @@
 .dark {
   --nicole-selection: var(--reading-selection, var(--accent-soft));
   /* Ink's hover fill is only 1.01:1 off accent-soft, so selected rows need a
-     stronger surface than the theme's accent token. */
+     stronger surface than the theme's accent token. Ink's default hover is
+     already distinct enough for the file tree. */
   --nicole-selected-row: var(--color-lavender-900);
+  --nicole-file-tree-hover: var(--surface-subtle);
   /* Ink's accent fill is lavender-700 (2.98:1 against the canvas) and its
      hover is darker still (2.2:1). A light fill is more visible on the dark
      canvas and keeps lavender-900 content at 6.19:1; hover and pressed states

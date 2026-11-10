@@ -178,11 +178,20 @@ describe("FileTree", () => {
     );
   });
 
-  it("marks the selected row with the shared selected-row color", async () => {
+  it("uses the shared selected-row color and the file-tree hover color", async () => {
     mountTree([], "macos", "a.md");
     await settle();
     expect(row("a.md").className).toContain(
       "bg-[var(--nicole-selected-row)]",
+    );
+    expect(row("a.md").className).not.toContain(
+      "hover:bg-[var(--nicole-file-tree-hover)]",
+    );
+    expect(row("notes").className).toContain(
+      "hover:bg-[var(--nicole-file-tree-hover)]",
+    );
+    expect(row("notes").className).not.toContain(
+      "hover:bg-[var(--surface-subtle)]",
     );
   });
 

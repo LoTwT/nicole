@@ -254,6 +254,28 @@ describe("primary button contract", () => {
     expect(contrast(darkText, darkSelection)).toBeGreaterThanOrEqual(4.5);
   });
 
+  it("strengthens only the Paper file tree hover", () => {
+    const root = rule(":root");
+    const dark = rule(".dark");
+    expect(declaration(root, "--nicole-file-tree-hover")).toBe(
+      "var(--surface-muted)",
+    );
+    expect(declaration(dark, "--nicole-file-tree-hover")).toBe(
+      "var(--surface-subtle)",
+    );
+
+    const panel = cssVariable(themeColorsCss, "--color-surface-1");
+    const oldHover = cssVariable(themeColorsCss, "--color-surface-3");
+    const newHover = cssVariable(themeColorsCss, "--color-surface-4");
+    expect(contrast(newHover, panel)).toBeGreaterThan(
+      contrast(oldHover, panel),
+    );
+
+    const darkHover = cssVariable(themeDarkCss, "--surface-subtle");
+    const darkPanel = cssVariable(themeDarkCss, "--surface-panel");
+    expect(contrast(darkHover, darkPanel)).toBeGreaterThan(1.2);
+  });
+
   it("defines one shared secondary button fill in both themes", () => {
     const base = rule(".button-secondary");
     expect(base).toMatch(/border-color:\s*var\(--border-default\);/);

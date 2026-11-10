@@ -48,11 +48,13 @@ const dotClass = computed(() => {
     <div v-if="showThemeToggle" class="-ml-1.5 flex shrink-0 items-center">
       <ThemeToggle :is-dark="isDark === true" @toggle="emit('toggle-theme')" />
     </div>
-    <span class="flex min-w-0 flex-1 items-center gap-1.5">
+    <span
+      class="-mr-1.5 ml-auto flex min-w-0 flex-1 items-center justify-end gap-1.5"
+    >
       <template v-if="notice">
         <span class="size-[7px] shrink-0 rounded-full" :class="dotClass"></span>
         <span
-          class="truncate"
+          class="min-w-0 truncate"
           :title="noticeDetail"
           :class="{
             'text-[var(--status-danger-fg)]': noticeTone === 'danger',
@@ -66,7 +68,7 @@ const dotClass = computed(() => {
       <template v-else-if="saveStatus">
         <span class="size-[7px] shrink-0 rounded-full" :class="dotClass"></span>
         <span
-          class="truncate"
+          class="min-w-0 truncate"
           :class="{
             'text-[var(--status-danger-fg)]': saveStatus.tone === 'danger',
             'text-[var(--status-warning-fg)]': saveStatus.tone === 'warning',

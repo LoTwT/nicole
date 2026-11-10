@@ -55,7 +55,7 @@ src/
     FileTree.vue          按需读取的文件树、右键菜单、行内新建与重命名
     FileTreeNode.vue      递归树节点与键盘可见结构
     TopBar.vue            多标签标签栏、模式切换、侧栏与大纲入口
-    StatusBar.vue         保存状态、临时提示与侧栏不可见时的主题按钮
+    StatusBar.vue         右侧保存状态与临时提示、侧栏不可见时的左侧主题按钮
     AppBanner.vue         外部修改、删除、保存失败和恢复内容横幅
     AppDialog.vue         模态对话框、焦点陷阱与焦点恢复
     CommandPalette.vue    命令、文件和标题三种模式的命令面板

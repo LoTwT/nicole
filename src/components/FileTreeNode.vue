@@ -95,7 +95,7 @@ function activate() {
       :class="[
         isSelected
           ? 'bg-[var(--nicole-selected-row)] text-[var(--text-primary)]'
-          : 'hover:bg-[var(--surface-subtle)]',
+          : 'hover:bg-[var(--nicole-file-tree-hover)]',
         isMuted && !isSelected ? 'text-[var(--text-muted)]' : 'text-[var(--text-secondary)]',
       ]"
       :style="{ paddingLeft }"
