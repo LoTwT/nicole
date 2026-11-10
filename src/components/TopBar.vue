@@ -69,6 +69,12 @@ const activeMode = computed(
   () => modes.find((item) => item.id === props.mode) ?? modes[0]!,
 );
 
+function tabControlHoverClass(tabId: number): string {
+  return tabId === props.activeTabId
+    ? "hover:bg-[var(--surface-subtle)]"
+    : "hover:bg-[var(--surface-muted)]";
+}
+
 function modeTitle(id: EditorMode): string {
   const item = modes.find((entry) => entry.id === id) ?? modes[0]!;
   return `${item.full} ${commandShortcut(item.command, props.platform)}`;
@@ -215,7 +221,7 @@ defineExpose({ closeModeMenu });
         class="group flex h-7 min-w-24 max-w-50 shrink-0 items-center gap-1.5 rounded-[var(--radius-control)] pl-3 pr-1.5"
         :class="
           tab.id === activeTabId
-            ? 'bg-[var(--surface-subtle)] text-[var(--text-primary)]'
+            ? 'bg-[var(--surface-muted)] text-[var(--text-primary)]'
             : 'text-[var(--text-muted)] hover:bg-[var(--surface-subtle)]'
         "
         :title="tab.title"
@@ -236,7 +242,8 @@ defineExpose({ closeModeMenu });
         <button
           v-if="tab.problem"
           type="button"
-          class="focus-ring grid size-4 shrink-0 place-items-center rounded-[3px] hover:bg-[var(--surface-muted)]"
+          class="focus-ring grid size-4 shrink-0 place-items-center rounded-[3px]"
+          :class="tabControlHoverClass(tab.id)"
           :title="tab.problemLabel"
           :aria-label="`关闭 ${tab.name}：${tab.problemLabel}`"
           @click.stop="emit('close-tab', tab.id)"
@@ -255,8 +262,11 @@ defineExpose({ closeModeMenu });
         <button
           v-else
           type="button"
-          class="focus-ring grid size-4 shrink-0 place-items-center rounded-[3px] text-[var(--text-muted)] hover:bg-[var(--surface-muted)] hover:text-[var(--text-primary)] focus-visible:opacity-100 group-hover:opacity-100"
-          :class="tab.id === activeTabId ? 'opacity-100' : 'opacity-0'"
+          class="focus-ring grid size-4 shrink-0 place-items-center rounded-[3px] text-[var(--text-muted)] hover:text-[var(--text-primary)] focus-visible:opacity-100 group-hover:opacity-100"
+          :class="[
+            tab.id === activeTabId ? 'opacity-100' : 'opacity-0',
+            tabControlHoverClass(tab.id),
+          ]"
           :aria-label="`关闭 ${tab.name}`"
           @click.stop="emit('close-tab', tab.id)"
         >
