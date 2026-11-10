@@ -123,13 +123,19 @@ func TestMenusUseSimplifiedChinese(t *testing.T) {
 	customizeEditMenu(menu)
 	tops := menu.Items()
 	name := mygo.App.Name()
-	wantMenuLabels(t, "app menu", tops[0].Submenu, "关于"+name, "检查更新…", "退出"+name)
+	if runtime.GOOS == "darwin" {
+		wantMenuLabels(t, "app menu", tops[0].Submenu, "关于"+name, "检查更新…", "退出"+name)
+		wantMenuLabels(t, "app menu", tops[0].Submenu, "隐藏"+name, "隐藏其他", "全部显示")
+	} else {
+		// MyGo hides RoleAbout outside macOS, and labels RoleQuit with menuExit
+		// on Windows and menuQuit elsewhere; both are "退出" in zh-Hans.
+		wantMenuLabels(t, "app menu", tops[0].Submenu, "检查更新…", "退出")
+	}
 	wantMenuLabels(t, "File menu", tops[1].Submenu, "关闭工作区")
 	wantMenuLabels(t, "Edit menu", tops[2].Submenu, "撤销", "重做", "剪切", "复制", "粘贴", "全选")
 	wantMenuLabels(t, "View menu", tops[3].Submenu, "实际大小", "放大", "缩小", "切换全屏幕")
 	wantMenuLabels(t, "Window menu", tops[4].Submenu, "最小化")
 	if runtime.GOOS == "darwin" {
-		wantMenuLabels(t, "app menu", tops[0].Submenu, "隐藏"+name, "隐藏其他", "全部显示")
 		wantMenuLabels(t, "Edit menu", tops[2].Submenu, "粘贴并匹配样式", "删除", "语音")
 		wantMenuLabels(t, "Window menu", tops[4].Submenu, "缩放", "前置全部窗口")
 		for _, item := range tops[2].Submenu {
