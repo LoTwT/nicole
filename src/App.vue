@@ -4396,7 +4396,7 @@ defineExpose({
         :notice="notice?.text ?? null"
         :notice-tone="notice?.tone"
         :notice-detail="notice?.detail"
-        :start-theme="startState"
+        :show-theme-toggle="!sidebarShown"
         :is-dark="isDark"
         @toggle-theme="toggleTheme"
       />
@@ -4463,7 +4463,7 @@ defineExpose({
               ? action.danger
                 ? 'border-[var(--status-danger-border)] bg-[var(--status-danger-bg)] text-[var(--status-danger-fg)]'
                 : 'button-primary'
-              : 'border-[var(--border-default)] text-[var(--text-secondary)] hover:bg-[var(--surface-subtle)]'
+              : 'button-secondary'
           "
           @click="resolveDialog(action.value)"
         >

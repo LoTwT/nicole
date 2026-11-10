@@ -518,7 +518,7 @@ watch(mode, (next) => {
             class="flex min-h-8 w-full items-center gap-2 rounded-[var(--radius-control)] px-2 py-1 text-left"
             :class="
               index === selectedIndex
-                ? 'bg-[var(--accent-soft)]'
+                ? 'bg-[var(--nicole-selected-row)]'
                 : 'hover:bg-[var(--surface-subtle)]'
             "
             :style="{
@@ -548,18 +548,32 @@ watch(mode, (next) => {
             <span class="min-w-0 flex-1">
               <span
                 class="block truncate"
-                :class="{ 'text-[var(--text-muted)]': item.placeholder }"
+                :class="{
+                  'text-[var(--text-secondary)]':
+                    item.placeholder && index === selectedIndex,
+                  'text-[var(--text-muted)]':
+                    item.placeholder && index !== selectedIndex,
+                }"
               >
                 {{ item.label }}
               </span>
               <span
                 v-if="item.detail"
-                class="block truncate text-[11px] text-[var(--text-muted)]"
+                class="block truncate text-[11px]"
+                :class="
+                  index === selectedIndex
+                    ? 'text-[var(--text-secondary)]'
+                    : 'text-[var(--text-muted)]'
+                "
               >
                 {{ item.detail }}
               </span>
             </span>
-            <KeyHint v-if="item.shortcut" :shortcut="item.shortcut" />
+            <KeyHint
+              v-if="item.shortcut"
+              :shortcut="item.shortcut"
+              :tone="index === selectedIndex ? 'secondary' : 'muted'"
+            />
           </button>
           <p
             v-if="mode === 'heading' && headingsTruncated"

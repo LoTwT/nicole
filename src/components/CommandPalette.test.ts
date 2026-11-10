@@ -155,11 +155,46 @@ describe("CommandPalette", () => {
       options()[0]?.id,
     );
     expect(options()[0]?.getAttribute("aria-selected")).toBe("true");
+    expect(options()[0]?.className).toContain(
+      "bg-[var(--nicole-selected-row)]",
+    );
     expect(options()[0]?.tabIndex).toBe(-1);
     expect(options()[0]?.querySelector("kbd")).toBeNull();
     expect(options()[0]?.textContent).toContain("⌘I");
     expect(options()[0]?.querySelector("span.text-right")?.textContent?.trim()).toBe(
       "⌘I",
+    );
+    expect(options()[0]?.querySelector("span.text-right")?.className).toContain(
+      "text-[var(--text-secondary)]",
+    );
+  });
+
+  it("keeps file details readable on selected and unselected rows", async () => {
+    mountPalette({
+      mode: "file",
+      workspaceOpen: true,
+      loadFiles: async () => ["notes/a.md", "notes/b.md"],
+    });
+    await settle();
+
+    const rows = options();
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.getAttribute("aria-selected")).toBe("true");
+    const selectedDetail = rows[0]!.querySelector<HTMLElement>(
+      'span[class*="text-[11px]"]',
+    )!;
+    const unselectedDetail = rows[1]!.querySelector<HTMLElement>(
+      'span[class*="text-[11px]"]',
+    )!;
+    expect(selectedDetail.className).toContain(
+      "text-[var(--text-secondary)]",
+    );
+    expect(selectedDetail.className).not.toContain(
+      "text-[var(--text-muted)]",
+    );
+    expect(unselectedDetail.className).toContain("text-[var(--text-muted)]");
+    expect(unselectedDetail.className).not.toContain(
+      "text-[var(--text-secondary)]",
     );
   });
 
@@ -543,7 +578,7 @@ describe("CommandPalette", () => {
     const option = options()[0]!;
     expect(option.textContent).toContain("空标题");
     expect(option.querySelector(".block.truncate")?.className).toContain(
-      "text-[var(--text-muted)]",
+      "text-[var(--text-secondary)]",
     );
     expect(document.body.textContent).toContain(
       "文档较大，部分标题尚未解析",

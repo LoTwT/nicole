@@ -178,6 +178,23 @@ describe("FileTree", () => {
     );
   });
 
+  it("uses the shared selected-row color and the file-tree hover color", async () => {
+    mountTree([], "macos", "a.md");
+    await settle();
+    expect(row("a.md").className).toContain(
+      "bg-[var(--nicole-selected-row)]",
+    );
+    expect(row("a.md").className).not.toContain(
+      "hover:bg-[var(--nicole-file-tree-hover)]",
+    );
+    expect(row("notes").className).toContain(
+      "hover:bg-[var(--nicole-file-tree-hover)]",
+    );
+    expect(row("notes").className).not.toContain(
+      "hover:bg-[var(--surface-subtle)]",
+    );
+  });
+
   it("reads a folder on first expansion and remembers it", async () => {
     mountTree();
     await settle();
@@ -193,6 +210,34 @@ describe("FileTree", () => {
     await settle();
     expect(mocks.listDirectory).toHaveBeenCalledWith("notes");
     expect(host.textContent).toContain("b.md");
+  });
+
+  it("expands an empty folder without a placeholder and still starts new files", async () => {
+    const emptyFolder = {
+      name: "empty",
+      path: "empty",
+      isDir: true,
+      isMarkdown: false,
+      size: 0,
+    };
+    mocks.listDirectory.mockImplementation(async (path: string) => ({
+      path,
+      entries: path === "." ? [emptyFolder] : [],
+    }));
+    mountTree();
+    await settle();
+
+    row("empty").click();
+    await settle();
+    expect(mocks.listDirectory).toHaveBeenCalledWith("empty");
+    expect(row("empty").getAttribute("aria-expanded")).toBe("true");
+    expect(host.textContent).not.toContain("空文件夹");
+
+    await treeApi!.startCreate("create-file", "empty");
+    await settle();
+    expect(
+      host.querySelector<HTMLInputElement>('input[aria-label="新建文件"]'),
+    ).not.toBeNull();
   });
 
   it("uses the native menu for a file and starts an inline rename", async () => {

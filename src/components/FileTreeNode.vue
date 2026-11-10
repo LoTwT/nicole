@@ -94,8 +94,8 @@ function activate() {
       class="focus-ring group flex h-[26px] cursor-default items-center gap-1.5 rounded-[var(--radius-control)] pr-1 text-[13px] outline-offset-[-2px]"
       :class="[
         isSelected
-          ? 'bg-[var(--accent-soft)] text-[var(--text-primary)]'
-          : 'hover:bg-[var(--surface-subtle)]',
+          ? 'bg-[var(--nicole-selected-row)] text-[var(--text-primary)]'
+          : 'hover:bg-[var(--nicole-file-tree-hover)]',
         isMuted && !isSelected ? 'text-[var(--text-muted)]' : 'text-[var(--text-secondary)]',
       ]"
       :style="{ paddingLeft }"
@@ -160,13 +160,6 @@ function activate() {
           @cancel-edit="emit('cancel-edit')"
         />
       </template>
-      <div
-        v-else-if="node.children && node.children.length === 0 && !(editing && editing.kind !== 'rename' && editing.target === node.path)"
-        class="h-[24px] text-[12px] text-[var(--text-muted)]"
-        :style="{ paddingLeft: `${8 + (depth + 1) * 14}px` }"
-      >
-        空文件夹
-      </div>
     </div>
   </div>
 </template>

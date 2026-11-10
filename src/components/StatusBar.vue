@@ -9,7 +9,8 @@ const props = defineProps<{
   notice: string | null;
   noticeTone?: "success" | "danger" | "muted";
   noticeDetail?: string;
-  startTheme?: boolean;
+  /** The sidebar owns the theme toggle whenever it is visible. */
+  showThemeToggle?: boolean;
   isDark?: boolean;
 }>();
 
@@ -44,14 +45,14 @@ const dotClass = computed(() => {
   <footer
     class="flex h-[26px] shrink-0 items-center gap-3 border-t border-[var(--border-subtle)] px-3.5 text-[12px] text-[var(--text-muted)]"
   >
-    <div v-if="startTheme" class="-ml-1.5 flex shrink-0 items-center">
+    <div v-if="showThemeToggle" class="-ml-1.5 flex shrink-0 items-center">
       <ThemeToggle :is-dark="isDark === true" @toggle="emit('toggle-theme')" />
     </div>
-    <span class="flex min-w-0 flex-1 items-center gap-1.5">
+    <span class="ml-auto flex min-w-0 flex-1 items-center justify-end gap-1.5">
       <template v-if="notice">
         <span class="size-[7px] shrink-0 rounded-full" :class="dotClass"></span>
         <span
-          class="truncate"
+          class="min-w-0 truncate"
           :title="noticeDetail"
           :class="{
             'text-[var(--status-danger-fg)]': noticeTone === 'danger',
@@ -65,7 +66,7 @@ const dotClass = computed(() => {
       <template v-else-if="saveStatus">
         <span class="size-[7px] shrink-0 rounded-full" :class="dotClass"></span>
         <span
-          class="truncate"
+          class="min-w-0 truncate"
           :class="{
             'text-[var(--status-danger-fg)]': saveStatus.tone === 'danger',
             'text-[var(--status-warning-fg)]': saveStatus.tone === 'warning',

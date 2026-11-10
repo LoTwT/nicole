@@ -49,14 +49,14 @@ const sizeLabel = computed(() => {
       <div class="flex justify-center gap-2">
         <button
           type="button"
-          class="focus-ring rounded-[var(--radius-control)] border border-[var(--border-default)] px-3 py-1.5 text-[12px] text-[var(--text-secondary)] hover:bg-[var(--surface-subtle)] hover:text-[var(--text-primary)]"
+          class="button-secondary focus-ring rounded-[var(--radius-control)] border px-3 py-1.5 text-[12px]"
           @click="emit('open-default')"
         >
           用默认应用打开
         </button>
         <button
           type="button"
-          class="focus-ring rounded-[var(--radius-control)] border border-[var(--border-default)] px-3 py-1.5 text-[12px] text-[var(--text-secondary)] hover:bg-[var(--surface-subtle)] hover:text-[var(--text-primary)]"
+          class="button-secondary focus-ring rounded-[var(--radius-control)] border px-3 py-1.5 text-[12px]"
           @click="emit('reveal')"
         >
           {{ revealLabel(platform) }}

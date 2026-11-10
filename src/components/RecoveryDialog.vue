@@ -78,7 +78,7 @@ const actionClass =
         type="button"
         :class="actionClass"
         data-autofocus
-        class="border-[var(--border-default)] text-[var(--text-secondary)] hover:bg-[var(--surface-subtle)]"
+        class="button-secondary"
         @click="emit('review')"
       >
         逐个查看
