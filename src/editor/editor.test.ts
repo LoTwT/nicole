@@ -1,8 +1,10 @@
+import { syntaxTreeAvailable } from "@codemirror/language";
 import { StateEffect } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createEditor, type EditorHandle, type EditorMode } from "./index";
+import { until } from "./test-helpers";
 
 // jsdom reports an empty navigator.platform, which CodeMirror treats as
 // non-Mac when it resolves `Mod` at module load. Pin it to Windows so the Ctrl
@@ -120,13 +122,13 @@ describe("createEditor", () => {
     const bold = doc.indexOf("加粗");
 
     view.dispatch({ selection: { anchor: bold } });
-    await settle();
+    await until(() => renderedText(view).includes("**加粗**"));
 
     expect(instance.mode).toBe("live");
     expect(renderedText(view)).toContain("**加粗**");
 
     instance.setMode("immersive");
-    await settle();
+    await until(() => !renderedText(view).includes("**加粗**"));
 
     expect(instance.mode).toBe("immersive");
     expect(instance.view).toBe(view);
@@ -134,7 +136,7 @@ describe("createEditor", () => {
     expect(renderedText(view)).toContain("加粗");
 
     instance.setMode("source");
-    await settle();
+    await until(() => renderedText(view).includes("# 标题"));
 
     expect(instance.mode).toBe("source");
     expect(instance.view).toBe(view);
@@ -669,6 +671,61 @@ describe("task checkbox", () => {
     expect(document.activeElement).toBe(view.contentDOM);
     expect(view.hasFocus).toBe(true);
   });
+
+  for (const mode of ["live", "immersive"] as const) {
+    it(`draws preview decorations when a truncated first parse catches up (${mode})`, async () => {
+      const realNow = Date.now;
+      let calls = 0;
+      const clock = vi.spyOn(Date, "now").mockImplementation(() => {
+        calls += 1;
+        // The first read sets the 20 ms parse deadline; every later read jumps
+        // past it so the initial tree stops at the first block.
+        return calls === 1 ? realNow() : realNow() + calls * 10_000;
+      });
+      let instance: EditorHandle;
+      try {
+        instance = mountOn("macos", mode);
+      } finally {
+        clock.mockRestore();
+      }
+      const view = instance.view;
+
+      expect(syntaxTreeAvailable(view.state, view.state.doc.length)).toBe(false);
+      expect(checkboxes(view)).toHaveLength(0);
+      const selection = view.state.selection.toJSON();
+      const text = view.state.doc.toString();
+      const scrollTop = view.scrollDOM.scrollTop;
+      const scrollRequests: boolean[] = [];
+      view.dispatch({
+        effects: StateEffect.appendConfig.of(
+          EditorView.updateListener.of((update) => {
+            scrollRequests.push(
+              ...update.transactions.map(
+                (transaction) => transaction.scrollIntoView,
+              ),
+            );
+          }),
+        ),
+      });
+
+      // Only the background parser runs here: no selection or document update
+      // may be needed to draw the task box, heading and hidden emphasis marks.
+      await until(
+        () => syntaxTreeAvailable(view.state, view.state.doc.length),
+        4000,
+      );
+      await until(() => checkboxes(view).length === 1, 4000);
+
+      expect(checkboxes(view)).toHaveLength(1);
+      expect(view.contentDOM.querySelector(".cm-nicole-h1")).not.toBeNull();
+      expect(renderedText(view)).not.toContain("**加粗**");
+      expect(renderedText(view)).toContain("加粗");
+      expect(view.state.selection.toJSON()).toEqual(selection);
+      expect(view.state.doc.toString()).toBe(text);
+      expect(view.scrollDOM.scrollTop).toBe(scrollTop);
+      expect(scrollRequests).not.toContain(true);
+    });
+  }
 
   it("blocks native editing events while the checkbox has focus", async () => {
     const instance = mount("live");

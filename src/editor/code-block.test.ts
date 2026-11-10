@@ -16,6 +16,7 @@ import {
   type EditorHandle,
   type EditorMode,
 } from "./index";
+import { until } from "./test-helpers";
 
 const doc = `行内 \`inline\` 代码
 
@@ -171,7 +172,10 @@ describe.each(["live", "immersive", "source"] as EditorMode[])(
     it("draws one block-sized background for fenced and indented code", async () => {
       editor = createEditor({ parent, doc, mode });
       const view = editor.view;
-      await settle();
+      await until(
+        () =>
+          view.contentDOM.querySelectorAll(".cm-nicole-code-line").length === 7,
+      );
 
       const codeLines = [
         ...view.contentDOM.querySelectorAll(".cm-nicole-code-line"),
@@ -181,6 +185,9 @@ describe.each(["live", "immersive", "source"] as EditorMode[])(
         false,
       );
 
+      await until(
+        () => view.scrollDOM.querySelectorAll(".cm-nicole-code-bg").length === 2,
+      );
       const backgrounds = [
         ...view.scrollDOM.querySelectorAll<HTMLElement>(".cm-nicole-code-bg"),
       ];

@@ -448,7 +448,7 @@ function dialogButton(label: string): HTMLButtonElement {
   return found;
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   document.body.innerHTML = '<div id="app"></div>';
   document.documentElement.classList.remove("dark");
   localStorage.clear();
@@ -571,6 +571,13 @@ beforeEach(() => {
   host = document.querySelector<HTMLElement>("#app")!;
   app = createApp(App);
   app.mount(host);
+  // Startup ends with TakePendingOpenedFiles. Waiting for it here keeps the
+  // real-clock startup out of tests that then install fake timers or swap the
+  // mocks; otherwise the old instance keeps reading the new values.
+  await vi.waitFor(
+    () => expect(mocks.takePendingOpenedFiles).toHaveBeenCalled(),
+    { interval: 1, timeout: 5000 },
+  );
 });
 
 afterEach(() => {
@@ -1733,9 +1740,9 @@ describe("autosave during IME composition", () => {
   });
 
   it("keeps a restored paused tab paused after a composition ends", async () => {
-    vi.useFakeTimers();
     app?.unmount();
     app = null;
+    vi.useFakeTimers();
     mocks.getSettings.mockResolvedValue({
       theme: "system",
       sidebarWidth: 252,
@@ -1763,15 +1770,23 @@ describe("autosave during IME composition", () => {
     });
     app = createApp(App);
     app.mount(host);
-    await settle();
+    await vi.waitFor(() => {
+      expect(dialogButton("逐个查看")).toBeTruthy();
+    });
     dialogButton("逐个查看").click();
-    await settle();
-    expect(host.querySelector("footer")?.textContent).toContain("已暂停自动保存");
+    await vi.waitFor(() => {
+      expect(host.querySelector("footer")?.textContent).toContain(
+        "已暂停自动保存",
+      );
+    });
 
     startComposition();
     endComposition();
-    await settle();
-    expect(host.querySelector("footer")?.textContent).toContain("已暂停自动保存");
+    await vi.waitFor(() => {
+      expect(host.querySelector("footer")?.textContent).toContain(
+        "已暂停自动保存",
+      );
+    });
     await vi.advanceTimersByTimeAsync(3000);
     expect(mocks.writeFile).not.toHaveBeenCalled();
   });

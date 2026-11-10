@@ -1090,7 +1090,10 @@ function preview(reveal: boolean, resolveImage: ImageResolver): Extension {
 
       update(update: ViewUpdate) {
         const rebuild =
-          update.docChanged || update.viewportChanged || update.selectionSet;
+          update.docChanged ||
+          update.viewportChanged ||
+          update.selectionSet ||
+          syntaxTree(update.startState) !== syntaxTree(update.state);
 
         if (update.view.compositionStarted) {
           // Replacing the DOM under an active IME composition makes WKWebView
