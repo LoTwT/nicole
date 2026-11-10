@@ -308,6 +308,59 @@ function pressPaletteShortcut(key: string) {
   return pressAppShortcut(key, true);
 }
 
+function pressSidebarShortcut() {
+  window.dispatchEvent(
+    new KeyboardEvent("keydown", {
+      key: "s",
+      ctrlKey: true,
+      metaKey: true,
+      bubbles: true,
+      cancelable: true,
+    }),
+  );
+}
+
+function themeToggle(where: "sidebar" | "status"): HTMLButtonElement {
+  const toggle = host.querySelector<HTMLButtonElement>(
+    `[data-theme-toggle="${where}"]`,
+  );
+  if (!toggle) throw new Error(`${where} theme toggle not found`);
+  return toggle;
+}
+
+function sidebarToggle(which: "show" | "hide"): HTMLButtonElement {
+  const selector =
+    which === "show" ? "[data-sidebar-toggle]" : "[data-sidebar-hide]";
+  const toggle = host.querySelector<HTMLButtonElement>(selector);
+  if (!toggle) throw new Error(`${which} sidebar toggle not found`);
+  return toggle;
+}
+
+function treeRow(path: string): HTMLElement {
+  const row = host.querySelector<HTMLElement>(`[data-tree-path="${path}"]`);
+  if (!row) throw new Error(`tree row ${path} not found`);
+  return row;
+}
+
+async function resizeTo(width: number) {
+  window.innerWidth = width;
+  window.dispatchEvent(new Event("resize"));
+  await settle();
+}
+
+async function withViewportWidth<T>(
+  width: number,
+  run: () => Promise<T>,
+): Promise<T> {
+  const original = window.innerWidth;
+  try {
+    await resizeTo(width);
+    return await run();
+  } finally {
+    await resizeTo(original);
+  }
+}
+
 async function openFolder(files = tree, generation = 1) {
   mocks.pickFolder.mockResolvedValue({ path: "/notes", canceled: false });
   mocks.openFolder.mockResolvedValue(folder("/notes", generation));
@@ -2847,6 +2900,212 @@ describe("theme and accessibility", () => {
       'button[aria-label^="切换到"]',
     );
     expect(themeButton).not.toBeNull();
+  });
+});
+
+describe("sidebar focus", () => {
+  it("swaps focus between the theme toggles as the sidebar shows and hides", async () => {
+    await openFile();
+    themeToggle("sidebar").focus();
+    pressSidebarShortcut();
+    await settle();
+    expect(host.querySelector("aside")).toBeNull();
+    expect(document.activeElement).toBe(themeToggle("status"));
+
+    themeToggle("status").focus();
+    pressSidebarShortcut();
+    await settle();
+    expect(host.querySelector("aside")).not.toBeNull();
+    expect(document.activeElement).toBe(themeToggle("sidebar"));
+  });
+
+  it("moves focus to the show button when a shortcut hides the sidebar", async () => {
+    await openFile();
+    treeRow("a.md").focus();
+    pressSidebarShortcut();
+    await settle();
+    expect(host.querySelector("aside")).toBeNull();
+    expect(document.activeElement).toBe(sidebarToggle("show"));
+  });
+
+  it("moves focus to the show button when the sidebar hide button is used", async () => {
+    await openFile();
+    const hide = sidebarToggle("hide");
+    hide.focus();
+    hide.click();
+    await settle();
+    expect(host.querySelector("aside")).toBeNull();
+    expect(document.activeElement).toBe(sidebarToggle("show"));
+  });
+
+  it("moves focus to the hide button when the show button opens the sidebar", async () => {
+    await openFile();
+    pressSidebarShortcut();
+    await settle();
+    const show = sidebarToggle("show");
+    show.focus();
+    show.click();
+    await settle();
+    expect(host.querySelector("aside")).not.toBeNull();
+    expect(document.activeElement).toBe(sidebarToggle("hide"));
+  });
+
+  it("moves focus to the show button when the palette hides the sidebar", async () => {
+    await openFile();
+    treeRow("a.md").focus();
+    pressPaletteShortcut("p");
+    await settle();
+    expect(document.activeElement).toBe(paletteInput());
+    typePalette("显示或隐藏侧栏");
+    await settle();
+    paletteOptions()
+      .find((option) => option.textContent?.includes("显示或隐藏侧栏"))!
+      .click();
+    await settle();
+    expect(host.querySelector("aside")).toBeNull();
+    expect(document.activeElement).toBe(sidebarToggle("show"));
+  });
+
+  it("restores the pre-overlay focus when Escape closes the overlay sidebar", async () => {
+    await openFile();
+    const view = editorView();
+    view.focus();
+    await withViewportWidth(800, async () => {
+      pressSidebarShortcut();
+      await settle();
+      expect(
+        host.querySelector("aside")?.classList.contains("sidebar--overlay"),
+      ).toBe(true);
+
+      treeRow("a.md").focus();
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await settle();
+      expect(host.querySelector("aside")).toBeNull();
+      expect(document.activeElement).toBe(view.contentDOM);
+    });
+  });
+
+  it("restores the pre-overlay focus when a click outside closes the overlay", async () => {
+    await openFile();
+    const view = editorView();
+    view.focus();
+    await withViewportWidth(800, async () => {
+      pressSidebarShortcut();
+      await settle();
+      treeRow("a.md").focus();
+
+      host
+        .querySelector("[data-editor-host]")!
+        .dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+      await settle();
+      expect(host.querySelector("aside")).toBeNull();
+      expect(document.activeElement).toBe(view.contentDOM);
+    });
+  });
+
+  it("falls back to the show button when the pre-overlay focus is gone", async () => {
+    await openFile();
+    await withViewportWidth(800, async () => {
+      (document.activeElement as HTMLElement | null)?.blur();
+      pressSidebarShortcut();
+      await settle();
+      treeRow("a.md").focus();
+
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await settle();
+      expect(document.activeElement).toBe(sidebarToggle("show"));
+    });
+  });
+
+  it("moves focus from the status toggle when a wider window shows the sidebar", async () => {
+    await openFile();
+    await withViewportWidth(800, async () => {
+      expect(host.querySelector("aside")).toBeNull();
+      themeToggle("status").focus();
+      await resizeTo(1024);
+      expect(host.querySelector("aside")).not.toBeNull();
+      expect(document.activeElement).toBe(themeToggle("sidebar"));
+    });
+  });
+
+  it("moves focus to the show button when a narrower window hides the sidebar", async () => {
+    await openFile();
+    treeRow("a.md").focus();
+    await withViewportWidth(800, async () => {
+      expect(host.querySelector("aside")).toBeNull();
+      expect(document.activeElement).toBe(sidebarToggle("show"));
+    });
+  });
+
+  it("leaves focus and selection alone when the sidebar hides", async () => {
+    await openFile();
+    const view = editorView();
+    view.dispatch({ selection: { anchor: 2, head: 4 } });
+    view.focus();
+    const selection = view.state.selection;
+
+    pressSidebarShortcut();
+    await settle();
+    expect(host.querySelector("aside")).toBeNull();
+    expect(document.activeElement).toBe(view.contentDOM);
+    expect(view.state.selection.eq(selection)).toBe(true);
+  });
+
+  it("returns focus to the overlay fallback after the palette closes", async () => {
+    await openFile();
+    await withViewportWidth(800, async () => {
+      pressSidebarShortcut();
+      await settle();
+      treeRow("a.md").focus();
+      pressPaletteShortcut("p");
+      await settle();
+      expect(host.querySelector("aside")).toBeNull();
+      expect(document.activeElement).toBe(paletteInput());
+
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await settle();
+      expect(document.activeElement).toBe(sidebarToggle("show"));
+    });
+  });
+
+  it("returns focus to the status theme toggle after the palette closes", async () => {
+    await openFile();
+    await withViewportWidth(800, async () => {
+      pressSidebarShortcut();
+      await settle();
+      themeToggle("sidebar").focus();
+      pressPaletteShortcut("p");
+      await settle();
+      expect(host.querySelector("aside")).toBeNull();
+
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await settle();
+      expect(document.activeElement).toBe(themeToggle("status"));
+    });
   });
 });
 

@@ -209,6 +209,7 @@ defineExpose({
     >
       <button
         type="button"
+        data-sidebar-hide
         class="app-no-drag focus-ring grid size-7 place-items-center rounded-[var(--radius-control)] text-[var(--text-muted)] hover:bg-[var(--surface-subtle)] hover:text-[var(--text-primary)]"
         :aria-label="`隐藏侧栏 ${sidebarShortcut}`"
         :title="`隐藏侧栏 ${sidebarShortcut}`"
@@ -320,7 +321,11 @@ defineExpose({
         <AppIcon name="folder-open" :size="14" />
       </button>
       <div class="flex items-center gap-1">
-        <ThemeToggle :is-dark="isDark" @toggle="emit('toggle-theme')" />
+        <ThemeToggle
+          data-theme-toggle="sidebar"
+          :is-dark="isDark"
+          @toggle="emit('toggle-theme')"
+        />
         <button
           type="button"
           class="focus-ring grid size-6 place-items-center rounded-[var(--radius-control)] text-[var(--text-muted)] disabled:cursor-default disabled:opacity-50"
