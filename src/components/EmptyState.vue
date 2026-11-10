@@ -356,7 +356,7 @@ defineExpose({
       <div
         v-if="dropActive"
         data-drop-hint
-        class="pointer-events-none absolute inset-2 flex items-center justify-center rounded-[var(--radius-card)] border-2 border-dashed border-[var(--nicole-primary-fill)] bg-[var(--surface-canvas)]"
+        class="pointer-events-none absolute inset-2 z-20 flex items-center justify-center rounded-[var(--radius-card)] border-2 border-dashed border-[var(--nicole-primary-fill)] bg-[var(--surface-canvas)]"
       >
         <div
           data-drop-hint-tint

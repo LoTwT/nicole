@@ -62,6 +62,11 @@ function mount(
   return { host: document.querySelector<HTMLElement>("#app")!, calls };
 }
 
+function zIndexOf(element: Element | null): number {
+  const match = element?.className.match(/\bz-(\d+)\b/);
+  return match ? Number(match[1]) : 0;
+}
+
 function mountLive(
   platform: AppPlatform,
   initialFolders: string[],
@@ -514,6 +519,26 @@ describe("EmptyState", () => {
   it("hides the recent block when there is no history", () => {
     const { host } = mount("macos", { mode: "start" });
     expect(host.textContent).not.toContain("最近打开");
+  });
+
+  it("keeps the drop hint above recent remove buttons", () => {
+    const { host } = mount("macos", {
+      mode: "start",
+      dropActive: true,
+      recentFolders: ["/Users/test/写作", "/Users/test/博客"],
+      missingFolders: ["/Users/test/博客"],
+    });
+    const hint = host.querySelector("[data-drop-hint]");
+    const removeButtons = [
+      ...host.querySelectorAll<HTMLElement>(
+        'button[aria-label^="从最近打开中移除"]',
+      ),
+    ];
+    expect(hint).not.toBeNull();
+    expect(removeButtons).toHaveLength(2);
+    for (const button of removeButtons) {
+      expect(zIndexOf(hint)).toBeGreaterThan(zIndexOf(button));
+    }
   });
 
   it("shows the drop hint only while a drop is active", () => {
