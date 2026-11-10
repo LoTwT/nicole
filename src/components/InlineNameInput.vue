@@ -50,7 +50,7 @@ onMounted(() => {
     :value="value"
     :aria-label="label"
     type="text"
-    class="h-[24px] min-w-0 flex-1 rounded-[var(--radius-control)] border border-[var(--focus-ring-color)] bg-[var(--surface-canvas)] px-1.5 text-[13px] text-[var(--text-primary)] outline-none"
+    class="h-[24px] min-w-0 flex-1 select-text rounded-[var(--radius-control)] border border-[var(--focus-ring-color)] bg-[var(--surface-canvas)] px-1.5 text-[13px] text-[var(--text-primary)] outline-none"
     @input="emit('update:value', ($event.target as HTMLInputElement).value)"
     @click.stop
     @mousedown.stop

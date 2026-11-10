@@ -2387,35 +2387,36 @@ async function switchToFolder(
   const closingTabs = tabs.value.filter(
     (tab) => tab.kind === "workspace" || tab.kind === "preview",
   );
-  let hadProblems = false;
 
   if (currentWorkspace !== null) {
     await saveWorkspaceTabs();
-    const problems = closingTabs.flatMap(tabCloseProblems);
-    hadProblems = problems.length > 0;
-    const choice = await askDialog({
-      title: `切换到“${targetName}”`,
-      message: `当前文件夹的 ${closingTabs.length} 个标签页会关闭，切回“${rootName.value}”时会恢复这些标签页`,
-      details: problems,
-      actions: [
-        { label: "取消", value: "cancel", autofocus: true },
-        {
-          label: hadProblems ? "放弃更改并切换" : "切换",
-          value: "switch",
-          primary: true,
-          danger: hadProblems,
-        },
-      ],
-    });
-    if (choice !== "switch") {
-      return false;
-    }
-    // The user agreed to discard what could not be saved; the copies for
-    // those documents must not outlive this switch. Recovery runs in separate
-    // Go goroutines, so wait for deletes and in-flight writes before the
-    // generation changes; otherwise Go rejects the late deletes.
-    for (const tab of closingTabs) {
-      forgetRecoveryForTab(tab);
+    if (closingTabs.length > 0) {
+      const problems = closingTabs.flatMap(tabCloseProblems);
+      const hadProblems = problems.length > 0;
+      const choice = await askDialog({
+        title: `切换到“${targetName}”`,
+        message: `当前文件夹的 ${closingTabs.length} 个标签页会关闭，切回“${rootName.value}”时会恢复这些标签页`,
+        details: problems,
+        actions: [
+          { label: "取消", value: "cancel", autofocus: true },
+          {
+            label: hadProblems ? "放弃更改并切换" : "切换",
+            value: "switch",
+            primary: true,
+            danger: hadProblems,
+          },
+        ],
+      });
+      if (choice !== "switch") {
+        return false;
+      }
+      // The user agreed to discard what could not be saved; the copies for
+      // those documents must not outlive this switch. Recovery runs in separate
+      // Go goroutines, so wait for deletes and in-flight writes before the
+      // generation changes; otherwise Go rejects the late deletes.
+      for (const tab of closingTabs) {
+        forgetRecoveryForTab(tab);
+      }
     }
     if (!(await waitForRecoveryOperations(RECOVERY_OPERATION_TIMEOUT_MS))) {
       void resumeRecoveryCopiesAfterPending(closingTabs);
@@ -2500,10 +2501,16 @@ async function closeWorkspace() {
         (tab) => tab.kind !== "single",
       ).length;
       const singleCount = closing.length - workspaceTabCount;
-      let message = `当前文件夹的 ${workspaceTabCount} 个标签页会关闭，下次打开“${rootName.value}”时会恢复这些标签页`;
-      if (singleCount > 0) {
-        message += `；${singleCount} 个单文件标签页会关闭且不会恢复`;
+      const messageParts: string[] = [];
+      if (workspaceTabCount > 0) {
+        messageParts.push(
+          `当前文件夹的 ${workspaceTabCount} 个标签页会关闭，下次打开“${rootName.value}”时会恢复这些标签页`,
+        );
       }
+      if (singleCount > 0) {
+        messageParts.push(`${singleCount} 个单文件标签页会关闭且不会恢复`);
+      }
+      const message = messageParts.join("；");
       const choice = await askDialog({
         title: "关闭工作区？",
         message,

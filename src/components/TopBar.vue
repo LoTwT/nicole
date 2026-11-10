@@ -219,7 +219,7 @@ defineExpose({ closeModeMenu });
         :aria-selected="tab.id === activeTabId"
         :data-tab-id="tab.id"
         :tabindex="tab.id === activeTabId ? 0 : -1"
-        class="group flex h-7 min-w-24 max-w-50 shrink-0 items-center gap-1.5 rounded-[var(--radius-control)] pl-3 pr-1.5"
+        class="group flex h-7 min-w-24 max-w-50 shrink-0 select-none items-center gap-1.5 rounded-[var(--radius-control)] pl-3 pr-1.5"
         :class="
           tab.id === activeTabId
             ? 'bg-[var(--surface-muted)] text-[var(--text-primary)]'

@@ -594,6 +594,81 @@ describe("FileTree", () => {
     );
   });
 
+  it("gives inline rename and create inputs the normal row's leading slot", async () => {
+    mountTree(["notes"]);
+    await settle();
+
+    const normalSlot = row("a.md").firstElementChild;
+    expect(normalSlot?.tagName).toBe("SPAN");
+    expect(normalSlot?.classList.contains("w-3")).toBe(true);
+
+    row("a.md").focus();
+    row("a.md").dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Enter",
+        code: "Enter",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    const renameRow = host.querySelector<HTMLElement>(
+      '[data-tree-path="a.md"]',
+    )!;
+    expect(renameRow.querySelector("input")).not.toBeNull();
+    const renameSlot = renameRow.firstElementChild;
+    expect(renameSlot?.tagName).toBe("SPAN");
+    expect(renameSlot?.classList.contains("w-3")).toBe(true);
+    expect(renameRow.classList.contains("gap-1.5")).toBe(true);
+
+    renameRow
+      .querySelector<HTMLInputElement>("input")!
+      .dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    await settle();
+
+    await treeApi!.startCreate("create-file", "notes");
+    await settle();
+    const createInput = host.querySelector<HTMLInputElement>(
+      'input[aria-label="新建文件"]',
+    )!;
+    const createRow = createInput.parentElement!;
+    const nestedNormalSlot = row("b.md").firstElementChild;
+    expect(nestedNormalSlot?.tagName).toBe("SPAN");
+    expect(nestedNormalSlot?.classList.contains("w-3")).toBe(true);
+    expect(createRow.firstElementChild?.tagName).toBe("SPAN");
+    expect(createRow.firstElementChild?.classList.contains("w-3")).toBe(true);
+    expect(createRow.classList.contains("gap-1.5")).toBe(true);
+  });
+
+  it("disables text selection on rows but keeps inline inputs selectable", async () => {
+    mountTree();
+    await settle();
+    expect(row("a.md").classList.contains("select-none")).toBe(true);
+
+    row("a.md").focus();
+    row("a.md").dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Enter",
+        code: "Enter",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    const input = host.querySelector<HTMLInputElement>(
+      'input[aria-label="重命名"]',
+    )!;
+    expect(input.classList.contains("select-text")).toBe(true);
+    expect(input.classList.contains("select-none")).toBe(false);
+    expect(input.parentElement?.classList.contains("select-none")).toBe(false);
+  });
+
   it("uses Enter, F2 and Delete on Windows", async () => {
     mountTree([], "windows");
     await settle();
