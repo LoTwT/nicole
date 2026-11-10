@@ -3041,6 +3041,23 @@ describe("sidebar focus", () => {
     });
   });
 
+  it("falls back to the show button when an outside click loses the pre-overlay focus", async () => {
+    await openFile();
+    await withViewportWidth(800, async () => {
+      (document.activeElement as HTMLElement | null)?.blur();
+      pressSidebarShortcut();
+      await settle();
+      treeRow("a.md").focus();
+
+      host
+        .querySelector("[data-editor-host]")!
+        .dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+      await settle();
+      expect(host.querySelector("aside")).toBeNull();
+      expect(document.activeElement).toBe(sidebarToggle("show"));
+    });
+  });
+
   it("moves focus from the status toggle when a wider window shows the sidebar", async () => {
     await openFile();
     await withViewportWidth(800, async () => {
@@ -3061,11 +3078,12 @@ describe("sidebar focus", () => {
     });
   });
 
-  it("leaves focus and selection alone when the sidebar hides", async () => {
+  it("leaves focus, selection and scroll alone when the sidebar hides", async () => {
     await openFile();
     const view = editorView();
     view.dispatch({ selection: { anchor: 2, head: 4 } });
     view.focus();
+    view.scrollDOM.scrollTop = 24;
     const selection = view.state.selection;
 
     pressSidebarShortcut();
@@ -3073,6 +3091,27 @@ describe("sidebar focus", () => {
     expect(host.querySelector("aside")).toBeNull();
     expect(document.activeElement).toBe(view.contentDOM);
     expect(view.state.selection.eq(selection)).toBe(true);
+    expect(view.scrollDOM.scrollTop).toBe(24);
+  });
+
+  it("leaves focus, selection and scroll alone when the sidebar shows", async () => {
+    await openFile();
+    const view = editorView();
+    pressSidebarShortcut();
+    await settle();
+    expect(host.querySelector("aside")).toBeNull();
+
+    view.dispatch({ selection: { anchor: 2, head: 4 } });
+    view.focus();
+    view.scrollDOM.scrollTop = 24;
+    const selection = view.state.selection;
+
+    pressSidebarShortcut();
+    await settle();
+    expect(host.querySelector("aside")).not.toBeNull();
+    expect(document.activeElement).toBe(view.contentDOM);
+    expect(view.state.selection.eq(selection)).toBe(true);
+    expect(view.scrollDOM.scrollTop).toBe(24);
   });
 
   it("does not reuse a dismissal origin after the window widens", async () => {
@@ -3101,6 +3140,40 @@ describe("sidebar focus", () => {
       await settle();
       expect(host.querySelector("aside")).toBeNull();
       expect(document.activeElement).toBe(sidebarToggle("show"));
+    });
+  });
+
+  it("leaves focus alone when Escape clears a leftover overlay flag in a wide window", async () => {
+    await openFile();
+    const view = editorView();
+    view.focus();
+    await withViewportWidth(800, async () => {
+      pressSidebarShortcut();
+      await settle();
+      expect(
+        host.querySelector("aside")?.classList.contains("sidebar--overlay"),
+      ).toBe(true);
+
+      await resizeTo(1024);
+      expect(host.querySelector("aside")).not.toBeNull();
+      (document.activeElement as HTMLElement | null)?.blur();
+      expect(document.activeElement).toBe(document.body);
+
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await settle();
+      expect(host.querySelector("aside")).not.toBeNull();
+      expect(document.activeElement).toBe(document.body);
+
+      // The stale overlay flag is gone, so narrowing does not reopen it.
+      await resizeTo(800);
+      expect(host.querySelector("aside")).toBeNull();
+      expect(document.activeElement).toBe(document.body);
     });
   });
 

@@ -1033,7 +1033,8 @@ interface SelectionClipGeometry {
 // backgrounds so a multi-line selection does not extend past their rounded
 // edges. Keep the layer at its natural zero size: sizing it would enlarge the
 // scroller. A polygon with a very tall vertical range clips every line without
-// giving the element a box.
+// giving the element a box; 1e7px exceeds the MaxDOMHeight cap (7,000,000px)
+// that CodeMirror's BigScaler applies to the rendered document.
 const selectionLayerClip = ViewPlugin.fromClass(
   class {
     private readonly request = {
