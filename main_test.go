@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/plugins/updater"
 )
 
 // TestMain gives every test its own user data directory. Some tests exercise
@@ -25,6 +26,12 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	mygo.App.SetPath(mygo.PathUserData, dir)
+	// Menus take the app's language when they are built, as in main; resolving
+	// it here keeps the label tests independent of the test machine's language.
+	// The user data path is set first: reading the locale may create it.
+	configureAppLanguage()
+	// The menu test builds the app menu, which holds the updater's item.
+	mygo.Use(updater.Plugin)
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)

@@ -21,6 +21,14 @@ Web 模式下，界面运行在系统 WebView 里（macOS WKWebView、Windows We
 
 开发时，`devUrl` 指向 Vite 开发服务器，可以热更新；打包后页面从 `mygo://localhost/` 加载。
 
+## 语言与菜单
+
+- 应用只显示一种语言。`mygo.App.SetLanguages(tags...)` 声明应用写成的语言，第一个是回退语言；`mygo.App.Locale()` 从中选出用户最常用的语言，没有匹配时用第一个。MyGo 的角色菜单标签、更新插件的 `updater.MenuItem()`、原生控件和页面都读取这个语言（`locale.go`、`menu.go` 的 `roleDefaults`）。
+- 日文、简体中文和繁体中文的 MyGo 译文是三个独立包，应用必须空白导入才会链接：`import _ "github.com/egoist/mygo/locales/zh-Hans"`（`locales/zh-Hans/locale_gen.go`）。应用自己没有 `i18n` 目录时，默认只有英文。
+- 菜单项在创建时取角色标签。`SetLanguages` 只把语言更新排到主线程；`App.Run` 之前创建菜单时，要先调用 `App.Locale()` 让语言在那之前确定，否则角色菜单会保留创建时的英文标签。`startLocale` 只在应用 ready 之后重命名角色项（`menu_text.go` 的 `relabelMenus`），所以应用自己设置过的标签和已经去掉角色的菜单项不会被改写。
+- macOS 上 `SetLanguages` 不改变 AppKit/WKWebView 的界面语言（`internal/darwin/locale.go`）：系统的菜单项（例如“编辑”菜单里由系统追加的听写、表情与符号）和网页右键菜单的系统项，跟随应用包在启动时选定的本地化。bundle 要在 `Info.plist` 声明 `CFBundleDevelopmentRegion` 和 `CFBundleLocalizations`；MyGo 从应用的 `i18n` 目录生成这些键和 `.lproj`，也可以用 `macos.infoPlist` 补充。`App.SetLocale` 会写入应用级 `AppleLanguages`，AppKit/WebKit 从下次启动起跟随。
+- Windows 的 `SetLanguages` 设置进程首选 UI 语言（`internal/windows/locale.go`），菜单和系统对话框在该语言有资源时显示它；WebView2 环境在第一个网页视图创建时取语言，之后不能改变。Linux 把语言交给 WebKitGTK（`internal/linux/locale.go`），GTK 菜单的布局方向随之确定。MyGo 自己的菜单文字在三个平台都由运行时译文决定。
+
 ## 绑定与 IPC
 
 - 用 `mygo.Bind(svc)` 暴露服务后，所有导出方法都能被调用。

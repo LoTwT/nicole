@@ -32,6 +32,7 @@
 - macOS 的红绿灯在左上角，叠在侧栏顶部；侧栏隐藏时，顶栏左侧留出 `--mygo-titlebar-inset-left`。Windows 的最小化、最大化、关闭按钮在右上角，顶栏右侧留出 `--mygo-titlebar-inset-right`。Linux 按桌面环境给出的两个变量留白。全屏时左右两个变量为 `0px`，顶栏内容随之贴到左右边缘，高度仍是 40px。
 - 顶栏和侧栏顶部的空白处标记为 `--app-region: drag`，可以拖动窗口。MyGo 只自动排除按钮、输入框、链接等原生可交互元素，自绘的标签页、模式切换分段等元素要显式标记 `--app-region: no-drag`。双击拖动区域时按系统行为缩放或最大化窗口。
 - 菜单栏：macOS 使用 `main.go` 设置的应用菜单。Windows 隐藏标题栏后没有菜单栏位置，按 Alt 或 F10 时 MyGo 在左上角弹出菜单。Linux 默认隐藏菜单栏，按 Alt 或 F10 时显示。应用菜单之后是“文件”菜单，目前只有“关闭工作区”；菜单项通过页面事件调用命令注册表，不另写执行逻辑，也不绑定原生快捷键。
+- 菜单语言固定为简体中文，不提供语言设置。`main.go` 在创建菜单前声明应用语言并解析一次，同时链接 MyGo 的 `zh-Hans` 译文，使角色菜单、`customizeEditMenu` 改写的撤销/重做和更新菜单项都显示中文。macOS 上 AppKit/WebKit 自带的菜单文字和网页右键菜单系统项由 bundle 语言决定，`mygo.config.ts` 通过 `macos.infoPlist` 声明 `zh-Hans`，因此打包应用从启动起就显示中文，不存在切换语言后要下次启动才生效的情况；Windows 和 Linux 的菜单同样使用运行时中文译文。实现与 MyGo 源码依据见[语言与菜单](../references/mygo.md#语言与菜单)。
 - 菜单项的快捷键不能与[快捷键](#快捷键)表冲突，也不能提供会丢失页面状态的操作。MyGo 默认的“显示”菜单（`RoleViewMenu`）包含“重新载入”⌘R、“强制重新载入”⇧⌘R，默认的“窗口”菜单（`RoleWindowMenu`）在 Windows 和 Linux 上把 Ctrl+W 绑定到关闭窗口，这些都要去掉或替换；“显示”菜单中的“切换开发者工具”（⌥⌘I、Ctrl+Shift+I）只在开发构建中保留；缩放（⌘+、⌘-、⌘0）和全屏保留。
 - 应用主题与系统外观不同时，用 `mygo.Theme.SetSource` 同步，让原生菜单、右键菜单和对话框跟随应用主题。
 - MyGo 0.7.3 的 `RoleUndo`/`RoleRedo` 在 macOS 上使用 AppKit 的 `undo:`/`redo:` selector，不会进入 CodeMirror 的历史。这两个菜单项改为向页面发送 `nicole:edit-command`，由页面执行 CodeMirror 的历史命令；输入法组合期间（`EditorView.compositionStarted`）忽略该命令。macOS 上已实测菜单点击、⌘Z 和 ⇧⌘Z 都作用于 CodeMirror 的历史，组合期间的忽略也有 Vitest 覆盖。Windows 和 Linux 的菜单事件行为**待实测**，见[待办](#待办)。
