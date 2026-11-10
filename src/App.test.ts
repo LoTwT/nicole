@@ -3119,20 +3119,34 @@ describe("sidebar focus", () => {
     });
   });
 
-  it("leaves focus in the editor when pointer clicks toggle the sidebar", async () => {
+  it("keeps editor focus and selection when the sidebar switches are clicked", async () => {
     await openFile();
     const view = editorView();
+    view.dispatch({ selection: { anchor: 2, head: 3 } });
     view.focus();
+    const selection = view.state.selection;
 
-    sidebarToggle("hide").click();
+    const clickSwitch = (element: HTMLElement) => {
+      const down = new MouseEvent("mousedown", {
+        bubbles: true,
+        cancelable: true,
+      });
+      element.dispatchEvent(down);
+      expect(down.defaultPrevented).toBe(true);
+      element.click();
+    };
+
+    clickSwitch(sidebarToggle("hide"));
     await settle();
     expect(host.querySelector("aside")).toBeNull();
     expect(document.activeElement).toBe(view.contentDOM);
+    expect(view.state.selection.eq(selection)).toBe(true);
 
-    sidebarToggle("show").click();
+    clickSwitch(sidebarToggle("show"));
     await settle();
     expect(host.querySelector("aside")).not.toBeNull();
     expect(document.activeElement).toBe(view.contentDOM);
+    expect(view.state.selection.eq(selection)).toBe(true);
   });
 
   it("does not pass focus through the show button when the palette opens", async () => {

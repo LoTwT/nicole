@@ -213,6 +213,7 @@ defineExpose({
         class="app-no-drag focus-ring grid size-7 place-items-center rounded-[var(--radius-control)] text-[var(--text-muted)] hover:bg-[var(--surface-subtle)] hover:text-[var(--text-primary)]"
         :aria-label="`隐藏侧栏 ${sidebarShortcut}`"
         :title="`隐藏侧栏 ${sidebarShortcut}`"
+        @mousedown.prevent
         @click="emit('hide-sidebar')"
       >
         <AppIcon name="sidebar" />

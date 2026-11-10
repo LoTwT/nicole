@@ -429,9 +429,6 @@ watch(overlaySidebar, (open) => {
 });
 
 function dismissOverlaySidebar() {
-  if (!overlaySidebar.value || isWide.value) {
-    return;
-  }
   // The dismissal owns its focus restoration. It runs even when closing and
   // reopening the overlay in one tick leaves sidebarShown unchanged, so no
   // stale origin can be applied to a later visibility change.
@@ -446,9 +443,6 @@ function dismissOverlaySidebar() {
       return;
     }
     overlayDismissal = null;
-    if (overlaySidebar.value) {
-      return;
-    }
     if (focusedControl() !== null) {
       return;
     }
@@ -831,9 +825,9 @@ function markMissing(folder: string) {
 
 function handleResize() {
   viewportWidth.value = window.innerWidth;
-  // The overlay only exists in the narrow layout. Clear it on every resize so
-  // widening cannot leave a stale overlay flag for later dismissals.
-  overlaySidebar.value = false;
+  if (!isWide.value) {
+    overlaySidebar.value = false;
+  }
 }
 
 function toggleSidebar() {
@@ -3951,7 +3945,7 @@ function handleGlobalKeydown(event: KeyboardEvent) {
     return;
   }
   if (event.key === "Escape") {
-    if (overlaySidebar.value && !isWide.value) {
+    if (overlaySidebar.value) {
       event.preventDefault();
       dismissOverlaySidebar();
     }
