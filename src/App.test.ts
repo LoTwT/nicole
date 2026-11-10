@@ -292,6 +292,21 @@ function typePalette(value: string) {
   input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
+function paletteOffers(label: string): boolean {
+  return paletteOptions().some((item) => item.textContent?.includes(label));
+}
+
+async function closePalette() {
+  window.dispatchEvent(
+    new KeyboardEvent("keydown", {
+      key: "Escape",
+      bubbles: true,
+      cancelable: true,
+    }),
+  );
+  await settle();
+}
+
 function pressAppShortcut(key: string, shift = false) {
   const event = new KeyboardEvent("keydown", {
     key,
@@ -701,19 +716,11 @@ describe("application shell", () => {
     expect(host.textContent).not.toContain("没有权限打开这个文件夹");
   });
 
-  it("keeps notices without a detail at three seconds", async () => {
-    vi.useFakeTimers();
+  it("does not show a notice when there is nothing to reopen", async () => {
     await openFolder();
     const reopen = pressAppShortcut("T", true);
     await settle();
     expect(reopen.defaultPrevented).toBe(true);
-    expect(host.textContent).toContain("没有可重新打开的标签页");
-
-    await vi.advanceTimersByTimeAsync(2999);
-    await settle();
-    expect(host.textContent).toContain("没有可重新打开的标签页");
-    await vi.advanceTimersByTimeAsync(1);
-    await settle();
     expect(host.textContent).not.toContain("没有可重新打开的标签页");
   });
 
@@ -836,16 +843,21 @@ describe("application shell", () => {
 
     await vi.advanceTimersByTimeAsync(5000);
     await settle();
-    pressAppShortcut("T", true);
+    mocks.revealEntry.mockRejectedValueOnce(new Error("no such folder"));
+    window.dispatchEvent(
+      new CustomEvent("nicole:run-command", {
+        detail: "app.reveal-workspace",
+      }),
+    );
     await settle();
-    expect(host.textContent).toContain("没有可重新打开的标签页");
+    expect(host.textContent).toContain("无法显示：no such folder");
 
     await vi.advanceTimersByTimeAsync(2999);
     await settle();
-    expect(host.textContent).toContain("没有可重新打开的标签页");
+    expect(host.textContent).toContain("无法显示：no such folder");
     await vi.advanceTimersByTimeAsync(1);
     await settle();
-    expect(host.textContent).not.toContain("没有可重新打开的标签页");
+    expect(host.textContent).not.toContain("无法显示：no such folder");
   });
 
   it("keeps an open-failure notice when the switch dialog is cancelled", async () => {
@@ -4492,18 +4504,91 @@ describe("command palette", () => {
     ).toBe(false);
   });
 
-  it("offers tab commands once a tab is open", async () => {
-    await openFile();
+  it("offers save and tab commands only when they can act", async () => {
+    await setupWorkspace({ "a.md": "# A\n", "b.md": "# B\n" });
+    await openPath("/notes/a.md");
     pressPaletteShortcut("P");
     await settle();
-    expect(
-      paletteOptions().some((item) => item.textContent?.includes("关闭标签页")),
-    ).toBe(true);
-    expect(
-      paletteOptions().some((item) =>
-        item.textContent?.includes("重新打开关闭的标签页"),
-      ),
-    ).toBe(true);
+    expect(paletteOffers("立即保存")).toBe(true);
+    expect(paletteOffers("关闭标签页")).toBe(true);
+    expect(paletteOffers("下一个标签页")).toBe(false);
+    expect(paletteOffers("上一个标签页")).toBe(false);
+    expect(paletteOffers("重新打开关闭的标签页")).toBe(false);
+    await closePalette();
+
+    await openPath("/notes/b.md");
+    pressPaletteShortcut("P");
+    await settle();
+    expect(paletteOffers("下一个标签页")).toBe(true);
+    expect(paletteOffers("上一个标签页")).toBe(true);
+    expect(paletteOffers("重新打开关闭的标签页")).toBe(false);
+    await closePalette();
+
+    pressAppShortcut("w");
+    await settle();
+    pressPaletteShortcut("P");
+    await settle();
+    expect(paletteOffers("立即保存")).toBe(true);
+    expect(paletteOffers("关闭标签页")).toBe(true);
+    expect(paletteOffers("下一个标签页")).toBe(false);
+    expect(paletteOffers("上一个标签页")).toBe(false);
+    expect(paletteOffers("重新打开关闭的标签页")).toBe(true);
+  });
+
+  it("lists workspace commands only with an open workspace", async () => {
+    await settle();
+    pressPaletteShortcut("P");
+    await settle();
+    for (const label of [
+      "新建文件",
+      "立即保存",
+      "显示或隐藏侧栏",
+      "下一个标签页",
+      "上一个标签页",
+      "重新打开关闭的标签页",
+    ]) {
+      expect(paletteOffers(label), label).toBe(false);
+    }
+    await closePalette();
+
+    await openFolder();
+    pressPaletteShortcut("P");
+    await settle();
+    expect(paletteOffers("新建文件")).toBe(true);
+    expect(paletteOffers("显示或隐藏侧栏")).toBe(true);
+    for (const label of [
+      "立即保存",
+      "下一个标签页",
+      "上一个标签页",
+      "重新打开关闭的标签页",
+    ]) {
+      expect(paletteOffers(label), label).toBe(false);
+    }
+  });
+
+  it("keeps save for a single-file Markdown tab without a workspace", async () => {
+    await settle();
+    pendingFiles = ["/tmp/single.md"];
+    openHandler?.();
+    await settle();
+    dialogButton("只打开这个文件").click();
+    await settle();
+
+    pressPaletteShortcut("P");
+    await settle();
+    expect(paletteOffers("立即保存")).toBe(true);
+    expect(paletteOffers("新建文件")).toBe(false);
+    expect(paletteOffers("显示或隐藏侧栏")).toBe(false);
+    expect(paletteOffers("下一个标签页")).toBe(false);
+    expect(paletteOffers("上一个标签页")).toBe(false);
+    expect(paletteOffers("重新打开关闭的标签页")).toBe(false);
+    await closePalette();
+
+    pressAppShortcut("w");
+    await settle();
+    pressPaletteShortcut("P");
+    await settle();
+    expect(paletteOffers("重新打开关闭的标签页")).toBe(false);
   });
 
   it("lists markdown files with recent ones first and reuses an open tab", async () => {

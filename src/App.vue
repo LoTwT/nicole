@@ -348,7 +348,10 @@ const isMarkdownOpen = computed(() => currentMarkdown.value !== null);
 function commandContextAllows(command: CommandDefinition): boolean {
   return (
     (!command.requiresWorkspace || hasWorkspace.value) &&
-    (!command.requiresOpenTab || tabs.value.length > 0)
+    (!command.requiresOpenTab || tabs.value.length > 0) &&
+    (!command.requiresActiveMarkdown || currentMarkdown.value !== null) &&
+    (!command.requiresMultipleTabs || tabs.value.length > 1) &&
+    (!command.requiresClosedTab || closedTabs.value.length > 0)
   );
 }
 

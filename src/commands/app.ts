@@ -22,6 +22,7 @@ export const appCommands: readonly CommandDefinition[] = [
     group: "app",
     scope: "app",
     keys: [{ key: "Mod-n" }],
+    requiresWorkspace: true,
     run: ({ app }) => {
       void app?.newFile();
       return app !== undefined;
@@ -33,6 +34,7 @@ export const appCommands: readonly CommandDefinition[] = [
     group: "app",
     scope: "app",
     keys: [{ key: "Mod-s" }],
+    requiresActiveMarkdown: true,
     run: ({ app }) => {
       void app?.saveCurrent();
       return app !== undefined;
@@ -144,6 +146,7 @@ export const appCommands: readonly CommandDefinition[] = [
     keys: [
       { mac: "Ctrl-Mod-s", win: "Ctrl-Shift-e", linux: "Ctrl-Shift-e" },
     ],
+    requiresWorkspace: true,
     run: ({ app }) => {
       void app?.toggleSidebar();
       return app !== undefined;
@@ -230,6 +233,7 @@ export const appCommands: readonly CommandDefinition[] = [
     scope: "app",
     keys: [{ key: "Shift-Mod-t" }],
     requiresWorkspace: true,
+    requiresClosedTab: true,
     run: ({ app }) => {
       void app?.reopenClosedTab();
       return app !== undefined;
@@ -244,6 +248,7 @@ export const appCommands: readonly CommandDefinition[] = [
       { key: "Ctrl-Tab" },
       { mac: "Shift-Mod-]", win: "Ctrl-PageDown", linux: "Ctrl-PageDown" },
     ],
+    requiresMultipleTabs: true,
     run: ({ app }) => {
       void app?.nextTab();
       return app !== undefined;
@@ -258,6 +263,7 @@ export const appCommands: readonly CommandDefinition[] = [
       { key: "Ctrl-Shift-Tab" },
       { mac: "Shift-Mod-[", win: "Ctrl-PageUp", linux: "Ctrl-PageUp" },
     ],
+    requiresMultipleTabs: true,
     run: ({ app }) => {
       void app?.previousTab();
       return app !== undefined;

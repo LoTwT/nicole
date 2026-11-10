@@ -104,5 +104,22 @@ export interface CommandDefinition {
    * last tab was closed.
    */
   requiresOpenTab?: boolean;
+  /**
+   * True when the command needs the active tab to be a Markdown file. The
+   * palette does not list it while a preview tab or the start page is active;
+   * key dispatch does not run it in that state.
+   */
+  requiresActiveMarkdown?: boolean;
+  /**
+   * True when the command needs more than one open tab. The palette does not
+   * list it with zero or one tab; key dispatch does not run it in that state.
+   */
+  requiresMultipleTabs?: boolean;
+  /**
+   * True when the command needs at least one tab in the closed history. The
+   * palette does not list it while the history is empty; key dispatch does not
+   * run it in that state.
+   */
+  requiresClosedTab?: boolean;
   run: (context: CommandContext) => boolean;
 }
