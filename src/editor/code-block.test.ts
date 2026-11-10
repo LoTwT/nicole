@@ -1,4 +1,5 @@
 import { markdownLanguage } from "@codemirror/lang-markdown";
+import { forceParsing, syntaxTree } from "@codemirror/language";
 import {
   openSearchPanel,
   search,
@@ -7,7 +8,7 @@ import {
 } from "@codemirror/search";
 import { StateEffect } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   collectCodeBlocks,
@@ -39,6 +40,20 @@ async function settle() {
 
 async function delay(milliseconds: number) {
   await new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+function rect(left: number, right: number, top = 0, bottom = 600): DOMRect {
+  return {
+    left,
+    right,
+    top,
+    bottom,
+    width: right - left,
+    height: bottom - top,
+    x: left,
+    y: top,
+    toJSON: () => ({}),
+  } as DOMRect;
 }
 
 function specificity(selector: string): [number, number, number] {
@@ -144,6 +159,7 @@ beforeEach(() => {
 
 afterEach(() => {
   editor?.destroy();
+  vi.restoreAllMocks();
 });
 
 describe.each(["live", "immersive", "source"] as EditorMode[])(
@@ -212,6 +228,99 @@ it("uses the reading mono font for every code line", async () => {
   }
 });
 
+it("insets backgrounds and follows the text start inside a quote", async () => {
+  const quoteDoc = [
+    "```ts",
+    "normal",
+    "```",
+    "",
+    "> ```ts",
+    "> quoted",
+    "> ```",
+  ].join("\n");
+  editor = createEditor({ parent, doc: quoteDoc, mode: "live" });
+  const view = editor.view;
+  await settle();
+
+  vi.spyOn(view.contentDOM, "getBoundingClientRect").mockReturnValue(
+    rect(100, 600),
+  );
+  vi.spyOn(view.scrollDOM, "getBoundingClientRect").mockReturnValue(
+    rect(0, 700),
+  );
+  Object.defineProperty(view.scrollDOM, "scrollWidth", {
+    configurable: true,
+    value: 700,
+  });
+  Object.defineProperty(view.scrollDOM, "scrollHeight", {
+    configurable: true,
+    value: 600,
+  });
+  const quoteStart = quoteDoc.indexOf("> ```ts");
+  vi.spyOn(view, "coordsAtPos").mockImplementation((position) => {
+    const left = position >= quoteStart ? 151 : 132;
+    return rect(left, left + 10, 0, 20);
+  });
+
+  // Force the layer to measure against the stubbed geometry.
+  view.dispatch({ changes: { from: view.state.doc.length, insert: "\n" } });
+  await settle();
+  await settle();
+
+  const markers = [
+    ...view.scrollDOM.querySelectorAll<HTMLElement>(".cm-nicole-code-bg"),
+  ];
+  expect(markers).toHaveLength(2);
+  expect(Number.parseFloat(markers[0]!.style.left)).toBe(116);
+  expect(Number.parseFloat(markers[0]!.style.width)).toBe(468);
+  expect(Number.parseFloat(markers[1]!.style.left)).toBe(135);
+  expect(Number.parseFloat(markers[1]!.style.width)).toBe(449);
+  expect(
+    Number.parseFloat(markers[1]!.style.left) +
+      Number.parseFloat(markers[1]!.style.width),
+  ).toBe(584);
+});
+
+it("clips the selection layer to the same horizontal band", async () => {
+  editor = createEditor({ parent, doc, mode: "live" });
+  const view = editor.view;
+  await settle();
+
+  const content = vi
+    .spyOn(view.contentDOM, "getBoundingClientRect")
+    .mockReturnValue(rect(100, 600));
+  vi.spyOn(view.scrollDOM, "getBoundingClientRect").mockReturnValue(
+    rect(0, 700),
+  );
+  Object.defineProperty(view.scrollDOM, "scrollWidth", {
+    configurable: true,
+    value: 700,
+  });
+  Object.defineProperty(view.scrollDOM, "scrollHeight", {
+    configurable: true,
+    value: 600,
+  });
+
+  view.dispatch({ changes: { from: view.state.doc.length, insert: "\n" } });
+  await settle();
+  await settle();
+
+  const layer = view.scrollDOM.querySelector<HTMLElement>(
+    ".cm-selectionLayer",
+  )!;
+  expect(layer.style.width).toBe("700px");
+  expect(layer.style.height).toBe("600px");
+  const insets = (value: string) =>
+    (value.match(/-?\d+(?:\.\d+)?/g) ?? []).map(Number);
+  expect(insets(layer.style.clipPath)).toEqual([0, 116, 0, 116]);
+
+  content.mockReturnValue(rect(120, 620));
+  view.dispatch({ changes: { from: view.state.doc.length, insert: "\n" } });
+  await settle();
+  await settle();
+  expect(insets(layer.style.clipPath)).toEqual([0, 96, 0, 136]);
+});
+
 it("decorates only code lines inside the visible ranges", async () => {
   const outsideDoc =
     "```js\n" +
@@ -223,6 +332,12 @@ it("decorates only code lines inside the visible ranges", async () => {
   const view = editor.view;
   await settle();
 
+  // Make the second block part of the syntax tree so this test fails if the
+  // collector ever scans the whole document instead of view.visibleRanges.
+  expect(forceParsing(view, outsideDoc.length, 1000)).toBe(true);
+  expect(syntaxTree(view.state).length).toBe(outsideDoc.length);
+  await settle();
+
   const outside = outsideDoc.indexOf("outside");
   expect(outside).toBeGreaterThan(view.visibleRanges.at(-1)!.to);
   const codeLines = [
@@ -232,6 +347,15 @@ it("decorates only code lines inside the visible ranges", async () => {
   expect(codeLines.some((line) => line.textContent?.includes("outside"))).toBe(
     false,
   );
+  const chunks = collectCodeBlocks(view).chunks;
+  expect(chunks).toHaveLength(1);
+  for (const chunk of chunks) {
+    expect(
+      view.visibleRanges.some(
+        (range) => range.from <= chunk.from && chunk.to <= range.to,
+      ),
+    ).toBe(true);
+  }
   expect(view.scrollDOM.querySelectorAll(".cm-nicole-code-bg")).toHaveLength(1);
 });
 

@@ -862,6 +862,8 @@ interface CodeBlockChunk {
   endsBlock: boolean;
 }
 
+const CODE_BLOCK_SIDE_MARGIN = 16;
+
 export function collectCodeBlocks(
   view: EditorView,
   tree = syntaxTree(view.state),
@@ -988,7 +990,7 @@ const codeBlockBackground = layer({
     // lineBlockAt() is relative to the document, before the content's top
     // padding; the layer is positioned against the content box in the viewport.
     const contentTop = content.top + view.documentPadding.top;
-    const right = content.right - 16;
+    const right = content.right - CODE_BLOCK_SIDE_MARGIN;
     const markers: RectangleMarker[] = [];
 
     for (const chunk of chunks) {
@@ -999,7 +1001,7 @@ const codeBlockBackground = layer({
       // from the line start also keeps the quote rule outside the background.
       const textLeft =
         view.coordsAtPos(chunk.from, 1)?.left ?? content.left + 32;
-      const left = textLeft - 16;
+      const left = textLeft - CODE_BLOCK_SIDE_MARGIN;
       const className = [
         "cm-nicole-code-bg",
         chunk.startsBlock ? "cm-nicole-code-bg-start" : "",
@@ -1020,6 +1022,69 @@ const codeBlockBackground = layer({
     return markers;
   },
 });
+
+interface SelectionClipGeometry {
+  width: number;
+  height: number;
+  left: number;
+  right: number;
+}
+
+// CodeMirror's selection rectangles span the whole content box, including its
+// 32px side padding. Clip the layer to the same 16px inset as the code
+// backgrounds so a multi-line selection does not extend past their rounded
+// edges. The layer has no intrinsic size, so give it the scroll size first.
+const selectionLayerClip = ViewPlugin.fromClass(
+  class {
+    private readonly request = {
+      read: (view: EditorView): SelectionClipGeometry | null => {
+        const layer =
+          view.scrollDOM.querySelector<HTMLElement>(".cm-selectionLayer");
+        if (!layer) return null;
+        const content = view.contentDOM.getBoundingClientRect();
+        const scroller = view.scrollDOM.getBoundingClientRect();
+        const baseLeft = scroller.left - view.scrollDOM.scrollLeft * view.scaleX;
+        const width = view.scrollDOM.scrollWidth;
+        const height = view.scrollDOM.scrollHeight;
+        if (width <= 0 || height <= 0 || content.width <= 0) return null;
+        const left = content.left - baseLeft + CODE_BLOCK_SIDE_MARGIN;
+        return {
+          width,
+          height,
+          left,
+          right:
+            width - (content.right - baseLeft) + CODE_BLOCK_SIDE_MARGIN,
+        };
+      },
+      write: (geometry: SelectionClipGeometry | null, view: EditorView) => {
+        if (!geometry) return;
+        const layer =
+          view.scrollDOM.querySelector<HTMLElement>(".cm-selectionLayer");
+        if (!layer) return;
+        const width = `${geometry.width}px`;
+        const height = `${geometry.height}px`;
+        const clip = `inset(0px ${Math.max(0, geometry.right)}px 0px ${Math.max(0, geometry.left)}px)`;
+        if (layer.style.width !== width) layer.style.width = width;
+        if (layer.style.height !== height) layer.style.height = height;
+        if (layer.style.clipPath !== clip) layer.style.clipPath = clip;
+      },
+    };
+
+    constructor(view: EditorView) {
+      view.requestMeasure(this.request);
+    }
+
+    update(update: ViewUpdate) {
+      if (
+        update.geometryChanged ||
+        update.docChanged ||
+        update.viewportChanged
+      ) {
+        update.view.requestMeasure(this.request);
+      }
+    }
+  },
+);
 
 function preview(reveal: boolean, resolveImage: ImageResolver): Extension {
   const plugin = ViewPlugin.fromClass(
@@ -1179,6 +1244,9 @@ const editorTheme = EditorView.theme({
     {
       backgroundColor: "var(--nicole-selection)",
     },
+  // The selection layer is given the full scroll size to clip it; it must not
+  // become a hit target in the content margins.
+  ".cm-selectionLayer": { pointerEvents: "none" },
   ".cm-activeLine": { backgroundColor: "transparent" },
   ".cm-gutters": { display: "none" },
   ".cm-nicole-h1": {
@@ -1614,6 +1682,7 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     syntaxHighlighting(highlightStyle),
     codeBlockPlugin,
     codeBlockBackground,
+    selectionLayerClip,
     editorTheme,
     createCommandKeymap(enabledCommands, platform),
     imageHandlers(onPasteImage, createTicketAt),
