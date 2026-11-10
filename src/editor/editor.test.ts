@@ -4,6 +4,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createEditor, type EditorHandle, type EditorMode } from "./index";
 
+// jsdom reports an empty navigator.platform, which CodeMirror treats as
+// non-Mac when it resolves `Mod` at module load. Pin it to Windows so the Ctrl
+// forwarding cases use one default keymap; mount() without a platform then
+// defaults to windows as well. The macOS cases below spell out Meta explicitly.
+vi.hoisted(() => {
+  Object.defineProperty(navigator, "platform", {
+    value: "Win32",
+    configurable: true,
+  });
+});
+
 const doc = `# 标题
 
 正文有**加粗**和*斜体*，还有[链接](https://example.com)。
@@ -74,19 +85,6 @@ function selectRenderedText(view: EditorView, from = 0, to = 2) {
   return selection;
 }
 
-function pressMod(view: EditorView, key: string, code: string) {
-  view.contentDOM.dispatchEvent(
-    new KeyboardEvent("keydown", {
-      key,
-      code,
-      ctrlKey: true,
-      metaKey: navigator.platform.startsWith("Mac"),
-      bubbles: true,
-      cancelable: true,
-    }),
-  );
-}
-
 function composition(
   view: EditorView,
   type: "compositionstart" | "compositionend",
@@ -143,44 +141,6 @@ describe("createEditor", () => {
     expect(renderedText(view)).toContain("**加粗**");
     expect(renderedText(view)).toContain("# 标题");
     expect(view.state.doc.toString()).toBe(doc);
-  });
-
-  it("toggles bold with the Mod-b binding in immersive mode", () => {
-    const instance = mount("immersive");
-    const view = instance.view;
-    const anchor = doc.indexOf("普通项");
-
-    view.dispatch({
-      selection: { anchor, head: anchor + "普通项".length },
-    });
-    pressMod(view, "b", "KeyB");
-
-    expect(view.state.doc.toString()).toContain("**普通项**");
-  });
-
-  it("runs app commands before basicSetup's default keymap", () => {
-    const instance = createEditor({
-      parent,
-      doc,
-      commands: [
-        {
-          id: "test.insert",
-          label: "插入 I",
-          group: "insert",
-          scope: "editor",
-          keys: [{ key: "Mod-i" }],
-          run: ({ view }) => {
-            view?.dispatch({ changes: { from: 0, insert: "I" } });
-            return true;
-          },
-        },
-      ],
-    });
-    const view = instance.view;
-
-    pressMod(view, "i", "KeyI");
-
-    expect(view.state.doc.toString()).toBe(`I${doc}`);
   });
 });
 

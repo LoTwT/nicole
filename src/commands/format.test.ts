@@ -1,13 +1,26 @@
 import type { EditorView } from "@codemirror/view";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { AppPlatform } from "../app/platform";
 import { createEditor, type EditorHandle } from "../editor";
+
+// jsdom reports an empty navigator.platform, which CodeMirror treats as
+// non-Mac when it resolves `Mod` at module load. Pin it so `Mod` follows the
+// macOS platform this suite declares.
+vi.hoisted(() => {
+  Object.defineProperty(navigator, "platform", {
+    value: "MacIntel",
+    configurable: true,
+  });
+});
+
+const platform: AppPlatform = "macos";
 
 let parent: HTMLElement;
 let editor: EditorHandle;
 
 function mount(doc: string) {
-  editor = createEditor({ parent, doc, platform: "macos" });
+  editor = createEditor({ parent, doc, platform });
   return editor;
 }
 
@@ -21,8 +34,8 @@ function press(
     new KeyboardEvent("keydown", {
       key,
       code,
-      ctrlKey: true,
-      metaKey: navigator.platform.startsWith("Mac"),
+      ctrlKey: platform !== "macos",
+      metaKey: platform === "macos",
       shiftKey: options.shift ?? false,
       bubbles: true,
       cancelable: true,
