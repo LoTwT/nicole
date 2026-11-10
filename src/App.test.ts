@@ -3,6 +3,16 @@ import { createApp, defineComponent, h, nextTick, ref } from "vue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App.vue";
+import type { AppPlatform } from "./app/platform";
+
+// CodeMirror resolves its `Mod` binding when the module loads. Pin the host to
+// macOS so its keymap matches the platform this suite declares, not the runner.
+vi.hoisted(() => {
+  Object.defineProperty(navigator, "platform", {
+    value: "MacIntel",
+    configurable: true,
+  });
+});
 
 const mocks = vi.hoisted(() => ({
   getAppInfo: vi.fn(),
@@ -243,13 +253,13 @@ function typeSlashAtEnd() {
   });
 }
 
-function pressMod(key: string, code: string) {
+function pressMod(key: string, code: string, platform: AppPlatform) {
   editorView().contentDOM.dispatchEvent(
     new KeyboardEvent("keydown", {
       key,
       code,
-      ctrlKey: true,
-      metaKey: navigator.platform.startsWith("Mac"),
+      ctrlKey: platform !== "macos",
+      metaKey: platform === "macos",
       bubbles: true,
       cancelable: true,
     }),
@@ -2876,7 +2886,7 @@ describe("theme and accessibility", () => {
     app?.unmount();
     mocks.getAppInfo.mockResolvedValue({
       version: "0.0.1",
-      os: "win32",
+      os: "windows",
       arch: "x64",
       goVersion: "go1.27",
       homeDir: "C:\\Users\\tester",
@@ -5173,7 +5183,7 @@ describe("slash menu with tabs", () => {
 
     const restored = editorView();
     restored.dispatch({ selection: { anchor: 1, head: 4 } });
-    pressMod("b", "KeyB");
+    pressMod("b", "KeyB", "macos");
     await settle();
     expect(restored.state.doc.toString()).toContain("X**one**\ntwo\n");
   });

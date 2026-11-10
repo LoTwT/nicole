@@ -1,13 +1,25 @@
 import type { EditorView } from "@codemirror/view";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { AppPlatform } from "../app/platform";
 import { createEditor, type EditorHandle } from "../editor";
+
+// CodeMirror resolves its `Mod` binding when the module loads. Pin the host to
+// macOS so its keymap matches the platform this suite declares, not the runner.
+vi.hoisted(() => {
+  Object.defineProperty(navigator, "platform", {
+    value: "MacIntel",
+    configurable: true,
+  });
+});
+
+const platform: AppPlatform = "macos";
 
 let parent: HTMLElement;
 let editor: EditorHandle;
 
 function mount(doc: string) {
-  editor = createEditor({ parent, doc, platform: "macos" });
+  editor = createEditor({ parent, doc, platform });
   return editor;
 }
 
@@ -21,8 +33,8 @@ function press(
     new KeyboardEvent("keydown", {
       key,
       code,
-      ctrlKey: true,
-      metaKey: navigator.platform.startsWith("Mac"),
+      ctrlKey: platform !== "macos",
+      metaKey: platform === "macos",
       shiftKey: options.shift ?? false,
       bubbles: true,
       cancelable: true,

@@ -2,8 +2,20 @@ import { EditorState, Prec } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { AppPlatform } from "../app/platform";
 import { getCommand } from "../commands/registry";
 import { createCommandKeymap } from "./keymap";
+
+// CodeMirror resolves its `Mod` binding when the module loads. Pin the host to
+// macOS so its keymap matches the platform this suite declares, not the runner.
+vi.hoisted(() => {
+  Object.defineProperty(navigator, "platform", {
+    value: "MacIntel",
+    configurable: true,
+  });
+});
+
+const platform: AppPlatform = "macos";
 
 let parent: HTMLElement;
 let view: EditorView | null = null;
@@ -13,8 +25,8 @@ function pressMod(target: EditorView, key: string, code: string) {
     new KeyboardEvent("keydown", {
       key,
       code,
-      ctrlKey: true,
-      metaKey: navigator.platform.startsWith("Mac"),
+      ctrlKey: platform !== "macos",
+      metaKey: platform === "macos",
       bubbles: true,
       cancelable: true,
     }),
@@ -40,7 +52,7 @@ describe("createCommandKeymap", () => {
         doc: "hello",
         extensions: [
           Prec.high(keymap.of([{ key: "Mod-i", run: competitor }])),
-          createCommandKeymap([getCommand("format.italic")!], "macos"),
+          createCommandKeymap([getCommand("format.italic")!], platform),
         ],
       }),
     });
