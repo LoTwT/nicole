@@ -9,6 +9,7 @@ import {
   onMounted,
   ref,
   shallowRef,
+  watch,
 } from "vue";
 
 import {
@@ -246,6 +247,7 @@ let dragDepth = 0;
 const expandedByRoot = ref<Record<string, string[]>>({});
 const recentFilesByRoot = ref<Record<string, string[]>>({});
 const paletteSession = shallowRef<PaletteSession | null>(null);
+let paletteReturnFocus: HTMLElement | null = null;
 
 const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
 const systemPrefersDark = ref(systemTheme.matches);
@@ -368,6 +370,104 @@ const sidebarShown = computed(
 const showSidebarToggle = computed(
   () => hasWorkspace.value && !sidebarShown.value,
 );
+
+/** The element that currently owns focus, excluding the implicit page body. */
+function focusedControl(): HTMLElement | null {
+  const active = document.activeElement;
+  return active instanceof HTMLElement &&
+    active !== document.body &&
+    active !== document.documentElement
+    ? active
+    : null;
+}
+
+/**
+ * Moves focus to the control that replaces the one removed by a sidebar
+ * visibility change. Routing by the removed element keeps shortcuts, palette
+ * commands, pointer clicks and viewport changes on the same destinations.
+ */
+function focusAfterRemovedSidebarControl(
+  removed: HTMLElement | null,
+): boolean {
+  if (removed === null) {
+    return false;
+  }
+  let target: HTMLElement | null = null;
+  if (removed.matches('[data-theme-toggle="status"]')) {
+    target = document.querySelector<HTMLElement>(
+      '[data-theme-toggle="sidebar"]',
+    );
+  } else if (removed.matches('[data-theme-toggle="sidebar"]')) {
+    target = document.querySelector<HTMLElement>(
+      '[data-theme-toggle="status"]',
+    );
+  } else if (
+    removed.matches("[data-sidebar-toggle], [data-sidebar-hide]") ||
+    removed.closest("aside") !== null
+  ) {
+    target =
+      document.querySelector<HTMLElement>("[data-sidebar-hide]") ??
+      document.querySelector<HTMLElement>("[data-sidebar-toggle]");
+  }
+  target?.focus();
+  return target !== null;
+}
+
+// The overlay does not take focus when it opens, so remember where the user
+// was before it replaced that part of the page. Esc and outside clicks are
+// dismissed by the user, not by toggling the sidebar, and return there first.
+let overlaySidebarReturnFocus: HTMLElement | null = null;
+let overlayDismissal: {
+  origin: HTMLElement | null;
+  removed: HTMLElement | null;
+} | null = null;
+
+watch(overlaySidebar, (open) => {
+  if (open) {
+    overlaySidebarReturnFocus = focusedControl();
+  }
+});
+
+function dismissOverlaySidebar() {
+  // The dismissal owns its focus restoration. It runs even when closing and
+  // reopening the overlay in one tick leaves sidebarShown unchanged, so no
+  // stale origin can be applied to a later visibility change.
+  const dismissal = {
+    origin: overlaySidebarReturnFocus,
+    removed: focusedControl(),
+  };
+  overlayDismissal = dismissal;
+  overlaySidebar.value = false;
+  void nextTick().then(() => {
+    if (overlayDismissal !== dismissal) {
+      return;
+    }
+    overlayDismissal = null;
+    if (focusedControl() !== null) {
+      return;
+    }
+    if (dismissal.origin?.isConnected) {
+      dismissal.origin.focus();
+      return;
+    }
+    focusAfterRemovedSidebarControl(dismissal.removed);
+  });
+}
+
+watch(sidebarShown, () => {
+  const removed = focusedControl();
+  void nextTick().then(() => {
+    // The dismissal handler owns Esc and outside clicks. The command palette
+    // focuses its input on mount and restores its own opener when it closes.
+    if (overlayDismissal !== null || paletteSession.value !== null) {
+      return;
+    }
+    if (focusedControl() !== null) {
+      return;
+    }
+    focusAfterRemovedSidebarControl(removed);
+  });
+});
 const selectedTreePath = computed(() => {
   const tab = currentTab.value;
   return tab?.kind === "workspace" || tab?.kind === "preview"
@@ -757,7 +857,7 @@ function handleContentPointerDown(event: PointerEvent) {
   ) {
     return;
   }
-  overlaySidebar.value = false;
+  dismissOverlaySidebar();
 }
 
 function updateSidebarWidth(width: number) {
@@ -3599,6 +3699,7 @@ function openCommandPalette(mode: CommandPaletteMode) {
   ) {
     return;
   }
+  paletteReturnFocus = focusedControl();
   closePalettePopovers();
   const tab = currentMarkdown.value;
   const activeEditor = tab !== null ? editor : null;
@@ -3666,6 +3767,22 @@ function paletteModeForShortcut(
 function closeCommandPalette() {
   paletteSession.value = null;
 }
+
+watch(paletteSession, async (session, previousSession) => {
+  if (session !== null || previousSession === null) {
+    return;
+  }
+  const origin = paletteReturnFocus;
+  paletteReturnFocus = null;
+  await nextTick();
+  // The panel restores a connected opener itself. When the opener was inside
+  // the overlay sidebar, that sidebar was already hidden when the panel
+  // opened, so apply the same fallback as an explicit sidebar dismissal.
+  if (focusedControl() !== null) {
+    return;
+  }
+  focusAfterRemovedSidebarControl(origin);
+});
 
 function restorePaletteEditor(session: PaletteSession) {
   if (
@@ -3830,7 +3947,7 @@ function handleGlobalKeydown(event: KeyboardEvent) {
   if (event.key === "Escape") {
     if (overlaySidebar.value) {
       event.preventDefault();
-      overlaySidebar.value = false;
+      dismissOverlaySidebar();
     }
     return;
   }

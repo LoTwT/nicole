@@ -190,6 +190,7 @@ defineExpose({ closeModeMenu });
       class="app-no-drag focus-ring grid size-7 shrink-0 place-items-center rounded-[var(--radius-control)] text-[var(--text-muted)] hover:bg-[var(--surface-subtle)] hover:text-[var(--text-primary)]"
       :aria-label="`显示侧栏 ${commandShortcut('nav.toggle-sidebar', platform)}`"
       :title="`显示侧栏 ${commandShortcut('nav.toggle-sidebar', platform)}`"
+      @mousedown.prevent
       @click="emit('toggle-sidebar')"
     >
       <AppIcon name="sidebar" />
