@@ -74,9 +74,10 @@ describe("StatusBar", () => {
     const footer = host.querySelector("footer")!;
     const [toggleRow, statusRow] = [...footer.children] as HTMLElement[];
     expect(toggleRow!.querySelector("button")).not.toBeNull();
+    expect(footer.className).toContain("px-3.5");
     expect(statusRow!.className).toContain("ml-auto");
     expect(statusRow!.className).toContain("justify-end");
-    expect(statusRow!.className).toContain("-mr-1.5");
+    expect(statusRow!.className).not.toContain("-mr-1.5");
     expect(statusRow!.className).toContain("flex-1");
     expect(statusRow!.className).toContain("min-w-0");
     expect(statusRow!.textContent?.trim()).toBe("已保存");
