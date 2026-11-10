@@ -861,7 +861,7 @@ describe("application shell", () => {
   });
 
   it("keeps an open-failure notice when the switch dialog is cancelled", async () => {
-    await openFolder();
+    await openFile();
     mocks.pickFolder.mockRejectedValueOnce(
       new Error("dialog: native picker failed"),
     );
@@ -950,6 +950,37 @@ describe("application shell", () => {
     expect(mocks.openFolder).toHaveBeenCalledTimes(1);
     expect(host.textContent).toContain("a.md");
     expect(editorView().state.doc.toString()).toBe("# A\n");
+  });
+
+  it("switches folders without confirmation when no tabs will close", async () => {
+    await openFolder();
+    mocks.pickFolder.mockResolvedValue({ path: "/second", canceled: false });
+    mocks.openFolder.mockResolvedValue(folder("/second", 2));
+
+    sidebarButton("切换文件夹").click();
+    await settle();
+
+    expect(dialog()).toBeNull();
+    expect(mocks.openFolder).toHaveBeenLastCalledWith("/second");
+    expect(host.querySelector("aside")).not.toBeNull();
+  });
+
+  it("switches folders without confirmation when only a single-file tab is open", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    await openPath("/tmp/single.md");
+    dialogButton("只打开这个文件").click();
+    await settle();
+
+    mocks.pickFolder.mockResolvedValue({ path: "/second", canceled: false });
+    mocks.openFolder.mockResolvedValue(folder("/second", 2));
+    sidebarButton("切换文件夹").click();
+    await settle();
+
+    expect(dialog()).toBeNull();
+    expect(mocks.openFolder).toHaveBeenLastCalledWith("/second");
+    expect(host.querySelectorAll('[role="tab"]')).toHaveLength(1);
+    expect(tabNamed("single.md")).toBeDefined();
+    expect(editorView().state.doc.toString()).toBe("# Single\n");
   });
 
   it("opens a non-Markdown file as a placeholder with system actions", async () => {
@@ -3662,8 +3693,6 @@ describe("multi-tab shell", () => {
     mocks.pickFolder.mockResolvedValue({ path: "/notes", canceled: false });
     sidebarButton("切换文件夹").click();
     await settle();
-    dialogButton("切换").click();
-    await settle();
 
     expect(tabElements().length).toBe(2);
     expect(tabNamed("b.md").getAttribute("aria-selected")).toBe("true");
@@ -4034,8 +4063,6 @@ describe("review round 1 fixes", () => {
     mocks.pickFolder.mockResolvedValue({ path: "/second", canceled: false });
     sidebarButton("切换文件夹").click();
     await settle();
-    dialogButton("切换").click();
-    await settle();
 
     const newRow = host.querySelector<HTMLElement>('[data-tree-path="a.md"]');
     expect(newRow).not.toBeNull();
@@ -4068,8 +4095,6 @@ describe("review round 1 fixes", () => {
     mocks.pickFolder.mockResolvedValue({ path: "/second", canceled: false });
     sidebarButton("切换文件夹").click();
     await settle();
-    dialogButton("切换").click();
-    await settle();
     expect(host.textContent).toContain("选择一个文件开始写作");
 
     read.resolve("# A\n");
@@ -4092,8 +4117,6 @@ describe("review round 1 fixes", () => {
 
     mocks.pickFolder.mockResolvedValue({ path: "/second", canceled: false });
     sidebarButton("切换文件夹").click();
-    await settle();
-    dialogButton("切换").click();
     await settle();
 
     read.reject(new Error("gone"));
@@ -4127,8 +4150,6 @@ describe("review round 1 fixes", () => {
 
     mocks.pickFolder.mockResolvedValue({ path: "/second", canceled: false });
     sidebarButton("切换文件夹").click();
-    await settle();
-    dialogButton("切换").click();
     await settle();
     read.resolve("# A\n");
     await settle();
@@ -4777,8 +4798,6 @@ describe("command palette", () => {
 
     mocks.pickFolder.mockResolvedValue({ path: "/notes", canceled: false });
     sidebarButton("切换文件夹").click();
-    await settle();
-    dialogButton("切换").click();
     await settle();
 
     pressAppShortcut("p");
@@ -6487,6 +6506,29 @@ describe("start page and workspace lifecycle", () => {
     expect(host.querySelector("aside")).not.toBeNull();
     expect(editorView().state.doc.toString()).toBe("# A changed\n");
     expect(tabElements()).toHaveLength(1);
+  });
+
+  it("omits the workspace tab count when only a single-file tab needs confirmation", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    await openPath("/tmp/single.md");
+    dialogButton("只打开这个文件").click();
+    await settle();
+    replaceEditorText("# Single changed\n");
+    mocks.writeSingleFile.mockRejectedValue(new Error("read only"));
+
+    window.dispatchEvent(
+      new CustomEvent("nicole:run-command", {
+        detail: "app.close-workspace",
+      }),
+    );
+    await settle();
+
+    expect(dialog()?.textContent).toContain("关闭工作区？");
+    expect(dialog()?.textContent).toContain(
+      "1 个单文件标签页会关闭且不会恢复",
+    );
+    expect(dialog()?.textContent).not.toContain("0 个标签页");
+    expect(dialog()?.textContent).not.toContain("当前文件夹的");
   });
 
   it("closes after the user gives up a failed save", async () => {

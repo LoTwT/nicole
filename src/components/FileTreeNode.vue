@@ -62,16 +62,17 @@ function activate() {
   <div>
     <div
       v-if="isRenaming"
-      class="flex h-[26px] items-center pr-1"
+      class="flex h-[26px] items-center gap-1.5 pr-1"
       :style="{ paddingLeft }"
       role="treeitem"
       :aria-level="depth + 1"
       :data-tree-path="node.path"
     >
+      <span class="w-3 shrink-0"></span>
       <AppIcon
         :name="node.isDir ? 'folder' : node.isMarkdown ? 'file-text' : 'file'"
         :size="14"
-        class="mr-1.5 shrink-0 text-[var(--text-muted)]"
+        class="shrink-0 text-[var(--text-muted)]"
       />
       <InlineNameInput
         :value="editing?.value ?? node.name"
@@ -91,7 +92,7 @@ function activate() {
       :aria-expanded="node.isDir ? node.expanded : undefined"
       :aria-selected="isSelected"
       :tabindex="tabStopPath === node.path ? 0 : -1"
-      class="focus-ring group flex h-[26px] cursor-default items-center gap-1.5 rounded-[var(--radius-control)] pr-1 text-[13px] outline-offset-[-2px]"
+      class="focus-ring group flex h-[26px] cursor-default select-none items-center gap-1.5 rounded-[var(--radius-control)] pr-1 text-[13px] outline-offset-[-2px]"
       :class="[
         isSelected
           ? 'bg-[var(--nicole-selected-row)] text-[var(--text-primary)]'
@@ -122,13 +123,14 @@ function activate() {
     <div v-if="node.isDir && node.expanded" role="group">
       <div
         v-if="editing?.kind !== undefined && editing.kind !== 'rename' && editing.target === node.path"
-        class="flex h-[26px] items-center pr-1"
+        class="flex h-[26px] items-center gap-1.5 pr-1"
         :style="{ paddingLeft: `${8 + (depth + 1) * 14}px` }"
       >
+        <span class="w-3 shrink-0"></span>
         <AppIcon
           :name="editing.kind === 'create-folder' ? 'folder' : 'file-text'"
           :size="14"
-          class="mr-1.5 shrink-0 text-[var(--text-muted)]"
+          class="shrink-0 text-[var(--text-muted)]"
         />
         <InlineNameInput
           :value="editing.value"

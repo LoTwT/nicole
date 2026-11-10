@@ -816,13 +816,14 @@ defineExpose({
       <template v-else>
         <div
           v-if="isRootCreate && editing"
-          class="flex h-[26px] items-center pr-1"
+          class="flex h-[26px] items-center gap-1.5 pr-1"
           :style="{ paddingLeft: '8px' }"
         >
+          <span class="w-3 shrink-0"></span>
           <AppIcon
             :name="editing.kind === 'create-folder' ? 'folder' : 'file-text'"
             :size="14"
-            class="mr-1.5 shrink-0 text-[var(--text-muted)]"
+            class="shrink-0 text-[var(--text-muted)]"
           />
           <InlineNameInput
             :value="editing.value"
