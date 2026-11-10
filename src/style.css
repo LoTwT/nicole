@@ -45,7 +45,9 @@
 }
 
 .dark {
-  --nicole-selection: var(--reading-selection, var(--accent-soft));
+  /* Ink's accent-soft is nearly the code-block background (1.01:1). Lavender-900
+     keeps selections visible on both the canvas and code blocks. */
+  --nicole-selection: var(--reading-selection, var(--color-lavender-900));
   /* Ink's hover fill is only 1.01:1 off accent-soft, so selected rows need a
      stronger surface than the theme's accent token. Ink's default hover is
      already distinct enough for the file tree. */

@@ -862,12 +862,14 @@ interface CodeBlockChunk {
   endsBlock: boolean;
 }
 
-function collectCodeBlocks(view: EditorView): {
+export function collectCodeBlocks(
+  view: EditorView,
+  tree = syntaxTree(view.state),
+): {
   decorations: DecorationSet;
   chunks: readonly CodeBlockChunk[];
 } {
   const { state } = view;
-  const tree = syntaxTree(state);
   // A node that ends at the parse frontier may still grow as the background
   // parser continues, so its bottom corner must not be rounded yet.
   const treeComplete = tree.length >= state.doc.length;
@@ -986,11 +988,18 @@ const codeBlockBackground = layer({
     // lineBlockAt() is relative to the document, before the content's top
     // padding; the layer is positioned against the content box in the viewport.
     const contentTop = content.top + view.documentPadding.top;
+    const right = content.right - 16;
     const markers: RectangleMarker[] = [];
 
     for (const chunk of chunks) {
       const first = view.lineBlockAt(chunk.from);
       const last = view.lineBlockAt(chunk.to);
+      // Keep 16px between the text and the outer edge of the background. A
+      // blockquote line has its border and gutter before the text, so measuring
+      // from the line start also keeps the quote rule outside the background.
+      const textLeft =
+        view.coordsAtPos(chunk.from, 1)?.left ?? content.left + 32;
+      const left = textLeft - 16;
       const className = [
         "cm-nicole-code-bg",
         chunk.startsBlock ? "cm-nicole-code-bg-start" : "",
@@ -1001,9 +1010,9 @@ const codeBlockBackground = layer({
       markers.push(
         new RectangleMarker(
           className,
-          content.left - baseLeft,
+          left - baseLeft,
           contentTop + first.top - baseTop,
-          content.width,
+          Math.max(0, right - left),
           last.bottom - first.top,
         ),
       );
@@ -1134,9 +1143,14 @@ const editorTheme = EditorView.theme({
   },
   "&.cm-focused": { outline: "none" },
   ".cm-line": { padding: "0" },
-  // The background itself is drawn in a layer below the selection layer. The
-  // line class only clears the per-span inline-code background for block code.
-  ".cm-nicole-code-line span": { backgroundColor: "transparent" },
+  // Code blocks are monospace as a whole, including fences, language labels
+  // and the indentation of indented code.
+  ".cm-nicole-code-line": { fontFamily: "var(--reading-font-mono)" },
+  // The background itself is drawn in a layer below the selection layer. This
+  // only clears the inline-code style on ordinary spans; search, selection-match
+  // and bracket-match highlights keep their own background.
+  ".cm-nicole-code-line span:not(.cm-searchMatch):not(.cm-searchMatch-selected):not(.cm-selectionMatch):not(.cm-matchingBracket):not(.cm-nonmatchingBracket)":
+    { backgroundColor: "transparent" },
   ".cm-nicole-code-bg": {
     backgroundColor: "var(--reading-code-bg)",
   },

@@ -176,10 +176,6 @@ describe("selection variables", () => {
     "node_modules/@ayingott/theme/src/foundation/colors.css",
     "utf8",
   );
-  const themeDark = readFileSync(
-    "node_modules/@ayingott/theme/src/semantic/dark.css",
-    "utf8",
-  );
 
   interface CascadeRule {
     value: string;
@@ -270,7 +266,7 @@ describe("selection variables", () => {
     return value.replace(/\s+/g, "");
   }
 
-  it("uses lavender-200 on Paper and accent-soft on Ink through the cascade", () => {
+  it("uses lavender-200 on Paper and lavender-900 on Ink through the cascade", () => {
     document.documentElement.classList.remove("dark");
     const light = winningSelectionRule();
     expect(normalized(light.value)).toBe(
@@ -281,12 +277,12 @@ describe("selection variables", () => {
     document.documentElement.classList.add("dark");
     const dark = winningSelectionRule();
     expect(normalized(dark.value)).toBe(
-      "var(--reading-selection,var(--accent-soft))",
+      "var(--reading-selection,var(--color-lavender-900))",
     );
     expect(dark.important).toBe(false);
 
     expect(themeColors).toMatch(/--color-lavender-200:\s*#ded4ff;/);
-    expect(themeDark).toMatch(/--accent-soft:\s*#2c2644;/);
+    expect(themeColors).toMatch(/--color-lavender-900:\s*#3d345d;/);
   });
 
   it("does not bypass the editor theme with !important", () => {
