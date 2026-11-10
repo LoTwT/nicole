@@ -429,6 +429,13 @@ watch(overlaySidebar, (open) => {
 });
 
 function dismissOverlaySidebar() {
+  // A window that widened while the overlay was open leaves the overlay flag
+  // set even though the sidebar is now pinned by sidebarOpen. Esc only clears
+  // that stale flag; there is no overlay to dismiss or focus to restore.
+  if (isWide.value) {
+    overlaySidebar.value = false;
+    return;
+  }
   // The dismissal owns its focus restoration. It runs even when closing and
   // reopening the overlay in one tick leaves sidebarShown unchanged, so no
   // stale origin can be applied to a later visibility change.
