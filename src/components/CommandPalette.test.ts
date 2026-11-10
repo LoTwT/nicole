@@ -169,6 +169,35 @@ describe("CommandPalette", () => {
     );
   });
 
+  it("keeps file details readable on selected and unselected rows", async () => {
+    mountPalette({
+      mode: "file",
+      workspaceOpen: true,
+      loadFiles: async () => ["notes/a.md", "notes/b.md"],
+    });
+    await settle();
+
+    const rows = options();
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.getAttribute("aria-selected")).toBe("true");
+    const selectedDetail = rows[0]!.querySelector<HTMLElement>(
+      'span[class*="text-[11px]"]',
+    )!;
+    const unselectedDetail = rows[1]!.querySelector<HTMLElement>(
+      'span[class*="text-[11px]"]',
+    )!;
+    expect(selectedDetail.className).toContain(
+      "text-[var(--text-secondary)]",
+    );
+    expect(selectedDetail.className).not.toContain(
+      "text-[var(--text-muted)]",
+    );
+    expect(unselectedDetail.className).toContain("text-[var(--text-muted)]");
+    expect(unselectedDetail.className).not.toContain(
+      "text-[var(--text-secondary)]",
+    );
+  });
+
   it("runs the selected command with Enter and leaves IME keys alone", async () => {
     const onRunCommand = vi.fn();
     const { close } = mountPalette({ onRunCommand });

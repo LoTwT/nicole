@@ -22,7 +22,7 @@ const state: SlashMenuState = {
       id: "insert.table",
       label: "表格",
       glyph: "▦",
-      shortcut: null,
+      shortcut: "⌘2",
     },
   ],
 };
@@ -66,6 +66,12 @@ describe("SlashMenu", () => {
     expect(options[0]?.querySelector("span.text-right")?.className).toContain(
       "text-[var(--text-secondary)]",
     );
+    expect(options[1]?.querySelector("span.text-right")?.className).toContain(
+      "text-[var(--text-muted)]",
+    );
+    expect(
+      options[1]?.querySelector("span.text-right")?.className,
+    ).not.toContain("text-[var(--text-secondary)]");
     expect(options[0]?.getAttribute("aria-label")).toBe("标题 1 ⌘1");
     expect(options[0]?.tabIndex).toBe(-1);
 
