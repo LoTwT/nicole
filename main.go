@@ -6,8 +6,30 @@ import (
 	"runtime"
 
 	"github.com/egoist/mygo"
+	_ "github.com/egoist/mygo/locales/zh-Hans"
 	"github.com/egoist/mygo/plugins/updater"
 )
+
+// appLanguage is the only language the interface shows. Language switching
+// is not a product feature: MyGo's role menus, the updater and the page all
+// follow this one tag.
+const appLanguage = "zh-Hans"
+
+// configureAppLanguage declares the app's language and works it out before
+// the first menu exists. Menu items take the language of the app when they are
+// made, and MyGo only relabels items that still have their role; since
+// customizeEditMenu clears the roles of Undo and Redo, the language must be
+// settled before the menu is built. Call it on the main thread.
+func configureAppLanguage() {
+	mygo.App.SetLanguages(appLanguage)
+	if generatingClient() {
+		// `mygo generate` runs this binary under a temporary app name, and
+		// reading the locale may create its user data directory. It writes a
+		// client, not a menu.
+		return
+	}
+	_ = mygo.App.Locale()
+}
 
 // AppInfo describes the running app and the Go runtime behind it.
 type AppInfo struct {
@@ -51,6 +73,7 @@ func main() {
 		return
 	}
 	installSecondInstanceFocus()
+	configureAppLanguage()
 	workspace := NewWorkspace()
 	settingsStore, err := startupSettingsStore()
 	if err != nil {

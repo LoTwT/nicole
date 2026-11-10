@@ -65,6 +65,17 @@ export default defineConfig({
       role: "Editor",
     },
   ],
+  // AppKit and WebKit say their own texts (the Edit menu's dictation and
+  // emoji items, the system items of the web view's context menu) in the
+  // bundle's language at launch; App.SetLanguages does not change the bundle.
+  // Declare the same single language as main.go so those texts are Simplified
+  // Chinese from the first launch. See docs/references/mygo.md.
+  macos: {
+    infoPlist: {
+      CFBundleDevelopmentRegion: "zh-Hans",
+      CFBundleLocalizations: ["zh-Hans"],
+    },
+  },
   out: "build",
   ...(updatesDisabled ? {} : { updates }),
 });

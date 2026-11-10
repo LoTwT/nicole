@@ -2,6 +2,7 @@ package main
 
 import (
 	"runtime"
+	"slices"
 	"testing"
 
 	"github.com/egoist/mygo"
@@ -98,6 +99,45 @@ func menuLabels(items []*mygo.MenuItem) []string {
 		labels = append(labels, item.Label)
 	}
 	return labels
+}
+
+func wantMenuLabels(t *testing.T, name string, items []*mygo.MenuItem, want ...string) {
+	t.Helper()
+	got := menuLabels(items)
+	for _, label := range want {
+		if !slices.Contains(got, label) {
+			t.Errorf("%s = %v, missing %q", name, got, label)
+		}
+	}
+}
+
+func TestMenusUseSimplifiedChinese(t *testing.T) {
+	// menuBarItems has no updater item, so it does not call App.Locale. An
+	// unresolved language fails here instead of blocking in that call.
+	bar := mygo.NewMenu(menuBarItems(&mygo.MenuItem{Label: "Nicole"}, false))
+	if got, want := menuLabels(bar.Items()), []string{"Nicole", "文件", "编辑", "显示", "窗口"}; !slices.Equal(got, want) {
+		t.Fatalf("top menus = %v, want %v", got, want)
+	}
+
+	menu := appMenu(false)
+	customizeEditMenu(menu)
+	tops := menu.Items()
+	name := mygo.App.Name()
+	wantMenuLabels(t, "app menu", tops[0].Submenu, "关于"+name, "检查更新…", "退出"+name)
+	wantMenuLabels(t, "File menu", tops[1].Submenu, "关闭工作区")
+	wantMenuLabels(t, "Edit menu", tops[2].Submenu, "撤销", "重做", "剪切", "复制", "粘贴", "全选")
+	wantMenuLabels(t, "View menu", tops[3].Submenu, "实际大小", "放大", "缩小", "切换全屏幕")
+	wantMenuLabels(t, "Window menu", tops[4].Submenu, "最小化")
+	if runtime.GOOS == "darwin" {
+		wantMenuLabels(t, "app menu", tops[0].Submenu, "隐藏"+name, "隐藏其他", "全部显示")
+		wantMenuLabels(t, "Edit menu", tops[2].Submenu, "粘贴并匹配样式", "删除", "语音")
+		wantMenuLabels(t, "Window menu", tops[4].Submenu, "缩放", "前置全部窗口")
+		for _, item := range tops[2].Submenu {
+			if item.Label == "语音" {
+				wantMenuLabels(t, "Speech menu", item.Submenu, "开始讲话", "停止讲话")
+			}
+		}
+	}
 }
 
 func TestTrimPageContextMenu(t *testing.T) {
