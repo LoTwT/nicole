@@ -4,9 +4,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createEditor, type EditorHandle, type EditorMode } from "./index";
 
-// CodeMirror resolves `Mod` when the module loads. Pin the host to Windows so
-// the Ctrl forwarding cases use one default keymap on every runner; the macOS
-// cases below spell out Meta explicitly.
+// jsdom reports an empty navigator.platform, which CodeMirror treats as
+// non-Mac when it resolves `Mod` at module load. Pin it to Windows so the Ctrl
+// forwarding cases use one default keymap; mount() without a platform then
+// defaults to windows as well. The macOS cases below spell out Meta explicitly.
 vi.hoisted(() => {
   Object.defineProperty(navigator, "platform", {
     value: "Win32",

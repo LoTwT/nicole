@@ -6,8 +6,9 @@ import type { AppPlatform } from "../app/platform";
 import { getCommand } from "../commands/registry";
 import { createCommandKeymap } from "./keymap";
 
-// CodeMirror resolves its `Mod` binding when the module loads. Pin the host to
-// macOS so its keymap matches the platform this suite declares, not the runner.
+// jsdom reports an empty navigator.platform, which CodeMirror treats as
+// non-Mac when it resolves `Mod` at module load. Pin it so `Mod` follows the
+// macOS platform this suite declares.
 vi.hoisted(() => {
   Object.defineProperty(navigator, "platform", {
     value: "MacIntel",

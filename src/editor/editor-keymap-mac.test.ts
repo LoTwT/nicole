@@ -3,8 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createEditor, type EditorHandle } from "./index";
 
-// CodeMirror resolves its `Mod` binding when the module loads. Pin the host to
-// macOS so its keymap matches the platform these tests declare, not the runner.
+// jsdom reports an empty navigator.platform, which CodeMirror treats as
+// non-Mac when it resolves `Mod` at module load. Pin it so `Mod` follows the
+// macOS platform these tests declare.
 vi.hoisted(() => {
   Object.defineProperty(navigator, "platform", {
     value: "MacIntel",
