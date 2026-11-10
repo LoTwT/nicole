@@ -356,9 +356,14 @@ defineExpose({
       <div
         v-if="dropActive"
         data-drop-hint
-        class="pointer-events-none absolute inset-2 flex items-center justify-center rounded-[var(--radius-card)] border-2 border-dashed border-[var(--nicole-primary-fill)] bg-[var(--accent-soft)]/40"
+        class="pointer-events-none absolute inset-2 flex items-center justify-center rounded-[var(--radius-card)] border-2 border-dashed border-[var(--nicole-primary-fill)] bg-[var(--surface-canvas)]"
       >
-        <p class="m-0 text-[13px] font-medium text-[var(--text-primary)]">
+        <div
+          data-drop-hint-tint
+          aria-hidden="true"
+          class="absolute inset-0 rounded-[var(--radius-card)] bg-[var(--accent-soft)]/40"
+        ></div>
+        <p class="relative m-0 text-[13px] font-medium text-[var(--text-primary)]">
           松开以打开文件夹
         </p>
       </div>

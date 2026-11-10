@@ -518,12 +518,15 @@ describe("EmptyState", () => {
 
   it("shows the drop hint only while a drop is active", () => {
     const { host } = mount("macos", { mode: "start", dropActive: true });
-    expect(host.querySelector("[data-drop-hint]")?.className).toContain(
+    const hint = host.querySelector("[data-drop-hint]");
+    expect(hint?.className).toContain(
       "border-[var(--nicole-primary-fill)]",
     );
-    expect(host.querySelector("[data-drop-hint]")?.textContent).toContain(
-      "松开以打开文件夹",
-    );
+    expect(hint?.className).toContain("bg-[var(--surface-canvas)]");
+    expect(
+      hint?.querySelector("[data-drop-hint-tint]")?.className,
+    ).toContain("bg-[var(--accent-soft)]/40");
+    expect(hint?.textContent).toContain("松开以打开文件夹");
     const { host: idle } = (() => {
       app?.unmount();
       return mount("macos", { mode: "start" });

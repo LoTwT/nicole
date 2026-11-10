@@ -152,6 +152,37 @@ describe("TopBar tabs", () => {
     expect(emitted.close).toEqual([2]);
   });
 
+  it("keeps active, hovered and idle tabs distinct", async () => {
+    mount(tabs(3), 2);
+    await settle();
+    const elements = [
+      ...host.querySelectorAll<HTMLElement>('[role="tab"]'),
+    ];
+    const active = elements[1]!;
+    const idle = elements[0]!;
+    expect(active.className).toContain("bg-[var(--surface-muted)]");
+    expect(active.className).toContain("text-[var(--text-primary)]");
+    expect(active.className).not.toContain(
+      "hover:bg-[var(--surface-subtle)]",
+    );
+    expect(idle.className).toContain("text-[var(--text-muted)]");
+    expect(idle.className).toContain("hover:bg-[var(--surface-subtle)]");
+    expect(idle.className).not.toContain("bg-[var(--surface-muted)]");
+
+    const activeClose = active.querySelector<HTMLButtonElement>(
+      'button[aria-label="关闭 note-1.md"]',
+    );
+    const idleClose = idle.querySelector<HTMLButtonElement>(
+      'button[aria-label="关闭 note-0.md"]',
+    );
+    expect(activeClose?.className).toContain(
+      "hover:bg-[var(--surface-subtle)]",
+    );
+    expect(idleClose?.className).toContain(
+      "hover:bg-[var(--surface-muted)]",
+    );
+  });
+
   it("uses the problem dot as the close entry and explains the state", async () => {
     const list = tabs(1);
     list[0] = {
@@ -166,6 +197,9 @@ describe("TopBar tabs", () => {
     );
     expect(dot).not.toBeNull();
     expect(dot?.getAttribute("title")).toBe("保存失败");
+    expect(dot?.className).toContain(
+      "hover:bg-[var(--surface-subtle)]",
+    );
     dot!.click();
     expect(emitted.close).toEqual([1]);
   });
