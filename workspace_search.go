@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
+	"io"
 	"io/fs"
 	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -24,9 +26,9 @@ const (
 	// UTF-16 code units. Longer lines keep a window around their first match.
 	searchSnippetLimit = 400
 	searchSnippetLead  = 100
-	// searchMatchTextLimit bounds the match text sent for validation. Length
-	// still reports the full match in UTF-16 code units.
-	searchMatchTextLimit = 200
+	// searchCheckInterval bounds how many UTF-16 units the coordinate and
+	// fingerprint loops process between cancellation checks.
+	searchCheckInterval = 4096
 )
 
 // SearchRequest describes one workspace search. It names no path: Go always
@@ -38,30 +40,40 @@ type SearchRequest struct {
 	Regex         bool   `json:"regex"`
 }
 
-// SearchMatch is one occurrence on a result line. Start and End are UTF-16
-// offsets in the newline-normalized document, which is the text CodeMirror
-// holds. They span the whole match even when it continues past the displayed
-// line. Text is a bounded prefix used to verify the match before selecting it,
-// while Length is the full length in UTF-16 code units. HighlightStart and
-// HighlightEnd are offsets in the sent line text; -1 means the match lies
-// outside the bounded snippet.
+// SearchMatch is one occurrence on a result line. Column is the match start
+// within the line in UTF-16 code units, independent of where earlier lines
+// end. Length is the full match length in UTF-16 code units, including text
+// after the displayed line. Fingerprint identifies the full match text so the
+// page can prove the selected range is unchanged; it is a pair of FNV-64
+// values over the normalized UTF-16 code units. EndLine and its fingerprint
+// cover the line containing the end of a cross-line match, and the four
+// boundary flags preserve RE2's document/line anchor semantics after a move.
+// HighlightStart and HighlightEnd are offsets in the sent line text; -1 means
+// the match lies outside the bounded snippet.
 type SearchMatch struct {
-	Start          int    `json:"start"`
-	End            int    `json:"end"`
-	Text           string `json:"text"`
-	Length         int    `json:"length"`
-	HighlightStart int    `json:"highlightStart"`
-	HighlightEnd   int    `json:"highlightEnd"`
+	Column                int    `json:"column"`
+	Length                int    `json:"length"`
+	Fingerprint           string `json:"fingerprint"`
+	EndLine               int    `json:"endLine"`
+	EndLineFingerprint    string `json:"endLineFingerprint"`
+	StartsAtDocumentStart bool   `json:"startsAtDocumentStart"`
+	StartsAtLineStart     bool   `json:"startsAtLineStart"`
+	EndsAtDocumentEnd     bool   `json:"endsAtDocumentEnd"`
+	EndsAtLineEnd         bool   `json:"endsAtLineEnd"`
+	HighlightStart        int    `json:"highlightStart"`
+	HighlightEnd          int    `json:"highlightEnd"`
 }
 
 // SearchPart is one streamed value of Workspace.Search: a matching line, then
 // a final summary. Type is "line" or "done". One line part carries every match
-// that starts on that line.
+// that starts on that line. LineFingerprint covers the full line text, not the
+// bounded snippet.
 type SearchPart struct {
 	Type            string        `json:"type"`
 	Path            string        `json:"path,omitempty"`
 	Line            int           `json:"line,omitempty"`
 	Text            string        `json:"text,omitempty"`
+	LineFingerprint string        `json:"lineFingerprint,omitempty"`
 	PrefixTruncated bool          `json:"prefixTruncated,omitempty"`
 	SuffixTruncated bool          `json:"suffixTruncated,omitempty"`
 	Matches         []SearchMatch `json:"matches,omitempty"`
@@ -73,6 +85,11 @@ type SearchPart struct {
 // errSearchStopped ends a scan whose page went away or whose workspace changed.
 // It is not a search failure: nothing is sent after it.
 var errSearchStopped = errors.New("workspace: search stopped")
+
+// errSearchSkip means a walked entry is no longer an allowed target when it is
+// opened: it became a symlink, a non-regular file, or its directory chain
+// changed. The entry is skipped like a file removed during the scan.
+var errSearchSkip = errors.New("workspace: search skipped an ineligible path")
 
 // Search scans the Markdown files of the open workspace and streams matching
 // lines on parts. It reads the disk, not unsaved editor text. Hidden folders,
@@ -153,6 +170,10 @@ func searchRoot(
 	stopped := false
 
 	err := fs.WalkDir(root.FS(), ".", func(name string, entry fs.DirEntry, walkErr error) error {
+		if stop() {
+			stopped = true
+			return fs.SkipAll
+		}
 		if walkErr != nil {
 			return walkErr
 		}
@@ -170,16 +191,17 @@ func searchRoot(
 		if !entry.Type().IsRegular() || !isMarkdownName(entry.Name()) {
 			return nil
 		}
-		if stop() {
-			stopped = true
-			return fs.SkipAll
-		}
-		data, err := root.ReadFile(filepath.FromSlash(name))
+		data, err := readSearchFile(root, name, stop)
 		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
-				// The file disappeared after WalkDir saw it; there is nothing
-				// left to search and this is not a failed search.
+			if errors.Is(err, errSearchSkip) || errors.Is(err, fs.ErrNotExist) {
+				// The entry stopped being a regular Markdown file after the
+				// walk saw it. This is not a failed search, and no link target
+				// may stand in for it.
 				return nil
+			}
+			if errors.Is(err, errSearchStopped) {
+				stopped = true
+				return fs.SkipAll
 			}
 			return err
 		}
@@ -226,6 +248,120 @@ func searchRoot(
 	})
 }
 
+// readSearchFile opens and reads one walked entry without following a link
+// that replaced the file or any directory after the walk. Each directory is
+// opened and its identity checked before use; the final file is opened, then
+// checked against both the entry before opening and the current path before
+// any bytes are read. A path that stopped being a regular Markdown file in a
+// visible directory is skipped, not read through a link.
+func readSearchFile(root *os.Root, rel string, stop func() bool) ([]byte, error) {
+	if stop() {
+		return nil, errSearchStopped
+	}
+	if err := validateWorkspaceFile(rel); err != nil {
+		return nil, errSearchSkip
+	}
+	parts := strings.Split(rel, "/")
+	if len(parts) == 0 || parts[len(parts)-1] == "" {
+		return nil, errSearchSkip
+	}
+	current := root
+	var owned []*os.Root
+	defer func() {
+		for _, opened := range owned {
+			_ = opened.Close()
+		}
+	}()
+
+	for _, part := range parts[:len(parts)-1] {
+		if stop() {
+			return nil, errSearchStopped
+		}
+		if ignoredFolder(part) {
+			return nil, errSearchSkip
+		}
+		before, err := current.Lstat(part)
+		if err != nil {
+			return nil, err
+		}
+		if before.Mode()&fs.ModeSymlink != 0 || !before.IsDir() {
+			return nil, errSearchSkip
+		}
+		next, err := current.OpenRoot(part)
+		if err != nil {
+			return nil, err
+		}
+		opened, statErr := next.Stat(".")
+		after, afterErr := current.Lstat(part)
+		if statErr != nil || afterErr != nil ||
+			after.Mode()&fs.ModeSymlink != 0 || !after.IsDir() ||
+			!os.SameFile(before, opened) || !os.SameFile(opened, after) {
+			_ = next.Close()
+			if statErr != nil {
+				return nil, statErr
+			}
+			if afterErr != nil {
+				return nil, afterErr
+			}
+			return nil, errSearchSkip
+		}
+		owned = append(owned, next)
+		current = next
+	}
+
+	name := parts[len(parts)-1]
+	if stop() {
+		return nil, errSearchStopped
+	}
+	before, err := current.Lstat(name)
+	if err != nil {
+		return nil, err
+	}
+	if before.Mode()&fs.ModeSymlink != 0 || !before.Mode().IsRegular() {
+		return nil, errSearchSkip
+	}
+	file, err := current.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	after, err := current.Lstat(name)
+	if err != nil {
+		return nil, err
+	}
+	if !opened.Mode().IsRegular() || after.Mode()&fs.ModeSymlink != 0 ||
+		!after.Mode().IsRegular() || !os.SameFile(before, opened) ||
+		!os.SameFile(opened, after) {
+		return nil, errSearchSkip
+	}
+
+	var data bytes.Buffer
+	chunk := make([]byte, 64*1024)
+	for {
+		if stop() {
+			return nil, errSearchStopped
+		}
+		n, readErr := file.Read(chunk)
+		if n > 0 {
+			_, _ = data.Write(chunk[:n])
+		}
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
+		if readErr != nil {
+			return nil, readErr
+		}
+	}
+	if stop() {
+		return nil, errSearchStopped
+	}
+	return data.Bytes(), nil
+}
+
 // searchFile streams the matching lines of one file. It stops after remaining
 // matches and reports whether one more exists, without sending it.
 func searchFile(
@@ -237,6 +373,9 @@ func searchFile(
 	stop func() bool,
 ) (int, bool, error) {
 	if remaining <= 0 {
+		if stop() {
+			return 0, false, errSearchStopped
+		}
 		if pattern.FindStringIndex(text) != nil {
 			return 0, true, nil
 		}
@@ -244,17 +383,33 @@ func searchFile(
 	}
 
 	var (
-		lineStartBytes []int
-		lineStartUnits []int
-		pending        *SearchPart
-		pendingMatches []SearchMatch
-		pendingStart   int
-		pendingLength  int
-		currentLine    = -1
+		lineStartBytes   []int
+		lineStartUnits   []int
+		lineFingerprints = map[int]string{}
+		pending          *SearchPart
+		pendingMatches   []SearchMatch
+		pendingStart     int
+		pendingLength    int
+		currentLine      = -1
 	)
+	lineFingerprint := func(index int) (string, error) {
+		if fingerprint, ok := lineFingerprints[index]; ok {
+			return fingerprint, nil
+		}
+		lineText := text[lineStartBytes[index]:lineEndByte(lineStartBytes, index, len(text))]
+		fingerprint, err := searchSignature(lineText, stop)
+		if err != nil {
+			return "", err
+		}
+		lineFingerprints[index] = fingerprint
+		return fingerprint, nil
+	}
 	flush := func() error {
 		if pending == nil {
 			return nil
+		}
+		if stop() {
+			return errSearchStopped
 		}
 		part := *pending
 		part.Matches = pendingMatches
@@ -266,15 +421,29 @@ func searchFile(
 	found := 0
 	byteCursor := 0
 	unitCursor := 0
-	unitsAt := func(offset int) int {
+	unitsAt := func(offset int) (int, error) {
 		if offset > byteCursor {
-			unitCursor += utf16Length(text[byteCursor:offset])
+			length, err := utf16LengthChecked(text[byteCursor:offset], stop)
+			if err != nil {
+				return 0, err
+			}
+			unitCursor += length
 			byteCursor = offset
 		}
-		return unitCursor
+		return unitCursor, nil
 	}
 
+	if stop() {
+		return 0, false, errSearchStopped
+	}
+	// The standard regexp API has no context parameter, so this one native
+	// call cannot be interrupted in the middle. The scan stops immediately
+	// before and after it; all surrounding read, coordinate, fingerprint and
+	// send loops check cancellation more frequently.
 	locations := pattern.FindAllStringIndex(text, remaining+1)
+	if stop() {
+		return 0, false, errSearchStopped
+	}
 	truncated := len(locations) > remaining
 	if truncated {
 		locations = locations[:remaining]
@@ -287,11 +456,21 @@ func searchFile(
 		start := location[0]
 		end := location[1]
 		if lineStartBytes == nil {
-			lineStartBytes, lineStartUnits = lineOffsets(text)
+			var err error
+			lineStartBytes, lineStartUnits, err = lineOffsets(text, stop)
+			if err != nil {
+				return found, false, err
+			}
 		}
 		line := lineIndexAt(lineStartBytes, start)
-		startUnit := unitsAt(start)
-		endUnit := unitsAt(end)
+		startUnit, err := unitsAt(start)
+		if err != nil {
+			return found, false, err
+		}
+		endUnit, err := unitsAt(end)
+		if err != nil {
+			return found, false, err
+		}
 		if line != currentLine {
 			if err := flush(); err != nil {
 				return found, false, err
@@ -299,12 +478,20 @@ func searchFile(
 			currentLine = line
 			lineText := text[lineStartBytes[line]:lineEndByte(lineStartBytes, line, len(text))]
 			firstInLine := startUnit - lineStartUnits[line]
-			snippet, snippetStart, snippetEnd, prefix, suffix := snippetWindow(lineText, firstInLine)
+			snippet, snippetStart, snippetEnd, prefix, suffix, err := snippetWindow(lineText, firstInLine, stop)
+			if err != nil {
+				return found, false, err
+			}
+			fingerprint, err := lineFingerprint(line)
+			if err != nil {
+				return found, false, err
+			}
 			pending = &SearchPart{
 				Type:            "line",
 				Path:            path,
 				Line:            line + 1,
 				Text:            snippet,
+				LineFingerprint: fingerprint,
 				PrefixTruncated: prefix,
 				SuffixTruncated: suffix,
 			}
@@ -320,13 +507,28 @@ func searchFile(
 		} else {
 			highlightEnd = clampInt(highlightEnd, highlightStart, pendingLength)
 		}
+		fingerprint, err := searchSignature(text[start:end], stop)
+		if err != nil {
+			return found, false, err
+		}
+		endLine := lineIndexAt(lineStartBytes, end)
+		endLineFingerprint, err := lineFingerprint(endLine)
+		if err != nil {
+			return found, false, err
+		}
+		endLineEnd := lineEndByte(lineStartBytes, endLine, len(text))
 		pendingMatches = append(pendingMatches, SearchMatch{
-			Start:          startUnit,
-			End:            endUnit,
-			Text:           clipUTF16(text[start:end], searchMatchTextLimit),
-			Length:         endUnit - startUnit,
-			HighlightStart: highlightStart,
-			HighlightEnd:   highlightEnd,
+			Column:                startUnit - lineStartUnit,
+			Length:                endUnit - startUnit,
+			Fingerprint:           fingerprint,
+			EndLine:               endLine + 1,
+			EndLineFingerprint:    endLineFingerprint,
+			StartsAtDocumentStart: start == 0,
+			StartsAtLineStart:     start == lineStartBytes[line],
+			EndsAtDocumentEnd:     end == len(text),
+			EndsAtLineEnd:         end == endLineEnd,
+			HighlightStart:        highlightStart,
+			HighlightEnd:          highlightEnd,
 		})
 		found++
 	}
@@ -348,18 +550,26 @@ func normalizeSearchNewlines(text string) string {
 
 // lineOffsets returns the byte and UTF-16 offset of the start of every line in
 // text. The text is expected to use "\n" only.
-func lineOffsets(text string) ([]int, []int) {
+func lineOffsets(text string, stop func() bool) ([]int, []int, error) {
 	bytes := []int{0}
 	units := []int{0}
 	unit := 0
+	seen := 0
 	for index, r := range text {
+		if seen%searchCheckInterval == 0 && stop() {
+			return nil, nil, errSearchStopped
+		}
+		seen++
 		if r == '\n' {
 			bytes = append(bytes, index+1)
 			units = append(units, unit+1)
 		}
 		unit += runeUTF16Length(r)
 	}
-	return bytes, units
+	if stop() {
+		return nil, nil, errSearchStopped
+	}
+	return bytes, units, nil
 }
 
 func lineEndByte(starts []int, index, textLength int) int {
@@ -377,8 +587,11 @@ func lineIndexAt(starts []int, offset int) int {
 
 // snippetWindow keeps a bounded UTF-16 window of one line around its first
 // match. Offsets are snapped to rune boundaries so an emoji is never split.
-func snippetWindow(line string, firstStart int) (string, int, int, bool, bool) {
-	lineLength := utf16Length(line)
+func snippetWindow(line string, firstStart int, stop func() bool) (string, int, int, bool, bool, error) {
+	lineLength, err := utf16LengthChecked(line, stop)
+	if err != nil {
+		return "", 0, 0, false, false, err
+	}
 	startUnit := firstStart - searchSnippetLead
 	if startUnit < 0 {
 		startUnit = 0
@@ -387,44 +600,66 @@ func snippetWindow(line string, firstStart int) (string, int, int, bool, bool) {
 	if endUnit > lineLength {
 		endUnit = lineLength
 	}
-	startByte := byteOffsetAtUTF16(line, startUnit)
-	endByte := byteOffsetAfterUTF16(line, endUnit)
+	startByte, err := byteOffsetAtUTF16(line, startUnit, stop)
+	if err != nil {
+		return "", 0, 0, false, false, err
+	}
+	endByte, err := byteOffsetAfterUTF16(line, endUnit, stop)
+	if err != nil {
+		return "", 0, 0, false, false, err
+	}
 	text := line[startByte:endByte]
-	actualStart := utf16Length(line[:startByte])
-	actualEnd := actualStart + utf16Length(text)
-	return text, actualStart, actualEnd, startByte > 0, endByte < len(line)
+	actualStart, err := utf16LengthChecked(line[:startByte], stop)
+	if err != nil {
+		return "", 0, 0, false, false, err
+	}
+	textLength, err := utf16LengthChecked(text, stop)
+	if err != nil {
+		return "", 0, 0, false, false, err
+	}
+	return text, actualStart, actualStart + textLength, startByte > 0, endByte < len(line), nil
 }
 
-func byteOffsetAtUTF16(text string, offset int) int {
+func byteOffsetAtUTF16(text string, offset int, stop func() bool) (int, error) {
 	unit := 0
+	seen := 0
 	for index := 0; index < len(text); {
+		if seen%searchCheckInterval == 0 && stop() {
+			return 0, errSearchStopped
+		}
+		seen++
 		if unit >= offset {
-			return index
+			return index, nil
 		}
 		r, size := utf8.DecodeRuneInString(text[index:])
 		unit += runeUTF16Length(r)
 		if unit > offset {
-			return index
+			return index, nil
 		}
 		index += size
 	}
-	return len(text)
+	return len(text), nil
 }
 
-func byteOffsetAfterUTF16(text string, offset int) int {
+func byteOffsetAfterUTF16(text string, offset int, stop func() bool) (int, error) {
 	if offset <= 0 {
-		return 0
+		return 0, nil
 	}
 	unit := 0
+	seen := 0
 	for index := 0; index < len(text); {
+		if seen%searchCheckInterval == 0 && stop() {
+			return 0, errSearchStopped
+		}
+		seen++
 		r, size := utf8.DecodeRuneInString(text[index:])
 		unit += runeUTF16Length(r)
 		index += size
 		if unit >= offset {
-			return index
+			return index, nil
 		}
 	}
-	return len(text)
+	return len(text), nil
 }
 
 func utf16Length(text string) int {
@@ -435,6 +670,19 @@ func utf16Length(text string) int {
 	return units
 }
 
+func utf16LengthChecked(text string, stop func() bool) (int, error) {
+	units := 0
+	seen := 0
+	for _, r := range text {
+		if seen%searchCheckInterval == 0 && stop() {
+			return 0, errSearchStopped
+		}
+		seen++
+		units += runeUTF16Length(r)
+	}
+	return units, nil
+}
+
 func runeUTF16Length(r rune) int {
 	if r > 0xFFFF {
 		return 2
@@ -442,16 +690,36 @@ func runeUTF16Length(r rune) int {
 	return 1
 }
 
-func clipUTF16(text string, limit int) string {
-	units := 0
-	for index, r := range text {
-		width := runeUTF16Length(r)
-		if units+width > limit {
-			return text[:index]
-		}
-		units += width
+// searchSignature is a 128-bit fingerprint of the normalized UTF-16 code
+// units: the concatenation of FNV-1a/64 and FNV-1/64 over the same
+// little-endian UTF-16 bytes. It is a content identity for stale-result
+// checks, not a password hash. Both halves are checked, so the JS side never
+// accepts a match by length or a bounded prefix alone.
+func searchSignature(text string, stop func() bool) (string, error) {
+	first := fnv.New64a()
+	second := fnv.New64()
+	var unit [2]byte
+	seen := 0
+	writeUnit := func(value uint16) {
+		unit[0] = byte(value)
+		unit[1] = byte(value >> 8)
+		_, _ = first.Write(unit[:])
+		_, _ = second.Write(unit[:])
 	}
-	return text
+	for _, r := range text {
+		if seen%searchCheckInterval == 0 && stop() {
+			return "", errSearchStopped
+		}
+		seen++
+		if r > 0xFFFF {
+			r -= 0x10000
+			writeUnit(uint16(0xD800 + (r >> 10)))
+			writeUnit(uint16(0xDC00 + (r & 0x3FF)))
+		} else {
+			writeUnit(uint16(r))
+		}
+	}
+	return fmt.Sprintf("%016x%016x", first.Sum64(), second.Sum64()), nil
 }
 
 func clampInt(value, minimum, maximum int) int {

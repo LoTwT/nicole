@@ -13,6 +13,8 @@ export interface SearchResultLine {
   path: string;
   line: number;
   text: string;
+  /** Fingerprint of the full line, independent of the bounded snippet. */
+  fingerprint: string;
   prefixTruncated: boolean;
   suffixTruncated: boolean;
   matches: SearchMatch[];
@@ -47,6 +49,7 @@ export function searchLineFromPart(part: SearchPart): SearchResultLine | null {
     path,
     line,
     text,
+    fingerprint: part.lineFingerprint ?? "",
     prefixTruncated: part.prefixTruncated === true,
     suffixTruncated: part.suffixTruncated === true,
     matches,
@@ -190,65 +193,114 @@ export function searchLineSegments(
   return segments;
 }
 
+/** A result-open target captured after the asynchronous tab switch. */
+export interface SearchTargetSnapshot {
+  root: string;
+  generation: number;
+  tabId: number;
+  text: string;
+  view: unknown;
+  doc: unknown;
+}
+
 /**
- * Finds the editor range for a result. It first trusts the original UTF-16
- * offsets only when the same match text is still there. If the document moved,
- * it relocates the text inside the result's line; anything else is reported as
- * stale instead of selecting an unrelated occurrence.
+ * Checks that the tab, view and document captured for a search result are
+ * still the current ones. An async open must use this before dispatching a
+ * selection so a newer workspace or tab cannot receive an old result.
+ */
+export function searchTargetStillCurrent(
+  snapshot: SearchTargetSnapshot,
+  current: SearchTargetSnapshot | null,
+): boolean {
+  return (
+    current !== null &&
+    current.root === snapshot.root &&
+    current.generation === snapshot.generation &&
+    current.tabId === snapshot.tabId &&
+    current.text === snapshot.text &&
+    current.view === snapshot.view &&
+    current.doc === snapshot.doc
+  );
+}
+
+/**
+ * Fingerprint of normalized UTF-16 code units: FNV-1a/64 and FNV-1/64 over
+ * little-endian UTF-16 bytes, concatenated. Go computes the same value. It
+ * proves full line and match content without sending an unbounded line over
+ * IPC; it is a staleness check, not a password hash.
+ */
+const FNV_OFFSET_BASIS = 14695981039346656037n;
+const FNV_PRIME = 1099511628211n;
+const FNV_MASK = (1n << 64n) - 1n;
+
+export function searchFingerprint(text: string): string {
+  let first = FNV_OFFSET_BASIS;
+  let second = FNV_OFFSET_BASIS;
+  for (let index = 0; index < text.length; index += 1) {
+    const unit = text.charCodeAt(index);
+    const low = BigInt(unit & 0xff);
+    const high = BigInt((unit >> 8) & 0xff);
+    first = ((first ^ low) * FNV_PRIME) & FNV_MASK;
+    first = ((first ^ high) * FNV_PRIME) & FNV_MASK;
+    second = (second * FNV_PRIME) & FNV_MASK;
+    second ^= low;
+    second = (second * FNV_PRIME) & FNV_MASK;
+    second ^= high;
+  }
+  return `${hex64(first)}${hex64(second)}`;
+}
+
+function hex64(value: bigint): string {
+  return value.toString(16).padStart(16, "0");
+}
+
+/**
+ * Finds the editor range for a result from the stable line number and UTF-16
+ * column. The complete target line and the complete match must still have their
+ * original fingerprints; any change to either is stale, and a duplicate on the
+ * same line is never substituted. Earlier lines may change length without
+ * moving the column of an unchanged target line.
  */
 export function locateSearchMatch(
   docText: string,
   line: SearchResultLine,
   match: SearchMatch,
 ): { from: number; to: number } | null {
+  if (line.fingerprint === "" || match.fingerprint === "") return null;
   const lineStart = lineStartOffset(docText, line.line);
   if (lineStart === null) return null;
   const newline = docText.indexOf("\n", lineStart);
   const lineEnd = newline === -1 ? docText.length : newline;
   const currentLine = docText.slice(lineStart, lineEnd);
-  const fullLength = Math.max(0, Math.trunc(match.length));
-  const text = match.text;
+  if (searchFingerprint(currentLine) !== line.fingerprint) return null;
 
-  if (text.length === 0 && fullLength === 0) {
-    if (currentLine !== line.text) return null;
-    const offset = Math.max(
-      0,
-      Math.min(currentLine.length, match.start - lineStart),
-    );
-    const from = lineStart + offset;
-    return { from, to: from };
+  const column = Math.max(0, Math.trunc(match.column));
+  const length = Math.max(0, Math.trunc(match.length));
+  if (column > currentLine.length) return null;
+  const from = lineStart + column;
+  const to = from + length;
+  if (to > docText.length) return null;
+  if (
+    (match.startsAtDocumentStart && from !== 0) ||
+    (match.startsAtLineStart && from !== lineStart)
+  ) {
+    return null;
+  }
+  if (searchFingerprint(docText.slice(from, to)) !== match.fingerprint) {
+    return null;
   }
 
-  const accept = (from: number): { from: number; to: number } | null => {
-    if (from < lineStart || from > lineEnd) return null;
-    if (fullLength < text.length) return null;
-    if (from + text.length > docText.length) return null;
-    if (docText.slice(from, from + text.length) !== text) return null;
-    if (from + fullLength > docText.length) return null;
-    return { from, to: from + fullLength };
-  };
-
-  const exact = accept(match.start);
-  if (exact !== null) return exact;
-
-  const newlineInMatch = text.indexOf("\n");
-  const searchText =
-    newlineInMatch === -1 ? text : text.slice(0, newlineInMatch);
-  if (searchText === "") return null;
-  const expected = match.start - lineStart;
-  let best: { from: number; to: number } | null = null;
-  let bestDistance = Number.POSITIVE_INFINITY;
-  let at = currentLine.indexOf(searchText);
-  while (at !== -1) {
-    const candidate = accept(lineStart + at);
-    const distance = Math.abs(at - expected);
-    if (candidate !== null && distance < bestDistance) {
-      best = candidate;
-      bestDistance = distance;
-    }
-    at = currentLine.indexOf(searchText, at + 1);
-  }
-  return best;
+  const endLineStart = lineStartOffset(docText, match.endLine);
+  if (endLineStart === null || endLineStart < lineStart) return null;
+  const endNewline = docText.indexOf("\n", endLineStart);
+  const endLineEnd =
+    endNewline === -1 ? docText.length : endNewline;
+  const endLine = docText.slice(endLineStart, endLineEnd);
+  if (searchFingerprint(endLine) !== match.endLineFingerprint) return null;
+  if (to < endLineStart || to > endLineEnd) return null;
+  if (match.endsAtDocumentEnd && to !== docText.length) return null;
+  if (match.endsAtLineEnd && to !== endLineEnd) return null;
+  return { from, to };
 }
 
 function lineStartOffset(text: string, line: number): number | null {

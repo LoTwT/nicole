@@ -13,6 +13,7 @@ import type {
   SearchRequest,
 } from "../services/mygo";
 import type { SearchSummary } from "../services/search";
+import { searchFingerprint } from "../app/workspace-search";
 import WorkspaceSearch from "./WorkspaceSearch.vue";
 
 interface FakeSession {
@@ -76,14 +77,19 @@ function button(selector: string): HTMLButtonElement {
 }
 
 const match = (
-  start: number,
+  column: number,
   text: string,
   highlightStart = 0,
 ): SearchMatch => ({
-  start,
-  end: start + text.length,
-  text,
+  column,
   length: text.length,
+  fingerprint: searchFingerprint(text),
+  endLine: 1,
+  endLineFingerprint: searchFingerprint(text),
+  startsAtDocumentStart: false,
+  startsAtLineStart: false,
+  endsAtDocumentEnd: false,
+  endsAtLineEnd: false,
   highlightStart,
   highlightEnd: highlightStart + text.length,
 });
@@ -94,7 +100,14 @@ function linePart(
   text: string,
   matches: SearchMatch[],
 ): SearchPart {
-  return { type: "line", path, line, text, matches };
+  return {
+    type: "line",
+    path,
+    line,
+    text,
+    lineFingerprint: searchFingerprint(text),
+    matches,
+  };
 }
 
 beforeEach(() => {
@@ -333,8 +346,8 @@ describe("WorkspaceSearch", () => {
     expect(targets[0]!.generation).toBe(4);
     expect(targets[0]!.line.path).toBe("notes/daily.md");
     expect(targets[0]!.line.line).toBe(2);
-    expect(targets[0]!.match.text).toBe("needle");
-    expect(targets[0]!.match.start).toBe(11);
+    expect(targets[0]!.match.column).toBe(11);
+    expect(targets[0]!.match.fingerprint).toBe(searchFingerprint("needle"));
   });
 
   it("cancels the channel when the view is destroyed", async () => {

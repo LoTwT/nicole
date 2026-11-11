@@ -186,19 +186,27 @@ export interface SavedImage {
 }
 
 /**
- * SearchMatch is one occurrence on a result line. Start and End are UTF-16
- * offsets in the newline-normalized document, which is the text CodeMirror
- * holds. They span the whole match even when it continues past the displayed
- * line. Text is a bounded prefix used to verify the match before selecting it,
- * while Length is the full length in UTF-16 code units. HighlightStart and
- * HighlightEnd are offsets in the sent line text; -1 means the match lies
- * outside the bounded snippet.
+ * SearchMatch is one occurrence on a result line. Column is the match start
+ * within the line in UTF-16 code units, independent of where earlier lines
+ * end. Length is the full match length in UTF-16 code units, including text
+ * after the displayed line. Fingerprint identifies the full match text so the
+ * page can prove the selected range is unchanged; it is a pair of FNV-64
+ * values over the normalized UTF-16 code units. EndLine and its fingerprint
+ * cover the line containing the end of a cross-line match, and the four
+ * boundary flags preserve RE2's document/line anchor semantics after a move.
+ * HighlightStart and HighlightEnd are offsets in the sent line text; -1 means
+ * the match lies outside the bounded snippet.
  */
 export interface SearchMatch {
-  start: number;
-  end: number;
-  text: string;
+  column: number;
   length: number;
+  fingerprint: string;
+  endLine: number;
+  endLineFingerprint: string;
+  startsAtDocumentStart: boolean;
+  startsAtLineStart: boolean;
+  endsAtDocumentEnd: boolean;
+  endsAtLineEnd: boolean;
   highlightStart: number;
   highlightEnd: number;
 }
@@ -206,13 +214,15 @@ export interface SearchMatch {
 /**
  * SearchPart is one streamed value of Workspace.Search: a matching line, then
  * a final summary. Type is "line" or "done". One line part carries every match
- * that starts on that line.
+ * that starts on that line. LineFingerprint covers the full line text, not the
+ * bounded snippet.
  */
 export interface SearchPart {
   type: string;
   path?: string;
   line?: number;
   text?: string;
+  lineFingerprint?: string;
   prefixTruncated?: boolean;
   suffixTruncated?: boolean;
   matches?: SearchMatch[];

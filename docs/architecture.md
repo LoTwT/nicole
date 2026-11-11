@@ -49,7 +49,7 @@ src/
     tabs.ts               标签页模型、同名区分、关闭问题与后台快照映射
     word-count.ts         字数口径与恢复副本的字数差
     watch-events.ts       监听事件与已打开文档、文件树刷新范围的对应
-    workspace-search.ts   搜索结果分组、高亮片段、错误文案与点击定位校验
+    workspace-search.ts   搜索结果分组、高亮片段、内容指纹、错误文案与点击定位校验
   commands/               唯一命令注册表、格式/应用命令、键位匹配与格式化、拼音搜索
   components/             界面组件
     AppSidebar.vue        侧栏外壳、宽度拖动、工作区工具行、搜索入口、底部入口
@@ -117,7 +117,7 @@ Go（main.go）
 - MyGo 调用只放在 `src/services/` 和 Go 入口（`main.go` 及同一包内直接使用 MyGo 的服务实现），其他前端模块通过 `src/services/` 间接使用后端能力。生成的客户端直接输出到 `src/services/mygo.ts`。
 - `main.go` 还注册 MyGo 的 `updater.Plugin`，绑定工作区、图片、设置、单文件、打开方式和原生菜单服务，注册图片协议并设置应用菜单；文件监听由 `Workspace.Watch` 在页面调用时开始。更新源、版本注入和发布流程见[发布与自动更新](release.md)。
 - `src/services/` 是生成的 `mygo.ts` 客户端上的薄封装，不承载业务逻辑。`app.ts` 只把 `Application.Info` 包装成 `getAppInfo`；`workspace.ts` 包装 `Workspace` 的 Markdown 方法、`PickFolder`/`OpenFolder` 和关窗保存事件；`files.ts`、`settings.ts`、`single-file.ts`、`menu.ts`、`open-file.ts`、`watch.ts` 和 `search.ts` 分别包装对应服务；`clipboard.ts` 只负责复制界面文字。封装不拼接路径，也不缓存文件内容。
-- `src/app/` 只放不依赖 Vue 组件实例的界面逻辑，`src/components/` 只负责渲染和交互事件；`App.vue` 负责把这些模块与 `services/` 接起来，不直接调用 MyGo。`src/app/workspace-search.ts` 只处理流式结果的分组、行片段和点击定位校验，`WorkspaceSearch.vue` 只处理输入、开关、渲染和 Channel 会话。
+- `src/app/` 只放不依赖 Vue 组件实例的界面逻辑，`src/components/` 只负责渲染和交互事件；`App.vue` 负责把这些模块与 `services/` 接起来，不直接调用 MyGo。`src/app/workspace-search.ts` 只处理流式结果的分组、行片段、128 位内容指纹和点击定位校验，`WorkspaceSearch.vue` 只处理输入、开关、渲染和 Channel 会话。
 - `src/commands/` 保存唯一命令注册表、格式与插入命令、应用与文件树命令、键位匹配和显示、拼音搜索/最近使用逻辑；只依赖 CodeMirror、`src/app/platform.ts`，以及类型层面的 `src/app/file-tree.ts`，不依赖 Vue 或 MyGo。`src/editor/slash.ts` 负责 slash 触发、查询和菜单状态，`src/components/SlashMenu.vue` 只负责渲染和定位；`src/app/context-menu.ts` 组装右键菜单并从注册表读取快捷键。`src/app/command-palette.ts` 处理面板模式标识、文件与标题排序；`src/editor/headings.ts` 从 Lezer 树提取标题；`src/components/CommandPalette.vue` 只负责渲染和键盘交互。
 - `createEditor` 的接口为：
 
@@ -209,7 +209,7 @@ Go（main.go）
 - 渲染出来的 HTML 一律先经过 DOMPurify 清洗。
 - 沙箱 iframe 可能会额外起进程，尽量不用。
 - Go 的文件服务限制见[工作区与文件](specs/workspace.md#路径守卫)。工作区内的读取、写入和文件操作都以 `os.OpenRoot` 的根为边界，并在操作前用 `filepath.EvalSymlinks` 确认目标仍在工作区内；文件树操作不能借 `..`、绝对路径、盘符路径或符号链接越出根目录。
-- 全文搜索只接受 generation、查询和两个选项，没有路径或根目录参数；Go 用 `os.Root` 扫描当前根，跳过隐藏目录、`node_modules` 和符号链接，返回的行片段与匹配文字都有长度上限。切换工作区后旧搜索按 generation 停止，页面也不能把单文件授权当成搜索范围。见[搜索](specs/workspace.md#搜索)。
+- 全文搜索只接受 generation、查询和两个选项，没有路径或根目录参数；Go 用 `os.Root` 扫描当前根，打开文件时逐级核对目录和文件身份，跳过枚举后变成符号链接或非普通文件的条目，并跳过隐藏目录和 `node_modules`。返回的行片段有长度上限，完整行、结束行和匹配只发送固定长度指纹。切换工作区后旧搜索按 generation 停止，页面也不能把单文件授权当成搜索范围。见[搜索](specs/workspace.md#搜索)。
 - 工作区外的文件采用按文件授权：`SingleFileService` 只保存用户通过原生对话框选择、或通过 `App.OnOpenFile` 提供并在页面确认后的解析绝对路径。读写只接受完全相同的路径，列出目录、访问同目录其他文件、相对路径和目录本身都拒绝；授权不跨重启保存，关闭标签页时释放。见[单文件标签页](specs/workspace.md#单文件标签页)。
 - **单文件授权经崩溃恢复延续的代价**：`Recovery` 目录里可能出现用户上次已授权的单文件路径。恢复时 Go 先核对路径：必须仍是普通 `.md` 文件、没有变成符号链接、父路径未改变，文件不存在时仍允许授权以便原路径重建；通过后才授权一次。对话框选择由页面保证；Go 只保证副本 id 存在于 `recovery` 目录、路径曾被授权、每条只能恢复一次。`List` 会把曾授权路径的 `diskText` 返回给页面。因此副本最多让一条曾授权路径跨重启延续一次；如果攻击者已经能写 `recovery/` 目录或界面数据目录，本地文件的机密性和完整性已不受这层边界保护。见[崩溃恢复](specs/workspace.md#崩溃恢复)。
 - 文件树的“用默认应用打开”在 Go 端按白名单分类：图片、PDF、纯文本和常见办公文档可直接打开；已知启动器类型（PATHEXT、macOS 脚本/快捷方式、Linux `.desktop` 等）直接拒绝；其他类型和 Unix 可执行文件必须先经过 Go 弹出的原生确认框，页面无法绕过。详见[文件操作](specs/workspace.md#打开方式的安全规则)。

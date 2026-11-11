@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -55,6 +57,31 @@ func searchDone(t *testing.T, parts []SearchPart) SearchPart {
 	return SearchPart{}
 }
 
+func mustFingerprint(t *testing.T, text string) string {
+	t.Helper()
+	fingerprint, err := searchSignature(text, func() bool { return false })
+	if err != nil {
+		t.Fatalf("searchSignature(%q): %v", text, err)
+	}
+	return fingerprint
+}
+
+func TestSearchFingerprintVectors(t *testing.T) {
+	for _, test := range []struct {
+		text string
+		want string
+	}{
+		{"", "cbf29ce484222325cbf29ce484222325"},
+		{"a", "089be207b544f1e408326707b4eb37da"},
+		{"中文😀foo", "5a605c943172cfd3bb1279579d8c64c7"},
+		{"foo\nbar", "5b2c62f6f41bccb8e58535308d138ac6"},
+	} {
+		if got := mustFingerprint(t, test.text); got != test.want {
+			t.Errorf("fingerprint(%q) = %q, want %q", test.text, got, test.want)
+		}
+	}
+}
+
 func TestSearchScopesRegularMarkdownFiles(t *testing.T) {
 	root := t.TempDir()
 	for _, name := range []string{
@@ -76,6 +103,9 @@ func TestSearchScopesRegularMarkdownFiles(t *testing.T) {
 		linkDir := filepath.Join(root, "linkdir")
 		if err := os.Symlink(outside, linkDir); err != nil {
 			t.Logf("directory symlink not created: %v", err)
+		}
+		if err := os.Symlink(filepath.Join(".hidden", "d.md"), filepath.Join(root, "hidden-link.md")); err != nil {
+			t.Logf("hidden file symlink not created: %v", err)
 		}
 	} else {
 		t.Logf("file symlink not created: %v", err)
@@ -106,31 +136,30 @@ func TestSearchLiteralCaseAndRegex(t *testing.T) {
 
 	literal := runSearch(t, workspace, SearchRequest{Query: "alpha"})
 	line := searchLineParts(literal)[0]
-	if len(line.Matches) != 2 || line.Matches[0].Text != "Alpha" || line.Matches[1].Text != "alpha" {
+	if len(line.Matches) != 2 ||
+		line.Matches[0].Column != 0 || line.Matches[1].Column != 6 {
 		t.Fatalf("case-insensitive literal matches = %#v", line.Matches)
 	}
 
 	sensitive := runSearch(t, workspace, SearchRequest{Query: "alpha", CaseSensitive: true})
 	line = searchLineParts(sensitive)[0]
-	if len(line.Matches) != 1 || line.Matches[0].Text != "alpha" {
+	if len(line.Matches) != 1 || line.Matches[0].Column != 6 {
 		t.Fatalf("case-sensitive literal matches = %#v", line.Matches)
 	}
 
 	dots := runSearch(t, workspace, SearchRequest{Query: "."})
 	line = searchLineParts(dots)[0]
-	if len(line.Matches) != 2 {
-		t.Fatalf("literal dot matches = %#v, want 2", line.Matches)
-	}
-	for _, match := range line.Matches {
-		if match.Text != "." {
-			t.Fatalf("literal query matched %q, want one dot", match.Text)
-		}
+	if len(line.Matches) != 2 || line.Matches[0].Column != 12 || line.Matches[1].Column != 16 {
+		t.Fatalf("literal dot matches = %#v, want columns 12 and 16", line.Matches)
 	}
 
 	regex := runSearch(t, workspace, SearchRequest{Query: `a\.b`, Regex: true})
 	line = searchLineParts(regex)[0]
-	if len(line.Matches) != 1 || line.Matches[0].Text != "a.b" {
+	if len(line.Matches) != 1 || line.Matches[0].Column != 15 {
 		t.Fatalf("regex matches = %#v", line.Matches)
+	}
+	if line.Matches[0].Fingerprint != mustFingerprint(t, "a.b") {
+		t.Fatalf("regex match fingerprint = %q", line.Matches[0].Fingerprint)
 	}
 }
 
@@ -157,9 +186,15 @@ func TestSearchUsesUTF16OffsetsAndNormalizedNewlines(t *testing.T) {
 	if first.Line != 1 || first.Text != "中文😀foo" {
 		t.Fatalf("first line = %#v", first)
 	}
+	if first.LineFingerprint != mustFingerprint(t, "中文😀foo") {
+		t.Fatalf("first line fingerprint = %q", first.LineFingerprint)
+	}
 	firstMatch := first.Matches[0]
-	if firstMatch.Start != 4 || firstMatch.End != 7 || firstMatch.Length != 3 {
-		t.Fatalf("first match offsets = %#v, want UTF-16 4..7", firstMatch)
+	if firstMatch.Column != 4 || firstMatch.Length != 3 {
+		t.Fatalf("first match position = %#v, want UTF-16 column 4 length 3", firstMatch)
+	}
+	if firstMatch.Fingerprint != mustFingerprint(t, "foo") {
+		t.Fatalf("first match fingerprint = %q", firstMatch.Fingerprint)
 	}
 	if firstMatch.HighlightStart != 4 || firstMatch.HighlightEnd != 7 {
 		t.Fatalf("first highlight = %#v", firstMatch)
@@ -169,8 +204,8 @@ func TestSearchUsesUTF16OffsetsAndNormalizedNewlines(t *testing.T) {
 		t.Fatalf("second line = %#v", second)
 	}
 	secondMatch := second.Matches[0]
-	if secondMatch.Start != 12 || secondMatch.End != 15 {
-		t.Fatalf("second match offsets = %#v, want document UTF-16 12..15", secondMatch)
+	if secondMatch.Column != 4 || secondMatch.Length != 3 {
+		t.Fatalf("second match position = %#v, want line column 4 length 3", secondMatch)
 	}
 	if secondMatch.HighlightStart != 4 || secondMatch.HighlightEnd != 7 {
 		t.Fatalf("second highlight = %#v", secondMatch)
@@ -181,7 +216,7 @@ func TestSearchUsesUTF16OffsetsAndNormalizedNewlines(t *testing.T) {
 	crWorkspace := openTestWorkspace(t, crRoot)
 	crParts := runSearch(t, crWorkspace, SearchRequest{Query: "b"})
 	crLines := searchLineParts(crParts)
-	if len(crLines) != 1 || crLines[0].Line != 2 || crLines[0].Matches[0].Start != 2 {
+	if len(crLines) != 1 || crLines[0].Line != 2 || crLines[0].Matches[0].Column != 0 {
 		t.Fatalf("bare CR result = %#v", crLines)
 	}
 }
@@ -197,11 +232,24 @@ func TestSearchHandlesCrossLineAndEmptyMatches(t *testing.T) {
 		t.Fatalf("cross-line lines = %#v", lines)
 	}
 	match := lines[0].Matches[0]
-	if match.Start != 0 || match.End != 7 || match.Length != 7 || match.Text != "foo\nbar" {
+	if match.Column != 0 || match.Length != 7 {
 		t.Fatalf("cross-line match = %#v", match)
+	}
+	if match.Fingerprint != mustFingerprint(t, "foo\nbar") {
+		t.Fatalf("cross-line fingerprint = %q", match.Fingerprint)
+	}
+	if match.EndLine != 2 || match.EndLineFingerprint != mustFingerprint(t, "bar") {
+		t.Fatalf("cross-line end line = %#v", match)
+	}
+	if !match.StartsAtDocumentStart || !match.StartsAtLineStart ||
+		!match.EndsAtDocumentEnd || !match.EndsAtLineEnd {
+		t.Fatalf("cross-line boundary flags = %#v", match)
 	}
 	if match.HighlightStart != 0 || match.HighlightEnd != 3 {
 		t.Fatalf("cross-line highlight = %#v", match)
+	}
+	if lines[0].LineFingerprint != mustFingerprint(t, "foo") {
+		t.Fatalf("cross-line line fingerprint = %q", lines[0].LineFingerprint)
 	}
 	done := searchDone(t, cross)
 	if done.MatchCount != 1 || done.FileCount != 1 {
@@ -216,8 +264,12 @@ func TestSearchHandlesCrossLineAndEmptyMatches(t *testing.T) {
 	if len(zeroLines) != 2 {
 		t.Fatalf("zero-width lines = %#v, want 2", zeroLines)
 	}
-	if zeroLines[0].Matches[0].Start != 0 || zeroLines[1].Matches[0].Start != 2 {
-		t.Fatalf("zero-width offsets = %#v", zeroLines)
+	if zeroLines[0].Matches[0].Column != 0 || zeroLines[1].Matches[0].Column != 0 {
+		t.Fatalf("zero-width columns = %#v", zeroLines)
+	}
+	if zeroLines[0].Matches[0].Length != 0 ||
+		zeroLines[0].Matches[0].Fingerprint != mustFingerprint(t, "") {
+		t.Fatalf("zero-width match = %#v", zeroLines[0].Matches[0])
 	}
 	if done := searchDone(t, zero); done.MatchCount != 2 {
 		t.Fatalf("zero-width done = %#v", done)
@@ -373,6 +425,15 @@ func TestSearchBoundsLongSnippets(t *testing.T) {
 		t.Fatalf("snippet has %d UTF-16 units, want at most %d", utf16Length(result.Text), searchSnippetLimit+2)
 	}
 	match := result.Matches[0]
+	if match.Column != 1500 || match.Length != 6 {
+		t.Fatalf("long line match position = %#v", match)
+	}
+	if match.Fingerprint != mustFingerprint(t, "needle") {
+		t.Fatalf("long line match fingerprint = %q", match.Fingerprint)
+	}
+	if result.LineFingerprint != mustFingerprint(t, line) {
+		t.Fatalf("long line fingerprint does not cover the full line")
+	}
 	if match.HighlightStart < 0 || match.HighlightEnd-match.HighlightStart != 6 {
 		t.Fatalf("long line highlight = %#v", match)
 	}
@@ -393,5 +454,125 @@ func TestSearchReportsReadErrors(t *testing.T) {
 	_, err := collectSearch(t, workspace, SearchRequest{Query: "needle"})
 	if !errors.Is(err, os.ErrPermission) {
 		t.Fatalf("search error = %v, want permission error", err)
+	}
+}
+
+func TestReadSearchFileRejectsReplacementLinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation needs Developer Mode on Windows")
+	}
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, ".hidden", "secret.md"), []byte("secret"))
+	mustWriteFile(t, filepath.Join(root, "b.md"), []byte("public"))
+	rootFS, err := os.OpenRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rootFS.Close()
+
+	data, err := readSearchFile(rootFS, "b.md", func() bool { return false })
+	if err != nil || string(data) != "public" {
+		t.Fatalf("read regular file = %q, %v", data, err)
+	}
+
+	if err := os.Remove(filepath.Join(root, "b.md")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(".hidden", "secret.md"), filepath.Join(root, "b.md")); err != nil {
+		t.Skipf("cannot create a file symlink: %v", err)
+	}
+	if data, err := readSearchFile(rootFS, "b.md", func() bool { return false }); !errors.Is(err, errSearchSkip) || data != nil {
+		t.Fatalf("replaced file link = %q, %v; want skipped", data, err)
+	}
+
+	mustWriteFile(t, filepath.Join(root, "notes", "c.md"), []byte("visible"))
+	mustWriteFile(t, filepath.Join(root, ".hidden", "d.md"), []byte("hidden"))
+	if err := os.RemoveAll(filepath.Join(root, "notes")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(".hidden", filepath.Join(root, "notes")); err != nil {
+		t.Skipf("cannot create a directory symlink: %v", err)
+	}
+	if data, err := readSearchFile(rootFS, "notes/c.md", func() bool { return false }); !errors.Is(err, errSearchSkip) || data != nil {
+		t.Fatalf("replaced directory link = %q, %v; want skipped", data, err)
+	}
+
+	if err := os.Mkdir(filepath.Join(root, "folder.md"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := readSearchFile(rootFS, "folder.md", func() bool { return false }); !errors.Is(err, errSearchSkip) || data != nil {
+		t.Fatalf("non-regular target = %q, %v; want skipped", data, err)
+	}
+}
+
+func TestSearchChecksCancellationBeforeWalkingNonMarkdown(t *testing.T) {
+	root := t.TempDir()
+	for index := 0; index < 200; index++ {
+		mustWriteFile(t, filepath.Join(root, "plain", fmt.Sprintf("%d.txt", index)), []byte("x"))
+	}
+	rootFS, err := os.OpenRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rootFS.Close()
+	calls := 0
+	var parts []SearchPart
+	err = searchRoot(
+		rootFS,
+		regexp.MustCompile("x"),
+		func(part SearchPart) error {
+			parts = append(parts, part)
+			return nil
+		},
+		func() bool {
+			calls++
+			return calls >= 1
+		},
+	)
+	if err != nil {
+		t.Fatalf("searchRoot after cancellation: %v", err)
+	}
+	if calls == 0 {
+		t.Fatal("searchRoot did not check cancellation before filtering entries")
+	}
+	if len(parts) != 0 {
+		t.Fatalf("parts after immediate cancellation = %#v", parts)
+	}
+}
+
+func TestSearchDoesNotFlushPendingLineAfterGenerationChange(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "a.md"), []byte("needle\nneedle\n"))
+	workspace := openTestWorkspace(t, root)
+	var parts []SearchPart
+	err := workspace.search(context.Background(), SearchRequest{
+		Generation: currentGeneration(workspace),
+		Query:      "needle",
+	}, func(part SearchPart) error {
+		parts = append(parts, part)
+		workspace.state.replace(root)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("search after same-file generation change: %v", err)
+	}
+	if len(parts) != 1 || parts[0].Type != "line" || parts[0].Line != 1 {
+		t.Fatalf("parts after same-file generation change = %#v, want only line 1", parts)
+	}
+}
+
+func TestSearchRecordsAnchorBoundaries(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "note.md"), []byte("foo"))
+	workspace := openTestWorkspace(t, root)
+	parts := runSearch(t, workspace, SearchRequest{Query: `foo$`, Regex: true})
+	line := searchLineParts(parts)[0]
+	match := line.Matches[0]
+	if !match.StartsAtDocumentStart || !match.StartsAtLineStart ||
+		!match.EndsAtDocumentEnd || !match.EndsAtLineEnd {
+		t.Fatalf("document-end match boundaries = %#v", match)
+	}
+	if match.EndLine != 1 || match.EndLineFingerprint != mustFingerprint(t, "foo") {
+		t.Fatalf("document-end match end line = %#v", match)
 	}
 }

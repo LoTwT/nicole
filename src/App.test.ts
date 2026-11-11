@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App.vue";
 import type { AppPlatform } from "./app/platform";
 import type { SearchPart, SearchRequest } from "./services/mygo";
+import { searchFingerprint } from "./app/workspace-search";
 
 // jsdom reports an empty navigator.platform, which CodeMirror treats as
 // non-Mac when it resolves `Mod` at module load. Pin it so `Mod` follows the
@@ -375,22 +376,29 @@ function searchLine(
   path: string,
   line: number,
   text: string,
-  start: number,
+  column: number,
   matchText: string,
+  fullLine = text,
 ): SearchPart {
   return {
     type: "line",
     path,
     line,
     text,
+    lineFingerprint: searchFingerprint(fullLine),
     matches: [
       {
-        start,
-        end: start + matchText.length,
-        text: matchText,
+        column,
         length: matchText.length,
-        highlightStart: start,
-        highlightEnd: start + matchText.length,
+        fingerprint: searchFingerprint(matchText),
+        endLine: line,
+        endLineFingerprint: searchFingerprint(fullLine),
+        startsAtDocumentStart: false,
+        startsAtLineStart: column === 0,
+        endsAtDocumentEnd: false,
+        endsAtLineEnd: column + matchText.length === fullLine.length,
+        highlightStart: column,
+        highlightEnd: column + matchText.length,
       },
     ],
   };
@@ -7333,12 +7341,12 @@ describe("workspace search", () => {
   });
 
   it("keeps a dirty tab and relocates a moved match; reports a stale result", async () => {
-    await openFile("a.md", "foo here\n");
+    await openFile("a.md", "first\nfoo here\n");
     pressAppShortcut("f", true);
     await settle();
     typeSearch("foo");
     await settle();
-    lastSearch().onLine(searchLine("a.md", 1, "foo here", 0, "foo"));
+    lastSearch().onLine(searchLine("a.md", 2, "foo here", 0, "foo"));
     await settle();
 
     const view = editorView();
@@ -7348,9 +7356,9 @@ describe("workspace search", () => {
     host.querySelector<HTMLButtonElement>("[data-search-result]")!.click();
     await settle();
     expect(mocks.readFile).not.toHaveBeenCalled();
-    expect(view.state.doc.toString()).toBe("X foo here\n");
-    expect(view.state.selection.main.from).toBe(2);
-    expect(view.state.selection.main.to).toBe(5);
+    expect(view.state.doc.toString()).toBe("X first\nfoo here\n");
+    expect(view.state.selection.main.from).toBe(8);
+    expect(view.state.selection.main.to).toBe(11);
 
     replaceEditorText("bar only\n");
     await settle();
@@ -7469,6 +7477,55 @@ describe("workspace search", () => {
         "搜索工作区",
       );
     });
+  });
+
+  it("leaves search and mounts the tree before creating a file", async () => {
+    await openFile();
+    pressAppShortcut("f", true);
+    await settle();
+    expect(host.querySelector("[data-search-panel]")).not.toBeNull();
+    editorView().focus();
+    pressAppShortcut("n");
+    await settle();
+    expect(host.querySelector("[data-search-panel]")).toBeNull();
+    expect(host.querySelector('[data-tree-path="a.md"]')).not.toBeNull();
+    const input = host.querySelector<HTMLInputElement>(
+      'input[aria-label="新建文件"]',
+    );
+    expect(input).not.toBeNull();
+    expect(input!.value).toBe("未命名.md");
+  });
+
+  it("lets a slash menu own Escape without closing search", async () => {
+    await openFile("a.md", "# A\n");
+    pressAppShortcut("f", true);
+    await settle();
+    expect(host.querySelector("[data-search-panel]")).not.toBeNull();
+    editorView().focus();
+    typeSlashAtEnd();
+    await settle();
+    expect(slashMenuElement()).not.toBeNull();
+
+    const escape = new KeyboardEvent("keydown", {
+      key: "Escape",
+      bubbles: true,
+      cancelable: true,
+    });
+    editorView().contentDOM.dispatchEvent(escape);
+    await settle();
+    expect(escape.defaultPrevented).toBe(true);
+    expect(slashMenuElement()).toBeNull();
+    expect(host.querySelector("[data-search-panel]")).not.toBeNull();
+
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    expect(host.querySelector("[data-search-panel]")).toBeNull();
   });
 
   it("does not treat IME keys as search exit or navigation", async () => {

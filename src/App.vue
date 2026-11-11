@@ -68,7 +68,9 @@ import {
 import { classifyWatchEvents } from "./app/watch-events";
 import {
   locateSearchMatch,
+  searchTargetStillCurrent,
   type SearchOpenTarget,
+  type SearchTargetSnapshot,
 } from "./app/workspace-search";
 import type { TreeNode } from "./app/file-tree";
 import AppBanner from "./components/AppBanner.vue";
@@ -3866,9 +3868,11 @@ function closeWorkspaceSearch(options: { restoreFocus?: boolean } = {}) {
 
 /**
  * Opens a result through the normal tab flow, so an existing dirty tab is
- * switched to rather than reread. The stored offsets are accepted only when
- * the same match text is still there; a bounded same-line relocation keeps
- * edits elsewhere from turning a valid result stale.
+ * switched to rather than reread. The request's root, generation, tab, editor
+ * view and document are captured and checked again after every wait; an older
+ * open must not steal focus or select in a newer workspace/tab. The stable
+ * line and UTF-16 column plus full line/match fingerprints decide whether the
+ * target is still provable.
  */
 async function openSearchResult(target: SearchOpenTarget): Promise<boolean> {
   const current = workspace.value;
@@ -3876,10 +3880,13 @@ async function openSearchResult(target: SearchOpenTarget): Promise<boolean> {
     showNotice("工作区已切换，请重新搜索", "danger");
     return false;
   }
+  const root = current.root;
+  const generation = current.generation;
   const opened = await openWorkspaceFile(target.line.path, undefined, {
     reveal: false,
   });
-  if (!opened) return false;
+  if (!opened || !isCurrentWorkspace(root, generation)) return false;
+
   const tab = currentMarkdown.value;
   const matchesTarget =
     tab !== null &&
@@ -3888,17 +3895,42 @@ async function openSearchResult(target: SearchOpenTarget): Promise<boolean> {
       : tab.kind === "single" &&
         sameFilePath(
           tab.path,
-          workspaceAbsolutePath(current.root, target.line.path),
+          workspaceAbsolutePath(root, target.line.path),
         ));
-  if (tab === null || !matchesTarget || editor === null) {
-    return false;
-  }
-  const located = locateSearchMatch(tab.text, target.line, target.match);
+  if (tab === null || !matchesTarget || editor === null) return false;
+
+  const tabId = tab.id;
+  const text = tab.text;
+  const view = editor.view;
+  const doc = view.state.doc;
+  const snapshot: SearchTargetSnapshot = {
+    root,
+    generation,
+    tabId,
+    text,
+    view,
+    doc,
+  };
+  const located = locateSearchMatch(text, target.line, target.match);
   if (located === null) {
     showNotice("搜索结果已过期，请重新搜索", "danger");
     return false;
   }
-  const view = editor.view;
+  // The open above awaited a tab switch or mount. Do not dispatch into a
+  // newer workspace, another tab, or a document that changed meanwhile.
+  const active = currentMarkdown.value;
+  const currentTarget: SearchTargetSnapshot | null =
+    active === null || editor === null || workspace.value === null
+      ? null
+      : {
+          root: workspace.value.root,
+          generation: workspace.value.generation,
+          tabId: active.id,
+          text: active.text,
+          view: editor.view,
+          doc: editor.view.state.doc,
+        };
+  if (!searchTargetStillCurrent(snapshot, currentTarget)) return false;
   view.dispatch({
     selection: EditorSelection.single(located.from, located.to),
     effects: EditorView.scrollIntoView(located.from, { y: "center" }),
@@ -4085,6 +4117,9 @@ function handleGlobalKeydown(event: KeyboardEvent) {
     return;
   }
   if (event.key === "Escape") {
+    if (event.defaultPrevented) {
+      return;
+    }
     if (overlaySidebar.value) {
       event.preventDefault();
       dismissOverlaySidebar();
@@ -4116,6 +4151,10 @@ function handleGlobalKeydown(event: KeyboardEvent) {
 async function newFile() {
   if (!workspace.value) {
     return;
+  }
+  if (searchOpen.value) {
+    closeWorkspaceSearch();
+    await nextTick();
   }
   if (!sidebarShown.value) {
     if (isWide.value) {
