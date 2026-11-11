@@ -137,6 +137,10 @@ func TestSettingsEditorModeDefaultsToLive(t *testing.T) {
 func TestSettingsEditorModeToleratesWrongJSONTypes(t *testing.T) {
 	store, dir := newTestSettings(t)
 	filePath := filepath.Join(dir, settingsFileName)
+	root := filepath.Join(dir, "notes")
+	if !filepath.IsAbs(root) {
+		t.Fatalf("test folder %q is not absolute", root)
+	}
 	cases := []struct {
 		name  string
 		value string
@@ -149,7 +153,26 @@ func TestSettingsEditorModeToleratesWrongJSONTypes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			content := []byte(`{"theme":"dark","editorMode":` + tc.value + `,"sidebarWidth":300,"recentFolders":["/notes"],"expandedFolders":{"/notes":["a"]},"workspaceClosed":true}` + "\n")
+			fixture := struct {
+				Theme           string              `json:"theme"`
+				EditorMode      json.RawMessage     `json:"editorMode"`
+				SidebarWidth    int                 `json:"sidebarWidth"`
+				RecentFolders   []string            `json:"recentFolders"`
+				ExpandedFolders map[string][]string `json:"expandedFolders"`
+				WorkspaceClosed bool                `json:"workspaceClosed"`
+			}{
+				Theme:           themeDark,
+				EditorMode:      json.RawMessage(tc.value),
+				SidebarWidth:    300,
+				RecentFolders:   []string{root},
+				ExpandedFolders: map[string][]string{root: {"a"}},
+				WorkspaceClosed: true,
+			}
+			content, err := json.Marshal(fixture)
+			if err != nil {
+				t.Fatal(err)
+			}
+			content = append(content, '\n')
 			if err := os.WriteFile(filePath, content, 0o644); err != nil {
 				t.Fatal(err)
 			}
@@ -164,11 +187,11 @@ func TestSettingsEditorModeToleratesWrongJSONTypes(t *testing.T) {
 			if settings.Theme != themeDark || settings.SidebarWidth != 300 || !settings.WorkspaceClosed {
 				t.Errorf("valid fields were reset: %+v", settings)
 			}
-			if len(settings.RecentFolders) != 1 || settings.RecentFolders[0] != "/notes" {
-				t.Errorf("RecentFolders = %q, want [/notes]", settings.RecentFolders)
+			if len(settings.RecentFolders) != 1 || settings.RecentFolders[0] != root {
+				t.Errorf("RecentFolders = %q, want [%q]", settings.RecentFolders, root)
 			}
-			if got := settings.ExpandedFolders["/notes"]; len(got) != 1 || got[0] != "a" {
-				t.Errorf("ExpandedFolders = %#v, want /notes: [a]", settings.ExpandedFolders)
+			if got := settings.ExpandedFolders[root]; len(got) != 1 || got[0] != "a" {
+				t.Errorf("ExpandedFolders = %#v, want %q: [a]", settings.ExpandedFolders, root)
 			}
 
 			after, err := os.ReadFile(filePath)
@@ -193,7 +216,18 @@ func TestSettingsSetEditorMode(t *testing.T) {
 	store, dir := newTestSettings(t)
 	settings := NewSettings(store)
 	filePath := filepath.Join(dir, settingsFileName)
-	legacy := []byte(`{"theme":"dark","sidebarWidth":300,"recentFolders":["/notes"],"expandedFolders":{"/notes":["a"]},"workspaceClosed":true}` + "\n")
+	root := filepath.Join(dir, "notes")
+	legacy, err := json.Marshal(map[string]any{
+		"theme":           themeDark,
+		"sidebarWidth":    300,
+		"recentFolders":   []string{root},
+		"expandedFolders": map[string][]string{root: {"a"}},
+		"workspaceClosed": true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy = append(legacy, '\n')
 	if err := os.WriteFile(filePath, legacy, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -225,11 +259,13 @@ func TestSettingsSetEditorMode(t *testing.T) {
 	if stored["workspaceClosed"] != true {
 		t.Errorf("workspaceClosed = %v, want true", stored["workspaceClosed"])
 	}
-	if recent, ok := stored["recentFolders"].([]any); !ok || len(recent) != 1 || recent[0] != "/notes" {
-		t.Errorf("recentFolders changed: %#v", stored["recentFolders"])
+	if recent, ok := stored["recentFolders"].([]any); !ok || len(recent) != 1 || recent[0] != root {
+		t.Errorf("recentFolders changed: %#v, want [%q]", stored["recentFolders"], root)
 	}
 	if expanded, ok := stored["expandedFolders"].(map[string]any); !ok || len(expanded) != 1 {
 		t.Errorf("expandedFolders changed: %#v", stored["expandedFolders"])
+	} else if folders, ok := expanded[root].([]any); !ok || len(folders) != 1 || folders[0] != "a" {
+		t.Errorf("expandedFolders[%q] = %#v, want [a]", root, expanded[root])
 	}
 
 	before := data
