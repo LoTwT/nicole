@@ -335,16 +335,15 @@ defineExpose({ closeModeMenu });
       <button
         v-if="showOutline"
         type="button"
+        data-outline-toggle
         class="focus-ring grid size-7 shrink-0 place-items-center rounded-[var(--radius-control)] text-[var(--text-muted)] disabled:cursor-default disabled:opacity-40"
         :class="{ 'bg-[var(--surface-subtle)] text-[var(--text-primary)]': outlineOn }"
         :disabled="!outlineEnabled"
         :aria-label="`显示或隐藏大纲 ${commandShortcut('nav.toggle-outline', platform)}`"
         :aria-pressed="outlineOn"
-        :title="
-          outlineEnabled
-            ? `显示或隐藏大纲 ${commandShortcut('nav.toggle-outline', platform)}`
-            : '大纲将在后续版本提供'
-        "
+        :aria-expanded="outlineOn"
+        aria-controls="outline-panel"
+        :title="`显示或隐藏大纲 ${commandShortcut('nav.toggle-outline', platform)}`"
         @click="emit('toggle-outline')"
       >
         <AppIcon name="outline" />

@@ -39,6 +39,7 @@ export interface AppCommandActions {
   newFile(): void | Promise<void>;
   saveCurrent(): void | Promise<void>;
   toggleSidebar(): void | Promise<void>;
+  toggleOutline(): void | Promise<void>;
   setMode(mode: CommandEditorMode): void | Promise<void>;
   toggleTheme(): void | Promise<void>;
   closeActiveTab(): void | Promise<void>;
