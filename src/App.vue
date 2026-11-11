@@ -310,6 +310,13 @@ let applyingExternal = false;
 let restoringTabs = false;
 // Two entry points can request the same file before either read finishes.
 const openingTabs = new Map<string, Promise<boolean>>();
+// A pending workspace read keeps the latest caller's navigation intent. A
+// normal open makes it unconditional; a newer search result replaces an older
+// result's guard so the shared read can still satisfy the current click.
+const openingTabIntents = new Map<
+  string,
+  { isRequestCurrent?: () => boolean }
+>();
 let recentSelfRename:
   | { oldPath: string; newPath: string; at: number }
   | null = null;
@@ -2136,10 +2143,9 @@ async function openWorkspaceFile(
   if (context === null) {
     return false;
   }
-  const requestCurrent = options.isRequestCurrent ?? (() => true);
   const existing = findOpenTabForWorkspacePath(context.root, path);
   if (existing !== undefined) {
-    if (!requestCurrent()) return false;
+    if (options.isRequestCurrent && !options.isRequestCurrent()) return false;
     await activateTab(existing.id);
     if (options.reveal ?? true) {
       void sidebar.value?.reveal(path);
@@ -2153,9 +2159,23 @@ async function openWorkspaceFile(
   );
   const pending = openingTabs.get(key);
   if (pending !== undefined) {
+    const intent = openingTabIntents.get(key);
+    if (intent !== undefined) {
+      if (options.isRequestCurrent === undefined) {
+        intent.isRequestCurrent = undefined;
+      } else if (intent.isRequestCurrent !== undefined) {
+        intent.isRequestCurrent = options.isRequestCurrent;
+      }
+    }
     return pending;
   }
 
+  const sharedIntent: { isRequestCurrent?: () => boolean } = {
+    isRequestCurrent: options.isRequestCurrent,
+  };
+  const requestCurrent = () =>
+    sharedIntent.isRequestCurrent === undefined ||
+    sharedIntent.isRequestCurrent();
   const task = (async (): Promise<boolean> => {
     let text: string;
     try {
@@ -2202,11 +2222,13 @@ async function openWorkspaceFile(
   })();
 
   openingTabs.set(key, task);
+  openingTabIntents.set(key, sharedIntent);
   try {
     return await task;
   } finally {
     if (openingTabs.get(key) === task) {
       openingTabs.delete(key);
+      openingTabIntents.delete(key);
     }
   }
 }

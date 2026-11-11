@@ -7753,14 +7753,13 @@ describe("workspace search", () => {
     expect(host.textContent).toContain("搜索结果已过期，请重新搜索");
   });
 
-  it("ignores a search result that finishes after another tab is selected", async () => {
+  it("ignores a search result that finishes after another file is opened", async () => {
     const files = {
       "a.md": "# A\n",
       "b.md": "# B\n",
       "c.md": "# C\nfoo\n",
     };
     await setupWorkspace(files);
-    await openPath("/notes/a.md");
     await openPath("/notes/b.md");
     expect(tabNamed("b.md").getAttribute("aria-selected")).toBe("true");
 
@@ -7779,10 +7778,22 @@ describe("workspace search", () => {
     host.querySelector<HTMLButtonElement>("[data-search-result]")!.click();
     await settle();
     expect(mocks.readFile).toHaveBeenCalledWith("c.md");
-    expect(tabElements()).toHaveLength(2);
+    expect(tabElements()).toHaveLength(1);
 
-    tabNamed("a.md").click();
+    searchInput().dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Escape",
+        code: "Escape",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
     await settle();
+    expect(host.querySelector("[data-search-panel]")).toBeNull();
+    host.querySelector<HTMLElement>('[data-tree-path="a.md"]')!.click();
+    await settle();
+    expect(tabElements()).toHaveLength(2);
+    expect(tabNamed("a.md").getAttribute("aria-selected")).toBe("true");
     const view = editorView();
     view.dispatch({ selection: { anchor: 1, head: 2 } });
     view.focus();
@@ -7799,6 +7810,53 @@ describe("workspace search", () => {
     expect(editorView().state.doc.toString()).toBe("# A\n");
     expect(editorView().state.selection.main.from).toBe(1);
     expect(editorView().state.selection.main.to).toBe(2);
+    expect(editorView().hasFocus).toBe(true);
+  });
+
+  it("honors a newer click on the same pending search result", async () => {
+    const files = {
+      "a.md": "# A\n",
+      "b.md": "# B\n",
+      "c.md": "# C\nfoo\n",
+    };
+    await setupWorkspace(files);
+    await openPath("/notes/a.md");
+    await openPath("/notes/b.md");
+
+    const cRead = deferred<string>();
+    mocks.readFile.mockImplementation((path: string) =>
+      path === "c.md"
+        ? cRead.promise
+        : Promise.resolve(files[path as keyof typeof files] ?? ""),
+    );
+    pressAppShortcut("f", true);
+    await settle();
+    typeSearch("foo");
+    await settle();
+    lastSearch().onLine(searchLine("c.md", 2, "foo", 0, "foo"));
+    await settle();
+    const cResult = host.querySelector<HTMLButtonElement>(
+      '[data-search-path="c.md"] [data-search-result]',
+    );
+    expect(cResult).not.toBeNull();
+    cResult!.click();
+    await settle();
+    expect(tabElements()).toHaveLength(2);
+
+    tabNamed("a.md").click();
+    await settle();
+    expect(tabNamed("a.md").getAttribute("aria-selected")).toBe("true");
+
+    cResult!.click();
+    await settle();
+    cRead.resolve(files["c.md"]);
+    await settle();
+
+    expect(tabElements()).toHaveLength(3);
+    expect(tabNamed("c.md").getAttribute("aria-selected")).toBe("true");
+    expect(editorView().state.doc.toString()).toBe(files["c.md"]);
+    expect(editorView().state.selection.main.from).toBe(4);
+    expect(editorView().state.selection.main.to).toBe(7);
     expect(editorView().hasFocus).toBe(true);
   });
 
