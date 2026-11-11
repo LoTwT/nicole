@@ -134,6 +134,61 @@ func TestSettingsEditorModeDefaultsToLive(t *testing.T) {
 	}
 }
 
+func TestSettingsEditorModeToleratesWrongJSONTypes(t *testing.T) {
+	store, dir := newTestSettings(t)
+	filePath := filepath.Join(dir, settingsFileName)
+	cases := []struct {
+		name  string
+		value string
+	}{
+		{"number", "1"},
+		{"bool", "true"},
+		{"object", `{"mode":"source"}`},
+		{"array", `["source"]`},
+		{"null", "null"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			content := []byte(`{"theme":"dark","editorMode":` + tc.value + `,"sidebarWidth":300,"recentFolders":["/notes"],"expandedFolders":{"/notes":["a"]},"workspaceClosed":true}` + "\n")
+			if err := os.WriteFile(filePath, content, 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			settings, err := store.get()
+			if err != nil {
+				t.Fatalf("get() = %v, want a usable settings value", err)
+			}
+			if settings.EditorMode != editorModeLive {
+				t.Errorf("EditorMode = %q, want %q", settings.EditorMode, editorModeLive)
+			}
+			if settings.Theme != themeDark || settings.SidebarWidth != 300 || !settings.WorkspaceClosed {
+				t.Errorf("valid fields were reset: %+v", settings)
+			}
+			if len(settings.RecentFolders) != 1 || settings.RecentFolders[0] != "/notes" {
+				t.Errorf("RecentFolders = %q, want [/notes]", settings.RecentFolders)
+			}
+			if got := settings.ExpandedFolders["/notes"]; len(got) != 1 || got[0] != "a" {
+				t.Errorf("ExpandedFolders = %#v, want /notes: [a]", settings.ExpandedFolders)
+			}
+
+			after, err := os.ReadFile(filePath)
+			if err != nil {
+				t.Fatalf("settings file was moved or removed: %v", err)
+			}
+			if !bytes.Equal(after, content) {
+				t.Errorf("reading a wrong editorMode type rewrote the file: %q", after)
+			}
+			backups, err := filepath.Glob(filePath + ".corrupt-*")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(backups) != 0 {
+				t.Errorf("wrong editorMode type created a corrupt backup: %q", backups)
+			}
+		})
+	}
+}
+
 func TestSettingsSetEditorMode(t *testing.T) {
 	store, dir := newTestSettings(t)
 	settings := NewSettings(store)

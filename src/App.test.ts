@@ -1204,7 +1204,12 @@ describe("editor mode settings", () => {
 
     const view = editorView();
     expect(view.contentDOM.textContent).toContain("# A");
-    expect(document.activeElement).toBe(view.contentDOM);
+    const otherControl = buttons("源码").find((item) =>
+      item.closest("header"),
+    )!;
+    otherControl.focus();
+    expect(document.activeElement).toBe(otherControl);
+    expect(document.activeElement).not.toBe(view.contentDOM);
 
     settings.resolve({
       theme: "system",
@@ -1216,7 +1221,7 @@ describe("editor mode settings", () => {
     await settle();
 
     expect(editorView()).toBe(view);
-    expect(document.activeElement).toBe(view.contentDOM);
+    expect(document.activeElement).toBe(otherControl);
     expect(view.contentDOM.textContent).not.toContain("# A");
     expect(
       buttons("沉浸")

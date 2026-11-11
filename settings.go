@@ -200,7 +200,7 @@ func newSettingsStoreIn(filePath string) *settingsStore {
 // explicit one, which legacy migration needs.
 type settingsFile struct {
 	Theme           *string             `json:"theme"`
-	EditorMode      string              `json:"editorMode"`
+	EditorMode      json.RawMessage     `json:"editorMode"`
 	SidebarWidth    int                 `json:"sidebarWidth"`
 	RecentFolders   []string            `json:"recentFolders"`
 	ExpandedFolders map[string][]string `json:"expandedFolders"`
@@ -331,7 +331,7 @@ func (s *settingsStore) readLocked() (AppSettings, bool, error) {
 	themePresent := file.Theme != nil
 	settings := AppSettings{
 		Theme:           themeSystem,
-		EditorMode:      file.EditorMode,
+		EditorMode:      decodeEditorMode(file.EditorMode),
 		SidebarWidth:    file.SidebarWidth,
 		RecentFolders:   file.RecentFolders,
 		ExpandedFolders: file.ExpandedFolders,
@@ -341,6 +341,21 @@ func (s *settingsStore) readLocked() (AppSettings, bool, error) {
 		settings.Theme = *file.Theme
 	}
 	return normalizeSettings(settings), themePresent, nil
+}
+
+// decodeEditorMode tolerates a wrong JSON type for this one field. A
+// hand-edited value must not turn the whole settings file into a corrupt
+// backup and reset unrelated settings. normalizeSettings handles string
+// values that are not known modes.
+func decodeEditorMode(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return editorModeLive
+	}
+	var mode string
+	if err := json.Unmarshal(raw, &mode); err != nil {
+		return editorModeLive
+	}
+	return mode
 }
 
 // backupCorruptLocked moves a damaged settings file aside so the next write
