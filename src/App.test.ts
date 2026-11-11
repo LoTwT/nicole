@@ -200,6 +200,12 @@ async function settle() {
   }
 }
 
+/** Waits for a macrotask, such as the delayed focus settlement. */
+async function nextTask() {
+  await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+  await settle();
+}
+
 /** Advances the command palette's clear-before-write announcement delay. */
 async function settlePaletteAnnouncement() {
   await settle();
@@ -4949,7 +4955,13 @@ describe("outline panel", () => {
       document.body.dispatchEvent(
         new MouseEvent("pointerdown", { bubbles: true, cancelable: true }),
       );
-      await settle();
+      document.body.dispatchEvent(
+        new MouseEvent("mousedown", { bubbles: true, cancelable: true }),
+      );
+      document.body.dispatchEvent(
+        new MouseEvent("pointerup", { bubbles: true, cancelable: true }),
+      );
+      await nextTask();
       expect(outlinePanel()).toBeNull();
 
       outlineToggle()!.click();
@@ -5045,34 +5057,64 @@ describe("outline panel", () => {
     });
   });
 
-  it("respects new focus and restores it only after a blank outside click", async () => {
+  it("settles focus after the full outside mouse sequence", async () => {
     await openFile("a.md", "# A\n\n## 一\n");
 
+    const footer = host.querySelector("footer")!;
     outlineToggle()!.click();
     await settle();
     expect(outlinePanel()).not.toBeNull();
-    host
-      .querySelector("footer")!
-      .dispatchEvent(
-        new MouseEvent("pointerdown", { bubbles: true, cancelable: true }),
-      );
-    await settle();
-    expect(outlinePanel()).toBeNull();
-    expect(editorView().dom.contains(document.activeElement)).toBe(true);
-
-    const modeButton = buttons("源码").find((item) =>
-      item.closest("header"),
-    )!;
-    outlineToggle()!.click();
-    await settle();
-    expect(outlinePanel()).not.toBeNull();
-    modeButton.dispatchEvent(
+    footer.dispatchEvent(
       new MouseEvent("pointerdown", { bubbles: true, cancelable: true }),
     );
-    modeButton.focus();
     await settle();
     expect(outlinePanel()).toBeNull();
-    expect(document.activeElement).toBe(modeButton);
+    // The old microtask restore happened here and was then undone by the
+    // browser's default mousedown focus action.
+    expect(editorView().dom.contains(document.activeElement)).toBe(false);
+    footer.dispatchEvent(
+      new MouseEvent("mousedown", { bubbles: true, cancelable: true }),
+    );
+    // jsdom does not perform the browser's default blur for a non-focusable
+    // mousedown target; apply it after dispatch to model that step.
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+    footer.dispatchEvent(
+      new MouseEvent("pointerup", { bubbles: true, cancelable: true }),
+    );
+    footer.dispatchEvent(
+      new MouseEvent("click", { bubbles: true, cancelable: true }),
+    );
+    await nextTask();
+    expect(editorView().dom.contains(document.activeElement)).toBe(true);
+
+    const focusTarget = document.createElement("button");
+    focusTarget.textContent = "外部控件";
+    document.body.append(focusTarget);
+    outlineToggle()!.click();
+    await settle();
+    expect(outlinePanel()).not.toBeNull();
+    focusTarget.dispatchEvent(
+      new MouseEvent("pointerdown", { bubbles: true, cancelable: true }),
+    );
+    await settle();
+    expect(outlinePanel()).toBeNull();
+    expect(editorView().dom.contains(document.activeElement)).toBe(false);
+    focusTarget.dispatchEvent(
+      new MouseEvent("mousedown", { bubbles: true, cancelable: true }),
+    );
+    // jsdom does not apply mousedown's default focus action; focus after the
+    // event dispatch models the browser's post-handler default.
+    focusTarget.focus();
+    focusTarget.dispatchEvent(
+      new MouseEvent("pointerup", { bubbles: true, cancelable: true }),
+    );
+    focusTarget.dispatchEvent(
+      new MouseEvent("click", { bubbles: true, cancelable: true }),
+    );
+    await nextTask();
+    expect(document.activeElement).toBe(focusTarget);
 
     outlineToggle()!.click();
     await settle();
@@ -5085,7 +5127,7 @@ describe("outline panel", () => {
     );
     await settle();
     expect(outlinePanel()).toBeNull();
-    expect(document.activeElement).toBe(modeButton);
+    expect(document.activeElement).toBe(focusTarget);
 
     outlineToggle()!.click();
     await settle();
@@ -5093,7 +5135,78 @@ describe("outline panel", () => {
     await settle();
     expect(outlinePanel()).toBeNull();
     expect(editorView().dom.contains(document.activeElement)).toBe(true);
-    expect(document.activeElement).not.toBe(modeButton);
+    expect(document.activeElement).not.toBe(focusTarget);
+  });
+
+  it("cancels a pending focus restore when another owner appears", async () => {
+    await openFile("a.md", "# A\n\n## 一\n");
+    const footer = host.querySelector("footer")!;
+
+    outlineToggle()!.click();
+    await settle();
+    footer.dispatchEvent(
+      new MouseEvent("pointerdown", { bubbles: true, cancelable: true }),
+    );
+    await settle();
+    expect(outlinePanel()).toBeNull();
+    pressPaletteShortcut("P");
+    await settle();
+    const input = paletteInput();
+    expect(document.activeElement).toBe(input);
+    footer.dispatchEvent(
+      new MouseEvent("mousedown", { bubbles: true, cancelable: true }),
+    );
+    footer.dispatchEvent(
+      new MouseEvent("pointerup", { bubbles: true, cancelable: true }),
+    );
+    footer.dispatchEvent(
+      new MouseEvent("click", { bubbles: true, cancelable: true }),
+    );
+    await nextTask();
+    expect(document.activeElement).toBe(input);
+    await closePalette();
+
+    outlineToggle()!.click();
+    await settle();
+    footer.dispatchEvent(
+      new MouseEvent("pointerdown", { bubbles: true, cancelable: true }),
+    );
+    await settle();
+    outlineToggle()!.click();
+    await settle();
+    expect(outlinePanel()).not.toBeNull();
+    footer.dispatchEvent(
+      new MouseEvent("mousedown", { bubbles: true, cancelable: true }),
+    );
+    // jsdom does not perform the browser's default blur for a non-focusable
+    // mousedown target; apply it after dispatch to model that step.
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+    footer.dispatchEvent(
+      new MouseEvent("pointerup", { bubbles: true, cancelable: true }),
+    );
+    footer.dispatchEvent(
+      new MouseEvent("click", { bubbles: true, cancelable: true }),
+    );
+    await nextTask();
+    expect(outlinePanel()).not.toBeNull();
+    expect(editorView().dom.contains(document.activeElement)).toBe(false);
+
+    footer.dispatchEvent(
+      new MouseEvent("pointerdown", { bubbles: true, cancelable: true }),
+    );
+    await settle();
+    app?.unmount();
+    app = null;
+    footer.dispatchEvent(
+      new MouseEvent("mousedown", { bubbles: true, cancelable: true }),
+    );
+    footer.dispatchEvent(
+      new MouseEvent("pointerup", { bubbles: true, cancelable: true }),
+    );
+    await nextTask();
+    expect(document.activeElement).toBe(document.body);
   });
 
   it("jumps from the temporary outline and closes it", async () => {

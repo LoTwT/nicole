@@ -20,6 +20,11 @@ import { visibleTopHeight } from "../editor/scroll";
 const INITIAL_PARSE_BUDGET_MS = 250;
 const FOLLOW_UP_PARSE_BUDGET_MS = 80;
 const FOLLOW_UP_DELAY_MS = 300;
+// CodeMirror 6.43.15 ends Safari's dead-key composition from a 20ms timer
+// without dispatching compositionend. A single post-change check lets those
+// public flags settle without polling; a real composition stays paused until
+// its own DOM compositionend.
+const COMPOSITION_END_CHECK_MS = 150;
 
 const props = defineProps<{
   view: EditorView;
@@ -37,6 +42,7 @@ const panel = ref<HTMLElement | null>(null);
 
 let updateTimer: ReturnType<typeof setTimeout> | null = null;
 let followUpTimer: ReturnType<typeof setTimeout> | null = null;
+let compositionCheckTimer: ReturnType<typeof setTimeout> | null = null;
 // The immutable Text object the current heading list was extracted from. A
 // changed document invalidates every position until the debounced refresh.
 let headingsDoc: Text | null = null;
@@ -59,6 +65,35 @@ function clearFollowUpTimer() {
     clearTimeout(followUpTimer);
     followUpTimer = null;
   }
+}
+
+function clearCompositionCheck() {
+  if (compositionCheckTimer !== null) {
+    clearTimeout(compositionCheckTimer);
+    compositionCheckTimer = null;
+  }
+}
+
+function scheduleCompositionEndCheck() {
+  clearCompositionCheck();
+  if (destroyed || !domComposing) {
+    return;
+  }
+  compositionCheckTimer = setTimeout(() => {
+    compositionCheckTimer = null;
+    if (destroyed || !domComposing) {
+      return;
+    }
+    if (props.view.compositionStarted || props.view.composing) {
+      // A real composition is still active. Its DOM compositionend remains
+      // the only owner of the resume path.
+      return;
+    }
+    domComposing = false;
+    // The check runs one interval after the last document change; refresh on
+    // the remaining part of the normal 300ms debounce.
+    scheduleUpdate(OUTLINE_UPDATE_DELAY_MS - COMPOSITION_END_CHECK_MS);
+  }, COMPOSITION_END_CHECK_MS);
 }
 
 function composing(): boolean {
@@ -106,9 +141,10 @@ function refresh(parseBudget = INITIAL_PARSE_BUDGET_MS) {
   }
 }
 
-function scheduleUpdate() {
+function scheduleUpdate(delay = OUTLINE_UPDATE_DELAY_MS) {
   clearUpdateTimer();
   clearFollowUpTimer();
+  clearCompositionCheck();
   // Safari can forget compositionend after a dead-key composition.
   // CodeMirror then ends the composition itself, so a document change with
   // both composition flags already false means the pause is stale. This only
@@ -120,23 +156,29 @@ function scheduleUpdate() {
   ) {
     domComposing = false;
   }
-  if (destroyed || composing()) {
+  if (destroyed) {
+    return;
+  }
+  if (composing()) {
+    scheduleCompositionEndCheck();
     return;
   }
   updateTimer = setTimeout(() => {
     updateTimer = null;
     refresh();
-  }, OUTLINE_UPDATE_DELAY_MS);
+  }, delay);
 }
 
 function handleCompositionStart() {
   domComposing = true;
   clearUpdateTimer();
   clearFollowUpTimer();
+  clearCompositionCheck();
 }
 
 function handleCompositionEnd() {
   domComposing = false;
+  clearCompositionCheck();
   scheduleUpdate();
 }
 
@@ -223,6 +265,7 @@ onBeforeUnmount(() => {
   destroyed = true;
   clearUpdateTimer();
   clearFollowUpTimer();
+  clearCompositionCheck();
   viewportObserver?.disconnect();
   viewportObserver = null;
   props.view.scrollDOM.removeEventListener("scroll", handleScroll);

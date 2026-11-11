@@ -270,6 +270,7 @@ const outlinePanel = ref<InstanceType<typeof Outline> | null>(null);
 const editorRevision = ref(0);
 let outlineChosen = false;
 let outlineOverlayReturnFocus: HTMLElement | null = null;
+let outlineFocusSettlement: (() => void) | null = null;
 const handledAppShortcutEvents = new WeakSet<KeyboardEvent>();
 
 const dialog = ref<DialogState | null>(null);
@@ -934,7 +935,14 @@ function handleContentPointerDown(event: PointerEvent) {
   dismissOverlaySidebar();
 }
 
+function cancelPendingOutlineFocusSettlement() {
+  const cancel = outlineFocusSettlement;
+  outlineFocusSettlement = null;
+  cancel?.();
+}
+
 function closeOutlineOverlay(restoreFocus = false) {
+  cancelPendingOutlineFocusSettlement();
   const origin = outlineOverlayReturnFocus;
   outlineOverlayReturnFocus = null;
   if (!outlineOverlayOpen.value) {
@@ -973,6 +981,7 @@ function toggleOutline() {
   if (!outlineEnabled.value) {
     return;
   }
+  cancelPendingOutlineFocusSettlement();
   // Opening the floating outline from the top bar or a shortcut must follow
   // the same popover-exclusion path as the command palette.
   topBar.value?.closeModeMenu();
@@ -1017,14 +1026,16 @@ function toggleOutline() {
 }
 
 function handleOutlineNavigate() {
+  cancelPendingOutlineFocusSettlement();
   outlineOverlayOpen.value = false;
   outlineOverlayReturnFocus = null;
 }
 
 /**
- * An outside click may focus a real control (the editor, a tab, a toolbar
- * button). Respect that new focus, and restore the pre-open focus only when
- * the click landed on blank space and left nothing focusable behind.
+ * An outside pointer's default focus action runs after the pointerdown and
+ * mousedown listeners, so deciding in a microtask is too early. Wait for the
+ * mouse sequence to finish, then respect a control that took focus; only a
+ * click that leaves the page body focused restores the pre-open control.
  */
 function closeOutlineOverlayAfterPointer() {
   const origin = outlineOverlayReturnFocus;
@@ -1032,8 +1043,31 @@ function closeOutlineOverlayAfterPointer() {
   if (!outlineOverlayOpen.value) {
     return;
   }
+  cancelPendingOutlineFocusSettlement();
   outlineOverlayOpen.value = false;
-  void nextTick().then(() => {
+
+  let finished = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  function cleanup() {
+    document.removeEventListener("mousedown", settleLater, true);
+    document.removeEventListener("pointerup", settleLater, true);
+    document.removeEventListener("pointercancel", settleLater, true);
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    if (outlineFocusSettlement === cleanup) {
+      outlineFocusSettlement = null;
+    }
+  }
+
+  function finish() {
+    if (finished) {
+      return;
+    }
+    finished = true;
+    cleanup();
     if (focusedControl() !== null) {
       return;
     }
@@ -1042,7 +1076,19 @@ function closeOutlineOverlayAfterPointer() {
       return;
     }
     outlineToggleElement()?.focus();
-  });
+  }
+
+  function settleLater() {
+    if (timer !== null || finished) {
+      return;
+    }
+    timer = setTimeout(finish, 0);
+  }
+
+  outlineFocusSettlement = cleanup;
+  document.addEventListener("mousedown", settleLater, true);
+  document.addEventListener("pointerup", settleLater, true);
+  document.addEventListener("pointercancel", settleLater, true);
 }
 
 function handleOutlinePointerDown(event: PointerEvent) {
@@ -4618,6 +4664,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  cancelPendingOutlineFocusSettlement();
   window.removeEventListener("beforeunload", saveBeforeExit);
   window.removeEventListener("pagehide", saveBeforeExit);
   window.removeEventListener("resize", handleWindowResize);

@@ -271,27 +271,47 @@ describe("Outline", () => {
     expect(host.textContent).toContain("没有标题");
   });
 
-  it("recovers when CodeMirror ends a dead-key composition without compositionend", async () => {
+  it("recovers when CodeMirror ends a dead-key composition after the edit", async () => {
     vi.useFakeTimers();
     mount("# 文章\n\n## 第一节\n");
     await settle();
     const view = (editor as EditorHandle).view;
+    let internallyEnded = false;
+    vi.spyOn(view, "compositionStarted", "get").mockImplementation(
+      () => !internallyEnded,
+    );
+    vi.spyOn(view, "composing", "get").mockImplementation(
+      () => !internallyEnded,
+    );
 
     view.contentDOM.dispatchEvent(
       new CompositionEvent("compositionstart", { bubbles: true }),
     );
-    // Safari can lose compositionend after a dead-key composition. CodeMirror
-    // ends it internally, leaving both flags false while the DOM event never
-    // arrives. The outline must not stay paused forever.
-    vi.spyOn(view, "compositionStarted", "get").mockReturnValue(false);
-    vi.spyOn(view, "composing", "get").mockReturnValue(false);
     view.dispatch({
       changes: { from: view.state.doc.length, insert: "\n## 第二节\n" },
     });
     await settle();
-    await vi.advanceTimersByTimeAsync(300);
+    expect(headingTexts()).toEqual(["第一节"]);
+
+    // The document change comes first. Later CodeMirror's Safari dead-key
+    // fallback ends the composition on its own, without a DOM compositionend
+    // and without another edit. No polling is allowed to remain afterwards.
+    // The public flags flip at the 20ms point instead of running the internal
+    // Safari branch, which jsdom cannot select.
+    await vi.advanceTimersByTimeAsync(20);
+    internallyEnded = true;
+    await vi.advanceTimersByTimeAsync(130);
+    await settle();
+    expect(headingTexts()).toEqual(["第一节"]);
+
+    await vi.advanceTimersByTimeAsync(150);
     await settle();
     expect(headingTexts()).toEqual(["第一节", "第二节"]);
+    const callsAfterRefresh = headingMocks.extract.mock.calls.length;
+
+    await vi.advanceTimersByTimeAsync(1000);
+    await settle();
+    expect(headingMocks.extract).toHaveBeenCalledTimes(callsAfterRefresh);
   });
 
   it("waits for the composition to end before the first extraction", async () => {
