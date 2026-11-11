@@ -110,6 +110,7 @@ import { onOpenFile, takePendingOpenedFiles } from "./services/open-file";
 import {
   getSettings,
   migrateLegacyTheme,
+  setEditorMode,
   setExpandedFolders,
   setSidebarWidth,
   setTheme,
@@ -303,6 +304,9 @@ let offFileDrop: (() => void) | null = null;
 let openedFilesQueue: Promise<void> = Promise.resolve();
 let appReady = false;
 let pendingOpenSignal = false;
+// A startup settings response must not replace a mode the user picked while
+// that response was still pending.
+let editorModeChosen = false;
 
 const imageInsertion = createImageInsertion({
   getEditor: () => editor,
@@ -706,11 +710,20 @@ function applyTheme() {
 
 applyTheme();
 
+function isEditorMode(value: unknown): value is EditorMode {
+  return value === "live" || value === "immersive" || value === "source";
+}
+
 function applySettings(loaded: AppSettings) {
   theme.value =
     loaded.theme === "light" || loaded.theme === "dark"
       ? loaded.theme
       : "system";
+  if (!editorModeChosen) {
+    const restored = isEditorMode(loaded.editorMode) ? loaded.editorMode : "live";
+    mode.value = restored;
+    editor?.setMode(restored);
+  }
   sidebarWidth.value = Math.min(400, Math.max(200, loaded.sidebarWidth || 252));
   recentFolders.value = [...loaded.recentFolders].slice(0, 10);
   expandedByRoot.value = { ...loaded.expandedFolders };
@@ -3666,9 +3679,13 @@ async function handleFolderDrop(drop: AssetDrop) {
 }
 
 function setMode(next: EditorMode) {
+  editorModeChosen = true;
   mode.value = next;
   editor?.setMode(next);
   editor?.focus();
+  void setEditorMode(next).catch(() => {
+    // Keep this session's choice if the write fails.
+  });
 }
 
 function activateCurrentTab() {

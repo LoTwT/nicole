@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"os"
@@ -33,6 +34,9 @@ func TestSettingsDefaults(t *testing.T) {
 	}
 	if settings.Theme != themeSystem {
 		t.Errorf("Theme = %q, want %q", settings.Theme, themeSystem)
+	}
+	if settings.EditorMode != editorModeLive {
+		t.Errorf("EditorMode = %q, want %q", settings.EditorMode, editorModeLive)
 	}
 	if settings.SidebarWidth != defaultSidebarWidth {
 		t.Errorf("SidebarWidth = %d, want %d", settings.SidebarWidth, defaultSidebarWidth)
@@ -85,6 +89,195 @@ func TestSettingsSetThemePersistsAndApplies(t *testing.T) {
 	}
 	if got := *applied; len(got) != 1 {
 		t.Errorf("invalid theme changed the native appearance: %q", got)
+	}
+}
+
+func TestSettingsEditorModeDefaultsToLive(t *testing.T) {
+	store, dir := newTestSettings(t)
+	filePath := filepath.Join(dir, settingsFileName)
+
+	settings, err := store.get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.EditorMode != editorModeLive {
+		t.Errorf("missing settings file: EditorMode = %q, want %q", settings.EditorMode, editorModeLive)
+	}
+
+	legacy := []byte(`{"theme":"dark","sidebarWidth":300,"recentFolders":["/notes"],"expandedFolders":{"/notes":["a"]},"workspaceClosed":true}` + "\n")
+	if err := os.WriteFile(filePath, legacy, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	settings, err = store.get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.EditorMode != editorModeLive {
+		t.Errorf("missing editorMode: EditorMode = %q, want %q", settings.EditorMode, editorModeLive)
+	}
+	if !settings.WorkspaceClosed || settings.Theme != themeDark || settings.SidebarWidth != 300 {
+		t.Errorf("existing fields changed while defaulting the mode: %+v", settings)
+	}
+
+	if err := os.WriteFile(filePath, []byte(`{"editorMode":"sepia","workspaceClosed":true}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	settings, err = store.get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.EditorMode != editorModeLive {
+		t.Errorf("invalid editorMode: EditorMode = %q, want %q", settings.EditorMode, editorModeLive)
+	}
+	if !settings.WorkspaceClosed {
+		t.Error("invalid editorMode cleared workspaceClosed")
+	}
+}
+
+func TestSettingsEditorModeToleratesWrongJSONTypes(t *testing.T) {
+	store, dir := newTestSettings(t)
+	filePath := filepath.Join(dir, settingsFileName)
+	root := filepath.Join(dir, "notes")
+	if !filepath.IsAbs(root) {
+		t.Fatalf("test folder %q is not absolute", root)
+	}
+	cases := []struct {
+		name  string
+		value string
+	}{
+		{"number", "1"},
+		{"bool", "true"},
+		{"object", `{"mode":"source"}`},
+		{"array", `["source"]`},
+		{"null", "null"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := struct {
+				Theme           string              `json:"theme"`
+				EditorMode      json.RawMessage     `json:"editorMode"`
+				SidebarWidth    int                 `json:"sidebarWidth"`
+				RecentFolders   []string            `json:"recentFolders"`
+				ExpandedFolders map[string][]string `json:"expandedFolders"`
+				WorkspaceClosed bool                `json:"workspaceClosed"`
+			}{
+				Theme:           themeDark,
+				EditorMode:      json.RawMessage(tc.value),
+				SidebarWidth:    300,
+				RecentFolders:   []string{root},
+				ExpandedFolders: map[string][]string{root: {"a"}},
+				WorkspaceClosed: true,
+			}
+			content, err := json.Marshal(fixture)
+			if err != nil {
+				t.Fatal(err)
+			}
+			content = append(content, '\n')
+			if err := os.WriteFile(filePath, content, 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			settings, err := store.get()
+			if err != nil {
+				t.Fatalf("get() = %v, want a usable settings value", err)
+			}
+			if settings.EditorMode != editorModeLive {
+				t.Errorf("EditorMode = %q, want %q", settings.EditorMode, editorModeLive)
+			}
+			if settings.Theme != themeDark || settings.SidebarWidth != 300 || !settings.WorkspaceClosed {
+				t.Errorf("valid fields were reset: %+v", settings)
+			}
+			if len(settings.RecentFolders) != 1 || settings.RecentFolders[0] != root {
+				t.Errorf("RecentFolders = %q, want [%q]", settings.RecentFolders, root)
+			}
+			if got := settings.ExpandedFolders[root]; len(got) != 1 || got[0] != "a" {
+				t.Errorf("ExpandedFolders = %#v, want %q: [a]", settings.ExpandedFolders, root)
+			}
+
+			after, err := os.ReadFile(filePath)
+			if err != nil {
+				t.Fatalf("settings file was moved or removed: %v", err)
+			}
+			if !bytes.Equal(after, content) {
+				t.Errorf("reading a wrong editorMode type rewrote the file: %q", after)
+			}
+			backups, err := filepath.Glob(filePath + ".corrupt-*")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(backups) != 0 {
+				t.Errorf("wrong editorMode type created a corrupt backup: %q", backups)
+			}
+		})
+	}
+}
+
+func TestSettingsSetEditorMode(t *testing.T) {
+	store, dir := newTestSettings(t)
+	settings := NewSettings(store)
+	filePath := filepath.Join(dir, settingsFileName)
+	root := filepath.Join(dir, "notes")
+	legacy, err := json.Marshal(map[string]any{
+		"theme":           themeDark,
+		"sidebarWidth":    300,
+		"recentFolders":   []string{root},
+		"expandedFolders": map[string][]string{root: {"a"}},
+		"workspaceClosed": true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy = append(legacy, '\n')
+	if err := os.WriteFile(filePath, legacy, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, mode := range []string{editorModeImmersive, editorModeSource, editorModeLive} {
+		if err := settings.SetEditorMode(mode); err != nil {
+			t.Fatalf("SetEditorMode(%q) = %v", mode, err)
+		}
+		loaded, err := store.get()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if loaded.EditorMode != mode {
+			t.Errorf("EditorMode after SetEditorMode(%q) = %q", mode, loaded.EditorMode)
+		}
+	}
+
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored map[string]any
+	if err := json.Unmarshal(data, &stored); err != nil {
+		t.Fatalf("settings file is not valid JSON: %v", err)
+	}
+	if stored["theme"] != themeDark || stored["sidebarWidth"] != float64(300) {
+		t.Errorf("existing display fields changed: %#v", stored)
+	}
+	if stored["workspaceClosed"] != true {
+		t.Errorf("workspaceClosed = %v, want true", stored["workspaceClosed"])
+	}
+	if recent, ok := stored["recentFolders"].([]any); !ok || len(recent) != 1 || recent[0] != root {
+		t.Errorf("recentFolders changed: %#v, want [%q]", stored["recentFolders"], root)
+	}
+	if expanded, ok := stored["expandedFolders"].(map[string]any); !ok || len(expanded) != 1 {
+		t.Errorf("expandedFolders changed: %#v", stored["expandedFolders"])
+	} else if folders, ok := expanded[root].([]any); !ok || len(folders) != 1 || folders[0] != "a" {
+		t.Errorf("expandedFolders[%q] = %#v, want [a]", root, expanded[root])
+	}
+
+	before := data
+	if err := settings.SetEditorMode("sepia"); !errors.Is(err, errInvalidEditorMode) {
+		t.Errorf("SetEditorMode(sepia) = %v, want %v", err, errInvalidEditorMode)
+	}
+	after, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Errorf("invalid mode changed the settings file: %q -> %q", before, after)
 	}
 }
 

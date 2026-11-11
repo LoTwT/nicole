@@ -38,6 +38,7 @@ const mocks = vi.hoisted(() => ({
   getSettings: vi.fn(),
   migrateLegacyTheme: vi.fn(),
   setTheme: vi.fn(),
+  setEditorMode: vi.fn(),
   setSidebarWidth: vi.fn(),
   setExpandedFolders: vi.fn(),
   addRecentFolder: vi.fn(),
@@ -91,6 +92,7 @@ vi.mock("./services/settings", () => ({
   getSettings: mocks.getSettings,
   migrateLegacyTheme: mocks.migrateLegacyTheme,
   setTheme: mocks.setTheme,
+  setEditorMode: mocks.setEditorMode,
   setSidebarWidth: mocks.setSidebarWidth,
   setExpandedFolders: mocks.setExpandedFolders,
   addRecentFolder: mocks.addRecentFolder,
@@ -436,6 +438,20 @@ async function mountAppWithApi() {
   await settle();
 }
 
+async function remountWithSettings(overrides: Record<string, unknown> = {}) {
+  app?.unmount();
+  mocks.getSettings.mockResolvedValue({
+    theme: "system",
+    sidebarWidth: 252,
+    recentFolders: [],
+    expandedFolders: {},
+    ...overrides,
+  });
+  app = createApp(App);
+  app.mount(host);
+  await settle();
+}
+
 function dialog(): HTMLElement | null {
   return document.querySelector('[role="dialog"]');
 }
@@ -503,6 +519,7 @@ beforeEach(async () => {
     expandedFolders: {},
   });
   mocks.setTheme.mockResolvedValue(undefined);
+  mocks.setEditorMode.mockResolvedValue(undefined);
   mocks.setSidebarWidth.mockResolvedValue(undefined);
   mocks.setExpandedFolders.mockResolvedValue(undefined);
   mocks.addRecentFolder.mockResolvedValue(undefined);
@@ -1100,6 +1117,236 @@ describe("application shell", () => {
     source!.click();
     await settle();
     expect(source?.getAttribute("aria-pressed")).toBe("true");
+    expect(mocks.setEditorMode).toHaveBeenCalledOnce();
+    expect(mocks.setEditorMode).toHaveBeenCalledWith("source");
+  });
+});
+
+describe("editor mode settings", () => {
+  const modeDoc = "# A\n\n[link](target)\n";
+
+  for (const [stored, label] of [
+    ["immersive", "沉浸"],
+    ["source", "源码"],
+  ] as const) {
+    it(`restores ${stored} before the editor is created`, async () => {
+      await remountWithSettings({ editorMode: stored });
+      await openFile("a.md", modeDoc);
+
+      expect(
+        buttons(label)
+          .find((item) => item.closest("header"))
+          ?.getAttribute("aria-pressed"),
+      ).toBe("true");
+      const rendered = editorView().contentDOM.textContent ?? "";
+      if (stored === "immersive") {
+        expect(rendered).not.toContain("# A");
+      } else {
+        expect(rendered).toContain("# A");
+        expect(rendered).toContain("target");
+      }
+      expect(mocks.setEditorMode).not.toHaveBeenCalled();
+    });
+  }
+
+  for (const [name, overrides] of [
+    ["missing", {}],
+    ["invalid", { editorMode: "sepia" }],
+  ] as const) {
+    it(`starts live when the stored mode is ${name}`, async () => {
+      await remountWithSettings(overrides);
+      await openFile("a.md", modeDoc);
+
+      expect(
+        buttons("预览")
+          .find((item) => item.closest("header"))
+          ?.getAttribute("aria-pressed"),
+      ).toBe("true");
+      const rendered = editorView().contentDOM.textContent ?? "";
+      expect(rendered).toContain("# A");
+      expect(rendered).not.toContain("target");
+      expect(mocks.setEditorMode).not.toHaveBeenCalled();
+    });
+  }
+
+  it("applies the mode returned by legacy theme migration", async () => {
+    localStorage.setItem("nicole-theme", "dark");
+    mocks.migrateLegacyTheme.mockResolvedValue({
+      theme: "dark",
+      editorMode: "source",
+      sidebarWidth: 252,
+      recentFolders: [],
+      expandedFolders: {},
+    });
+    app?.unmount();
+    app = createApp(App);
+    app.mount(host);
+    await settle();
+
+    await openFile("a.md", modeDoc);
+    expect(
+      buttons("源码")
+        .find((item) => item.closest("header"))
+        ?.getAttribute("aria-pressed"),
+    ).toBe("true");
+    expect(editorView().contentDOM.textContent).toContain("target");
+    expect(localStorage.getItem("nicole-theme")).toBeNull();
+    expect(mocks.setEditorMode).not.toHaveBeenCalled();
+  });
+
+  it("applies a late saved mode without rebuilding the view or moving focus", async () => {
+    const settings = deferred<Record<string, unknown>>();
+    mocks.getSettings.mockImplementation(() => settings.promise);
+    await mountAppWithApi();
+    mocks.readSingleFile.mockResolvedValue(modeDoc);
+    await exposedApp!.value.openSingleFile("/tmp/late.md", "late.md");
+    await settle();
+
+    const view = editorView();
+    expect(view.contentDOM.textContent).toContain("# A");
+    const otherControl = buttons("源码").find((item) =>
+      item.closest("header"),
+    )!;
+    otherControl.focus();
+    expect(document.activeElement).toBe(otherControl);
+    expect(document.activeElement).not.toBe(view.contentDOM);
+
+    settings.resolve({
+      theme: "system",
+      sidebarWidth: 252,
+      recentFolders: [],
+      expandedFolders: {},
+      editorMode: "immersive",
+    });
+    await settle();
+
+    expect(editorView()).toBe(view);
+    expect(document.activeElement).toBe(otherControl);
+    expect(view.contentDOM.textContent).not.toContain("# A");
+    expect(
+      buttons("沉浸")
+        .find((item) => item.closest("header"))
+        ?.getAttribute("aria-pressed"),
+    ).toBe("true");
+    expect(mocks.setEditorMode).not.toHaveBeenCalled();
+  });
+
+  it("keeps a mode chosen while settings load and still applies other settings", async () => {
+    const settings = deferred<Record<string, unknown>>();
+    mocks.getSettings.mockImplementation(() => settings.promise);
+    await mountAppWithApi();
+
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "2",
+        ctrlKey: true,
+        metaKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    expect(mocks.setEditorMode).toHaveBeenCalledOnce();
+    expect(mocks.setEditorMode).toHaveBeenCalledWith("immersive");
+
+    mocks.readSingleFile.mockResolvedValue(modeDoc);
+    await exposedApp!.value.openSingleFile("/tmp/chosen.md", "chosen.md");
+    await settle();
+    expect(editorView().contentDOM.textContent).not.toContain("# A");
+
+    settings.resolve({
+      theme: "dark",
+      sidebarWidth: 300,
+      recentFolders: [],
+      expandedFolders: {},
+      editorMode: "source",
+    });
+    await settle();
+
+    expect(
+      buttons("沉浸")
+        .find((item) => item.closest("header"))
+        ?.getAttribute("aria-pressed"),
+    ).toBe("true");
+    expect(editorView().contentDOM.textContent).not.toContain("# A");
+    expect(document.documentElement.classList.contains("dark")).toBe(true);
+    expect(
+      (host.firstElementChild as HTMLElement).style.getPropertyValue(
+        "--sidebar-width",
+      ),
+    ).toBe("300px");
+    expect(mocks.setEditorMode).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the new mode when saving it fails", async () => {
+    await openFile("a.md", modeDoc);
+    mocks.setEditorMode.mockRejectedValue(new Error("disk full"));
+
+    buttons("源码").find((item) => item.closest("header"))!.click();
+    await settle();
+
+    expect(
+      buttons("源码")
+        .find((item) => item.closest("header"))
+        ?.getAttribute("aria-pressed"),
+    ).toBe("true");
+    expect(editorView().contentDOM.textContent).toContain("target");
+  });
+
+  it("saves once from the compact mode menu", async () => {
+    await openFile("a.md", modeDoc);
+    await withViewportWidth(700, async () => {
+      const toggle = host.querySelector<HTMLButtonElement>(
+        '[aria-label^="编辑模式："]',
+      );
+      expect(toggle).not.toBeNull();
+      toggle!.click();
+      await settle();
+
+      const item = [
+        ...host.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]'),
+      ].find((entry) => entry.textContent?.includes("源码"));
+      expect(item).toBeDefined();
+      item!.click();
+      await settle();
+
+      expect(mocks.setEditorMode).toHaveBeenCalledOnce();
+      expect(mocks.setEditorMode).toHaveBeenCalledWith("source");
+    });
+  });
+
+  it("saves once from the mode shortcut", async () => {
+    await openFile("a.md", modeDoc);
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "3",
+        ctrlKey: true,
+        metaKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+
+    expect(mocks.setEditorMode).toHaveBeenCalledOnce();
+    expect(mocks.setEditorMode).toHaveBeenCalledWith("source");
+  });
+
+  it("saves once from the command palette", async () => {
+    await openFile("a.md", modeDoc);
+    pressPaletteShortcut("P");
+    await settle();
+    typePalette("源码");
+    await vi.waitFor(() =>
+      expect(paletteOptions()[0]?.textContent ?? "").toContain("源码"),
+    );
+    paletteOptions()
+      .find((option) => option.textContent?.includes("源码"))!
+      .click();
+    await settle();
+
+    expect(mocks.setEditorMode).toHaveBeenCalledOnce();
+    expect(mocks.setEditorMode).toHaveBeenCalledWith("source");
   });
 });
 

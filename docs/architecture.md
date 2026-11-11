@@ -96,7 +96,7 @@ Go（main.go）
   SingleFileService       工作区外单个 .md 的按文件授权、读写与显示（当前）
   OpenedFiles             系统“打开方式”的路径队列与 app:open-file 信号（当前）
   NativeMenu              页面请求的原生右键菜单（当前）
-  Settings                settings.json、最近文件夹、展开状态、侧栏宽度、主题（当前）
+  Settings                settings.json、最近文件夹、展开状态、侧栏宽度、主题、编辑模式（当前）
   WorkspaceTabs           tabs.json、当前根目录的标签页布局与活动标签（当前）
   Recovery                recovery/ 未保存内容副本、磁盘哈希与单文件恢复授权（当前）
   Assets                  图片存到 assets/，读剪贴板和原生拖入路径（当前）
@@ -188,7 +188,7 @@ Go（main.go）
 - `Workspace.Watch(generation)` 用 `*mygo.Channel[FileWatchPart]` 流式返回 `ready` 和事件批次；底层是 `mygo.WatchFiles`，在 Go 端过滤 Nicole 自己的写入（见[工作区与文件](specs/workspace.md#忽略-nicole-自己的写入)）。工作区状态本身是可替换的单例，后续协议 handler 在启动时注册、运行时读取同一个状态。
 - `SingleFileService` 提供 `ChooseSingleFile`、`AcceptSingleFile`、`DismissOfferedFile`、`ReadSingleFile`、`WriteSingleFile`、`RevealSingleFile` 和 `ReleaseSingleFile`；授权按解析后的绝对路径保存，只有对话框选择或 `App.OnOpenFile` 提供的文件才能被接受。打开系统文件的父目录是一次性授权：`OpenFolder` 成功后 Go 消耗对应提供项，取消时页面调用 `DismissOfferedFile`。`OpenedFiles` 暂存系统传入的路径；`app:open-file` 只通知“有新文件”，页面收到信号后调用 `TakePendingOpenedFiles` 一次取走队列，既覆盖启动时到达的文件，也不会重复交付同一个文件。
 - `Recovery` 提供 `Save(copy, generation)`、`List(generation)`、`Delete(id, generation)`、`Discard(ids, generation)` 和 `RestoreSingleFile(id)`。工作区副本只接受当前根和 generation；单文件副本写入时核对 `SingleFileService` 的授权。副本请求可带 `baselineUnconfirmed`，此时 Go 不记录也不沿用磁盘哈希。`List` 由 Go 读磁盘并返回 `diskState`、`text` 和 `diskText`，页面不自行读盘；`changed`/`missing` 的结果是列表时的快照，用户在对话框里做出选择前页面会重新 `List`。格式、上限和恢复规则见[工作区与文件](specs/workspace.md#崩溃恢复)。
-- `Settings` 提供 `Get`、`MigrateLegacyTheme`、`SetTheme`、`SetSidebarWidth`、`SetExpandedFolders`、`AddRecentFolder` 和 `RemoveRecentFolder`；`AddRecentFolder` 只接受当前已打开的根目录，最近列表由 `Workspace.open` 写入；`SetTheme` 同时调用 `mygo.Theme.SetSource` 同步原生外观。`workspaceClosed` 由 Go 维护，页面只通过 `Get` 读取；语义见[设置存储](specs/workspace.md#设置存储)。
+- `Settings` 提供 `Get`、`MigrateLegacyTheme`、`SetTheme`、`SetEditorMode`、`SetSidebarWidth`、`SetExpandedFolders`、`AddRecentFolder` 和 `RemoveRecentFolder`；`AddRecentFolder` 只接受当前已打开的根目录，最近列表由 `Workspace.open` 写入；`SetTheme` 同时调用 `mygo.Theme.SetSource` 同步原生外观；`SetEditorMode` 只接受 `live`、`immersive` 或 `source`，非法值在写盘前拒绝。`workspaceClosed` 由 Go 维护，页面只通过 `Get` 读取；语义见[设置存储](specs/workspace.md#设置存储)。
 - `WorkspaceTabs` 提供 `Get(root)` 和 `Save(root, tabs, active, recentFiles)`，只接受当前打开的根目录；标签和最近文件路径都是相对路径，只用于显示和恢复，不构成文件授权。格式和限制见[工作区与文件](specs/workspace.md#标签页存储)。
 - `NativeMenu.PopupNativeMenu` 在调用窗口的页面坐标显示原生菜单，返回选中项 ID 或空字符串；页面最多传 64 项，ID 唯一。正文的 WebView 右键菜单由 `Page.OnContextMenu` 裁剪，见[安全](#安全)。
 - 搜索通过 Channel 流式返回结果（见[工作区与文件](specs/workspace.md#搜索)）。
