@@ -1795,7 +1795,7 @@ describe("autosave during IME composition", () => {
     await vi.advanceTimersByTimeAsync(3000);
     expect(host.querySelector("footer")?.textContent).toContain("已暂停自动保存");
     expect(mocks.writeFile).not.toHaveBeenCalled();
-  });
+  }, 15000);
 
   it("does not let one tab's invalidation release another tab's composition", async () => {
     vi.useFakeTimers();

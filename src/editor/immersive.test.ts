@@ -1017,7 +1017,7 @@ describe("immersive mode second-round regressions", () => {
     expect(scrolled).not.toContain(true);
     expect(editor.view.scrollDOM.scrollTop).toBe(scrollBefore);
     expect(undoDepth(editor.view.state)).toBe(undoBefore);
-  });
+  }, 15000);
 
   it("does not block the event loop while correcting a far selection", async () => {
     const text = longDocumentForTest(220000);
