@@ -1,4 +1,5 @@
 import {
+  SearchCursor,
   SearchQuery,
   closeSearchPanel,
   findNext,
@@ -65,7 +66,11 @@ export interface FindReplaceController {
   subscribe(listener: (state: FindReplaceState) => void): () => void;
   /** Opens the panel, optionally revealing the replace row. */
   open(replaceVisible?: boolean): void;
-  close(): void;
+  /**
+   * Closes the panel. The default restores the opener; overlays that take over
+   * focus pass `restoreFocus: false`.
+   */
+  close(options?: { restoreFocus?: boolean }): void;
   /** Re-focuses the find input when the panel is already open. */
   focus(): void;
   setQuery(query: string): void;
@@ -108,13 +113,30 @@ const inertSearchPanel = () => {
 
 const searchSupport = search({ createPanel: inertSearchPanel });
 
-function currentQuery(view: EditorView): SearchQuery {
-  return getSearchQuery(view.state);
+function currentQuery(state: EditorState): SearchQuery {
+  return getSearchQuery(state);
 }
 
-function queryUsable(view: EditorView): boolean {
-  const query = currentQuery(view);
+function queryUsable(query: SearchQuery): boolean {
   return query.search !== "" && query.valid;
+}
+
+/**
+ * SearchQuery documents that non-literal string queries turn `\n`, `\r`,
+ * `\t` and `\\` into their characters. SearchCursor itself is public; using
+ * it directly keeps the overlapping string semantics of findNext/findPrevious.
+ */
+function unquotedSearch(query: SearchQuery): string {
+  if (query.literal) return query.search;
+  return query.search.replace(/\\([nrt\\])/g, (_match, character: string) =>
+    character === "n"
+      ? "\n"
+      : character === "r"
+        ? "\r"
+        : character === "t"
+          ? "\t"
+          : "\\",
+  );
 }
 
 function forEachMatch(
@@ -124,6 +146,18 @@ function forEachMatch(
   to: number,
   visit: (match: { from: number; to: number }) => void,
 ) {
+  if (!query.regexp) {
+    const cursor = new SearchCursor(
+      state.doc,
+      unquotedSearch(query),
+      from,
+      to,
+      query.caseSensitive ? undefined : (text) => text.toLowerCase(),
+    );
+    while (!cursor.nextOverlapping().done) visit(cursor.value);
+    return;
+  }
+
   const cursor = query.getCursor(state, from, to);
   for (;;) {
     const next = cursor.next();
@@ -141,7 +175,7 @@ function buildDecorations(
   isOpen: boolean,
 ): DecorationSet {
   if (!isOpen) return Decoration.none;
-  const query = currentQuery(view);
+  const query = currentQuery(view.state);
   if (!query.valid) return Decoration.none;
 
   const matches = new Map<string, { from: number; to: number }>();
@@ -236,8 +270,7 @@ interface Counts {
   error: FindReplaceError | null;
 }
 
-function countMatches(state: EditorState): Counts {
-  const query = getSearchQuery(state);
+function countMatches(state: EditorState, query: SearchQuery): Counts {
   if (query.search === "") {
     return { current: 0, total: 0, error: null };
   }
@@ -273,6 +306,7 @@ export function createFindReplaceController(
   let error: FindReplaceError | null = null;
   let focusToken = 0;
   let destroyed = false;
+  let opener: HTMLElement | null = null;
   const listeners = new Set<(state: FindReplaceState) => void>();
   let lastState: FindReplaceState | null = null;
 
@@ -330,9 +364,27 @@ export function createFindReplaceController(
     view.dispatch({ effects: setSearchQuery.of(buildQuery()) });
   }
 
+  function queryInSync(): boolean {
+    return currentQuery(view.state).eq(buildQuery());
+  }
+
+  /**
+   * Nicole's inputs are the source of truth. A stale default binding (for
+   * example F3 on macOS) may open the hidden panel and replace the query from
+   * the selection; restore both the closed panel and the displayed query
+   * before any count, navigation or replacement uses the state.
+   */
+  function syncSearchState() {
+    if (destroyed) return;
+    if (searchPanelOpen(view.state)) closeSearchPanel(view);
+    if (!queryInSync()) {
+      view.dispatch({ effects: setSearchQuery.of(buildQuery()) });
+    }
+  }
+
   function refresh() {
     if (open) {
-      const counts = countMatches(view.state);
+      const counts = countMatches(view.state, buildQuery());
       current = counts.current;
       total = counts.total;
       error = counts.error;
@@ -353,6 +405,14 @@ export function createFindReplaceController(
   function openPanel(revealReplace: boolean) {
     if (destroyed) return;
     if (!open) {
+      const active = view.root.activeElement;
+      const rootDocument = view.root as Document;
+      opener =
+        active instanceof HTMLElement &&
+        active !== rootDocument.body &&
+        active !== rootDocument.documentElement
+          ? active
+          : null;
       const range = view.state.selection.main;
       const singleLine =
         !range.empty &&
@@ -372,17 +432,32 @@ export function createFindReplaceController(
     refresh();
   }
 
-  function close() {
+  function close(options: { restoreFocus?: boolean } = {}) {
     if (destroyed || !open) return;
+    const restoreFocus = options.restoreFocus ?? true;
+    const target = opener;
+    opener = null;
     open = false;
     replaceVisible = false;
     view.dispatch({ effects: findPanelOpen.of(false) });
     refresh();
-    view.focus();
+    if (!restoreFocus) return;
+    if (target?.isConnected) target.focus();
+    if (target === null || view.root.activeElement !== target) {
+      view.focus();
+    }
   }
 
   function handleUpdate(update: ViewUpdate) {
-    if (destroyed || !open) return;
+    if (destroyed) return;
+    if (
+      searchPanelOpen(update.state) ||
+      !currentQuery(update.state).eq(buildQuery())
+    ) {
+      syncSearchState();
+      return;
+    }
+    if (!open) return;
     if (
       update.docChanged ||
       update.selectionSet ||
@@ -394,14 +469,13 @@ export function createFindReplaceController(
 
   function move(direction: 1 | -1): boolean {
     if (destroyed) return false;
-    if (!open && !queryUsable(view)) {
-      openPanel(false);
+    syncSearchState();
+    if (!queryUsable(buildQuery())) {
+      if (!open) openPanel(false);
+      else focus();
       return true;
     }
-    if (!queryUsable(view)) {
-      focus();
-      return true;
-    }
+    if (!queryInSync()) return true;
     if (direction === 1) findNext(view);
     else findPrevious(view);
     if (open) refresh();
@@ -445,13 +519,17 @@ export function createFindReplaceController(
     next: () => move(1),
     previous: () => move(-1),
     replace() {
-      if (destroyed || !open || !queryUsable(view)) return false;
+      if (destroyed || !open) return false;
+      syncSearchState();
+      if (!queryUsable(buildQuery()) || !queryInSync()) return false;
       const changed = replaceNext(view);
       if (changed) refresh();
       return changed;
     },
     replaceAll() {
-      if (destroyed || !open || !queryUsable(view)) return false;
+      if (destroyed || !open) return false;
+      syncSearchState();
+      if (!queryUsable(buildQuery()) || !queryInSync()) return false;
       const changed = replaceAll(view);
       if (changed) refresh();
       return changed;
@@ -459,6 +537,7 @@ export function createFindReplaceController(
     destroy() {
       if (destroyed) return;
       destroyed = true;
+      opener = null;
       listeners.clear();
       controllers.delete(view);
       updateListeners.delete(view);

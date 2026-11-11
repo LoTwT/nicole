@@ -46,6 +46,7 @@ const emit = defineEmits<{
   "toggle-sidebar": [];
   "toggle-outline": [];
   "open-folder": [];
+  "mode-menu-will-open": [];
 }>();
 
 const modes: readonly {
@@ -87,6 +88,21 @@ function chooseMode(next: EditorMode) {
 
 function closeModeMenu() {
   modeMenuOpen.value = false;
+}
+
+function toggleModeMenu() {
+  if (modeMenuOpen.value) {
+    modeMenuOpen.value = false;
+    return;
+  }
+  // Let the app dismiss another popover before this menu takes focus.
+  emit("mode-menu-will-open");
+  modeMenuOpen.value = true;
+  void nextTick(() => {
+    modeArea.value
+      ?.querySelector<HTMLElement>('[role="menuitemradio"]')
+      ?.focus();
+  });
 }
 
 function handleModeKeydown(event: KeyboardEvent) {
@@ -291,7 +307,7 @@ defineExpose({ closeModeMenu });
             :title="modeTitle(activeMode.id)"
             :aria-expanded="modeMenuOpen"
             aria-haspopup="menu"
-            @click="modeMenuOpen = !modeMenuOpen"
+            @click="toggleModeMenu"
           >
             <AppIcon :name="activeMode.icon" :size="14" />
           </button>

@@ -840,6 +840,45 @@ describe("task checkbox", () => {
     expect(instance.search.snapshot().open).toBe(true);
   });
 
+  it("forwards Ctrl-H, F3 and Shift-F3 from a focused task box", async () => {
+    const instance = await mountWithTask("live", "windows");
+    const view = instance.view;
+    const input = checkboxes(view)[0]!.querySelector("input")!;
+    input.focus();
+
+    const replace = pressKey(input, {
+      key: "h",
+      code: "KeyH",
+      ctrlKey: true,
+    });
+    expect(replace.defaultPrevented).toBe(true);
+    expect(instance.search.snapshot()).toMatchObject({
+      open: true,
+      replaceVisible: true,
+    });
+
+    instance.search.close({ restoreFocus: false });
+    instance.search.setQuery("待办");
+    input.focus();
+    const next = pressKey(input, { key: "F3", code: "F3" });
+    expect(next.defaultPrevented).toBe(true);
+    expect(view.state.selection.main.from).toBe(doc.indexOf("待办"));
+    expect(view.state.selection.main.to).toBe(doc.indexOf("待办") + 2);
+
+    view.dispatch({ selection: { anchor: view.state.doc.length } });
+    await settle();
+    await waitForTaskBoxes(view);
+    const previousInput = checkboxes(view)[0]!.querySelector("input")!;
+    previousInput.focus();
+    const previous = pressKey(previousInput, {
+      key: "F3",
+      code: "F3",
+      shiftKey: true,
+    });
+    expect(previous.defaultPrevented).toBe(true);
+    expect(view.state.selection.main.from).toBe(doc.indexOf("待办"));
+  });
+
   it("forwards Select All from the primary modifier on Windows", async () => {
     const instance = await mountWithTask("live", "windows");
     const view = instance.view;

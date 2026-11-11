@@ -1,6 +1,11 @@
+import {
+  getSearchQuery,
+  searchPanelOpen,
+} from "@codemirror/search";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createEditor, type EditorHandle } from "./index";
+import { until } from "./test-helpers";
 
 // CodeMirror resolves `Mod` from navigator.platform when its keymap runs.
 vi.hoisted(() => {
@@ -59,6 +64,74 @@ describe("find shortcuts on macOS", () => {
     const replace = press("f", { altKey: true });
     expect(replace.defaultPrevented).toBe(true);
     expect(instance.search.snapshot().replaceVisible).toBe(true);
+  });
+
+  it("keeps a leftover default F3 binding from changing an invalid query", () => {
+    editor = createEditor({ parent, doc: "foo", mode: "live" });
+    const instance = editor;
+    instance.view.dispatch({ selection: { anchor: 0, head: 3 } });
+    instance.search.open(true);
+    instance.search.setRegexp(true);
+    instance.search.setQuery("(");
+    instance.search.setReplacement("x");
+    expect(instance.search.snapshot()).toMatchObject({
+      error: "invalid-regexp",
+      query: "(",
+    });
+
+    const f3 = new KeyboardEvent("keydown", {
+      key: "F3",
+      code: "F3",
+      bubbles: true,
+      cancelable: true,
+    });
+    instance.view.contentDOM.dispatchEvent(f3);
+
+    expect(f3.defaultPrevented).toBe(true);
+    expect(instance.search.snapshot()).toMatchObject({
+      error: "invalid-regexp",
+      query: "(",
+      current: 0,
+      total: 0,
+    });
+    expect(getSearchQuery(instance.view.state).search).toBe("(");
+    expect(getSearchQuery(instance.view.state).valid).toBe(false);
+    expect(searchPanelOpen(instance.view.state)).toBe(false);
+    expect(instance.search.replaceAll()).toBe(false);
+    expect(instance.view.state.doc.toString()).toBe("foo");
+  });
+
+  it("forwards Alt-Mod-F from a task box and restores the box on close", async () => {
+    editor = createEditor({
+      parent,
+      doc: "- [ ] 待办\n\n正文\n",
+      mode: "live",
+    });
+    const instance = editor;
+    instance.view.dispatch({
+      selection: { anchor: instance.view.state.doc.length },
+    });
+    await until(
+      () =>
+        instance.view.contentDOM.querySelector(".cm-nicole-checkbox-input") !==
+        null,
+      "the task checkbox",
+    );
+    const checkbox = instance.view.contentDOM.querySelector<HTMLInputElement>(
+      ".cm-nicole-checkbox-input",
+    )!;
+    checkbox.focus();
+
+    const replace = press("f", { altKey: true });
+    expect(replace.defaultPrevented).toBe(true);
+    expect(instance.search.snapshot()).toMatchObject({
+      open: true,
+      replaceVisible: true,
+    });
+    expect(document.activeElement).toBe(instance.view.contentDOM);
+
+    instance.search.close();
+    expect(document.activeElement).toBe(checkbox);
   });
 
   it("keeps Mod-g and Shift-Mod-g navigation", () => {

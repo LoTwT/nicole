@@ -5518,6 +5518,92 @@ describe("find and replace", () => {
     expect(findPanel()?.textContent).toContain("0/0");
   });
 
+  it("closes find when the compact mode menu opens and focuses the menu", async () => {
+    await openFile("a.md", "# A\n");
+    await withViewportWidth(700, async () => {
+      editorView().focus();
+      pressMod("f", "KeyF", "macos");
+      await settle();
+      expect(findPanel()).not.toBeNull();
+
+      const toggle = host.querySelector<HTMLButtonElement>(
+        '[aria-label^="编辑模式："]',
+      )!;
+      toggle.click();
+      await settle();
+
+      expect(findPanel()).toBeNull();
+      const menu = host.querySelector<HTMLElement>('[role="menu"]');
+      expect(menu).not.toBeNull();
+      expect(document.activeElement).toBe(
+        menu!.querySelector('[role="menuitemradio"]'),
+      );
+
+      // The reverse direction: opening find closes this popover and moves
+      // focus into the find input.
+      editorView().contentDOM.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "f",
+          code: "KeyF",
+          metaKey: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await settle();
+      expect(host.querySelector('[role="menu"]')).toBeNull();
+      expect(findPanel()).not.toBeNull();
+      expect(document.activeElement).toBe(findInput());
+    });
+  });
+
+  it("opens the command, file and heading palettes from the find inputs", async () => {
+    await openFile("a.md", "foo\n");
+    const shortcuts: readonly [string, boolean, "find" | "replace"][] = [
+      ["p", false, "find"],
+      ["P", true, "replace"],
+      ["O", true, "find"],
+    ];
+
+    for (const [key, shiftKey, source] of shortcuts) {
+      editorView().focus();
+      pressMod("f", "KeyF", "macos");
+      await settle();
+      let target = findInput();
+      if (source === "replace") {
+        target.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "f",
+            code: "KeyF",
+            altKey: true,
+            metaKey: true,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+        await settle();
+        target = findReplaceInput();
+      }
+      target.focus();
+      target.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key,
+          metaKey: true,
+          shiftKey,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await settle();
+
+      expect(findPanel()).toBeNull();
+      expect(paletteInput()).toBeInstanceOf(HTMLInputElement);
+      expect(document.activeElement).toBe(paletteInput());
+      closePalette();
+      await settle();
+    }
+  });
+
   it("closes find when the command palette opens", async () => {
     await openFile("a.md", "foo\n");
     editorView().focus();
@@ -5570,6 +5656,72 @@ describe("find and replace", () => {
     await settle();
     expect(findPanel()).not.toBeNull();
     expect(document.activeElement).toBe(findInput());
+
+    const input = findInput();
+    input.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "f",
+        code: "KeyF",
+        metaKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    expect(document.activeElement).toBe(findInput());
+
+    input.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Escape",
+        code: "Escape",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    expect(findPanel()).toBeNull();
+    expect(document.activeElement).toBe(checkbox);
+  });
+
+  it("falls back to the editor when the find opener was removed", async () => {
+    await openFile("a.md", "- [ ] 待办\n");
+    const view = editorView();
+    view.dispatch({ selection: { anchor: view.state.doc.length } });
+    await vi.waitFor(
+      () => expect(host.querySelector(".cm-nicole-checkbox-input")).not.toBeNull(),
+      { interval: 1, timeout: 4000 },
+    );
+    const checkbox = host.querySelector<HTMLInputElement>(
+      ".cm-nicole-checkbox-input",
+    )!;
+    checkbox.focus();
+    checkbox.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "f",
+        code: "KeyF",
+        metaKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    expect(findPanel()).not.toBeNull();
+
+    replaceEditorText("# 普通标题\n");
+    await settle();
+    expect(host.querySelector(".cm-nicole-checkbox-input")).toBeNull();
+
+    findInput().dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Escape",
+        code: "Escape",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    expect(findPanel()).toBeNull();
+    expect(document.activeElement).toBe(editorView().contentDOM);
   });
 });
 

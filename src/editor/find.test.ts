@@ -177,6 +177,32 @@ describe("find/replace controller", () => {
     expect(instance.view.state.doc.toString()).toBe("a1 b2\na3");
   });
 
+  it("counts overlapping string matches consistently with navigation", () => {
+    const instance = mount("aaa");
+    const controller = instance.search;
+    controller.open(false);
+    controller.setQuery("aa");
+    expect(controller.snapshot()).toMatchObject({ current: 0, total: 2 });
+
+    // CodeMirror's string navigation starts inside the current match, so a
+    // caret at offset 1 selects the overlapping [1, 3] match.
+    instance.view.dispatch({ selection: { anchor: 1 } });
+    controller.next();
+    expect(instance.view.state.selection.main.from).toBe(1);
+    expect(instance.view.state.selection.main.to).toBe(3);
+    expect(controller.snapshot()).toMatchObject({ current: 2, total: 2 });
+    expect(
+      instance.view.contentDOM.querySelectorAll(".cm-searchMatch-selected")
+        .length,
+    ).toBeGreaterThan(0);
+
+    controller.setReplacement("X");
+    expect(controller.replaceAll()).toBe(true);
+    expect(instance.view.state.doc.toString()).toBe("Xa");
+    expect(instance.undo()).toBe(true);
+    expect(instance.view.state.doc.toString()).toBe("aaa");
+  });
+
   it("replaces all matches in one undo step and reports one model change", () => {
     const changes = vi.fn();
     editor = createEditor({

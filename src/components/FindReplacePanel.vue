@@ -9,6 +9,7 @@ import {
   watch,
 } from "vue";
 
+import type { CommandPaletteMode } from "../app/command-palette";
 import type { AppPlatform } from "../app/platform";
 import {
   commandRegistry,
@@ -26,7 +27,10 @@ const props = defineProps<{
   platform: AppPlatform;
 }>();
 
-const emit = defineEmits<{ opened: [] }>();
+const emit = defineEmits<{
+  opened: [];
+  "open-palette": [mode: CommandPaletteMode];
+}>();
 
 const state = shallowRef<FindReplaceState>(props.controller.snapshot());
 const findInput = ref<HTMLInputElement | null>(null);
@@ -140,6 +144,30 @@ function handleKeydown(event: KeyboardEvent) {
     event.preventDefault();
     event.stopPropagation();
     props.controller.previous();
+    return;
+  }
+
+  // The window listener deliberately ignores text fields. The panel explicitly
+  // hands the three registered palette entries back to the app, and leaves
+  // dialogs, availability checks and other text-field protections untouched.
+  const appCommand = matchCommand(
+    event,
+    props.platform,
+    commandRegistry,
+    "app",
+  );
+  const paletteMode: CommandPaletteMode | null =
+    appCommand?.id === "nav.quick-open"
+      ? "file"
+      : appCommand?.id === "nav.command-palette"
+        ? "command"
+        : appCommand?.id === "nav.goto-heading"
+          ? "heading"
+          : null;
+  if (paletteMode !== null) {
+    event.preventDefault();
+    event.stopPropagation();
+    emit("open-palette", paletteMode);
     return;
   }
 

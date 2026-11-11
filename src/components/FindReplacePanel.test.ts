@@ -163,6 +163,29 @@ describe("FindReplacePanel", () => {
     expect(instance.view.state.doc.toString()).toBe("foo foo");
   });
 
+  it("keeps overlapping matches aligned with counts, status and current mark", async () => {
+    const instance = mount("aaa");
+    instance.search.open(false);
+    await settle();
+    type(findInput(), "aa");
+    await settle();
+    expect(countText()).toContain("0/2");
+
+    instance.view.dispatch({ selection: { anchor: 1 } });
+    await settle();
+    iconButton("下一个匹配").click();
+    await settle();
+    expect(countText()).toContain("2/2");
+    const status = panel()!.querySelector<HTMLElement>(
+      '[role="status"][aria-live="polite"]',
+    )!;
+    expect(status.textContent).toBe("第 2 项，共 2 项");
+    expect(
+      instance.view.contentDOM.querySelector(".cm-searchMatch-selected")
+        ?.textContent,
+    ).toBe("aa");
+  });
+
   it("keeps an invalid regular expression stable and disables replacement", async () => {
     const instance = mount("a+ b");
     instance.search.open(true);

@@ -3730,6 +3730,11 @@ function closePopoverMenus() {
   topBar.value?.closeModeMenu();
 }
 
+/** The compact mode menu is a popover; opening it replaces the find panel. */
+function handleModeMenuWillOpen() {
+  editor?.search.close({ restoreFocus: false });
+}
+
 function closePalettePopovers() {
   closePopoverMenus();
   editor?.search.close();
@@ -4537,6 +4542,7 @@ defineExpose({
         @set-mode="setMode"
         @toggle-sidebar="toggleSidebar"
         @open-folder="chooseFolder"
+        @mode-menu-will-open="handleModeMenuWillOpen"
       />
 
       <div class="flex min-h-0 flex-1">
@@ -4595,6 +4601,7 @@ defineExpose({
               :controller="findController"
               :platform="platform"
               @opened="topBar?.closeModeMenu()"
+              @open-palette="openCommandPalette"
             />
           </div>
         </main>

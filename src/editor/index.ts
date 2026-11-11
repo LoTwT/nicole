@@ -48,6 +48,7 @@ import { tags } from "@lezer/highlight";
 import { basicSetup } from "codemirror";
 
 import { isMac, type AppPlatform } from "../app/platform";
+import { matchCommand } from "../commands/keybinding";
 import { commandRegistry } from "../commands/registry";
 import {
   createFindReplaceController,
@@ -1367,6 +1368,13 @@ const editorTheme = EditorView.theme({
 
 const defaultResolveImage: ImageResolver = (src) => src;
 
+const forwardableFindCommands = new Set([
+  "edit.find",
+  "edit.find-replace",
+  "edit.find-next",
+  "edit.find-previous",
+]);
+
 function clipboardHasImage(data: DataTransfer | null): boolean {
   if (!data) return false;
   for (let index = 0; index < data.items.length; index++) {
@@ -1865,6 +1873,9 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
   };
   const onCheckboxKeydown = (event: KeyboardEvent) => {
     if (!checkboxFocused()) return;
+    // The IME owns every key while composing; forwarding a candidate key would
+    // navigate or replace instead of committing text.
+    if (event.isComposing || event.keyCode === 229) return;
     // A bare Space toggles the checkbox natively. Any modified Space is an
     // editing/IME/system shortcut, not a task toggle.
     if (event.key === " ") {
@@ -1873,12 +1884,25 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
       }
       return;
     }
+    // Forward every registry find shortcut (including Alt+Mod-F, Ctrl+H and
+    // F3/Shift-F3) before focus leaves the checkbox. Controller.open() records
+    // the checkbox as the opener so closing the panel can return there.
+    const findCommand = matchCommand(
+      event,
+      platform,
+      commandRegistry,
+      "editor",
+    );
+    if (findCommand !== null && forwardableFindCommands.has(findCommand.id)) {
+      event.preventDefault();
+      runScopeHandlers(view, event, "editor");
+      focusEditor();
+      return;
+    }
     const primaryModifier = isMac(platform) ? event.metaKey : event.ctrlKey;
     if (primaryModifier) {
-      // Find, find-next, find-previous (with Shift for g) and select-all are
-      // editor commands, not menu actions. Give the editor focus, then run the
-      // same keymap CodeMirror would have run if the event had targeted the
-      // contentEditable.
+      // Select-all and any additional editor commands without a registry find
+      // binding keep the existing forwarding behavior.
       const key = event.key.toLowerCase();
       if (
         !event.altKey &&
