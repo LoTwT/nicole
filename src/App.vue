@@ -66,6 +66,10 @@ import {
   type TabModel,
 } from "./app/tabs";
 import { classifyWatchEvents } from "./app/watch-events";
+import {
+  locateSearchMatch,
+  type SearchOpenTarget,
+} from "./app/workspace-search";
 import type { TreeNode } from "./app/file-tree";
 import AppBanner from "./components/AppBanner.vue";
 import AppDialog from "./components/AppDialog.vue";
@@ -249,6 +253,8 @@ const expandedByRoot = ref<Record<string, string[]>>({});
 const recentFilesByRoot = ref<Record<string, string[]>>({});
 const paletteSession = shallowRef<PaletteSession | null>(null);
 let paletteReturnFocus: HTMLElement | null = null;
+const searchOpen = ref(false);
+let searchReturnFocus: HTMLElement | null = null;
 
 const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
 const systemPrefersDark = ref(systemTheme.matches);
@@ -2305,6 +2311,7 @@ async function applyWorkspace(folder: {
   generation: number;
 }): Promise<boolean> {
   const context = { root: folder.root, generation: folder.generation };
+  closeWorkspaceSearch({ restoreFocus: false });
   const previous = findTab(activeTabId.value);
   const keepSingle = previous?.kind === "single";
   const singles = tabs.value.filter((tab) => tab.kind === "single");
@@ -2566,6 +2573,7 @@ async function closeWorkspace() {
       showNotice(`关闭工作区失败：${errorText(error)}`, "danger");
       return false;
     }
+    closeWorkspaceSearch({ restoreFocus: false });
 
     for (const tab of closing) {
       if (tab.kind === "single") {
@@ -3802,6 +3810,103 @@ function closeCommandPalette() {
   paletteSession.value = null;
 }
 
+function showSidebarForSearch() {
+  if (isWide.value) {
+    sidebarOpen.value = true;
+  } else {
+    overlaySidebar.value = true;
+  }
+}
+
+/** Opens the sidebar search view, or focuses its input when already open. */
+function openWorkspaceSearch() {
+  if (
+    workspace.value === null ||
+    dialogOpen ||
+    recoveryDialog.value !== null ||
+    recoveryChecking
+  ) {
+    return;
+  }
+  if (!searchOpen.value) {
+    searchReturnFocus = focusedControl();
+    searchOpen.value = true;
+  }
+  showSidebarForSearch();
+  void nextTick(() => sidebar.value?.focusSearchInput());
+}
+
+/**
+ * Leaves the search view for the file tree. The opener receives focus again;
+ * if it disappeared with an overlay sidebar, the search entry or the sidebar
+ * toggle is the fallback.
+ */
+function closeWorkspaceSearch(options: { restoreFocus?: boolean } = {}) {
+  if (!searchOpen.value) return;
+  const origin = searchReturnFocus;
+  searchReturnFocus = null;
+  searchOpen.value = false;
+  if (options.restoreFocus === false) return;
+  void nextTick().then(() => {
+    if (focusedControl() !== null) return;
+    if (overlaySidebar.value) {
+      sidebar.value?.focusSearchButton();
+      return;
+    }
+    if (origin?.isConnected) {
+      origin.focus();
+      return;
+    }
+    sidebar.value?.focusSearchButton();
+    if (focusedControl() === null) {
+      document.querySelector<HTMLElement>("[data-sidebar-toggle]")?.focus();
+    }
+  });
+}
+
+/**
+ * Opens a result through the normal tab flow, so an existing dirty tab is
+ * switched to rather than reread. The stored offsets are accepted only when
+ * the same match text is still there; a bounded same-line relocation keeps
+ * edits elsewhere from turning a valid result stale.
+ */
+async function openSearchResult(target: SearchOpenTarget): Promise<boolean> {
+  const current = workspace.value;
+  if (current === null || current.generation !== target.generation) {
+    showNotice("工作区已切换，请重新搜索", "danger");
+    return false;
+  }
+  const opened = await openWorkspaceFile(target.line.path, undefined, {
+    reveal: false,
+  });
+  if (!opened) return false;
+  const tab = currentMarkdown.value;
+  const matchesTarget =
+    tab !== null &&
+    (tab.kind === "workspace"
+      ? tab.path === target.line.path
+      : tab.kind === "single" &&
+        sameFilePath(
+          tab.path,
+          workspaceAbsolutePath(current.root, target.line.path),
+        ));
+  if (tab === null || !matchesTarget || editor === null) {
+    return false;
+  }
+  const located = locateSearchMatch(tab.text, target.line, target.match);
+  if (located === null) {
+    showNotice("搜索结果已过期，请重新搜索", "danger");
+    return false;
+  }
+  const view = editor.view;
+  view.dispatch({
+    selection: EditorSelection.single(located.from, located.to),
+    effects: EditorView.scrollIntoView(located.from, { y: "center" }),
+  });
+  view.focus();
+  return true;
+}
+
 watch(paletteSession, async (session, previousSession) => {
   if (session !== null || previousSession === null) {
     return;
@@ -3896,6 +4001,7 @@ function commandContext(view: CommandContext["view"]): CommandContext {
         cycleTab(-1);
       },
       openCommandPalette,
+      openWorkspaceSearch,
     },
   };
 }
@@ -3982,6 +4088,9 @@ function handleGlobalKeydown(event: KeyboardEvent) {
     if (overlaySidebar.value) {
       event.preventDefault();
       dismissOverlaySidebar();
+    } else if (searchOpen.value) {
+      event.preventDefault();
+      closeWorkspaceSearch();
     }
     return;
   }
@@ -4395,6 +4504,7 @@ onBeforeUnmount(() => {
   offFileDrop = null;
   offSaveBeforeClose?.();
   offSaveBeforeClose = null;
+  closeWorkspaceSearch({ restoreFocus: false });
   stopWatch();
   cancelPersistTimer();
   writeAllRecoveryCopies();
@@ -4445,9 +4555,13 @@ defineExpose({
       :selected-path="selectedTreePath"
       :initial-expanded="expandedForRoot"
       :is-dark="isDark"
+      :search-active="searchOpen"
       @hide-sidebar="toggleSidebar"
       @open-folder="chooseFolder"
       @toggle-theme="toggleTheme"
+      @search-all="openWorkspaceSearch"
+      @close-search="closeWorkspaceSearch"
+      @open-search-result="openSearchResult"
       @width-change="updateSidebarWidth"
       @width-commit="commitSidebarWidth"
       @reset-width="resetSidebarWidth"

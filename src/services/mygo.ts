@@ -186,6 +186,53 @@ export interface SavedImage {
 }
 
 /**
+ * SearchMatch is one occurrence on a result line. Start and End are UTF-16
+ * offsets in the newline-normalized document, which is the text CodeMirror
+ * holds. They span the whole match even when it continues past the displayed
+ * line. Text is a bounded prefix used to verify the match before selecting it,
+ * while Length is the full length in UTF-16 code units. HighlightStart and
+ * HighlightEnd are offsets in the sent line text; -1 means the match lies
+ * outside the bounded snippet.
+ */
+export interface SearchMatch {
+  start: number;
+  end: number;
+  text: string;
+  length: number;
+  highlightStart: number;
+  highlightEnd: number;
+}
+
+/**
+ * SearchPart is one streamed value of Workspace.Search: a matching line, then
+ * a final summary. Type is "line" or "done". One line part carries every match
+ * that starts on that line.
+ */
+export interface SearchPart {
+  type: string;
+  path?: string;
+  line?: number;
+  text?: string;
+  prefixTruncated?: boolean;
+  suffixTruncated?: boolean;
+  matches?: SearchMatch[];
+  fileCount?: number;
+  matchCount?: number;
+  truncated?: boolean;
+}
+
+/**
+ * SearchRequest describes one workspace search. It names no path: Go always
+ * scans the open workspace and checks Generation against it.
+ */
+export interface SearchRequest {
+  generation: number;
+  query: string;
+  caseSensitive: boolean;
+  regex: boolean;
+}
+
+/**
  * SingleFile names a file the user explicitly chose outside the workspace.
  * Path is absolute and has its symlinks resolved; it is the only path the
  * single-file methods accept, and no other file in its folder is accessible.
@@ -395,6 +442,20 @@ export const Workspace = {
    */
   revealEntry(rel: string, generation: number): Promise<void> {
     return call("Workspace.RevealEntry", rel, generation);
+  },
+  /**
+   * Search scans the Markdown files of the open workspace and streams matching
+   * lines on parts. It reads the disk, not unsaved editor text. Hidden folders,
+   * node_modules, symlinks and files that are not regular Markdown files are
+   * skipped with the same facts ListFiles uses. The page may close the channel
+   * to cancel; Go also stops when the workspace generation changes.
+   *
+   * Results are newline-normalized and use UTF-16 offsets for the page's
+   * CodeMirror document. At most searchMatchLimit matches are sent; the final
+   * part distinguishes an exact limit from a truncated result.
+   */
+  search(request: SearchRequest, parts: Channel<SearchPart>): Promise<void> {
+    return call("Workspace.Search", request, parts);
   },
   /**
    * TrashEntry moves a file or folder to the platform's trash. The trash itself

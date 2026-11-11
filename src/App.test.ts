@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App.vue";
 import type { AppPlatform } from "./app/platform";
+import type { SearchPart, SearchRequest } from "./services/mygo";
 
 // jsdom reports an empty navigator.platform, which CodeMirror treats as
 // non-Mac when it resolves `Mod` at module load. Pin it so `Mod` follows the
@@ -63,6 +64,7 @@ const mocks = vi.hoisted(() => ({
   pasteImage: vi.fn(),
   importImages: vi.fn(),
   watchWorkspace: vi.fn(),
+  searchWorkspace: vi.fn(),
 }));
 
 vi.mock("./services/app", () => ({ getAppInfo: mocks.getAppInfo }));
@@ -130,6 +132,9 @@ vi.mock("./services/assets", () => ({
 vi.mock("./services/watch", () => ({
   watchWorkspace: mocks.watchWorkspace,
 }));
+vi.mock("./services/search", () => ({
+  searchWorkspace: mocks.searchWorkspace,
+}));
 
 const slashMocks = vi.hoisted(() => ({ destroy: vi.fn() }));
 const headingMocks = vi.hoisted(() => ({
@@ -190,6 +195,20 @@ let dropHandler: ((drop: import("./services/mygo").AssetDrop) => void) | null =
 let closeHandler: ((token: number) => Promise<void>) | null = null;
 let openHandler: (() => void) | null = null;
 let pendingFiles: string[] = [];
+
+interface FakeSearchSession {
+  request: SearchRequest;
+  onLine: (part: SearchPart) => void;
+  resolve: (summary: {
+    files: number;
+    matches: number;
+    truncated: boolean;
+  }) => void;
+  reject: (error: unknown) => void;
+  close: ReturnType<typeof vi.fn>;
+}
+
+let searchSessions: FakeSearchSession[] = [];
 
 async function settle() {
   for (let index = 0; index < 20; index++) {
@@ -330,6 +349,51 @@ function pressAppShortcut(key: string, shift = false) {
   });
   window.dispatchEvent(event);
   return event;
+}
+
+function searchInput(): HTMLInputElement {
+  const field = host.querySelector<HTMLInputElement>(
+    'input[aria-label="搜索工作区"]',
+  );
+  if (!field) throw new Error("workspace search input not found");
+  return field;
+}
+
+function typeSearch(value: string) {
+  const field = searchInput();
+  field.value = value;
+  field.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function lastSearch(): FakeSearchSession {
+  const session = searchSessions.at(-1);
+  if (!session) throw new Error("workspace search was not started");
+  return session;
+}
+
+function searchLine(
+  path: string,
+  line: number,
+  text: string,
+  start: number,
+  matchText: string,
+): SearchPart {
+  return {
+    type: "line",
+    path,
+    line,
+    text,
+    matches: [
+      {
+        start,
+        end: start + matchText.length,
+        text: matchText,
+        length: matchText.length,
+        highlightStart: start,
+        highlightEnd: start + matchText.length,
+      },
+    ],
+  };
 }
 
 function pressPaletteShortcut(key: string) {
@@ -475,6 +539,7 @@ beforeEach(async () => {
   dropHandler = null;
   closeHandler = null;
   openHandler = null;
+  searchSessions = [];
 
   vi.clearAllMocks();
   mocks.getAppInfo.mockResolvedValue({
@@ -581,6 +646,28 @@ beforeEach(async () => {
         closed: new Promise<void>(() => {}),
         close: vi.fn(),
       };
+    },
+  );
+  mocks.searchWorkspace.mockImplementation(
+    (request: SearchRequest, onLine: (part: SearchPart) => void) => {
+      let resolve!: FakeSearchSession["resolve"];
+      let reject!: FakeSearchSession["reject"];
+      const result = new Promise<{
+        files: number;
+        matches: number;
+        truncated: boolean;
+      }>((done, fail) => {
+        resolve = done;
+        reject = fail;
+      });
+      searchSessions.push({
+        request,
+        onLine,
+        resolve,
+        reject,
+        close: vi.fn(),
+      });
+      return { result, close: searchSessions.at(-1)!.close };
     },
   );
 
@@ -2980,16 +3067,6 @@ describe("theme and accessibility", () => {
 
   it("skips unavailable placeholder shortcuts", async () => {
     await openFile();
-    const search = new KeyboardEvent("keydown", {
-      key: "f",
-      metaKey: true,
-      shiftKey: true,
-      bubbles: true,
-      cancelable: true,
-    });
-    window.dispatchEvent(search);
-    expect(search.defaultPrevented).toBe(false);
-
     const outline = new KeyboardEvent("keydown", {
       key: "o",
       ctrlKey: true,
@@ -4821,7 +4898,7 @@ describe("command palette", () => {
     );
     expect(
       paletteOptions().some((item) => item.textContent?.includes("全文搜索")),
-    ).toBe(false);
+    ).toBe(true);
     expect(
       paletteOptions().some((item) => item.textContent?.includes("重命名")),
     ).toBe(false);
@@ -7148,5 +7225,291 @@ describe("start page and workspace lifecycle", () => {
       window.dispatchEvent(new Event("resize"));
       await settle();
     }
+  });
+});
+
+describe("workspace search", () => {
+  it("opens from the sidebar, yields the tree on Escape, and restores focus", async () => {
+    await openFile();
+    const searchButton = [
+      ...host.querySelectorAll<HTMLButtonElement>("aside button"),
+    ].find((item) =>
+      item.getAttribute("aria-label")?.startsWith("搜索工作区"),
+    );
+    expect(searchButton).toBeDefined();
+    expect(searchButton!.disabled).toBe(false);
+    searchButton!.click();
+    await settle();
+    expect(host.querySelector("[data-search-panel]")).not.toBeNull();
+    expect(host.querySelector('[data-tree-path="a.md"]')).toBeNull();
+    expect(document.activeElement).toBe(searchInput());
+
+    const escape = new KeyboardEvent("keydown", {
+      key: "Escape",
+      bubbles: true,
+      cancelable: true,
+    });
+    searchInput().dispatchEvent(escape);
+    await settle();
+    expect(escape.defaultPrevented).toBe(true);
+    expect(host.querySelector("[data-search-panel]")).toBeNull();
+    expect(host.querySelector('[data-tree-path="a.md"]')).not.toBeNull();
+    expect(editorView().hasFocus).toBe(true);
+  });
+
+  it("requires a workspace and ignores a single-file tab", async () => {
+    await mountAppWithApi();
+    const withoutWorkspace = pressAppShortcut("f", true);
+    await settle();
+    expect(withoutWorkspace.defaultPrevented).toBe(true);
+    expect(searchSessions).toHaveLength(0);
+    expect(host.querySelector("[data-search-panel]")).toBeNull();
+
+    await exposedApp!.value.openSingleFile("/tmp/single.md", "single.md");
+    await settle();
+    const single = pressAppShortcut("f", true);
+    await settle();
+    expect(single.defaultPrevented).toBe(true);
+    expect(searchSessions).toHaveLength(0);
+    expect(host.querySelector("[data-search-panel]")).toBeNull();
+
+    await openFolder();
+    const withWorkspace = pressAppShortcut("f", true);
+    await settle();
+    expect(withWorkspace.defaultPrevented).toBe(true);
+    expect(host.querySelector("[data-search-panel]")).not.toBeNull();
+    expect(searchSessions).toHaveLength(0);
+  });
+
+  it("opens from the command palette", async () => {
+    await openFolder();
+    pressPaletteShortcut("P");
+    await settle();
+    expect(paletteOffers("全文搜索")).toBe(true);
+    typePalette("quanwen");
+    await vi.waitFor(() =>
+      expect(paletteOptions()[0]?.textContent ?? "").toContain("全文搜索"),
+    );
+    paletteInput().dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Enter",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    expect(host.querySelector("[data-search-panel]")).not.toBeNull();
+    expect(document.activeElement).toBe(searchInput());
+  });
+
+  it("streams results and opens the matching UTF-16 range centered", async () => {
+    await openFile("a.md", "中文😀foo\r\nnext\r\n");
+    pressAppShortcut("f", true);
+    await settle();
+    typeSearch("foo");
+    await settle();
+    expect(lastSearch().request).toEqual({
+      generation: 1,
+      query: "foo",
+      caseSensitive: false,
+      regex: false,
+    });
+    lastSearch().onLine(searchLine("a.md", 1, "中文😀foo", 4, "foo"));
+    await settle();
+    expect(host.textContent).toContain("正在搜索");
+    expect(host.querySelector("[data-search-result]")).not.toBeNull();
+
+    const scrollSpy = vi.spyOn(EditorView, "scrollIntoView");
+    host.querySelector<HTMLButtonElement>("[data-search-result]")!.click();
+    await settle();
+    const view = editorView();
+    expect(view.state.doc.toString()).toBe("中文😀foo\nnext\n");
+    expect(view.state.selection.main.from).toBe(4);
+    expect(view.state.selection.main.to).toBe(7);
+    expect(view.state.sliceDoc(4, 7)).toBe("foo");
+    expect(scrollSpy).toHaveBeenCalledWith(4, { y: "center" });
+    expect(view.hasFocus).toBe(true);
+    scrollSpy.mockRestore();
+  });
+
+  it("keeps a dirty tab and relocates a moved match; reports a stale result", async () => {
+    await openFile("a.md", "foo here\n");
+    pressAppShortcut("f", true);
+    await settle();
+    typeSearch("foo");
+    await settle();
+    lastSearch().onLine(searchLine("a.md", 1, "foo here", 0, "foo"));
+    await settle();
+
+    const view = editorView();
+    view.dispatch({ changes: { from: 0, insert: "X " } });
+    await settle();
+    mocks.readFile.mockClear();
+    host.querySelector<HTMLButtonElement>("[data-search-result]")!.click();
+    await settle();
+    expect(mocks.readFile).not.toHaveBeenCalled();
+    expect(view.state.doc.toString()).toBe("X foo here\n");
+    expect(view.state.selection.main.from).toBe(2);
+    expect(view.state.selection.main.to).toBe(5);
+
+    replaceEditorText("bar only\n");
+    await settle();
+    host.querySelector<HTMLButtonElement>("[data-search-result]")!.click();
+    await settle();
+    expect(view.state.doc.toString()).toBe("bar only\n");
+    expect(host.textContent).toContain("搜索结果已过期，请重新搜索");
+  });
+
+  it("reads a changed disk file without selecting an old offset", async () => {
+    tree = [entry("b.md", "b.md")];
+    mocks.readFile.mockResolvedValue("different text\n");
+    await openFolder();
+    pressAppShortcut("f", true);
+    await settle();
+    typeSearch("foo");
+    await settle();
+    lastSearch().onLine(searchLine("b.md", 1, "foo", 0, "foo"));
+    await settle();
+
+    host.querySelector<HTMLButtonElement>("[data-search-result]")!.click();
+    await settle();
+    expect(editorView().state.doc.toString()).toBe("different text\n");
+    expect(editorView().state.selection.main.empty).toBe(true);
+    expect(host.textContent).toContain("搜索结果已过期，请重新搜索");
+  });
+
+  it("reports a missing file instead of opening an empty tab", async () => {
+    tree = [entry("gone.md", "gone.md")];
+    mocks.readFile.mockRejectedValue(new Error("ENOENT"));
+    await openFolder();
+    pressAppShortcut("f", true);
+    await settle();
+    typeSearch("foo");
+    await settle();
+    lastSearch().onLine(searchLine("gone.md", 1, "foo", 0, "foo"));
+    await settle();
+
+    host.querySelector<HTMLButtonElement>("[data-search-result]")!.click();
+    await settle();
+    expect(host.textContent).toContain("读取失败");
+    expect(host.querySelectorAll('[role="tab"]')).toHaveLength(0);
+  });
+
+  it("cancels the channel when the workspace switches", async () => {
+    await mountAppWithApi();
+    await openFolder();
+    pressAppShortcut("f", true);
+    await settle();
+    typeSearch("needle");
+    await settle();
+    const session = lastSearch();
+
+    mocks.pickFolder.mockResolvedValue({ path: "/other", canceled: false });
+    mocks.openFolder.mockResolvedValue(folder("/other", 2));
+    await exposedApp!.value.chooseFolder();
+    await settle();
+    expect(session.close).toHaveBeenCalled();
+    expect(host.querySelector("[data-search-panel]")).toBeNull();
+  });
+
+  it("cancels the channel when the workspace closes", async () => {
+    await mountAppWithApi();
+    await openFolder();
+    pressAppShortcut("f", true);
+    await settle();
+    typeSearch("needle");
+    await settle();
+    const session = lastSearch();
+    await exposedApp!.value.closeWorkspace();
+    await settle();
+    expect(session.close).toHaveBeenCalled();
+    expect(host.querySelector("[data-search-panel]")).toBeNull();
+    expect(host.textContent).toContain("开始写作");
+  });
+
+  it("works in the narrow overlay sidebar and dismisses the overlay first", async () => {
+    await withViewportWidth(800, async () => {
+      await openFolder();
+      expect(host.querySelector("aside")).toBeNull();
+      const shortcut = pressAppShortcut("f", true);
+      await settle();
+      expect(shortcut.defaultPrevented).toBe(true);
+      expect(host.querySelector("aside")?.className).toContain(
+        "sidebar--overlay",
+      );
+      expect(searchInput()).not.toBeNull();
+
+      const escape = new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+        cancelable: true,
+      });
+      window.dispatchEvent(escape);
+      await settle();
+      expect(escape.defaultPrevented).toBe(true);
+      expect(host.querySelector("aside")).toBeNull();
+
+      pressAppShortcut("f", true);
+      await settle();
+      expect(host.querySelector("aside")?.className).toContain(
+        "sidebar--overlay",
+      );
+      expect(host.querySelector("[data-search-panel]")).not.toBeNull();
+
+      typeSearch("needle");
+      await settle();
+      searchInput().value = "";
+      searchInput().dispatchEvent(new Event("input", { bubbles: true }));
+      await settle();
+      expect(host.querySelector("aside")?.className).toContain(
+        "sidebar--overlay",
+      );
+      expect(host.querySelector("[data-search-panel]")).toBeNull();
+      expect(document.activeElement?.getAttribute("aria-label")).toContain(
+        "搜索工作区",
+      );
+    });
+  });
+
+  it("does not treat IME keys as search exit or navigation", async () => {
+    await openFile();
+    pressAppShortcut("f", true);
+    await settle();
+    typeSearch("needle");
+    await settle();
+
+    const composing = new KeyboardEvent("keydown", {
+      key: "Escape",
+      isComposing: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    searchInput().dispatchEvent(composing);
+    await settle();
+    expect(composing.defaultPrevented).toBe(false);
+    expect(host.querySelector("[data-search-panel]")).not.toBeNull();
+
+    const keyCode229 = new KeyboardEvent("keydown", {
+      key: "Escape",
+      bubbles: true,
+      cancelable: true,
+    });
+    Object.defineProperty(keyCode229, "keyCode", { value: 229 });
+    searchInput().dispatchEvent(keyCode229);
+    await settle();
+    expect(keyCode229.defaultPrevented).toBe(false);
+    expect(host.querySelector("[data-search-panel]")).not.toBeNull();
+  });
+
+  it("closes the search channel when the page is destroyed", async () => {
+    await openFolder();
+    pressAppShortcut("f", true);
+    await settle();
+    typeSearch("needle");
+    await settle();
+    const session = lastSearch();
+    app?.unmount();
+    app = null;
+    expect(session.close).toHaveBeenCalled();
   });
 });

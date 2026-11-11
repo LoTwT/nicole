@@ -49,6 +49,7 @@ export interface AppCommandActions {
   nextTab(): void | Promise<void>;
   previousTab(): void | Promise<void>;
   openCommandPalette(mode: CommandPaletteMode): void | Promise<void>;
+  openWorkspaceSearch(): void | Promise<void>;
 }
 
 /** The focused tree row and the actions a file-tree command can run. */
