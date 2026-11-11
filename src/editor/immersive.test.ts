@@ -1,4 +1,5 @@
 import { undo, undoDepth } from "@codemirror/commands";
+import { syntaxTreeAvailable } from "@codemirror/language";
 import { EditorSelection, StateEffect } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -9,6 +10,7 @@ import {
   type EditorHandle,
   type EditorMode,
 } from "./index";
+import { until } from "./test-helpers";
 
 const doc = `# 一级标题
 
@@ -68,16 +70,6 @@ function key(
 
 function composition(view: EditorView, type: "compositionstart" | "compositionend") {
   view.contentDOM.dispatchEvent(new CompositionEvent(type, { bubbles: true }));
-}
-
-async function until(predicate: () => boolean, timeout = 5000) {
-  const started = Date.now();
-  while (!predicate()) {
-    if (Date.now() - started > timeout) {
-      throw new Error("timed out waiting for the editor");
-    }
-    await new Promise<void>((resolve) => setTimeout(resolve, 20));
-  }
 }
 
 function longDocumentForTest(linesCount: number) {
@@ -278,7 +270,10 @@ describe("immersive mode line-start boundaries", () => {
 
     editor.view.dispatch({ changes: { from: 0, insert: "- " } });
 
-    await until(() => editor.view.state.selection.main.head === 2);
+    await until(
+      () => editor.view.state.selection.main.head === 2,
+      "the corrected selection",
+    );
     expect(editor.view.state.selection.main.head).toBe(2);
   });
 
@@ -468,6 +463,7 @@ describe("immersive mode long-document corrections", () => {
 
     await until(
       () => editor.view.state.selection.main.head === target.from + 2,
+      "the corrected selection",
     );
     expect(editor.view.state.selection.main.head).toBe(target.from + 2);
   });
@@ -482,6 +478,7 @@ describe("immersive mode long-document corrections", () => {
 
     await until(
       () => editor.view.state.selection.main.head === target.from + 2,
+      "the corrected selection",
     );
     expect(editor.view.state.selection.main.head).toBe(target.from + 2);
   });
@@ -496,10 +493,11 @@ describe("immersive mode long-document corrections", () => {
 
     await until(
       () => editor.view.state.selection.main.head === target.from + 2,
+      "the corrected selection",
       10000,
     );
     expect(editor.view.state.selection.main.head).toBe(target.from + 2);
-  });
+  }, 15000);
 
   it("keeps the scroll position and does not request scrolling for a fix", async () => {
     mount("immersive", `# 标题\n\n${"正文\n".repeat(80)}`);
@@ -514,7 +512,10 @@ describe("immersive mode long-document corrections", () => {
     editor.view.dispatch({ effects: StateEffect.appendConfig.of(observer) });
     editor.view.dispatch({ selection: { anchor: heading.from } });
 
-    await until(() => editor.view.state.selection.main.head === 2);
+    await until(
+      () => editor.view.state.selection.main.head === 2,
+      "the corrected selection",
+    );
     expect(editor.view.scrollDOM.scrollTop).toBe(120);
     expect(transactions).not.toContain(true);
   });
@@ -611,14 +612,19 @@ describe("immersive mode second-round regressions", () => {
     });
   }
 
-  it("collapses a non-empty selection to its left edge with Alt-ArrowLeft", () => {
+  it("collapses a non-empty selection to its left edge with Alt-ArrowLeft", async () => {
     mount("immersive", "上一段\n\n- 文本\n");
-    const target = editor.view.state.doc.line(3);
-    editor.view.dispatch({
+    const view = editor.view;
+    await until(
+      () => syntaxTreeAvailable(view.state, view.state.doc.length),
+      "the syntax tree to cover the list",
+    );
+    const target = view.state.doc.line(3);
+    view.dispatch({
       selection: { anchor: target.to, head: target.from + 2 },
     });
 
-    key(editor.view, "ArrowLeft", { altKey: true });
+    key(view, "ArrowLeft", { altKey: true });
 
     expect(editor.view.state.selection.main.empty).toBe(true);
     expect(editor.view.state.selection.main.head).toBe(target.from + 2);
@@ -913,10 +919,11 @@ describe("immersive mode second-round regressions", () => {
 
     await until(
       () => editor.view.state.selection.main.head === target.from + 2,
+      "the corrected selection",
       10000,
     );
     expect(editor.view.state.selection.main.head).toBe(target.from + 2);
-  });
+  }, 15000);
 
   it("waits for composition before applying a far selection correction", async () => {
     const text = longDocumentForTest(10000);
@@ -932,10 +939,11 @@ describe("immersive mode second-round regressions", () => {
     composition(editor.view, "compositionend");
     await until(
       () => editor.view.state.selection.main.head === target.from + 2,
+      "the corrected selection",
       10000,
     );
     expect(editor.view.state.selection.main.head).toBe(target.from + 2);
-  });
+  }, 15000);
 
   it("clears a pending parse timer when switching modes", () => {
     const text = longDocumentForTest(55000);
@@ -1001,6 +1009,7 @@ describe("immersive mode second-round regressions", () => {
 
     await until(
       () => editor.view.state.selection.main.head === target.from + 2,
+      "the corrected selection",
       10000,
     );
 
@@ -1008,7 +1017,7 @@ describe("immersive mode second-round regressions", () => {
     expect(scrolled).not.toContain(true);
     expect(editor.view.scrollDOM.scrollTop).toBe(scrollBefore);
     expect(undoDepth(editor.view.state)).toBe(undoBefore);
-  });
+  }, 15000);
 
   it("does not block the event loop while correcting a far selection", async () => {
     const text = longDocumentForTest(220000);
@@ -1020,6 +1029,6 @@ describe("immersive mode second-round regressions", () => {
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
 
     expect(performance.now() - started).toBeLessThan(400);
-  });
+  }, 15000);
 
 });

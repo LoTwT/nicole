@@ -1,8 +1,10 @@
+import { syntaxTreeAvailable } from "@codemirror/language";
 import { StateEffect } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createEditor, type EditorHandle, type EditorMode } from "./index";
+import { until } from "./test-helpers";
 
 // jsdom reports an empty navigator.platform, which CodeMirror treats as
 // non-Mac when it resolves `Mod` at module load. Pin it to Windows so the Ctrl
@@ -64,6 +66,22 @@ function mountOn(
   return editor;
 }
 
+async function waitForTaskBoxes(view: EditorView, count = 1) {
+  await until(
+    () => checkboxes(view).length === count,
+    `${count} task checkbox${count === 1 ? "" : "es"} to render`,
+  );
+}
+
+async function mountWithTask(
+  mode: EditorMode = "live",
+  platform?: "macos" | "windows" | "linux",
+) {
+  const instance = platform === undefined ? mount(mode) : mountOn(platform, mode);
+  await waitForTaskBoxes(instance.view);
+  return instance;
+}
+
 function selectRenderedText(view: EditorView, from = 0, to = 2) {
   const line = view.contentDOM.querySelector(".cm-line")!;
   const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
@@ -120,13 +138,19 @@ describe("createEditor", () => {
     const bold = doc.indexOf("加粗");
 
     view.dispatch({ selection: { anchor: bold } });
-    await settle();
+    await until(
+      () => renderedText(view).includes("**加粗**"),
+      "the revealed bold markers",
+    );
 
     expect(instance.mode).toBe("live");
     expect(renderedText(view)).toContain("**加粗**");
 
     instance.setMode("immersive");
-    await settle();
+    await until(
+      () => !renderedText(view).includes("**加粗**"),
+      "the hidden bold markers",
+    );
 
     expect(instance.mode).toBe("immersive");
     expect(instance.view).toBe(view);
@@ -134,22 +158,24 @@ describe("createEditor", () => {
     expect(renderedText(view)).toContain("加粗");
 
     instance.setMode("source");
-    await settle();
+    await until(
+      () => renderedText(view).includes("# 标题"),
+      "the source-mode heading",
+    );
 
     expect(instance.mode).toBe("source");
     expect(instance.view).toBe(view);
     expect(renderedText(view)).toContain("**加粗**");
     expect(renderedText(view)).toContain("# 标题");
     expect(view.state.doc.toString()).toBe(doc);
-  });
+  }, 15000);
 });
 
 describe("IME composition", () => {
   for (const mode of ["live", "immersive"] as const) {
     it(`keeps ${mode} decorations while composing and rebuilds after it ends`, async () => {
-      const instance = mount(mode);
+      const instance = await mountWithTask(mode);
       const view = instance.view;
-      await settle();
       const box = checkboxes(view)[0]!;
       expect(box).toBeDefined();
       const insertAt = taskStart();
@@ -232,9 +258,8 @@ describe("IME composition", () => {
   });
 
   it("rebuilds decorations for ordinary typing", async () => {
-    const instance = mount("live");
+    const instance = await mountWithTask("live");
     const view = instance.view;
-    await settle();
     expect(checkboxes(view)).toHaveLength(1);
 
     const insertAt = taskStart();
@@ -251,9 +276,8 @@ describe("IME composition", () => {
 
 describe("task checkbox", () => {
   it("reuses the widget DOM and toggles the task at its current position", async () => {
-    const instance = mount("live");
+    const instance = await mountWithTask("live");
     const view = instance.view;
-    await settle();
     const box = checkboxes(view)[0]!;
     const click = () => {
       box.querySelector("input")!.dispatchEvent(
@@ -306,9 +330,8 @@ describe("task checkbox", () => {
   });
 
   it("keeps focus on the checkbox when it is toggled", async () => {
-    const instance = mount("live");
+    const instance = await mountWithTask("live");
     const view = instance.view;
-    await settle();
     const box = checkboxes(view)[0]!;
     const input = box.querySelector("input")!;
     input.focus();
@@ -328,9 +351,8 @@ describe("task checkbox", () => {
 
   for (const mode of ["live", "immersive"] as const) {
     it(`keeps editing keys away from the document while the checkbox has focus (${mode})`, async () => {
-      const instance = mountOn("macos", mode);
+      const instance = await mountWithTask(mode, "macos");
       const view = instance.view;
-      await settle();
       const input = checkboxes(view)[0]!.querySelector("input")!;
       const at = doc.indexOf("加粗");
       view.dispatch({ selection: { anchor: at } });
@@ -381,9 +403,8 @@ describe("task checkbox", () => {
   }
 
   it("lets native keys and menu shortcuts through while the checkbox has focus", async () => {
-    const instance = mountOn("macos");
+    const instance = await mountWithTask("live", "macos");
     const view = instance.view;
-    await settle();
     const input = checkboxes(view)[0]!.querySelector("input")!;
     input.focus();
 
@@ -406,9 +427,8 @@ describe("task checkbox", () => {
   });
 
   it("blocks every modified Space without toggling the task", async () => {
-    const instance = mountOn("macos");
+    const instance = await mountWithTask("live", "macos");
     const view = instance.view;
-    await settle();
     const input = checkboxes(view)[0]!.querySelector("input")!;
     const before = view.state.doc.toString();
     input.focus();
@@ -438,9 +458,8 @@ describe("task checkbox", () => {
   });
 
   it("does not swallow blocked keys before window-level listeners", async () => {
-    const instance = mount("live");
+    const instance = await mountWithTask("live");
     const view = instance.view;
-    await settle();
     const input = checkboxes(view)[0]!.querySelector("input")!;
     input.focus();
     const windowKeydown = vi.fn();
@@ -455,9 +474,8 @@ describe("task checkbox", () => {
   });
 
   it("clears a non-collapsed native selection when the checkbox gains focus", async () => {
-    const instance = mount("live");
+    const instance = await mountWithTask("live");
     const view = instance.view;
-    await settle();
     const input = checkboxes(view)[0]!.querySelector("input")!;
     const at = doc.indexOf("加粗");
     view.dispatch({ selection: { anchor: at, head: at + 2 } });
@@ -486,9 +504,8 @@ describe("task checkbox", () => {
   });
 
   it("clears a non-collapsed native selection on a checkbox focusin", async () => {
-    const instance = mount("live");
+    const instance = await mountWithTask("live");
     const view = instance.view;
-    await settle();
     const input = checkboxes(view)[0]!.querySelector("input")!;
     input.focus();
 
@@ -502,9 +519,8 @@ describe("task checkbox", () => {
   });
 
   it("does not clear a native selection when focus returns to the editor", async () => {
-    const instance = mount("live");
+    const instance = await mountWithTask("live");
     const view = instance.view;
-    await settle();
     const input = checkboxes(view)[0]!.querySelector("input")!;
     input.focus();
     view.focus();
@@ -526,9 +542,8 @@ describe("task checkbox", () => {
       document.body.innerHTML = '<div id="host"></div>';
       parent = document.querySelector<HTMLElement>("#host")!;
       parent.style.height = "600px";
-      const instance = mountOn("macos", mode);
+      const instance = await mountWithTask(mode, "macos");
       const view = instance.view;
-      await settle();
       const input = checkboxes(view)[0]!.querySelector("input")!;
       view.scrollDOM.scrollTop = 321;
       input.focus();
@@ -557,9 +572,8 @@ describe("task checkbox", () => {
 
   for (const mode of ["live", "immersive"] as const) {
     it(`returns focus after replaceDocument removes the focused box (${mode})`, async () => {
-      const instance = mountOn("macos", mode);
+      const instance = await mountWithTask(mode, "macos");
       const view = instance.view;
-      await settle();
       const input = checkboxes(view)[0]!.querySelector("input")!;
       input.focus();
       expect(document.activeElement).toBe(input);
@@ -575,9 +589,8 @@ describe("task checkbox", () => {
   }
 
   it("does not steal focus from another control", async () => {
-    const instance = mountOn("macos");
+    const instance = await mountWithTask("live", "macos");
     const view = instance.view;
-    await settle();
     const input = checkboxes(view)[0]!.querySelector("input")!;
     input.focus();
 
@@ -591,13 +604,12 @@ describe("task checkbox", () => {
   });
 
   it("returns focus after undo removes the focused box", async () => {
-    const instance = mountOn("macos");
+    const instance = await mountWithTask("live", "macos");
     const view = instance.view;
-    await settle();
     view.dispatch({
       changes: { from: doc.length, insert: "\n- [ ] 新任务\n" },
     });
-    await settle();
+    await waitForTaskBoxes(view, 2);
     const input = checkboxes(view)[1]!.querySelector("input")!;
     input.focus();
 
@@ -610,9 +622,8 @@ describe("task checkbox", () => {
   });
 
   it("recovers a box removed while the window is blurred after it returns", async () => {
-    const instance = mountOn("macos");
+    const instance = await mountWithTask("live", "macos");
     const view = instance.view;
-    await settle();
     const input = checkboxes(view)[0]!.querySelector("input")!;
     input.focus();
     const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
@@ -632,9 +643,8 @@ describe("task checkbox", () => {
   });
 
   it("does not take focus back from another control after the box is gone", async () => {
-    const instance = mountOn("macos");
+    const instance = await mountWithTask("live", "macos");
     const view = instance.view;
-    await settle();
     const input = checkboxes(view)[0]!.querySelector("input")!;
     input.focus();
     const outside = document.createElement("input");
@@ -649,9 +659,8 @@ describe("task checkbox", () => {
   });
 
   it("keeps focus on a connected box across ordinary updates", async () => {
-    const instance = mountOn("macos");
+    const instance = await mountWithTask("live", "macos");
     const view = instance.view;
-    await settle();
     const input = checkboxes(view)[0]!.querySelector("input")!;
     input.focus();
 
@@ -671,9 +680,8 @@ describe("task checkbox", () => {
   });
 
   it("blocks native editing events while the checkbox has focus", async () => {
-    const instance = mount("live");
+    const instance = await mountWithTask("live");
     const view = instance.view;
-    await settle();
     const input = checkboxes(view)[0]!.querySelector("input")!;
     input.focus();
 
@@ -703,9 +711,8 @@ describe("task checkbox", () => {
   });
 
   it("does not take focus or the caret on mousedown", async () => {
-    const instance = mount("live");
+    const instance = await mountWithTask("live");
     const view = instance.view;
-    await settle();
     const box = checkboxes(view)[0]!;
     const input = box.querySelector("input")!;
     const at = doc.indexOf("加粗");
@@ -746,9 +753,8 @@ describe("task checkbox", () => {
   it("lets CodeMirror see mouse events but not keyboard events on the widget", async () => {
     let clicks = 0;
     let keyups = 0;
-    const instance = mount("live");
+    const instance = await mountWithTask("live");
     const view = instance.view;
-    await settle();
     view.dispatch({
       effects: StateEffect.appendConfig.of(
         EditorView.domEventHandlers({
@@ -798,7 +804,7 @@ describe("task checkbox", () => {
     });
     editor = instance;
     const view = instance.view;
-    await settle();
+    await waitForTaskBoxes(view);
     const input = checkboxes(view)[0]!.querySelector("input")!;
     input.focus();
 
@@ -809,9 +815,8 @@ describe("task checkbox", () => {
   });
 
   it("forwards Find from the primary modifier on Windows", async () => {
-    const instance = mountOn("windows");
+    const instance = await mountWithTask("live", "windows");
     const view = instance.view;
-    await settle();
     const input = checkboxes(view)[0]!.querySelector("input")!;
     input.focus();
 
@@ -836,9 +841,8 @@ describe("task checkbox", () => {
   });
 
   it("forwards Select All from the primary modifier on Windows", async () => {
-    const instance = mountOn("windows");
+    const instance = await mountWithTask("live", "windows");
     const view = instance.view;
-    await settle();
     const input = checkboxes(view)[0]!.querySelector("input")!;
     input.focus();
     view.dispatch({ selection: { anchor: 0 } });
@@ -875,7 +879,7 @@ describe("task checkbox", () => {
     });
     editor = instance;
     const view = instance.view;
-    await settle();
+    await waitForTaskBoxes(view);
     const input = checkboxes(view)[0]!.querySelector("input")!;
 
     for (const [key, code] of [
@@ -938,7 +942,7 @@ describe("task checkbox", () => {
     });
     editor = instance;
     const view = instance.view;
-    await settle();
+    await waitForTaskBoxes(view);
     const input = checkboxes(view)[0]!.querySelector("input")!;
 
     input.focus();
@@ -1004,7 +1008,7 @@ describe("task checkbox", () => {
       });
       editor = instance;
       const view = instance.view;
-      await settle();
+      await waitForTaskBoxes(view);
       const input = checkboxes(view)[0]!.querySelector("input")!;
       input.focus();
 
@@ -1054,7 +1058,7 @@ describe("task checkbox", () => {
     });
     editor = instance;
     const view = instance.view;
-    await settle();
+    await waitForTaskBoxes(view);
     const input = checkboxes(view)[0]!.querySelector("input")!;
     input.focus();
 
@@ -1070,9 +1074,8 @@ describe("task checkbox", () => {
   });
 
   it("recovers native Select All while the checkbox has focus", async () => {
-    const instance = mount("live");
+    const instance = await mountWithTask("live");
     const view = instance.view;
-    await settle();
     const input = checkboxes(view)[0]!.querySelector("input")!;
     input.focus();
     view.dispatch({ selection: { anchor: 0 } });
@@ -1090,9 +1093,8 @@ describe("task checkbox", () => {
   });
 
   it("ignores selectstart outside the page background while the checkbox has focus", async () => {
-    const instance = mount("live");
+    const instance = await mountWithTask("live");
     const view = instance.view;
-    await settle();
     const input = checkboxes(view)[0]!.querySelector("input")!;
     input.focus();
     view.dispatch({ selection: { anchor: 4 } });
@@ -1112,9 +1114,8 @@ describe("task checkbox", () => {
   });
 
   it("does not turn a body selectstart into Select All after the checkbox lost focus", async () => {
-    const instance = mount("live");
+    const instance = await mountWithTask("live");
     const view = instance.view;
-    await settle();
     const input = checkboxes(view)[0]!.querySelector("input")!;
     input.focus();
     view.dispatch({ selection: { anchor: 4 } });
@@ -1133,8 +1134,7 @@ describe("task checkbox", () => {
   });
 
   it("removes its checkbox, document and window listeners when destroyed", async () => {
-    const instance = mount("live");
-    await settle();
+    const instance = await mountWithTask("live");
     const input = checkboxes(instance.view)[0]!.querySelector("input")!;
     const remove = vi.spyOn(instance.view.contentDOM, "removeEventListener");
     const removeDocument = vi.spyOn(document, "removeEventListener");
@@ -1163,6 +1163,68 @@ describe("task checkbox", () => {
     removeDocument.mockRestore();
     removeWindow.mockRestore();
   });
+});
+
+describe("preview decorations after a truncated parse", () => {
+  for (const mode of ["live", "immersive"] as const) {
+    it(`draws preview decorations when a truncated first parse catches up (${mode})`, async () => {
+      const realNow = Date.now;
+      let calls = 0;
+      const clock = vi.spyOn(Date, "now").mockImplementation(() => {
+        calls += 1;
+        // The first read sets the 20 ms parse deadline; every later read jumps
+        // past it so the initial tree stops at the first block.
+        return calls === 1 ? realNow() : realNow() + calls * 10_000;
+      });
+      let instance: EditorHandle;
+      try {
+        instance = mountOn("macos", mode);
+      } finally {
+        clock.mockRestore();
+      }
+      const view = instance.view;
+
+      expect(syntaxTreeAvailable(view.state, view.state.doc.length)).toBe(false);
+      expect(checkboxes(view)).toHaveLength(0);
+      const selection = view.state.selection.toJSON();
+      const text = view.state.doc.toString();
+      const scrollTop = view.scrollDOM.scrollTop;
+      const scrollRequests: boolean[] = [];
+      view.dispatch({
+        effects: StateEffect.appendConfig.of(
+          EditorView.updateListener.of((update) => {
+            scrollRequests.push(
+              ...update.transactions.map(
+                (transaction) => transaction.scrollIntoView,
+              ),
+            );
+          }),
+        ),
+      });
+
+      // Only the background parser runs here: no selection or document update
+      // may be needed to draw the task box, heading and hidden emphasis marks.
+      await until(
+        () => syntaxTreeAvailable(view.state, view.state.doc.length),
+        "the full syntax tree",
+        4000,
+      );
+      await until(
+        () => checkboxes(view).length === 1,
+        "the task checkbox",
+        4000,
+      );
+
+      expect(checkboxes(view)).toHaveLength(1);
+      expect(view.contentDOM.querySelector(".cm-nicole-h1")).not.toBeNull();
+      expect(renderedText(view)).not.toContain("**加粗**");
+      expect(renderedText(view)).toContain("加粗");
+      expect(view.state.selection.toJSON()).toEqual(selection);
+      expect(view.state.doc.toString()).toBe(text);
+      expect(view.scrollDOM.scrollTop).toBe(scrollTop);
+      expect(scrollRequests).not.toContain(true);
+    }, 15000);
+  }
 });
 
 describe("background restore state", () => {

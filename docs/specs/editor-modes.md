@@ -118,7 +118,7 @@ Backspace/⌃H 在块第一行内容起点按上面的规则删除整段行首�
 
 `src/editor/index.ts` 已从交接附件中的 `main.ts`（2026-10 验证，不纳入仓库）移植，接口见[架构](../architecture.md#依赖边界)。当前仍保持演示的**整行展开**，后续再细到元素。
 
-- `preview(reveal)` 生成一个 `ViewPlugin`；文档、视口或选区变化时，在可见范围内重建 decorations。组合输入期间跳过重建，只做位置映射，见[中文输入法](#中文输入法)。
+- `preview(reveal)` 生成一个 `ViewPlugin`；文档、视口、选区或语法树变化时，在可见范围内重建 decorations。首次解析只按时间预算解析到文档的一部分；后台解析推进后，新进入语法树的标题、任务框和隐藏标记会自动补上，不需要选区或文档更新。组合输入期间跳过重建，只做位置映射，见[中文输入法](#中文输入法)。
 - 遍历语法树：隐藏 `HeaderMark`、`EmphasisMark`、`CodeMark`、`StrikethroughMark`、`QuoteMark`、任务项的列表符号和链接的 URL；把列表符号、任务框、图片、分割线替换成 widget；标题和引用用行级 decoration。
 - 代码块背景由独立 layer 绘制，规则见[代码块背景](#代码块背景)。
 - 任务框自绘：`appearance: none` 的 `<input type="checkbox">` 覆盖在容器上，负责点击和键盘操作；外框、背景和勾选标记都由容器上的 CSS 绘制，读取 `--nicole-checkbox-*` 变量，回退见 `src/editor/index.ts` 的 `editorTheme`，因此亮暗切换不需要重建编辑器。任务框 widget 的 `eq` 只比较勾选状态，`updateDOM` 原地更新勾选样式以保留焦点；点击时用 `view.posAtDOM` 和文档内容取当前位置与状态，避免在前面输入文字时重建任务框。

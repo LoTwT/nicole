@@ -1,5 +1,9 @@
 import { markdownLanguage } from "@codemirror/lang-markdown";
-import { forceParsing, syntaxTree } from "@codemirror/language";
+import {
+  forceParsing,
+  syntaxTree,
+  syntaxTreeAvailable,
+} from "@codemirror/language";
 import {
   openSearchPanel,
   search,
@@ -16,6 +20,7 @@ import {
   type EditorHandle,
   type EditorMode,
 } from "./index";
+import { until } from "./test-helpers";
 
 const doc = `行内 \`inline\` 代码
 
@@ -36,10 +41,6 @@ async function settle() {
   await new Promise<void>((resolve) =>
     requestAnimationFrame(() => resolve()),
   );
-}
-
-async function delay(milliseconds: number) {
-  await new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds));
 }
 
 function rect(left: number, right: number, top = 0, bottom = 600): DOMRect {
@@ -171,7 +172,11 @@ describe.each(["live", "immersive", "source"] as EditorMode[])(
     it("draws one block-sized background for fenced and indented code", async () => {
       editor = createEditor({ parent, doc, mode });
       const view = editor.view;
-      await settle();
+      await until(
+        () =>
+          view.contentDOM.querySelectorAll(".cm-nicole-code-line").length === 7,
+        "the seven code line decorations",
+      );
 
       const codeLines = [
         ...view.contentDOM.querySelectorAll(".cm-nicole-code-line"),
@@ -181,6 +186,10 @@ describe.each(["live", "immersive", "source"] as EditorMode[])(
         false,
       );
 
+      await until(
+        () => view.scrollDOM.querySelectorAll(".cm-nicole-code-bg").length === 2,
+        "the two code backgrounds",
+      );
       const backgrounds = [
         ...view.scrollDOM.querySelectorAll<HTMLElement>(".cm-nicole-code-bg"),
       ];
@@ -195,7 +204,7 @@ describe.each(["live", "immersive", "source"] as EditorMode[])(
       expect(Number.parseFloat(backgrounds[0]!.style.height)).toBeGreaterThan(
         Number.parseFloat(backgrounds[1]!.style.height),
       );
-    });
+    }, 15000);
   },
 );
 
@@ -218,7 +227,10 @@ it("keeps the code background below the selection layer", async () => {
 it("uses the reading mono font for every code line", async () => {
   editor = createEditor({ parent, doc, mode: "live" });
   const view = editor.view;
-  await settle();
+  await until(
+    () => view.contentDOM.querySelectorAll(".cm-nicole-code-line").length > 0,
+    "the code line decorations",
+  );
 
   const lines = [
     ...view.contentDOM.querySelectorAll<HTMLElement>(".cm-nicole-code-line"),
@@ -267,8 +279,14 @@ it("insets backgrounds and follows the text start inside a quote", async () => {
 
   // Force the layer to measure against the stubbed geometry.
   view.dispatch({ changes: { from: view.state.doc.length, insert: "\n" } });
-  await settle();
-  await settle();
+  await until(
+    () => {
+      const markers =
+        view.scrollDOM.querySelectorAll<HTMLElement>(".cm-nicole-code-bg");
+      return markers.length === 2 && markers[0]!.style.left === "116px";
+    },
+    "the code background markers to use the stubbed geometry",
+  );
 
   const markers = [
     ...view.scrollDOM.querySelectorAll<HTMLElement>(".cm-nicole-code-bg"),
@@ -297,12 +315,11 @@ it("clips the zero-sized selection layer with a polygon", async () => {
   );
 
   view.dispatch({ changes: { from: view.state.doc.length, insert: "\n" } });
-  await settle();
-  await settle();
-
   const layer = view.scrollDOM.querySelector<HTMLElement>(
     ".cm-selectionLayer",
   )!;
+  await until(() => layer.style.clipPath !== "", "the selection clip");
+
   expect(layer.style.width).toBe("");
   expect(layer.style.height).toBe("");
   const polygonPoints = (value: string) =>
@@ -320,10 +337,12 @@ it("clips the zero-sized selection layer with a polygon", async () => {
 
   content.mockReturnValue(rect(120, 620));
   view.dispatch({ changes: { from: view.state.doc.length, insert: "\n" } });
-  await settle();
-  await settle();
+  await until(
+    () => layer.style.clipPath.includes("136px"),
+    "the updated selection clip",
+  );
   expect(polygonX(layer.style.clipPath)).toEqual([136, 604, 604, 136]);
-});
+}, 15000);
 
 it("decorates only code lines inside the visible ranges", async () => {
   const outsideDoc =
@@ -340,7 +359,14 @@ it("decorates only code lines inside the visible ranges", async () => {
   // collector ever scans the whole document instead of view.visibleRanges.
   expect(forceParsing(view, outsideDoc.length, 1000)).toBe(true);
   expect(syntaxTree(view.state).length).toBe(outsideDoc.length);
-  await settle();
+  await until(
+    () => view.contentDOM.querySelectorAll(".cm-nicole-code-line").length > 0,
+    "the visible code line decorations",
+  );
+  await until(
+    () => view.scrollDOM.querySelectorAll(".cm-nicole-code-bg").length === 1,
+    "the visible code background",
+  );
 
   const outside = outsideDoc.indexOf("outside");
   expect(outside).toBeGreaterThan(view.visibleRanges.at(-1)!.to);
@@ -361,7 +387,7 @@ it("decorates only code lines inside the visible ranges", async () => {
     ).toBe(true);
   }
   expect(view.scrollDOM.querySelectorAll(".cm-nicole-code-bg")).toHaveLength(1);
-});
+}, 15000);
 
 it("adds code lines only after the tree reaches their visible range", async () => {
   const treeDoc =
@@ -413,35 +439,37 @@ it("adds code backgrounds after parsing reaches the visible block", async () => 
     0,
   );
 
-  const started = Date.now();
-  while (
-    view.contentDOM.querySelectorAll(".cm-nicole-code-line").length === 0 &&
-    Date.now() - started < 5000
-  ) {
-    await delay(20);
-  }
+  await until(
+    () => view.contentDOM.querySelectorAll(".cm-nicole-code-line").length === 4,
+    "the four code line decorations",
+  );
   expect(view.contentDOM.querySelectorAll(".cm-nicole-code-line")).toHaveLength(
     4,
   );
 
-  await settle();
-  await settle();
+  await until(
+    () => view.scrollDOM.querySelector(".cm-nicole-code-bg") !== null,
+    "the code background",
+  );
   const background = view.scrollDOM.querySelector<HTMLElement>(
     ".cm-nicole-code-bg",
   )!;
   expect(background.classList).toContain("cm-nicole-code-bg-start");
   expect(background.classList).toContain("cm-nicole-code-bg-end");
-});
+}, 15000);
 
 it("maps code decorations during composition and rebuilds afterwards", async () => {
   const indentedDoc = "正文\n\n    indented\n    code\n\n尾部\n";
   editor = createEditor({ parent, doc: indentedDoc, mode: "live" });
   const view = editor.view;
-  await settle();
-  expect(view.contentDOM.querySelectorAll(".cm-nicole-code-line")).toHaveLength(
-    2,
+  await until(
+    () => view.contentDOM.querySelectorAll(".cm-nicole-code-line").length === 2,
+    "the two code line decorations",
   );
-  expect(view.scrollDOM.querySelectorAll(".cm-nicole-code-bg")).toHaveLength(1);
+  await until(
+    () => view.scrollDOM.querySelectorAll(".cm-nicole-code-bg").length === 1,
+    "the code background",
+  );
 
   view.contentDOM.dispatchEvent(
     new CompositionEvent("compositionstart", { bubbles: true }),
@@ -464,13 +492,20 @@ it("maps code decorations during composition and rebuilds afterwards", async () 
     new CompositionEvent("compositionend", { bubbles: true }),
   );
   view.dispatch({});
-  await settle();
+  await until(
+    () => view.contentDOM.querySelectorAll(".cm-nicole-code-line").length === 0,
+    "the rebuilt code line decorations",
+  );
+  await until(
+    () => view.scrollDOM.querySelectorAll(".cm-nicole-code-bg").length === 0,
+    "the rebuilt code background",
+  );
 
   expect(view.contentDOM.querySelectorAll(".cm-nicole-code-line")).toHaveLength(
     0,
   );
   expect(view.scrollDOM.querySelectorAll(".cm-nicole-code-bg")).toHaveLength(0);
-});
+}, 20000);
 
 it("keeps inline code and search highlights painted inside code blocks", async () => {
   const highlightDoc = [
@@ -487,13 +522,32 @@ it("keeps inline code and search highlights painted inside code blocks", async (
   ].join("\n");
   editor = createEditor({ parent, doc: highlightDoc, mode: "live" });
   const view = editor.view;
+  await until(
+    () => syntaxTreeAvailable(view.state, view.state.doc.length),
+    "the syntax tree to cover the inline code",
+  );
   view.dispatch({ effects: StateEffect.appendConfig.of(search()) });
   view.dispatch({
     effects: setSearchQuery.of(new SearchQuery({ search: "foo" })),
   });
   openSearchPanel(view);
-  await settle();
-  await settle();
+  await until(
+    () => {
+      const spans = [
+        ...view.contentDOM.querySelectorAll<HTMLElement>("span"),
+      ].filter(
+        (span) =>
+          (span.textContent === "table-inline" ||
+            span.textContent === "near-inline") &&
+          !span.closest(".cm-nicole-code-line"),
+      );
+      return (
+        spans.length === 2 &&
+        view.contentDOM.querySelectorAll(".cm-searchMatch").length > 0
+      );
+    },
+    "the inline code spans and search matches",
+  );
 
   const monospace = [...view.contentDOM.querySelectorAll<HTMLElement>("span")];
   const inline = monospace.filter(
@@ -530,4 +584,4 @@ it("keeps inline code and search highlights painted inside code blocks", async (
     expect(winningBackground(match)).not.toBe("transparent");
     expect(winningBackground(match)).not.toBe("var(--reading-code-bg)");
   }
-});
+}, 15000);
