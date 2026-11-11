@@ -47,6 +47,8 @@ scripts/measure-memory.sh --budget 120
 
 脚本依赖 `footprint`，只在 macOS 上可用，**不接入 CI**：runner 的环境数据不代表真实机器。
 
+十篇文档场景不使用上述空载流程：脚本只测空载并在结束时退出应用。十标签验收在隔离实例中按真实的 `tabs.json` / `settings.json` 恢复十篇文档，确认十个标签和内容后，对同一已核验 PID 按 resource coalition 重新发现 WebKit 助手进程，逐进程取 `footprint` 的 MB 值合计并采样。临时采样脚本复用 `scripts/measure-memory.sh` 的 coalition 归属、`phys_footprint` 解析和启动/停止身份核验，不加入仓库或 CI；固定样本、时间序列和限制见[内存基线](../references/memory-baseline.md#2026-11-11main-0ffdd47-的十标签测量)。
+
 ## 内存基线的更新约定
 
 每个界面 PR，以及其他可能影响内存的 PR，合并后在最新的 `main` 上构建 `.app`，运行 `scripts/measure-memory.sh --budget 120` 测一次空载，把 `total_mb`、`attribution`、构建提交和度量环境写进 PR 描述；与[内存基线](../references/memory-baseline.md)的最新一节比较。`total_mb` 比最新基线高出 10MB 或更多时，在 PR 描述中说明原因，并由用户确认；不要求在该 PR 中优化。内存优化在功能基本完成后统一进行，在此之前只记录。
