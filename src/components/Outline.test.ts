@@ -190,8 +190,15 @@ describe("Outline", () => {
     view.scrollDOM.dispatchEvent(new Event("scroll"));
     await nextTick();
     expect(headingButtons()[0]?.getAttribute("data-active")).toBeNull();
-    expect(headingButtons()[1]?.getAttribute("data-active")).toBe("true");
-    expect(headingButtons()[1]?.getAttribute("aria-current")).toBe("location");
+    const active = headingButtons()[1]!;
+    expect(active.getAttribute("data-active")).toBe("true");
+    expect(active.getAttribute("aria-current")).toBe("location");
+    expect(active.className).toContain("border-[var(--text-accent)]");
+    expect(active.className).not.toContain("border-transparent");
+    expect(headingButtons()[0]!.className).toContain("border-transparent");
+    expect(headingButtons()[0]!.className).not.toContain(
+      "border-[var(--text-accent)]",
+    );
   });
 
   it("updates 300ms after the last document change", async () => {
@@ -215,6 +222,74 @@ describe("Outline", () => {
     expect(headingTexts()).toEqual(["第一节"]);
 
     await vi.advanceTimersByTimeAsync(1);
+    await settle();
+    expect(headingTexts()).toEqual(["第一节", "第二节"]);
+  });
+
+  it("ignores old heading positions after an edit until the refresh", async () => {
+    vi.useFakeTimers();
+    mount("# 文章\n\n## 第一节\n\n正文\n");
+    await settle();
+    const view = (editor as EditorHandle).view;
+    view.dispatch({ selection: { anchor: 0 } });
+
+    view.dispatch({ changes: { from: 0, insert: "\n" } });
+    await settle();
+    const selectionAfterEdit = view.state.selection.main;
+    headingButtons()[0]!.click();
+    await settle();
+
+    expect(navigations).toBe(0);
+    expect(view.state.selection.main.eq(selectionAfterEdit)).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(300);
+    await settle();
+    const position = view.state.doc.toString().indexOf("## 第一节");
+    headingButtons()[0]!.click();
+    await settle();
+    expect(navigations).toBe(1);
+    expect(view.state.selection.main.head).toBe(position);
+  });
+
+  it("does not jump below the shortened document before the refresh", async () => {
+    vi.useFakeTimers();
+    mount("# 文章\n\n## 第一节\n\n正文\n");
+    await settle();
+    const view = (editor as EditorHandle).view;
+
+    view.dispatch({
+      changes: { from: 0, to: view.state.doc.length, insert: "" },
+    });
+    await settle();
+    const selectionAfterEdit = view.state.selection.main;
+    expect(() => headingButtons()[0]!.click()).not.toThrow();
+    expect(navigations).toBe(0);
+    expect(view.state.selection.main.eq(selectionAfterEdit)).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(300);
+    await settle();
+    expect(host.textContent).toContain("没有标题");
+  });
+
+  it("recovers when CodeMirror ends a dead-key composition without compositionend", async () => {
+    vi.useFakeTimers();
+    mount("# 文章\n\n## 第一节\n");
+    await settle();
+    const view = (editor as EditorHandle).view;
+
+    view.contentDOM.dispatchEvent(
+      new CompositionEvent("compositionstart", { bubbles: true }),
+    );
+    // Safari can lose compositionend after a dead-key composition. CodeMirror
+    // ends it internally, leaving both flags false while the DOM event never
+    // arrives. The outline must not stay paused forever.
+    vi.spyOn(view, "compositionStarted", "get").mockReturnValue(false);
+    vi.spyOn(view, "composing", "get").mockReturnValue(false);
+    view.dispatch({
+      changes: { from: view.state.doc.length, insert: "\n## 第二节\n" },
+    });
+    await settle();
+    await vi.advanceTimersByTimeAsync(300);
     await settle();
     expect(headingTexts()).toEqual(["第一节", "第二节"]);
   });

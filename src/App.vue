@@ -973,6 +973,10 @@ function toggleOutline() {
   if (!outlineEnabled.value) {
     return;
   }
+  // Opening the floating outline from the top bar or a shortcut must follow
+  // the same popover-exclusion path as the command palette.
+  topBar.value?.closeModeMenu();
+  slashMenu?.close();
   if (outlineWide.value) {
     outlineChosen = true;
     const next = !outlineVisible.value;
@@ -994,21 +998,51 @@ function toggleOutline() {
     closeOutlineOverlay(true);
     return;
   }
-  // The floating outline is a popover too, so it cannot coexist with the
-  // slash menu. Closing the menu keeps the typed text untouched.
-  slashMenu?.close();
   outlineOverlayReturnFocus = focusedControl();
   outlineOverlayOpen.value = true;
   void nextTick().then(() => {
-    if (outlineOverlayOpen.value) {
-      outlinePanel.value?.focusActiveHeading();
+    if (!outlineOverlayOpen.value) {
+      return;
     }
+    // Closing the mode menu can unmount the focused item. Keep a return
+    // target that still exists before moving focus into the outline.
+    if (
+      outlineOverlayReturnFocus !== null &&
+      !outlineOverlayReturnFocus.isConnected
+    ) {
+      outlineOverlayReturnFocus = outlineToggleElement();
+    }
+    outlinePanel.value?.focusActiveHeading();
   });
 }
 
 function handleOutlineNavigate() {
   outlineOverlayOpen.value = false;
   outlineOverlayReturnFocus = null;
+}
+
+/**
+ * An outside click may focus a real control (the editor, a tab, a toolbar
+ * button). Respect that new focus, and restore the pre-open focus only when
+ * the click landed on blank space and left nothing focusable behind.
+ */
+function closeOutlineOverlayAfterPointer() {
+  const origin = outlineOverlayReturnFocus;
+  outlineOverlayReturnFocus = null;
+  if (!outlineOverlayOpen.value) {
+    return;
+  }
+  outlineOverlayOpen.value = false;
+  void nextTick().then(() => {
+    if (focusedControl() !== null) {
+      return;
+    }
+    if (origin?.isConnected) {
+      origin.focus();
+      return;
+    }
+    outlineToggleElement()?.focus();
+  });
 }
 
 function handleOutlinePointerDown(event: PointerEvent) {
@@ -1021,7 +1055,7 @@ function handleOutlinePointerDown(event: PointerEvent) {
   ) {
     return;
   }
-  closeOutlineOverlay(false);
+  closeOutlineOverlayAfterPointer();
 }
 
 watch(outlineWide, () => {

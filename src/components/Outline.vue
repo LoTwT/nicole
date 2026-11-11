@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { Text } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 
@@ -36,10 +37,13 @@ const panel = ref<HTMLElement | null>(null);
 
 let updateTimer: ReturnType<typeof setTimeout> | null = null;
 let followUpTimer: ReturnType<typeof setTimeout> | null = null;
+// The immutable Text object the current heading list was extracted from. A
+// changed document invalidates every position until the debounced refresh.
+let headingsDoc: Text | null = null;
 let viewportObserver: ResizeObserver | null = null;
-// The outline follows the DOM composition events, matching the editor's own
-// listener. CodeMirror's flags can outlive a lost compositionend; trusting
-// them here would keep an outline frozen after the IME has already closed.
+// DOM composition events own the pause. CodeMirror's flags can outlive a lost
+// compositionend, so they are only used to notice that CodeMirror has already
+// ended the composition itself.
 let domComposing = false;
 let destroyed = false;
 
@@ -90,11 +94,10 @@ function refresh(parseBudget = INITIAL_PARSE_BUDGET_MS) {
     return;
   }
   clearFollowUpTimer();
-  const extraction = extractHeadingsWithStatus(props.view.state, parseBudget);
-  headings.value = outlineHeadings(
-    props.view.state.doc.toString(),
-    extraction.headings,
-  );
+  const state = props.view.state;
+  const extraction = extractHeadingsWithStatus(state, parseBudget);
+  headings.value = outlineHeadings(state.doc.toString(), extraction.headings);
+  headingsDoc = state.doc;
   complete.value = extraction.complete;
   hasLoaded.value = true;
   syncActiveHeading();
@@ -106,6 +109,17 @@ function refresh(parseBudget = INITIAL_PARSE_BUDGET_MS) {
 function scheduleUpdate() {
   clearUpdateTimer();
   clearFollowUpTimer();
+  // Safari can forget compositionend after a dead-key composition.
+  // CodeMirror then ends the composition itself, so a document change with
+  // both composition flags already false means the pause is stale. This only
+  // releases our local pause; it never changes CodeMirror's state.
+  if (
+    domComposing &&
+    !props.view.compositionStarted &&
+    !props.view.composing
+  ) {
+    domComposing = false;
+  }
   if (destroyed || composing()) {
     return;
   }
@@ -136,6 +150,15 @@ function jumpToHeading(index: number) {
     return;
   }
   const view = props.view;
+  // Positions from an older document can still be inside the new document,
+  // so bounds alone are not enough. The list is usable again only after the
+  // debounced refresh records the current document identity.
+  if (
+    headingsDoc !== view.state.doc ||
+    heading.position > view.state.doc.length
+  ) {
+    return;
+  }
   view.dispatch({
     selection: { anchor: heading.position },
     effects: EditorView.scrollIntoView(heading.position, {
@@ -253,11 +276,11 @@ onBeforeUnmount(() => {
             :data-active="activeIndex === index ? 'true' : undefined"
             :aria-current="activeIndex === index ? 'location' : undefined"
             :title="heading.text || '空标题'"
-            class="focus-ring flex w-full items-start rounded-[var(--radius-control)] border-l-2 border-transparent py-1 pr-2 text-left text-[13px] leading-snug hover:bg-[var(--surface-subtle)]"
+            class="focus-ring flex w-full items-start rounded-[var(--radius-control)] border-l-2 py-1 pr-2 text-left text-[13px] leading-snug hover:bg-[var(--surface-subtle)]"
             :class="
               activeIndex === index
                 ? 'border-[var(--text-accent)] bg-[var(--surface-subtle)] text-[var(--text-primary)]'
-                : 'text-[var(--text-secondary)]'
+                : 'border-transparent text-[var(--text-secondary)]'
             "
             :style="{ paddingLeft: `${8 + (heading.level - 1) * 12}px` }"
             @click="jumpToHeading(index)"
