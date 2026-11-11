@@ -7753,6 +7753,108 @@ describe("workspace search", () => {
     expect(host.textContent).toContain("搜索结果已过期，请重新搜索");
   });
 
+  it("ignores a search result that finishes after another tab is selected", async () => {
+    const files = {
+      "a.md": "# A\n",
+      "b.md": "# B\n",
+      "c.md": "# C\nfoo\n",
+    };
+    await setupWorkspace(files);
+    await openPath("/notes/a.md");
+    await openPath("/notes/b.md");
+    expect(tabNamed("b.md").getAttribute("aria-selected")).toBe("true");
+
+    const cRead = deferred<string>();
+    mocks.readFile.mockImplementation((path: string) =>
+      path === "c.md"
+        ? cRead.promise
+        : Promise.resolve(files[path as keyof typeof files] ?? ""),
+    );
+    pressAppShortcut("f", true);
+    await settle();
+    typeSearch("foo");
+    await settle();
+    lastSearch().onLine(searchLine("c.md", 2, "foo", 0, "foo"));
+    await settle();
+    host.querySelector<HTMLButtonElement>("[data-search-result]")!.click();
+    await settle();
+    expect(mocks.readFile).toHaveBeenCalledWith("c.md");
+    expect(tabElements()).toHaveLength(2);
+
+    tabNamed("a.md").click();
+    await settle();
+    const view = editorView();
+    view.dispatch({ selection: { anchor: 1, head: 2 } });
+    view.focus();
+    expect(view.state.doc.toString()).toBe("# A\n");
+
+    cRead.resolve(files["c.md"]);
+    await settle();
+
+    expect(tabElements()).toHaveLength(2);
+    expect(host.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain(
+      "a.md",
+    );
+    expect(editorView()).toBe(view);
+    expect(editorView().state.doc.toString()).toBe("# A\n");
+    expect(editorView().state.selection.main.from).toBe(1);
+    expect(editorView().state.selection.main.to).toBe(2);
+    expect(editorView().hasFocus).toBe(true);
+  });
+
+  it("lets a newer search result supersede a pending older result", async () => {
+    const files = {
+      "a.md": "# A\n",
+      "c.md": "foo\n",
+      "d.md": "foo\n",
+    };
+    await setupWorkspace(files);
+    await openPath("/notes/a.md");
+
+    const reads = {
+      "c.md": deferred<string>(),
+      "d.md": deferred<string>(),
+    };
+    mocks.readFile.mockImplementation((path: string) => {
+      const read = reads[path as keyof typeof reads];
+      if (read) return read.promise;
+      return Promise.resolve(files[path as keyof typeof files] ?? "");
+    });
+    pressAppShortcut("f", true);
+    await settle();
+    typeSearch("foo");
+    await settle();
+    lastSearch().onLine(searchLine("c.md", 1, "foo", 0, "foo"));
+    lastSearch().onLine(searchLine("d.md", 1, "foo", 0, "foo"));
+    await settle();
+
+    const cResult = host.querySelector<HTMLButtonElement>(
+      '[data-search-path="c.md"] [data-search-result]',
+    );
+    const dResult = host.querySelector<HTMLButtonElement>(
+      '[data-search-path="d.md"] [data-search-result]',
+    );
+    expect(cResult).not.toBeNull();
+    expect(dResult).not.toBeNull();
+    cResult!.click();
+    await settle();
+    dResult!.click();
+    await settle();
+
+    reads["c.md"].resolve(files["c.md"]);
+    await settle();
+    expect(host.querySelector('[role="tab"]')).not.toBeNull();
+    expect(tabElements()).toHaveLength(1);
+    expect(tabNamed("a.md").getAttribute("aria-selected")).toBe("true");
+
+    reads["d.md"].resolve(files["d.md"]);
+    await settle();
+    expect(tabElements()).toHaveLength(2);
+    expect(tabNamed("d.md").getAttribute("aria-selected")).toBe("true");
+    expect(editorView().state.selection.main.from).toBe(0);
+    expect(editorView().state.selection.main.to).toBe(3);
+  });
+
   it("reads a changed disk file without selecting an old offset", async () => {
     tree = [entry("b.md", "b.md")];
     mocks.readFile.mockResolvedValue("different text\n");
@@ -7942,16 +8044,18 @@ describe("workspace search", () => {
     expect(findPanel()).not.toBeNull();
     expect(host.querySelector("[data-search-panel]")).not.toBeNull();
 
-    findInput().dispatchEvent(
-      new KeyboardEvent("keydown", {
-        key: "Escape",
-        code: "Escape",
-        bubbles: true,
-        cancelable: true,
-      }),
-    );
+    searchInput().focus();
+    const findEscape = new KeyboardEvent("keydown", {
+      key: "Escape",
+      code: "Escape",
+      bubbles: true,
+      cancelable: true,
+    });
+    searchInput().dispatchEvent(findEscape);
     await settle();
+    expect(findEscape.defaultPrevented).toBe(true);
     expect(findPanel()).toBeNull();
+    expect(editorView().hasFocus).toBe(true);
     expect(host.querySelector("[data-search-panel]")).not.toBeNull();
 
     const searchEscape = new KeyboardEvent("keydown", {

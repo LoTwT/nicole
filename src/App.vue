@@ -284,6 +284,23 @@ const findController = shallowRef<FindReplaceController | null>(null);
 let findOptions: FindReplaceOptions = { ...EMPTY_FIND_OPTIONS };
 let mountSequence = 0;
 let nextTabId = 1;
+// Search result navigation captures this revision. Any later active-tab
+// change makes the pending search intent stale before it can take focus.
+let tabNavigationRevision = 0;
+// A newer result click supersedes an older one even when both are still
+// waiting for their files.
+let searchNavigationSequence = 0;
+
+watch(
+  activeTabId,
+  (id, previous) => {
+    if (id !== previous) {
+      tabNavigationRevision += 1;
+    }
+  },
+  { flush: "sync" },
+);
+
 let lastWorkspaceActivePath: string | null = null;
 let slashMenu: SlashMenuController | null = null;
 const slashState = shallowRef<SlashMenuSnapshot>(null);
@@ -2108,14 +2125,21 @@ function cycleTab(delta: number) {
 async function openWorkspaceFile(
   path: string,
   name?: string,
-  options: { silent?: boolean; reveal?: boolean } = {},
+  options: {
+    silent?: boolean;
+    reveal?: boolean;
+    /** A caller-owned intent that must still be current before activation. */
+    isRequestCurrent?: () => boolean;
+  } = {},
 ): Promise<boolean> {
   const context = currentWorkspaceContext();
   if (context === null) {
     return false;
   }
+  const requestCurrent = options.isRequestCurrent ?? (() => true);
   const existing = findOpenTabForWorkspacePath(context.root, path);
   if (existing !== undefined) {
+    if (!requestCurrent()) return false;
     await activateTab(existing.id);
     if (options.reveal ?? true) {
       void sidebar.value?.reveal(path);
@@ -2139,23 +2163,29 @@ async function openWorkspaceFile(
     } catch (error) {
       if (
         isCurrentWorkspace(context.root, context.generation) &&
+        requestCurrent() &&
         !options.silent
       ) {
         showNotice(`读取失败：${errorText(error)}`, "danger");
       }
       return false;
     }
-    if (!isCurrentWorkspace(context.root, context.generation)) {
+    if (
+      !isCurrentWorkspace(context.root, context.generation) ||
+      !requestCurrent()
+    ) {
       return false;
     }
     const current = findOpenTabForWorkspacePath(context.root, path);
     if (current !== undefined) {
+      if (!requestCurrent()) return false;
       await activateTab(current.id);
       if (options.reveal ?? true) {
         void sidebar.value?.reveal(path);
       }
       return true;
     }
+    if (!requestCurrent()) return false;
     const tab = makeMarkdownTab(
       "workspace",
       path,
@@ -3735,6 +3765,19 @@ function isTextInput(target: EventTarget | null): boolean {
   );
 }
 
+/**
+ * The workspace search field has no Escape handler of its own. It therefore
+ * participates in the app-level overlay order even while the find panel is
+ * open; other fields, such as the file-tree name editor, consume Escape before
+ * it reaches the window listener.
+ */
+function isWorkspaceSearchInput(target: EventTarget | null): boolean {
+  return (
+    target instanceof HTMLElement &&
+    target.matches("[data-search-panel] [data-search-input]")
+  );
+}
+
 function closePopoverMenus() {
   slashMenu?.close();
   topBar.value?.closeModeMenu();
@@ -3895,11 +3938,11 @@ function closeWorkspaceSearch(options: { restoreFocus?: boolean } = {}) {
 
 /**
  * Opens a result through the normal tab flow, so an existing dirty tab is
- * switched to rather than reread. The request's root, generation, tab, editor
- * view and document are captured and checked again after every wait; an older
- * open must not steal focus or select in a newer workspace/tab. The stable
- * line and UTF-16 column plus full line/match fingerprints decide whether the
- * target is still provable.
+ * switched to rather than reread. The navigation intent is captured before
+ * the disk read: a later active-tab change makes this request stale before it
+ * can insert, activate or focus another tab. The open flow still protects the
+ * workspace generation, and the stable line and UTF-16 column plus full
+ * line/match fingerprints decide whether the target is still provable.
  */
 async function openSearchResult(target: SearchOpenTarget): Promise<boolean> {
   const current = workspace.value;
@@ -3909,10 +3952,23 @@ async function openSearchResult(target: SearchOpenTarget): Promise<boolean> {
   }
   const root = current.root;
   const generation = current.generation;
+  const navigationRevision = tabNavigationRevision;
+  const searchSequence = ++searchNavigationSequence;
+  const isRequestCurrent = () =>
+    tabNavigationRevision === navigationRevision &&
+    searchSequence === searchNavigationSequence &&
+    isCurrentWorkspace(root, generation);
   const opened = await openWorkspaceFile(target.line.path, undefined, {
     reveal: false,
+    isRequestCurrent,
   });
-  if (!opened || !isCurrentWorkspace(root, generation)) return false;
+  if (
+    !opened ||
+    searchSequence !== searchNavigationSequence ||
+    !isCurrentWorkspace(root, generation)
+  ) {
+    return false;
+  }
 
   const tab = currentMarkdown.value;
   const matchesTarget =
@@ -4164,8 +4220,9 @@ function handleGlobalKeydown(event: KeyboardEvent) {
     }
     if (editor?.search.snapshot().open) {
       // Another text field, such as a rename box, owns its own Escape. The
-      // find panel stops propagation itself and does not reach this branch.
-      if (isTextInput(event.target)) {
+      // find panel stops propagation itself and does not reach this branch;
+      // the workspace search field deliberately yields to this order.
+      if (isTextInput(event.target) && !isWorkspaceSearchInput(event.target)) {
         return;
       }
       event.preventDefault();

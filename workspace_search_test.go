@@ -505,7 +505,7 @@ func TestReadSearchFileRejectsReplacementLinks(t *testing.T) {
 	}
 }
 
-func TestSearchChecksCancellationBeforeWalkingNonMarkdown(t *testing.T) {
+func TestSearchChecksCancellationDuringNonMarkdownWalk(t *testing.T) {
 	root := t.TempDir()
 	for index := 0; index < 200; index++ {
 		mustWriteFile(t, filepath.Join(root, "plain", fmt.Sprintf("%d.txt", index)), []byte("x"))
@@ -516,6 +516,7 @@ func TestSearchChecksCancellationBeforeWalkingNonMarkdown(t *testing.T) {
 	}
 	defer rootFS.Close()
 	calls := 0
+	const cancelAfter = 10
 	var parts []SearchPart
 	err = searchRoot(
 		rootFS,
@@ -526,17 +527,17 @@ func TestSearchChecksCancellationBeforeWalkingNonMarkdown(t *testing.T) {
 		},
 		func() bool {
 			calls++
-			return calls >= 1
+			return calls >= cancelAfter
 		},
 	)
 	if err != nil {
 		t.Fatalf("searchRoot after cancellation: %v", err)
 	}
-	if calls == 0 {
-		t.Fatal("searchRoot did not check cancellation before filtering entries")
+	if calls != cancelAfter {
+		t.Fatalf("cancellation checks = %d, want %d while walking non-Markdown entries", calls, cancelAfter)
 	}
 	if len(parts) != 0 {
-		t.Fatalf("parts after immediate cancellation = %#v", parts)
+		t.Fatalf("parts after walk cancellation = %#v", parts)
 	}
 }
 

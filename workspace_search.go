@@ -248,12 +248,20 @@ func searchRoot(
 	})
 }
 
+// openSearchFile opens a rooted entry without waiting for a writer when the
+// path changed into a FIFO after the Lstat check. The returned descriptor is
+// still inspected before any bytes are read.
+func openSearchFile(root *os.Root, name string) (*os.File, error) {
+	return root.OpenFile(name, os.O_RDONLY|searchOpenNonblock, 0)
+}
+
 // readSearchFile opens and reads one walked entry without following a link
 // that replaced the file or any directory after the walk. Each directory is
-// opened and its identity checked before use; the final file is opened, then
-// checked against both the entry before opening and the current path before
-// any bytes are read. A path that stopped being a regular Markdown file in a
-// visible directory is skipped, not read through a link.
+// opened and its identity checked before use; the final file is opened without
+// blocking on special files, then checked against both the entry before
+// opening and the current path before any bytes are read. A path that stopped
+// being a regular Markdown file in a visible directory is skipped, not read
+// through a link.
 func readSearchFile(root *os.Root, rel string, stop func() bool) ([]byte, error) {
 	if stop() {
 		return nil, errSearchStopped
@@ -320,7 +328,7 @@ func readSearchFile(root *os.Root, rel string, stop func() bool) ([]byte, error)
 	if before.Mode()&fs.ModeSymlink != 0 || !before.Mode().IsRegular() {
 		return nil, errSearchSkip
 	}
-	file, err := current.Open(name)
+	file, err := openSearchFile(current, name)
 	if err != nil {
 		return nil, err
 	}

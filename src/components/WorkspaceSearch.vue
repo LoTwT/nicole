@@ -208,6 +208,7 @@ defineExpose({ focusInput });
         <input
           ref="input"
           type="text"
+          data-search-input
           class="focus-ring min-w-0 flex-1 bg-transparent text-[12px] text-[var(--text-primary)] placeholder:text-[var(--text-muted)]"
           aria-label="搜索工作区"
           placeholder="搜索工作区"
