@@ -403,6 +403,28 @@ describe("Outline", () => {
     expect(host.textContent).not.toContain("文档较大，部分标题尚未解析");
   });
 
+  it("clears the composition-end check when the outline unmounts", async () => {
+    vi.useFakeTimers();
+    mount("# 文章\n\n## 第一节\n");
+    await settle();
+    const view = (editor as EditorHandle).view;
+    view.contentDOM.dispatchEvent(
+      new CompositionEvent("compositionstart", { bubbles: true }),
+    );
+    view.dispatch({
+      changes: { from: view.state.doc.length, insert: "\n## 迟到\n" },
+    });
+    await settle();
+    const during = vi.getTimerCount();
+    const calls = headingMocks.extract.mock.calls.length;
+
+    app?.unmount();
+    app = null;
+    expect(vi.getTimerCount()).toBeLessThan(during);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(headingMocks.extract).toHaveBeenCalledTimes(calls);
+  });
+
   it("clears timers and listeners when the outline unmounts", async () => {
     vi.useFakeTimers();
     mount("# 文章\n\n## 第一节\n");
