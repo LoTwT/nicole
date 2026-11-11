@@ -46,6 +46,7 @@ const emit = defineEmits<{
   "toggle-sidebar": [];
   "toggle-outline": [];
   "open-folder": [];
+  "mode-menu-will-open": [];
 }>();
 
 const modes: readonly {
@@ -62,6 +63,7 @@ const modes: readonly {
 
 const modeMenuOpen = ref(false);
 const modeArea = ref<HTMLElement | null>(null);
+const modeToggle = ref<HTMLButtonElement | null>(null);
 const tablist = ref<HTMLElement | null>(null);
 let resizeObserver: ResizeObserver | null = null;
 
@@ -89,11 +91,47 @@ function closeModeMenu() {
   modeMenuOpen.value = false;
 }
 
+/**
+ * Escape owns both the menu close and the focus return. Programmatic closes
+ * use closeModeMenu() instead, so a new owner can keep focus.
+ */
+function closeModeMenuByEscape() {
+  modeMenuOpen.value = false;
+  void nextTick(() => {
+    if (modeMenuOpen.value) return;
+    const toggle = modeToggle.value;
+    if (!toggle?.isConnected) return;
+    const active = document.activeElement;
+    const focusHandedOff =
+      active instanceof HTMLElement &&
+      active.isConnected &&
+      active !== document.body &&
+      active !== document.documentElement;
+    if (focusHandedOff && active !== toggle) return;
+    toggle.focus();
+  });
+}
+
+function toggleModeMenu() {
+  if (modeMenuOpen.value) {
+    modeMenuOpen.value = false;
+    return;
+  }
+  // Let the app dismiss another popover before this menu takes focus.
+  emit("mode-menu-will-open");
+  modeMenuOpen.value = true;
+  void nextTick(() => {
+    modeArea.value
+      ?.querySelector<HTMLElement>('[role="menuitemradio"]')
+      ?.focus();
+  });
+}
+
 function handleModeKeydown(event: KeyboardEvent) {
   if (event.key === "Escape" && modeMenuOpen.value) {
     event.preventDefault();
     event.stopPropagation();
-    modeMenuOpen.value = false;
+    closeModeMenuByEscape();
   }
 }
 
@@ -285,13 +323,14 @@ defineExpose({ closeModeMenu });
       >
         <div v-if="compact" class="relative">
           <button
+            ref="modeToggle"
             type="button"
             class="focus-ring grid size-6 place-items-center rounded-[4px] text-[var(--text-secondary)] hover:bg-[var(--surface-subtle)]"
             :aria-label="`编辑模式：${activeMode.full}`"
             :title="modeTitle(activeMode.id)"
             :aria-expanded="modeMenuOpen"
             aria-haspopup="menu"
-            @click="modeMenuOpen = !modeMenuOpen"
+            @click="toggleModeMenu"
           >
             <AppIcon :name="activeMode.icon" :size="14" />
           </button>

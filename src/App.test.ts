@@ -329,6 +329,41 @@ function paletteOffers(label: string): boolean {
   return paletteOptions().some((item) => item.textContent?.includes(label));
 }
 
+function findPanel(): HTMLElement | null {
+  return document.querySelector<HTMLElement>("[data-find-replace]");
+}
+
+function findInput(): HTMLInputElement {
+  const input = findPanel()?.querySelector<HTMLInputElement>(
+    'input[aria-label="查找"]',
+  );
+  if (!input) throw new Error("find input not found");
+  return input;
+}
+
+function findReplaceInput(): HTMLInputElement {
+  const input = findPanel()?.querySelector<HTMLInputElement>(
+    'input[aria-label="替换为"]',
+  );
+  if (!input) throw new Error("replace input not found");
+  return input;
+}
+
+function typeFind(input: HTMLInputElement, value: string) {
+  input.value = value;
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function findButton(label: string): HTMLButtonElement {
+  const button = [...(findPanel()?.querySelectorAll<HTMLButtonElement>("button") ?? [])].find(
+    (item) =>
+      item.textContent?.trim() === label ||
+      item.getAttribute("aria-label")?.startsWith(label),
+  );
+  if (!button) throw new Error(`find button ${label} not found`);
+  return button;
+}
+
 async function closePalette() {
   window.dispatchEvent(
     new KeyboardEvent("keydown", {
@@ -5448,6 +5483,356 @@ describe("command palette", () => {
   });
 });
 
+describe("find and replace", () => {
+  it("opens only the find row, reveals replace and saves the replaced model", async () => {
+    vi.useFakeTimers();
+    await openFile("a.md", "foo foo\n");
+    const view = editorView();
+    view.focus();
+
+    pressMod("f", "KeyF", "macos");
+    await settle();
+    expect(findPanel()).not.toBeNull();
+    expect(host.querySelector(".cm-panel input")).toBeNull();
+    expect(document.activeElement).toBe(findInput());
+    expect(findPanel()?.querySelector('input[aria-label="替换为"]')).toBeNull();
+
+    typeFind(findInput(), "foo");
+    await settle();
+    expect(findPanel()?.textContent).toContain("0/2");
+    findButton("下一个匹配").click();
+    await settle();
+    expect(findPanel()?.textContent).toContain("1/2");
+
+    findInput().dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "f",
+        code: "KeyF",
+        altKey: true,
+        metaKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    typeFind(findReplaceInput(), "bar");
+    await settle();
+    findButton("全部替换").click();
+    await settle();
+    expect(editorView().state.doc.toString()).toBe("bar bar\n");
+    expect(findPanel()?.textContent).toContain("0/0");
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(mocks.writeFile).toHaveBeenCalledWith("a.md", "bar bar\n", 1);
+
+    findInput().dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Escape",
+        code: "Escape",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    expect(findPanel()).toBeNull();
+    expect(document.activeElement).toBe(editorView().contentDOM);
+  });
+
+  it("closes only the slash menu before the find panel on Escape", async () => {
+    await openFile("a.md", "hello\n");
+    editorView().focus();
+    pressMod("f", "KeyF", "macos");
+    await settle();
+    expect(findPanel()).not.toBeNull();
+
+    editorView().focus();
+    await settle();
+    typeSlashAtEnd();
+    await settle();
+    expect(slashMenuElement()).not.toBeNull();
+    expect(findPanel()).not.toBeNull();
+
+    editorView().contentDOM.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Escape",
+        code: "Escape",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    expect(slashMenuElement()).toBeNull();
+    expect(findPanel()).not.toBeNull();
+
+    editorView().contentDOM.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Escape",
+        code: "Escape",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    expect(findPanel()).toBeNull();
+  });
+
+  it("destroys the panel and its query when switching tabs", async () => {
+    await setupWorkspace({ "a.md": "one one\n", "b.md": "two\n" });
+    await openPath("/notes/a.md");
+    await openPath("/notes/b.md");
+    tabNamed("a.md").click();
+    await settle();
+    editorView().focus();
+    pressMod("f", "KeyF", "macos");
+    await settle();
+    typeFind(findInput(), "one");
+    await settle();
+    expect(findPanel()?.textContent).toContain("0/2");
+
+    tabNamed("b.md").click();
+    await settle();
+    expect(findPanel()).toBeNull();
+    expect(
+      editorView().contentDOM.querySelectorAll(".cm-searchMatch"),
+    ).toHaveLength(0);
+
+    editorView().focus();
+    pressMod("f", "KeyF", "macos");
+    await settle();
+    expect(findInput().value).toBe("one");
+    expect(findPanel()?.textContent).toContain("0/0");
+  });
+
+  it("closes find when the compact mode menu opens and restores its toggle on Escape", async () => {
+    await openFile("a.md", "# A\n");
+    await withViewportWidth(700, async () => {
+      editorView().focus();
+      pressSidebarShortcut();
+      await settle();
+      expect(
+        host.querySelector("aside")?.classList.contains("sidebar--overlay"),
+      ).toBe(true);
+      expect(document.activeElement).toBe(editorView().contentDOM);
+
+      pressMod("f", "KeyF", "macos");
+      await settle();
+      expect(findPanel()).not.toBeNull();
+
+      const toggle = host.querySelector<HTMLButtonElement>(
+        '[aria-label^="编辑模式："]',
+      )!;
+      toggle.click();
+      await settle();
+
+      expect(findPanel()).toBeNull();
+      const menu = host.querySelector<HTMLElement>('[role="menu"]');
+      expect(menu).not.toBeNull();
+      const firstItem = menu!.querySelector<HTMLElement>(
+        '[role="menuitemradio"]',
+      )!;
+      expect(document.activeElement).toBe(firstItem);
+
+      const escape = new KeyboardEvent("keydown", {
+        key: "Escape",
+        code: "Escape",
+        bubbles: true,
+        cancelable: true,
+      });
+      firstItem.dispatchEvent(escape);
+      await settle();
+
+      expect(escape.defaultPrevented).toBe(true);
+      expect(host.querySelector('[role="menu"]')).toBeNull();
+      expect(document.activeElement).toBe(toggle);
+      expect(host.querySelector("aside")).not.toBeNull();
+      expect(findPanel()).toBeNull();
+
+      // The reverse direction: opening find closes this popover and moves
+      // focus into the find input.
+      editorView().contentDOM.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "f",
+          code: "KeyF",
+          metaKey: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await settle();
+      expect(host.querySelector('[role="menu"]')).toBeNull();
+      expect(findPanel()).not.toBeNull();
+      expect(document.activeElement).toBe(findInput());
+    });
+  });
+
+  it("opens the command, file and heading palettes from the find inputs", async () => {
+    await openFile("a.md", "foo\n");
+    const shortcuts: readonly [string, boolean, "find" | "replace"][] = [
+      ["p", false, "find"],
+      ["P", true, "replace"],
+      ["O", true, "find"],
+    ];
+
+    for (const [key, shiftKey, source] of shortcuts) {
+      editorView().focus();
+      pressMod("f", "KeyF", "macos");
+      await settle();
+      let target = findInput();
+      if (source === "replace") {
+        target.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "f",
+            code: "KeyF",
+            altKey: true,
+            metaKey: true,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+        await settle();
+        target = findReplaceInput();
+      }
+      target.focus();
+      target.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key,
+          metaKey: true,
+          shiftKey,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await settle();
+
+      expect(findPanel()).toBeNull();
+      expect(paletteInput()).toBeInstanceOf(HTMLInputElement);
+      expect(document.activeElement).toBe(paletteInput());
+      closePalette();
+      await settle();
+    }
+  });
+
+  it("closes find when the command palette opens", async () => {
+    await openFile("a.md", "foo\n");
+    editorView().focus();
+    pressMod("f", "KeyF", "macos");
+    await settle();
+    expect(findPanel()).not.toBeNull();
+
+    pressAppShortcut("P", true);
+    await settle();
+    expect(findPanel()).toBeNull();
+    expect(paletteInput()).toBeInstanceOf(HTMLInputElement);
+  });
+
+  it("does not run editor find without an active Markdown editor", async () => {
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "f",
+        code: "KeyF",
+        metaKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    expect(findPanel()).toBeNull();
+    expect(host.querySelector(".cm-editor")).toBeNull();
+  });
+
+  it("forwards Mod-f from a focused task box into the find input", async () => {
+    await openFile("a.md", "- [ ] 待办\n");
+    const view = editorView();
+    view.dispatch({ selection: { anchor: view.state.doc.length } });
+    await vi.waitFor(
+      () => expect(host.querySelector(".cm-nicole-checkbox-input")).not.toBeNull(),
+      { interval: 1, timeout: 4000 },
+    );
+    const checkbox = host.querySelector<HTMLInputElement>(
+      ".cm-nicole-checkbox-input",
+    )!;
+    checkbox.focus();
+    checkbox.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "f",
+        code: "KeyF",
+        metaKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    expect(findPanel()).not.toBeNull();
+    expect(document.activeElement).toBe(findInput());
+
+    const input = findInput();
+    input.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "f",
+        code: "KeyF",
+        metaKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    expect(document.activeElement).toBe(findInput());
+
+    input.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Escape",
+        code: "Escape",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    expect(findPanel()).toBeNull();
+    expect(document.activeElement).toBe(checkbox);
+  });
+
+  it("falls back to the editor when the find opener was removed", async () => {
+    await openFile("a.md", "- [ ] 待办\n");
+    const view = editorView();
+    view.dispatch({ selection: { anchor: view.state.doc.length } });
+    await vi.waitFor(
+      () => expect(host.querySelector(".cm-nicole-checkbox-input")).not.toBeNull(),
+      { interval: 1, timeout: 4000 },
+    );
+    const checkbox = host.querySelector<HTMLInputElement>(
+      ".cm-nicole-checkbox-input",
+    )!;
+    checkbox.focus();
+    checkbox.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "f",
+        code: "KeyF",
+        metaKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    expect(findPanel()).not.toBeNull();
+
+    replaceEditorText("# 普通标题\n");
+    await settle();
+    expect(host.querySelector(".cm-nicole-checkbox-input")).toBeNull();
+
+    findInput().dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Escape",
+        code: "Escape",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    expect(findPanel()).toBeNull();
+    expect(document.activeElement).toBe(editorView().contentDOM);
+  });
+});
+
 describe("slash menu with tabs", () => {
   it("destroys the previous slash controller when switching tabs", async () => {
     await setupWorkspace({ "a.md": "# A\n", "b.md": "# B\n" });
@@ -7525,6 +7910,60 @@ describe("workspace search", () => {
       }),
     );
     await settle();
+    expect(host.querySelector("[data-search-panel]")).toBeNull();
+  });
+
+  it("lets a slash menu and find panel each consume Escape before search", async () => {
+    await openFile("a.md", "# A\n");
+    pressAppShortcut("f", true);
+    await settle();
+    expect(host.querySelector("[data-search-panel]")).not.toBeNull();
+
+    editorView().focus();
+    pressMod("f", "KeyF", "macos");
+    await settle();
+    expect(findPanel()).not.toBeNull();
+    expect(host.querySelector("[data-search-panel]")).not.toBeNull();
+
+    typeSlashAtEnd();
+    await settle();
+    expect(slashMenuElement()).not.toBeNull();
+
+    const slashEscape = new KeyboardEvent("keydown", {
+      key: "Escape",
+      code: "Escape",
+      bubbles: true,
+      cancelable: true,
+    });
+    editorView().contentDOM.dispatchEvent(slashEscape);
+    await settle();
+    expect(slashEscape.defaultPrevented).toBe(true);
+    expect(slashMenuElement()).toBeNull();
+    expect(findPanel()).not.toBeNull();
+    expect(host.querySelector("[data-search-panel]")).not.toBeNull();
+
+    findInput().dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Escape",
+        code: "Escape",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    expect(findPanel()).toBeNull();
+    expect(host.querySelector("[data-search-panel]")).not.toBeNull();
+
+    const searchEscape = new KeyboardEvent("keydown", {
+      key: "Escape",
+      code: "Escape",
+      bubbles: true,
+      cancelable: true,
+    });
+    searchInput().focus();
+    searchInput().dispatchEvent(searchEscape);
+    await settle();
+    expect(searchEscape.defaultPrevented).toBe(true);
     expect(host.querySelector("[data-search-panel]")).toBeNull();
   });
 
