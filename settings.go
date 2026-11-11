@@ -27,10 +27,15 @@ const (
 	themeSystem = "system"
 	themeLight  = "light"
 	themeDark   = "dark"
+
+	editorModeLive      = "live"
+	editorModeImmersive = "immersive"
+	editorModeSource    = "source"
 )
 
 var (
 	errInvalidTheme           = errors.New("settings: theme must be system, light or dark")
+	errInvalidEditorMode      = errors.New("settings: editor mode must be live, immersive or source")
 	errRecentFolderNotCurrent = errors.New("settings: recent folder must be the open workspace")
 )
 
@@ -39,6 +44,9 @@ var (
 type AppSettings struct {
 	// Theme is "system", "light" or "dark". System follows the desktop.
 	Theme string `json:"theme"`
+	// EditorMode is the global editor mode: "live", "immersive" or "source".
+	// It is shared by every tab.
+	EditorMode string `json:"editorMode"`
 	// SidebarWidth is the sidebar width in CSS pixels, within
 	// [200, 400].
 	SidebarWidth int `json:"sidebarWidth"`
@@ -91,6 +99,12 @@ func (s *Settings) MigrateLegacyTheme(legacy string) (AppSettings, error) {
 // SetTheme saves the theme and makes the native appearance follow it.
 func (s *Settings) SetTheme(theme string) error {
 	return s.store.setTheme(theme)
+}
+
+// SetEditorMode saves the global editor mode. It rejects unknown modes before
+// touching the settings file.
+func (s *Settings) SetEditorMode(mode string) error {
+	return s.store.setEditorMode(mode)
 }
 
 // SetSidebarWidth saves the sidebar width, clamped to the range the interface
@@ -186,6 +200,7 @@ func newSettingsStoreIn(filePath string) *settingsStore {
 // explicit one, which legacy migration needs.
 type settingsFile struct {
 	Theme           *string             `json:"theme"`
+	EditorMode      string              `json:"editorMode"`
 	SidebarWidth    int                 `json:"sidebarWidth"`
 	RecentFolders   []string            `json:"recentFolders"`
 	ExpandedFolders map[string][]string `json:"expandedFolders"`
@@ -195,6 +210,7 @@ type settingsFile struct {
 func defaultSettings() AppSettings {
 	return AppSettings{
 		Theme:           themeSystem,
+		EditorMode:      editorModeLive,
 		SidebarWidth:    defaultSidebarWidth,
 		RecentFolders:   []string{},
 		ExpandedFolders: map[string][]string{},
@@ -226,6 +242,16 @@ func (s *settingsStore) setTheme(theme string) error {
 	}
 	applyThemeSource(theme)
 	return nil
+}
+
+func (s *settingsStore) setEditorMode(mode string) error {
+	mode = strings.TrimSpace(strings.ToLower(mode))
+	if !validEditorMode(mode) {
+		return errInvalidEditorMode
+	}
+	return s.update(func(settings *AppSettings) {
+		settings.EditorMode = mode
+	})
 }
 
 func (s *settingsStore) migrateLegacyTheme(legacy string) (AppSettings, error) {
@@ -305,6 +331,7 @@ func (s *settingsStore) readLocked() (AppSettings, bool, error) {
 	themePresent := file.Theme != nil
 	settings := AppSettings{
 		Theme:           themeSystem,
+		EditorMode:      file.EditorMode,
 		SidebarWidth:    file.SidebarWidth,
 		RecentFolders:   file.RecentFolders,
 		ExpandedFolders: file.ExpandedFolders,
@@ -339,12 +366,16 @@ func (s *settingsStore) writeLocked(settings AppSettings) error {
 }
 
 // normalizeSettings returns a copy with every field in the shape the interface
-// expects: a known theme, a width in range, non-nil collections and no
-// duplicate recent folders.
+// expects: a known theme and editor mode, a width in range, non-nil
+// collections and no duplicate recent folders.
 func normalizeSettings(settings AppSettings) AppSettings {
 	settings.Theme = strings.TrimSpace(strings.ToLower(settings.Theme))
 	if !validTheme(settings.Theme) {
 		settings.Theme = themeSystem
+	}
+	settings.EditorMode = strings.TrimSpace(strings.ToLower(settings.EditorMode))
+	if !validEditorMode(settings.EditorMode) {
+		settings.EditorMode = editorModeLive
 	}
 	if settings.SidebarWidth <= 0 {
 		settings.SidebarWidth = defaultSidebarWidth
@@ -380,6 +411,10 @@ func normalizeSettings(settings AppSettings) AppSettings {
 
 func validTheme(theme string) bool {
 	return theme == themeSystem || theme == themeLight || theme == themeDark
+}
+
+func validEditorMode(mode string) bool {
+	return mode == editorModeLive || mode == editorModeImmersive || mode == editorModeSource
 }
 
 func themeSource(theme string) mygo.ThemeSource {

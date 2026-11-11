@@ -3,8 +3,9 @@ import { Settings, type AppSettings } from "./mygo";
 export type { AppSettings };
 
 export type ThemeSetting = "system" | "light" | "dark";
+export type EditorModeSetting = "live" | "immersive" | "source";
 
-/** Reads the global settings; defaults are "system", 252 px and no recent folders. */
+/** Reads the global settings; defaults are "system", "live", 252 px and no recent folders. */
 export function getSettings(): Promise<AppSettings> {
   return Settings.get();
 }
@@ -20,6 +21,11 @@ export function migrateLegacyTheme(legacy: string): Promise<AppSettings> {
 /** Saves the theme and makes native menus and dialogs follow it. */
 export function setTheme(theme: ThemeSetting): Promise<void> {
   return Settings.setTheme(theme);
+}
+
+/** Saves the global editor mode; Go rejects unknown values. */
+export function setEditorMode(mode: EditorModeSetting): Promise<void> {
+  return Settings.setEditorMode(mode);
 }
 
 /** Saves the sidebar width; Go clamps it to 200–400 px. */

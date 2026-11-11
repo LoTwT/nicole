@@ -25,6 +25,11 @@ export interface AppSettings {
   /** Theme is "system", "light" or "dark". System follows the desktop. */
   theme: string;
   /**
+   * EditorMode is the global editor mode: "live", "immersive" or "source".
+   * It is shared by every tab.
+   */
+  editorMode: string;
+  /**
    * SidebarWidth is the sidebar width in CSS pixels, within
    * [200, 400].
    */
@@ -482,6 +487,13 @@ export const Settings = {
   /** RemoveRecentFolder drops folder from the recent folders. */
   removeRecentFolder(folder: string): Promise<void> {
     return call("Settings.RemoveRecentFolder", folder);
+  },
+  /**
+   * SetEditorMode saves the global editor mode. It rejects unknown modes before
+   * touching the settings file.
+   */
+  setEditorMode(mode: string): Promise<void> {
+    return call("Settings.SetEditorMode", mode);
   },
   /**
    * SetExpandedFolders saves the expanded folders of root. The frontend owns

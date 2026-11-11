@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"os"
@@ -33,6 +34,9 @@ func TestSettingsDefaults(t *testing.T) {
 	}
 	if settings.Theme != themeSystem {
 		t.Errorf("Theme = %q, want %q", settings.Theme, themeSystem)
+	}
+	if settings.EditorMode != editorModeLive {
+		t.Errorf("EditorMode = %q, want %q", settings.EditorMode, editorModeLive)
 	}
 	if settings.SidebarWidth != defaultSidebarWidth {
 		t.Errorf("SidebarWidth = %d, want %d", settings.SidebarWidth, defaultSidebarWidth)
@@ -85,6 +89,104 @@ func TestSettingsSetThemePersistsAndApplies(t *testing.T) {
 	}
 	if got := *applied; len(got) != 1 {
 		t.Errorf("invalid theme changed the native appearance: %q", got)
+	}
+}
+
+func TestSettingsEditorModeDefaultsToLive(t *testing.T) {
+	store, dir := newTestSettings(t)
+	filePath := filepath.Join(dir, settingsFileName)
+
+	settings, err := store.get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.EditorMode != editorModeLive {
+		t.Errorf("missing settings file: EditorMode = %q, want %q", settings.EditorMode, editorModeLive)
+	}
+
+	legacy := []byte(`{"theme":"dark","sidebarWidth":300,"recentFolders":["/notes"],"expandedFolders":{"/notes":["a"]},"workspaceClosed":true}` + "\n")
+	if err := os.WriteFile(filePath, legacy, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	settings, err = store.get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.EditorMode != editorModeLive {
+		t.Errorf("missing editorMode: EditorMode = %q, want %q", settings.EditorMode, editorModeLive)
+	}
+	if !settings.WorkspaceClosed || settings.Theme != themeDark || settings.SidebarWidth != 300 {
+		t.Errorf("existing fields changed while defaulting the mode: %+v", settings)
+	}
+
+	if err := os.WriteFile(filePath, []byte(`{"editorMode":"sepia","workspaceClosed":true}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	settings, err = store.get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.EditorMode != editorModeLive {
+		t.Errorf("invalid editorMode: EditorMode = %q, want %q", settings.EditorMode, editorModeLive)
+	}
+	if !settings.WorkspaceClosed {
+		t.Error("invalid editorMode cleared workspaceClosed")
+	}
+}
+
+func TestSettingsSetEditorMode(t *testing.T) {
+	store, dir := newTestSettings(t)
+	settings := NewSettings(store)
+	filePath := filepath.Join(dir, settingsFileName)
+	legacy := []byte(`{"theme":"dark","sidebarWidth":300,"recentFolders":["/notes"],"expandedFolders":{"/notes":["a"]},"workspaceClosed":true}` + "\n")
+	if err := os.WriteFile(filePath, legacy, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, mode := range []string{editorModeImmersive, editorModeSource, editorModeLive} {
+		if err := settings.SetEditorMode(mode); err != nil {
+			t.Fatalf("SetEditorMode(%q) = %v", mode, err)
+		}
+		loaded, err := store.get()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if loaded.EditorMode != mode {
+			t.Errorf("EditorMode after SetEditorMode(%q) = %q", mode, loaded.EditorMode)
+		}
+	}
+
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored map[string]any
+	if err := json.Unmarshal(data, &stored); err != nil {
+		t.Fatalf("settings file is not valid JSON: %v", err)
+	}
+	if stored["theme"] != themeDark || stored["sidebarWidth"] != float64(300) {
+		t.Errorf("existing display fields changed: %#v", stored)
+	}
+	if stored["workspaceClosed"] != true {
+		t.Errorf("workspaceClosed = %v, want true", stored["workspaceClosed"])
+	}
+	if recent, ok := stored["recentFolders"].([]any); !ok || len(recent) != 1 || recent[0] != "/notes" {
+		t.Errorf("recentFolders changed: %#v", stored["recentFolders"])
+	}
+	if expanded, ok := stored["expandedFolders"].(map[string]any); !ok || len(expanded) != 1 {
+		t.Errorf("expandedFolders changed: %#v", stored["expandedFolders"])
+	}
+
+	before := data
+	if err := settings.SetEditorMode("sepia"); !errors.Is(err, errInvalidEditorMode) {
+		t.Errorf("SetEditorMode(sepia) = %v, want %v", err, errInvalidEditorMode)
+	}
+	after, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Errorf("invalid mode changed the settings file: %q -> %q", before, after)
 	}
 }
 

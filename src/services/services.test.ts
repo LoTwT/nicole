@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   getSettings: vi.fn(),
   migrateLegacyTheme: vi.fn(),
   setTheme: vi.fn(),
+  setEditorMode: vi.fn(),
   setSidebarWidth: vi.fn(),
   setExpandedFolders: vi.fn(),
   addRecentFolder: vi.fn(),
@@ -49,6 +50,7 @@ vi.mock("./mygo", () => ({
     get: mocks.getSettings,
     migrateLegacyTheme: mocks.migrateLegacyTheme,
     setTheme: mocks.setTheme,
+    setEditorMode: mocks.setEditorMode,
     setSidebarWidth: mocks.setSidebarWidth,
     setExpandedFolders: mocks.setExpandedFolders,
     addRecentFolder: mocks.addRecentFolder,
@@ -114,6 +116,7 @@ import {
   getSettings,
   migrateLegacyTheme,
   removeRecentFolder,
+  setEditorMode,
   setExpandedFolders,
   setSidebarWidth,
   setTheme,
@@ -148,6 +151,7 @@ beforeEach(() => {
     expandedFolders: {},
   });
   mocks.setTheme.mockResolvedValue(undefined);
+  mocks.setEditorMode.mockResolvedValue(undefined);
   mocks.setSidebarWidth.mockResolvedValue(undefined);
   mocks.setExpandedFolders.mockResolvedValue(undefined);
   mocks.addRecentFolder.mockResolvedValue(undefined);
@@ -225,6 +229,7 @@ describe("service wrappers", () => {
     await getSettings();
     await migrateLegacyTheme("dark");
     await setTheme("light");
+    await setEditorMode("source");
     await setSidebarWidth(300);
     await setExpandedFolders("/notes", ["a"]);
     await addRecentFolder("/notes");
@@ -233,6 +238,7 @@ describe("service wrappers", () => {
     expect(mocks.getSettings).toHaveBeenCalledOnce();
     expect(mocks.migrateLegacyTheme).toHaveBeenCalledWith("dark");
     expect(mocks.setTheme).toHaveBeenCalledWith("light");
+    expect(mocks.setEditorMode).toHaveBeenCalledWith("source");
     expect(mocks.setSidebarWidth).toHaveBeenCalledWith(300);
     expect(mocks.setExpandedFolders).toHaveBeenCalledWith("/notes", ["a"]);
     expect(mocks.addRecentFolder).toHaveBeenCalledWith("/notes");
