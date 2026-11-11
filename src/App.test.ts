@@ -5518,10 +5518,17 @@ describe("find and replace", () => {
     expect(findPanel()?.textContent).toContain("0/0");
   });
 
-  it("closes find when the compact mode menu opens and focuses the menu", async () => {
+  it("closes find when the compact mode menu opens and restores its toggle on Escape", async () => {
     await openFile("a.md", "# A\n");
     await withViewportWidth(700, async () => {
       editorView().focus();
+      pressSidebarShortcut();
+      await settle();
+      expect(
+        host.querySelector("aside")?.classList.contains("sidebar--overlay"),
+      ).toBe(true);
+      expect(document.activeElement).toBe(editorView().contentDOM);
+
       pressMod("f", "KeyF", "macos");
       await settle();
       expect(findPanel()).not.toBeNull();
@@ -5535,9 +5542,25 @@ describe("find and replace", () => {
       expect(findPanel()).toBeNull();
       const menu = host.querySelector<HTMLElement>('[role="menu"]');
       expect(menu).not.toBeNull();
-      expect(document.activeElement).toBe(
-        menu!.querySelector('[role="menuitemradio"]'),
-      );
+      const firstItem = menu!.querySelector<HTMLElement>(
+        '[role="menuitemradio"]',
+      )!;
+      expect(document.activeElement).toBe(firstItem);
+
+      const escape = new KeyboardEvent("keydown", {
+        key: "Escape",
+        code: "Escape",
+        bubbles: true,
+        cancelable: true,
+      });
+      firstItem.dispatchEvent(escape);
+      await settle();
+
+      expect(escape.defaultPrevented).toBe(true);
+      expect(host.querySelector('[role="menu"]')).toBeNull();
+      expect(document.activeElement).toBe(toggle);
+      expect(host.querySelector("aside")).not.toBeNull();
+      expect(findPanel()).toBeNull();
 
       // The reverse direction: opening find closes this popover and moves
       // focus into the find input.
