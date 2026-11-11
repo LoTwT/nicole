@@ -49,6 +49,11 @@ import { basicSetup } from "codemirror";
 
 import { isMac, type AppPlatform } from "../app/platform";
 import { commandRegistry } from "../commands/registry";
+import {
+  createFindReplaceController,
+  findSearchExtension,
+  notifyFindController,
+} from "./find";
 import { createCommandKeymap } from "./keymap";
 import {
   scrollAnchor,
@@ -77,6 +82,12 @@ export type {
   PasteImageHandler,
   SavedSelection,
 } from "./types";
+export type {
+  FindReplaceController,
+  FindReplaceError,
+  FindReplaceOptions,
+  FindReplaceState,
+} from "./find";
 
 class BulletWidget extends WidgetType {
   override eq(other: WidgetType) {
@@ -1208,6 +1219,23 @@ const editorTheme = EditorView.theme({
   // and bracket-match highlights keep their own background.
   ".cm-nicole-code-line span:not(.cm-searchMatch):not(.cm-searchMatch-selected):not(.cm-selectionMatch):not(.cm-matchingBracket):not(.cm-nonmatchingBracket)":
     { backgroundColor: "transparent" },
+  // Nicole renders find/replace above the editor. The built-in search panel
+  // stays state-only, so an old key binding or a test cannot create a second
+  // visible panel or an extra 1px panel border.
+  ".cm-panels": { display: "none" },
+  // `search()` installs a base theme for these classes. The extra `.cm-content`
+  // makes Nicole's variables win without `!important`.
+  "&.cm-editor .cm-content .cm-searchMatch": {
+    backgroundColor: "var(--status-warning-bg)",
+    outlineWidth: "1px",
+    outlineStyle: "solid",
+    outlineColor: "var(--status-warning-border)",
+    borderRadius: "2px",
+  },
+  "&.cm-editor .cm-content .cm-searchMatch.cm-searchMatch-selected": {
+    backgroundColor: "var(--accent-soft)",
+    outlineColor: "var(--focus-ring-color)",
+  },
   ".cm-nicole-code-bg": {
     backgroundColor: "var(--reading-code-bg)",
   },
@@ -1418,6 +1446,7 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     platform = runtimePlatform(),
     commands = [],
     restore,
+    find: initialFind,
     resolveImage = defaultResolveImage,
     onPasteImage,
     onChange,
@@ -1669,6 +1698,7 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     EditorView.lineWrapping,
     markdown({ base: markdownLanguage }),
     syntaxHighlighting(highlightStyle),
+    findSearchExtension,
     codeBlockPlugin,
     codeBlockBackground,
     selectionLayerClip,
@@ -1676,6 +1706,7 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     createCommandKeymap(enabledCommands, platform),
     imageHandlers(onPasteImage, createTicketAt),
     EditorView.updateListener.of((update) => {
+      notifyFindController(update);
       if (focusedCheckbox !== null && !focusedCheckbox.isConnected) {
         window.setTimeout(recoverRemovedCheckbox, 0);
       }
@@ -1727,6 +1758,7 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
         extensions,
       }),
   });
+  const find = createFindReplaceController(view, initialFind);
   view.contentDOM.addEventListener("compositionstart", handleCompositionStart);
   view.contentDOM.addEventListener("compositionend", handleCompositionEnd);
 
@@ -1929,6 +1961,7 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     get mode() {
       return mode;
     },
+    search: find,
     setMode(next) {
       if (next === mode) return;
       mode = next;
@@ -1988,6 +2021,7 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     },
     destroy() {
       destroyed = true;
+      find.destroy();
       editorDocument.removeEventListener("selectstart", onSelectStart, true);
       window.removeEventListener("focus", recoverRemovedCheckbox);
       view.contentDOM.removeEventListener("focusout", onCheckboxFocusOut, true);

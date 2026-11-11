@@ -826,8 +826,8 @@ describe("task checkbox", () => {
       ctrlKey: true,
     });
     expect(find.defaultPrevented).toBe(true);
-    const search = view.dom.querySelector<HTMLInputElement>(".cm-panel input");
-    expect(search).not.toBeNull();
+    expect(instance.search.snapshot().open).toBe(true);
+    expect(view.dom.querySelector(".cm-panel input")).toBeNull();
     expect(document.activeElement).toBe(view.contentDOM);
 
     input.focus();
@@ -837,7 +837,7 @@ describe("task checkbox", () => {
       ctrlKey: true,
     });
     expect(next.defaultPrevented).toBe(true);
-    expect(view.dom.querySelector(".cm-panel input")).not.toBeNull();
+    expect(instance.search.snapshot().open).toBe(true);
   });
 
   it("forwards Select All from the primary modifier on Windows", async () => {
