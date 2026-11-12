@@ -47,6 +47,9 @@ type AppSettings struct {
 	// EditorMode is the global editor mode: "live", "immersive" or "source".
 	// It is shared by every tab.
 	EditorMode string `json:"editorMode"`
+	// OutlineVisible remembers whether the outline is open. The narrow
+	// floating outline is temporary and does not change this value.
+	OutlineVisible bool `json:"outlineVisible"`
 	// SidebarWidth is the sidebar width in CSS pixels, within
 	// [200, 400].
 	SidebarWidth int `json:"sidebarWidth"`
@@ -105,6 +108,14 @@ func (s *Settings) SetTheme(theme string) error {
 // touching the settings file.
 func (s *Settings) SetEditorMode(mode string) error {
 	return s.store.setEditorMode(mode)
+}
+
+// SetOutlineVisible remembers the global outline switch. Narrow windows keep
+// their temporary floating outline in the page, not here.
+func (s *Settings) SetOutlineVisible(visible bool) error {
+	return s.store.update(func(settings *AppSettings) {
+		settings.OutlineVisible = visible
+	})
 }
 
 // SetSidebarWidth saves the sidebar width, clamped to the range the interface
@@ -201,6 +212,7 @@ func newSettingsStoreIn(filePath string) *settingsStore {
 type settingsFile struct {
 	Theme           *string             `json:"theme"`
 	EditorMode      json.RawMessage     `json:"editorMode"`
+	OutlineVisible  json.RawMessage     `json:"outlineVisible"`
 	SidebarWidth    int                 `json:"sidebarWidth"`
 	RecentFolders   []string            `json:"recentFolders"`
 	ExpandedFolders map[string][]string `json:"expandedFolders"`
@@ -211,6 +223,7 @@ func defaultSettings() AppSettings {
 	return AppSettings{
 		Theme:           themeSystem,
 		EditorMode:      editorModeLive,
+		OutlineVisible:  false,
 		SidebarWidth:    defaultSidebarWidth,
 		RecentFolders:   []string{},
 		ExpandedFolders: map[string][]string{},
@@ -332,6 +345,7 @@ func (s *settingsStore) readLocked() (AppSettings, bool, error) {
 	settings := AppSettings{
 		Theme:           themeSystem,
 		EditorMode:      decodeEditorMode(file.EditorMode),
+		OutlineVisible:  decodeOutlineVisible(file.OutlineVisible),
 		SidebarWidth:    file.SidebarWidth,
 		RecentFolders:   file.RecentFolders,
 		ExpandedFolders: file.ExpandedFolders,
@@ -356,6 +370,20 @@ func decodeEditorMode(raw json.RawMessage) string {
 		return editorModeLive
 	}
 	return mode
+}
+
+// decodeOutlineVisible applies the same one-field tolerance as editorMode:
+// a hand-edited wrong type falls back to the default (hidden) without
+// replacing every other valid setting with defaults.
+func decodeOutlineVisible(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var visible bool
+	if err := json.Unmarshal(raw, &visible); err != nil {
+		return false
+	}
+	return visible
 }
 
 // backupCorruptLocked moves a damaged settings file aside so the next write

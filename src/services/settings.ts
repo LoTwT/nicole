@@ -28,6 +28,11 @@ export function setEditorMode(mode: EditorModeSetting): Promise<void> {
   return Settings.setEditorMode(mode);
 }
 
+/** Remembers whether the wide-layout outline is open. */
+export function setOutlineVisible(visible: boolean): Promise<void> {
+  return Settings.setOutlineVisible(visible);
+}
+
 /** Saves the sidebar width; Go clamps it to 200–400 px. */
 export function setSidebarWidth(width: number): Promise<void> {
   return Settings.setSidebarWidth(width);

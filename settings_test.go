@@ -38,6 +38,9 @@ func TestSettingsDefaults(t *testing.T) {
 	if settings.EditorMode != editorModeLive {
 		t.Errorf("EditorMode = %q, want %q", settings.EditorMode, editorModeLive)
 	}
+	if settings.OutlineVisible {
+		t.Error("OutlineVisible = true, want the default false")
+	}
 	if settings.SidebarWidth != defaultSidebarWidth {
 		t.Errorf("SidebarWidth = %d, want %d", settings.SidebarWidth, defaultSidebarWidth)
 	}
@@ -278,6 +281,141 @@ func TestSettingsSetEditorMode(t *testing.T) {
 	}
 	if !bytes.Equal(before, after) {
 		t.Errorf("invalid mode changed the settings file: %q -> %q", before, after)
+	}
+}
+
+func TestSettingsSetOutlineVisible(t *testing.T) {
+	store, dir := newTestSettings(t)
+	settings := NewSettings(store)
+	filePath := filepath.Join(dir, settingsFileName)
+	root := filepath.Join(dir, "notes")
+	fixture, err := json.Marshal(map[string]any{
+		"theme":           themeDark,
+		"editorMode":      editorModeSource,
+		"sidebarWidth":    300,
+		"recentFolders":   []string{root},
+		"expandedFolders": map[string][]string{root: {"a"}},
+		"workspaceClosed": true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture = append(fixture, '\n')
+	if err := os.WriteFile(filePath, fixture, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, visible := range []bool{true, false, true} {
+		if err := settings.SetOutlineVisible(visible); err != nil {
+			t.Fatalf("SetOutlineVisible(%v) = %v", visible, err)
+		}
+		loaded, err := store.get()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if loaded.OutlineVisible != visible {
+			t.Errorf("OutlineVisible = %v, want %v", loaded.OutlineVisible, visible)
+		}
+		if loaded.Theme != themeDark || loaded.EditorMode != editorModeSource ||
+			loaded.SidebarWidth != 300 || !loaded.WorkspaceClosed {
+			t.Errorf("other settings changed after SetOutlineVisible(%v): %+v", visible, loaded)
+		}
+		if len(loaded.RecentFolders) != 1 || loaded.RecentFolders[0] != root {
+			t.Errorf("RecentFolders = %q, want [%q]", loaded.RecentFolders, root)
+		}
+		if got := loaded.ExpandedFolders[root]; len(got) != 1 || got[0] != "a" {
+			t.Errorf("ExpandedFolders[%q] = %q, want [a]", root, got)
+		}
+	}
+
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored map[string]any
+	if err := json.Unmarshal(data, &stored); err != nil {
+		t.Fatalf("settings file is not valid JSON: %v", err)
+	}
+	if stored["outlineVisible"] != true {
+		t.Errorf("outlineVisible = %v, want true", stored["outlineVisible"])
+	}
+}
+
+func TestSettingsOutlineVisibleToleratesWrongJSONTypes(t *testing.T) {
+	store, dir := newTestSettings(t)
+	filePath := filepath.Join(dir, settingsFileName)
+	root := filepath.Join(dir, "notes")
+	cases := []struct {
+		name  string
+		value string
+	}{
+		{"string", `"yes"`},
+		{"number", "1"},
+		{"object", `{"visible":true}`},
+		{"array", "[true]"},
+		{"null", "null"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := struct {
+				Theme           string              `json:"theme"`
+				EditorMode      string              `json:"editorMode"`
+				OutlineVisible  json.RawMessage     `json:"outlineVisible"`
+				SidebarWidth    int                 `json:"sidebarWidth"`
+				RecentFolders   []string            `json:"recentFolders"`
+				ExpandedFolders map[string][]string `json:"expandedFolders"`
+				WorkspaceClosed bool                `json:"workspaceClosed"`
+			}{
+				Theme:           themeDark,
+				EditorMode:      editorModeSource,
+				OutlineVisible:  json.RawMessage(tc.value),
+				SidebarWidth:    300,
+				RecentFolders:   []string{root},
+				ExpandedFolders: map[string][]string{root: {"a"}},
+				WorkspaceClosed: true,
+			}
+			content, err := json.Marshal(fixture)
+			if err != nil {
+				t.Fatal(err)
+			}
+			content = append(content, '\n')
+			if err := os.WriteFile(filePath, content, 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			settings, err := store.get()
+			if err != nil {
+				t.Fatalf("get() = %v, want a usable settings value", err)
+			}
+			if settings.OutlineVisible {
+				t.Error("OutlineVisible = true, want the default false")
+			}
+			if settings.Theme != themeDark || settings.EditorMode != editorModeSource ||
+				settings.SidebarWidth != 300 || !settings.WorkspaceClosed {
+				t.Errorf("valid fields were reset: %+v", settings)
+			}
+			if len(settings.RecentFolders) != 1 || settings.RecentFolders[0] != root {
+				t.Errorf("RecentFolders = %q, want [%q]", settings.RecentFolders, root)
+			}
+			if got := settings.ExpandedFolders[root]; len(got) != 1 || got[0] != "a" {
+				t.Errorf("ExpandedFolders[%q] = %#v, want [a]", root, got)
+			}
+
+			after, err := os.ReadFile(filePath)
+			if err != nil {
+				t.Fatalf("settings file was moved or removed: %v", err)
+			}
+			if !bytes.Equal(after, content) {
+				t.Errorf("reading a wrong outlineVisible type rewrote the file: %q", after)
+			}
+			backups, err := filepath.Glob(filePath + ".corrupt-*")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(backups) != 0 {
+				t.Errorf("wrong outlineVisible type created a corrupt backup: %q", backups)
+			}
+		})
 	}
 }
 
