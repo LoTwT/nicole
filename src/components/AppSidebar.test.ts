@@ -47,6 +47,7 @@ function mount(
   let resets = 0;
   let themes = 0;
   let openFolders = 0;
+  let searchAll = 0;
   const runCommands: string[] = [];
   const expandedChanges: string[][] = [];
   const Component = defineComponent({
@@ -73,6 +74,9 @@ function mount(
           onOpenFolder: () => {
             openFolders += 1;
           },
+          onSearchAll: () => {
+            searchAll += 1;
+          },
           onRunCommand: (id: string) => {
             runCommands.push(id);
           },
@@ -90,6 +94,7 @@ function mount(
     resets: () => resets,
     themes: () => themes,
     openFolders: () => openFolders,
+    searchAll: () => searchAll,
     runCommands,
     expandedChanges,
   };
@@ -133,7 +138,7 @@ describe("AppSidebar", () => {
   });
 
   it("names icon-only controls", async () => {
-    mount();
+    const log = mount();
     await settle();
     expect(
       host.querySelector('button[aria-label^="隐藏侧栏"]'),
@@ -149,8 +154,13 @@ describe("AppSidebar", () => {
     expect(search!.textContent?.replace(/\s+/g, "")).toBe("搜索工作区");
     expect(search!.getAttribute("title")).toContain("⇧⌘F");
     expect(search!.getAttribute("aria-label")).toContain("⇧⌘F");
-    expect(search!.disabled).toBe(true);
-    expect(search!.className).toContain("disabled:opacity-50");
+    expect(search!.disabled).toBe(false);
+    expect(search!.className).not.toContain("disabled:opacity-50");
+    const enabled = host.querySelector<HTMLButtonElement>(
+      'button[aria-label^="搜索工作区"]',
+    )!;
+    enabled.click();
+    expect(log.searchAll()).toBe(1);
     const settings = host.querySelector<HTMLButtonElement>(
       'button[aria-label^="设置"]',
     )!;

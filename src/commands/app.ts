@@ -135,8 +135,11 @@ export const appCommands: readonly CommandDefinition[] = [
     group: "app",
     scope: "app",
     keys: [{ key: "Shift-Mod-f" }],
-    available: false,
-    run: () => false,
+    requiresWorkspace: true,
+    run: ({ app }) => {
+      void app?.openWorkspaceSearch();
+      return app !== undefined;
+    },
   },
   {
     id: "nav.toggle-sidebar",

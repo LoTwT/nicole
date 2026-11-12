@@ -4,6 +4,7 @@ import { computed, onBeforeUnmount, ref } from "vue";
 import { buildContextMenu } from "../app/context-menu";
 import type { TreeEditState, TreeNode } from "../app/file-tree";
 import type { AppPlatform } from "../app/platform";
+import type { SearchOpenTarget } from "../app/workspace-search";
 import { commandShortcut } from "../commands/registry";
 import { copyText } from "../services/clipboard";
 import { popupNativeMenu } from "../services/menu";
@@ -11,6 +12,7 @@ import type { WorkspaceFileEvent } from "../services/mygo";
 import AppIcon from "./AppIcon.vue";
 import FileTree from "./FileTree.vue";
 import ThemeToggle from "./ThemeToggle.vue";
+import WorkspaceSearch from "./WorkspaceSearch.vue";
 
 export type SidebarMode = "pinned" | "overlay";
 
@@ -24,6 +26,7 @@ const props = defineProps<{
   selectedPath: string | null;
   initialExpanded: readonly string[];
   isDark: boolean;
+  searchActive?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -32,6 +35,8 @@ const emit = defineEmits<{
   "open-settings": [];
   "toggle-theme": [];
   "search-all": [];
+  "close-search": [];
+  "open-search-result": [target: SearchOpenTarget];
   "width-change": [width: number];
   "width-commit": [width: number];
   "reset-width": [];
@@ -47,6 +52,8 @@ const emit = defineEmits<{
 }>();
 
 const tree = ref<InstanceType<typeof FileTree> | null>(null);
+const searchPanel = ref<InstanceType<typeof WorkspaceSearch> | null>(null);
+const searchButton = ref<HTMLButtonElement | null>(null);
 const newFileButton = ref<HTMLButtonElement | null>(null);
 const newFolderButton = ref<HTMLButtonElement | null>(null);
 const moreButton = ref<HTMLButtonElement | null>(null);
@@ -194,6 +201,12 @@ defineExpose({
   collapseAll() {
     return tree.value?.collapseAll();
   },
+  focusSearchInput() {
+    searchPanel.value?.focusInput();
+  },
+  focusSearchButton() {
+    searchButton.value?.focus();
+  },
 });
 </script>
 
@@ -221,92 +234,103 @@ defineExpose({
     </div>
 
     <button
+      ref="searchButton"
       type="button"
-      class="focus-ring mx-2.5 mb-2 flex shrink-0 items-center gap-1.5 rounded-[var(--radius-control)] bg-[var(--surface-subtle)] px-2 py-1.5 text-[12px] text-[var(--text-muted)] disabled:cursor-default disabled:opacity-50"
-      disabled
-      :title="`搜索工作区 ${commandShortcut('nav.search', platform)}，将在后续版本提供`"
-      :aria-label="`搜索工作区 ${commandShortcut('nav.search', platform)}，将在后续版本提供`"
+      class="focus-ring mx-2.5 mb-2 flex shrink-0 items-center gap-1.5 rounded-[var(--radius-control)] bg-[var(--surface-subtle)] px-2 py-1.5 text-[12px] text-[var(--text-muted)] hover:bg-[var(--surface-muted)] hover:text-[var(--text-primary)]"
+      :class="{ 'bg-[var(--nicole-selected-row)] text-[var(--text-primary)]': searchActive }"
+      :title="`搜索工作区 ${commandShortcut('nav.search', platform)}`"
+      :aria-label="`搜索工作区 ${commandShortcut('nav.search', platform)}`"
       @click="emit('search-all')"
     >
       <AppIcon name="search" :size="13" />
       <span class="flex-1 text-left">搜索工作区</span>
     </button>
 
-    <div
-      class="flex h-[26px] shrink-0 items-center gap-0.5 px-2.5"
-      role="group"
-      aria-label="工作区操作"
-    >
-      <span
-        class="min-w-0 flex-1 truncate text-[11px] font-semibold text-[var(--text-muted)]"
-        :title="rootName"
+    <template v-if="!searchActive">
+      <div
+        class="flex h-[26px] shrink-0 items-center gap-0.5 px-2.5"
+        role="group"
+        aria-label="工作区操作"
       >
-        {{ rootName }}
-      </span>
-      <button
-        ref="newFileButton"
-        type="button"
-        class="focus-ring grid size-[22px] shrink-0 place-items-center rounded-[var(--radius-control)] text-[var(--text-muted)] hover:bg-[var(--surface-muted)] hover:text-[var(--text-primary)]"
-        :aria-label="newFileHint"
-        :title="newFileHint"
-        @click="startRootCreate('create-file', newFileButton)"
-      >
-        <AppIcon name="file-plus" :size="14" />
-      </button>
-      <button
-        ref="newFolderButton"
-        type="button"
-        class="focus-ring grid size-[22px] shrink-0 place-items-center rounded-[var(--radius-control)] text-[var(--text-muted)] hover:bg-[var(--surface-muted)] hover:text-[var(--text-primary)]"
-        :aria-label="newFolderHint"
-        :title="newFolderHint"
-        @click="startRootCreate('create-folder', newFolderButton)"
-      >
-        <AppIcon name="folder-plus" :size="14" />
-      </button>
-      <button
-        type="button"
-        class="focus-ring grid size-[22px] shrink-0 place-items-center rounded-[var(--radius-control)] text-[var(--text-muted)] hover:bg-[var(--surface-muted)] hover:text-[var(--text-primary)]"
-        :aria-label="collapseHint"
-        :title="collapseHint"
-        @click="collapseAll"
-      >
-        <AppIcon name="chevrons-down-up" :size="14" />
-      </button>
-      <button
-        ref="moreButton"
-        type="button"
-        class="focus-ring grid size-[22px] shrink-0 place-items-center rounded-[var(--radius-control)] text-[var(--text-muted)] hover:bg-[var(--surface-muted)] hover:text-[var(--text-primary)]"
-        :aria-label="moreHint"
-        :title="moreHint"
-        aria-haspopup="menu"
-        @click="openMoreMenu"
-      >
-        <AppIcon name="more" :size="14" />
-      </button>
-    </div>
+        <span
+          class="min-w-0 flex-1 truncate text-[11px] font-semibold text-[var(--text-muted)]"
+          :title="rootName"
+        >
+          {{ rootName }}
+        </span>
+        <button
+          ref="newFileButton"
+          type="button"
+          class="focus-ring grid size-[22px] shrink-0 place-items-center rounded-[var(--radius-control)] text-[var(--text-muted)] hover:bg-[var(--surface-muted)] hover:text-[var(--text-primary)]"
+          :aria-label="newFileHint"
+          :title="newFileHint"
+          @click="startRootCreate('create-file', newFileButton)"
+        >
+          <AppIcon name="file-plus" :size="14" />
+        </button>
+        <button
+          ref="newFolderButton"
+          type="button"
+          class="focus-ring grid size-[22px] shrink-0 place-items-center rounded-[var(--radius-control)] text-[var(--text-muted)] hover:bg-[var(--surface-muted)] hover:text-[var(--text-primary)]"
+          :aria-label="newFolderHint"
+          :title="newFolderHint"
+          @click="startRootCreate('create-folder', newFolderButton)"
+        >
+          <AppIcon name="folder-plus" :size="14" />
+        </button>
+        <button
+          type="button"
+          class="focus-ring grid size-[22px] shrink-0 place-items-center rounded-[var(--radius-control)] text-[var(--text-muted)] hover:bg-[var(--surface-muted)] hover:text-[var(--text-primary)]"
+          :aria-label="collapseHint"
+          :title="collapseHint"
+          @click="collapseAll"
+        >
+          <AppIcon name="chevrons-down-up" :size="14" />
+        </button>
+        <button
+          ref="moreButton"
+          type="button"
+          class="focus-ring grid size-[22px] shrink-0 place-items-center rounded-[var(--radius-control)] text-[var(--text-muted)] hover:bg-[var(--surface-muted)] hover:text-[var(--text-primary)]"
+          :aria-label="moreHint"
+          :title="moreHint"
+          aria-haspopup="menu"
+          @click="openMoreMenu"
+        >
+          <AppIcon name="more" :size="14" />
+        </button>
+      </div>
 
-    <FileTree
-      ref="tree"
-      :root-path="rootPath"
+      <FileTree
+        ref="tree"
+        :root-path="rootPath"
+        :generation="generation"
+        :selected-path="selectedPath"
+        :platform="platform"
+        :initial-expanded="initialExpanded"
+        @open-entry="emit('open-entry', $event)"
+        @entry-created="(path, isDir) => emit('entry-created', path, isDir)"
+        @entry-renaming="
+          (oldPath, newPath, isDir) =>
+            emit('entry-renaming', oldPath, newPath, isDir)
+        "
+        @entry-rename-failed="(oldPath) => emit('entry-rename-failed', oldPath)"
+        @entry-renamed="
+          (oldPath, newPath, isDir) =>
+            emit('entry-renamed', oldPath, newPath, isDir)
+        "
+        @trash-request="emit('trash-request', $event)"
+        @expanded-change="emit('expanded-change', $event)"
+        @run-command="emit('run-command', $event)"
+        @status="emit('status', $event)"
+      />
+    </template>
+
+    <WorkspaceSearch
+      v-else
+      ref="searchPanel"
       :generation="generation"
-      :selected-path="selectedPath"
-      :platform="platform"
-      :initial-expanded="initialExpanded"
-      @open-entry="emit('open-entry', $event)"
-      @entry-created="(path, isDir) => emit('entry-created', path, isDir)"
-      @entry-renaming="
-        (oldPath, newPath, isDir) =>
-          emit('entry-renaming', oldPath, newPath, isDir)
-      "
-      @entry-rename-failed="(oldPath) => emit('entry-rename-failed', oldPath)"
-      @entry-renamed="
-        (oldPath, newPath, isDir) =>
-          emit('entry-renamed', oldPath, newPath, isDir)
-      "
-      @trash-request="emit('trash-request', $event)"
-      @expanded-change="emit('expanded-change', $event)"
-      @run-command="emit('run-command', $event)"
-      @status="emit('status', $event)"
+      @close="emit('close-search')"
+      @open-result="emit('open-search-result', $event)"
     />
 
     <div

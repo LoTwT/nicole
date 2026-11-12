@@ -67,6 +67,12 @@ import {
   type TabModel,
 } from "./app/tabs";
 import { classifyWatchEvents } from "./app/watch-events";
+import {
+  locateSearchMatch,
+  searchTargetStillCurrent,
+  type SearchOpenTarget,
+  type SearchTargetSnapshot,
+} from "./app/workspace-search";
 import type { TreeNode } from "./app/file-tree";
 import AppBanner from "./components/AppBanner.vue";
 import AppDialog from "./components/AppDialog.vue";
@@ -256,6 +262,8 @@ const expandedByRoot = ref<Record<string, string[]>>({});
 const recentFilesByRoot = ref<Record<string, string[]>>({});
 const paletteSession = shallowRef<PaletteSession | null>(null);
 let paletteReturnFocus: HTMLElement | null = null;
+const searchOpen = ref(false);
+let searchReturnFocus: HTMLElement | null = null;
 
 const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
 const systemPrefersDark = ref(systemTheme.matches);
@@ -290,6 +298,23 @@ const findController = shallowRef<FindReplaceController | null>(null);
 let findOptions: FindReplaceOptions = { ...EMPTY_FIND_OPTIONS };
 let mountSequence = 0;
 let nextTabId = 1;
+// Search result navigation captures this revision. Any later active-tab
+// change makes the pending search intent stale before it can take focus.
+let tabNavigationRevision = 0;
+// A newer result click supersedes an older one even when both are still
+// waiting for their files.
+let searchNavigationSequence = 0;
+
+watch(
+  activeTabId,
+  (id, previous) => {
+    if (id !== previous) {
+      tabNavigationRevision += 1;
+    }
+  },
+  { flush: "sync" },
+);
+
 let lastWorkspaceActivePath: string | null = null;
 let slashMenu: SlashMenuController | null = null;
 const slashState = shallowRef<SlashMenuSnapshot>(null);
@@ -299,6 +324,13 @@ let applyingExternal = false;
 let restoringTabs = false;
 // Two entry points can request the same file before either read finishes.
 const openingTabs = new Map<string, Promise<boolean>>();
+// A pending workspace read keeps the latest caller's navigation intent. A
+// normal open makes it unconditional; a newer search result replaces an older
+// result's guard so the shared read can still satisfy the current click.
+const openingTabIntents = new Map<
+  string,
+  { isRequestCurrent?: () => boolean }
+>();
 let recentSelfRename:
   | { oldPath: string; newPath: string; at: number }
   | null = null;
@@ -2346,7 +2378,12 @@ function cycleTab(delta: number) {
 async function openWorkspaceFile(
   path: string,
   name?: string,
-  options: { silent?: boolean; reveal?: boolean } = {},
+  options: {
+    silent?: boolean;
+    reveal?: boolean;
+    /** A caller-owned intent that must still be current before activation. */
+    isRequestCurrent?: () => boolean;
+  } = {},
 ): Promise<boolean> {
   const context = currentWorkspaceContext();
   if (context === null) {
@@ -2354,6 +2391,7 @@ async function openWorkspaceFile(
   }
   const existing = findOpenTabForWorkspacePath(context.root, path);
   if (existing !== undefined) {
+    if (options.isRequestCurrent && !options.isRequestCurrent()) return false;
     await activateTab(existing.id);
     if (options.reveal ?? true) {
       void sidebar.value?.reveal(path);
@@ -2367,9 +2405,23 @@ async function openWorkspaceFile(
   );
   const pending = openingTabs.get(key);
   if (pending !== undefined) {
+    const intent = openingTabIntents.get(key);
+    if (intent !== undefined) {
+      if (options.isRequestCurrent === undefined) {
+        intent.isRequestCurrent = undefined;
+      } else if (intent.isRequestCurrent !== undefined) {
+        intent.isRequestCurrent = options.isRequestCurrent;
+      }
+    }
     return pending;
   }
 
+  const sharedIntent: { isRequestCurrent?: () => boolean } = {
+    isRequestCurrent: options.isRequestCurrent,
+  };
+  const requestCurrent = () =>
+    sharedIntent.isRequestCurrent === undefined ||
+    sharedIntent.isRequestCurrent();
   const task = (async (): Promise<boolean> => {
     let text: string;
     try {
@@ -2377,23 +2429,29 @@ async function openWorkspaceFile(
     } catch (error) {
       if (
         isCurrentWorkspace(context.root, context.generation) &&
+        requestCurrent() &&
         !options.silent
       ) {
         showNotice(`读取失败：${errorText(error)}`, "danger");
       }
       return false;
     }
-    if (!isCurrentWorkspace(context.root, context.generation)) {
+    if (
+      !isCurrentWorkspace(context.root, context.generation) ||
+      !requestCurrent()
+    ) {
       return false;
     }
     const current = findOpenTabForWorkspacePath(context.root, path);
     if (current !== undefined) {
+      if (!requestCurrent()) return false;
       await activateTab(current.id);
       if (options.reveal ?? true) {
         void sidebar.value?.reveal(path);
       }
       return true;
     }
+    if (!requestCurrent()) return false;
     const tab = makeMarkdownTab(
       "workspace",
       path,
@@ -2410,11 +2468,13 @@ async function openWorkspaceFile(
   })();
 
   openingTabs.set(key, task);
+  openingTabIntents.set(key, sharedIntent);
   try {
     return await task;
   } finally {
     if (openingTabs.get(key) === task) {
       openingTabs.delete(key);
+      openingTabIntents.delete(key);
     }
   }
 }
@@ -2572,6 +2632,7 @@ async function applyWorkspace(folder: {
   generation: number;
 }): Promise<boolean> {
   const context = { root: folder.root, generation: folder.generation };
+  closeWorkspaceSearch({ restoreFocus: false });
   const previous = findTab(activeTabId.value);
   const keepSingle = previous?.kind === "single";
   const singles = tabs.value.filter((tab) => tab.kind === "single");
@@ -2833,6 +2894,7 @@ async function closeWorkspace() {
       showNotice(`关闭工作区失败：${errorText(error)}`, "danger");
       return false;
     }
+    closeWorkspaceSearch({ restoreFocus: false });
 
     for (const tab of closing) {
       if (tab.kind === "single") {
@@ -3971,6 +4033,19 @@ function isTextInput(target: EventTarget | null): boolean {
   );
 }
 
+/**
+ * The workspace search field has no Escape handler of its own. It therefore
+ * participates in the app-level overlay order even while the find panel is
+ * open; other fields, such as the file-tree name editor, consume Escape before
+ * it reaches the window listener.
+ */
+function isWorkspaceSearchInput(target: EventTarget | null): boolean {
+  return (
+    target instanceof HTMLElement &&
+    target.matches("[data-search-panel] [data-search-input]")
+  );
+}
+
 function closePopoverMenus() {
   slashMenu?.close();
   topBar.value?.closeModeMenu();
@@ -4085,6 +4160,146 @@ function closeCommandPalette() {
   paletteSession.value = null;
 }
 
+function showSidebarForSearch() {
+  if (isWide.value) {
+    sidebarOpen.value = true;
+  } else {
+    overlaySidebar.value = true;
+  }
+}
+
+/** Opens the sidebar search view, or focuses its input when already open. */
+function openWorkspaceSearch() {
+  if (
+    workspace.value === null ||
+    dialogOpen ||
+    recoveryDialog.value !== null ||
+    recoveryChecking
+  ) {
+    return;
+  }
+  if (!searchOpen.value) {
+    searchReturnFocus = focusedControl();
+    searchOpen.value = true;
+  }
+  showSidebarForSearch();
+  void nextTick(() => sidebar.value?.focusSearchInput());
+}
+
+/**
+ * Leaves the search view for the file tree. The opener receives focus again;
+ * if it disappeared with an overlay sidebar, the search entry or the sidebar
+ * toggle is the fallback.
+ */
+function closeWorkspaceSearch(options: { restoreFocus?: boolean } = {}) {
+  if (!searchOpen.value) return;
+  const origin = searchReturnFocus;
+  searchReturnFocus = null;
+  searchOpen.value = false;
+  if (options.restoreFocus === false) return;
+  void nextTick().then(() => {
+    if (focusedControl() !== null) return;
+    if (overlaySidebar.value) {
+      sidebar.value?.focusSearchButton();
+      return;
+    }
+    if (origin?.isConnected) {
+      origin.focus();
+      return;
+    }
+    sidebar.value?.focusSearchButton();
+    if (focusedControl() === null) {
+      document.querySelector<HTMLElement>("[data-sidebar-toggle]")?.focus();
+    }
+  });
+}
+
+/**
+ * Opens a result through the normal tab flow, so an existing dirty tab is
+ * switched to rather than reread. The navigation intent is captured before
+ * the disk read: a later active-tab change makes this request stale before it
+ * can insert, activate or focus another tab. The open flow still protects the
+ * workspace generation, and the stable line and UTF-16 column plus full
+ * line/match fingerprints decide whether the target is still provable.
+ */
+async function openSearchResult(target: SearchOpenTarget): Promise<boolean> {
+  const current = workspace.value;
+  if (current === null || current.generation !== target.generation) {
+    showNotice("工作区已切换，请重新搜索", "danger");
+    return false;
+  }
+  const root = current.root;
+  const generation = current.generation;
+  const navigationRevision = tabNavigationRevision;
+  const searchSequence = ++searchNavigationSequence;
+  const isRequestCurrent = () =>
+    tabNavigationRevision === navigationRevision &&
+    searchSequence === searchNavigationSequence &&
+    isCurrentWorkspace(root, generation);
+  const opened = await openWorkspaceFile(target.line.path, undefined, {
+    reveal: false,
+    isRequestCurrent,
+  });
+  if (
+    !opened ||
+    searchSequence !== searchNavigationSequence ||
+    !isCurrentWorkspace(root, generation)
+  ) {
+    return false;
+  }
+
+  const tab = currentMarkdown.value;
+  const matchesTarget =
+    tab !== null &&
+    (tab.kind === "workspace"
+      ? tab.path === target.line.path
+      : tab.kind === "single" &&
+        sameFilePath(
+          tab.path,
+          workspaceAbsolutePath(root, target.line.path),
+        ));
+  if (tab === null || !matchesTarget || editor === null) return false;
+
+  const tabId = tab.id;
+  const text = tab.text;
+  const view = editor.view;
+  const doc = view.state.doc;
+  const snapshot: SearchTargetSnapshot = {
+    root,
+    generation,
+    tabId,
+    text,
+    view,
+    doc,
+  };
+  const located = locateSearchMatch(text, target.line, target.match);
+  if (located === null) {
+    showNotice("搜索结果已过期，请重新搜索", "danger");
+    return false;
+  }
+  // The open above awaited a tab switch or mount. Do not dispatch into a
+  // newer workspace, another tab, or a document that changed meanwhile.
+  const active = currentMarkdown.value;
+  const currentTarget: SearchTargetSnapshot | null =
+    active === null || editor === null || workspace.value === null
+      ? null
+      : {
+          root: workspace.value.root,
+          generation: workspace.value.generation,
+          tabId: active.id,
+          text: active.text,
+          view: editor.view,
+          doc: editor.view.state.doc,
+        };
+  if (!searchTargetStillCurrent(snapshot, currentTarget)) return false;
+  view.dispatch({
+    selection: EditorSelection.single(located.from, located.to),
+    effects: EditorView.scrollIntoView(located.from, { y: "center" }),
+  });
+  view.focus();
+  return true;
+}
+
 watch(paletteSession, async (session, previousSession) => {
   if (session !== null || previousSession === null) {
     return;
@@ -4180,6 +4395,7 @@ function commandContext(view: CommandContext["view"]): CommandContext {
         cycleTab(-1);
       },
       openCommandPalette,
+      openWorkspaceSearch,
     },
   };
 }
@@ -4283,8 +4499,9 @@ function handleGlobalKeydown(event: KeyboardEvent) {
     }
     if (editor?.search.snapshot().open) {
       // Another text field, such as a rename box, owns its own Escape. The
-      // find panel stops propagation itself and does not reach this branch.
-      if (isTextInput(event.target)) {
+      // find panel stops propagation itself and does not reach this branch;
+      // the workspace search field deliberately yields to this order.
+      if (isTextInput(event.target) && !isWorkspaceSearchInput(event.target)) {
         return;
       }
       event.preventDefault();
@@ -4299,6 +4516,9 @@ function handleGlobalKeydown(event: KeyboardEvent) {
     if (overlaySidebar.value) {
       event.preventDefault();
       dismissOverlaySidebar();
+    } else if (searchOpen.value) {
+      event.preventDefault();
+      closeWorkspaceSearch();
     }
     return;
   }
@@ -4354,6 +4574,10 @@ function handleAppShortcutCapture(event: KeyboardEvent) {
 async function newFile() {
   if (!workspace.value) {
     return;
+  }
+  if (searchOpen.value) {
+    closeWorkspaceSearch();
+    await nextTick();
   }
   if (!sidebarShown.value) {
     if (isWide.value) {
@@ -4749,6 +4973,7 @@ onBeforeUnmount(() => {
   offFileDrop = null;
   offSaveBeforeClose?.();
   offSaveBeforeClose = null;
+  closeWorkspaceSearch({ restoreFocus: false });
   stopWatch();
   cancelPersistTimer();
   writeAllRecoveryCopies();
@@ -4799,9 +5024,13 @@ defineExpose({
       :selected-path="selectedTreePath"
       :initial-expanded="expandedForRoot"
       :is-dark="isDark"
+      :search-active="searchOpen"
       @hide-sidebar="toggleSidebar"
       @open-folder="chooseFolder"
       @toggle-theme="toggleTheme"
+      @search-all="openWorkspaceSearch"
+      @close-search="closeWorkspaceSearch"
+      @open-search-result="openSearchResult"
       @width-change="updateSidebarWidth"
       @width-commit="commitSidebarWidth"
       @reset-width="resetSidebarWidth"
