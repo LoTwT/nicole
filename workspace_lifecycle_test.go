@@ -76,6 +76,7 @@ func TestCloseWorkspaceClearsRootAndDependentServices(t *testing.T) {
 		"TrashEntry":         func() error { return workspace.TrashEntry("a.md", oldGeneration) },
 		"OpenWithDefaultApp": func() error { return workspace.OpenWithDefaultApp(context.Background(), "a.md", oldGeneration) },
 		"RevealEntry":        func() error { return workspace.RevealEntry("a.md", oldGeneration) },
+		"RevealImage":        func() error { return workspace.RevealImage("a.png", oldGeneration) },
 		"Watch":              func() error { return workspace.Watch(context.Background(), oldGeneration, nil) },
 	} {
 		if err := call(); !errors.Is(err, errNoWorkspace) {

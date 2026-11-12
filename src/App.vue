@@ -81,6 +81,7 @@ import AppSidebar from "./components/AppSidebar.vue";
 import CommandPalette from "./components/CommandPalette.vue";
 import EmptyState from "./components/EmptyState.vue";
 import FindReplacePanel from "./components/FindReplacePanel.vue";
+import LinkImageEditor from "./components/LinkImageEditor.vue";
 import NonMarkdownPlaceholder from "./components/NonMarkdownPlaceholder.vue";
 import Outline from "./components/Outline.vue";
 import SlashMenu from "./components/SlashMenu.vue";
@@ -93,6 +94,7 @@ import {
   type EditorRestoreState,
   type FindReplaceController,
   type FindReplaceOptions,
+  type LinkImageEditorSession,
   type SavedSelection,
 } from "./editor";
 import { EMPTY_FIND_OPTIONS } from "./editor/find";
@@ -107,7 +109,7 @@ import {
   type SlashMenuSnapshot,
 } from "./editor/slash";
 import { createImageInsertion } from "./image-insertion";
-import { resolveImageUrl } from "./image-url";
+import { resolveImageUrl, resolveLocalImagePath } from "./image-url";
 import { getAppInfo, type AppInfo } from "./services/app";
 import { onWindowFileDrop, type AssetDrop } from "./services/assets";
 import { copyText } from "./services/clipboard";
@@ -115,6 +117,7 @@ import {
   listDirectory,
   openWithDefaultApp,
   revealEntry,
+  revealImage,
   trashEntry,
 } from "./services/files";
 import { popupNativeMenu } from "./services/menu";
@@ -230,6 +233,13 @@ interface RecoveryDialogState {
   otherFolders: number;
 }
 
+interface LinkImageEditorState {
+  id: number;
+  session: LinkImageEditorSession;
+  initialText: string;
+  initialUrl: string;
+}
+
 interface RecoveryWriteState {
   written: string | null;
   writtenBaselineUnconfirmed: boolean | null;
@@ -318,6 +328,12 @@ watch(
 let lastWorkspaceActivePath: string | null = null;
 let slashMenu: SlashMenuController | null = null;
 const slashState = shallowRef<SlashMenuSnapshot>(null);
+const linkImageEditor = shallowRef<LinkImageEditorState | null>(null);
+const linkImageEditorPanel = ref<InstanceType<typeof LinkImageEditor> | null>(
+  null,
+);
+let linkImageReturnFocus: HTMLElement | null = null;
+let nextLinkImageEditorID = 1;
 let noticeTimer: ReturnType<typeof setTimeout> | null = null;
 let saveQueue: Promise<boolean> = Promise.resolve(true);
 let applyingExternal = false;
@@ -1025,6 +1041,7 @@ function toggleOutline() {
   // the same popover-exclusion path as the command palette.
   topBar.value?.closeModeMenu();
   slashMenu?.close();
+  closeLinkImageEditor({ restoreFocus: false });
   if (outlineWide.value) {
     outlineChosen = true;
     const next = !outlineVisible.value;
@@ -1162,6 +1179,7 @@ watch(outlineEnabled, (enabled) => {
 
 watch(slashState, (state) => {
   if (state !== null) {
+    closeLinkImageEditor({ restoreFocus: false });
     closeOutlineOverlay(false);
   }
 });
@@ -1666,6 +1684,7 @@ function setRecoveredContent(
     tab.snapshot = null;
   }
   if (active && editor !== null) {
+    closeLinkImageEditor({ restoreFocus: false });
     editor.replaceDocument(text);
   }
   applyingExternal = false;
@@ -2256,6 +2275,7 @@ function snapshotActiveEditor() {
 }
 
 function clearEditor() {
+  closeLinkImageEditor({ restoreFocus: false });
   slashMenu?.destroy();
   slashMenu = null;
   slashState.value = null;
@@ -2314,6 +2334,7 @@ async function mountActive(focus = true) {
     onChange: (text) => handleEditorChange(tab.id, text),
     onCompositionStart: () => handleEditorCompositionStart(tab.id),
     onCompositionEnd: () => handleEditorCompositionEnd(tab.id),
+    onEditLinkImage: handleEditLinkImage,
   });
   editorRevision.value += 1;
   slashMenu = createSlashMenu({
@@ -3223,6 +3244,7 @@ function applyExternalText(tab: TabModel, text: string) {
   tab.restored = false;
   forgetRecoveryForTab(tab);
   if (active && editor !== null) {
+    closeLinkImageEditor({ restoreFocus: false });
     editor.replaceDocument(normalized);
   }
   applyingExternal = false;
@@ -4046,7 +4068,89 @@ function isWorkspaceSearchInput(target: EventTarget | null): boolean {
   );
 }
 
+function closeLinkImageEditor(options: { restoreFocus?: boolean } = {}) {
+  const state = linkImageEditor.value;
+  if (state === null) return;
+  const returnFocus = linkImageReturnFocus;
+  linkImageEditor.value = null;
+  linkImageReturnFocus = null;
+  state.session.dispose();
+  if (options.restoreFocus === false) return;
+  void nextTick().then(() => {
+    const active = document.activeElement;
+    if (
+      active !== null &&
+      active !== document.body &&
+      active !== document.documentElement
+    ) {
+      // Another control or popover took focus while this one closed.
+      return;
+    }
+    if (returnFocus?.isConnected) {
+      if (active !== returnFocus) returnFocus.focus();
+      return;
+    }
+    editor?.focus();
+  });
+}
+
+function handleEditLinkImage(session: LinkImageEditorSession | null) {
+  if (session === null) {
+    closeLinkImageEditor();
+    return;
+  }
+  closePopoverMenus();
+  linkImageReturnFocus =
+    focusedControl() ?? editor?.view.contentDOM ?? null;
+  linkImageEditor.value = {
+    id: nextLinkImageEditorID++,
+    session,
+    initialText: session.initialText,
+    initialUrl: session.initialUrl,
+  };
+}
+
+function completeLinkImage(text: string, url: string) {
+  const state = linkImageEditor.value;
+  if (state === null) return;
+  state.session.complete(text, url);
+  closeLinkImageEditor();
+}
+
+function removeLinkImage() {
+  const state = linkImageEditor.value;
+  if (state === null) return;
+  state.session.remove();
+  closeLinkImageEditor();
+}
+
+function linkImageRevealPath(path: string): string | null {
+  const tab = currentMarkdown.value;
+  if (tab === null || tab.kind !== "workspace" || workspace.value === null) {
+    return null;
+  }
+  return resolveLocalImagePath(path, tab.path);
+}
+
+function isLinkImageRevealable(path: string): boolean {
+  return linkImageRevealPath(path) !== null;
+}
+
+async function revealLinkImage(path: string) {
+  const tab = currentMarkdown.value;
+  const current = workspace.value;
+  if (tab === null || current === null || tab.kind !== "workspace") return;
+  const local = resolveLocalImagePath(path, tab.path);
+  if (local === null) return;
+  try {
+    await revealImage(local, current.generation);
+  } catch (error) {
+    showNotice(`显示图片失败：${errorText(error)}`, "danger");
+  }
+}
+
 function closePopoverMenus() {
+  closeLinkImageEditor({ restoreFocus: false });
   slashMenu?.close();
   topBar.value?.closeModeMenu();
   focusOutlineToggleIfInside();
@@ -4055,6 +4159,7 @@ function closePopoverMenus() {
 
 /** The compact mode menu is a popover; opening it replaces other popovers. */
 function handleModeMenuWillOpen() {
+  closeLinkImageEditor({ restoreFocus: false });
   editor?.search.close({ restoreFocus: false });
   focusOutlineToggleIfInside();
   closeOutlineOverlay(false);
@@ -4552,6 +4657,64 @@ function runAppShortcutEvent(event: KeyboardEvent): boolean {
   return true;
 }
 
+function linkImageEditorElement(): HTMLElement | null {
+  return document.querySelector<HTMLElement>("[data-link-image-editor]");
+}
+
+function targetInsideLinkImageEditor(target: EventTarget | null): boolean {
+  return (
+    target instanceof Node &&
+    linkImageEditorElement()?.contains(target) === true
+  );
+}
+
+/**
+ * A plain click in immersive mode leaves focus in the document. Escape closes
+ * the dialog from there, and Tab moves into its first field before CodeMirror
+ * or the browser can move focus elsewhere.
+ */
+function handleLinkImageCapture(event: KeyboardEvent) {
+  if (
+    linkImageEditor.value === null ||
+    event.isComposing ||
+    event.keyCode === 229 ||
+    dialogOpen ||
+    recoveryDialog.value !== null ||
+    paletteSession.value !== null
+  ) {
+    return;
+  }
+  if (event.key === "Escape") {
+    if (targetInsideLinkImageEditor(event.target)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    closeLinkImageEditor();
+    return;
+  }
+  if (
+    event.key !== "Tab" ||
+    event.metaKey ||
+    event.ctrlKey ||
+    event.altKey ||
+    event.shiftKey ||
+    !linkImageEditor.value.session.preserveEditorFocus ||
+    targetInsideLinkImageEditor(event.target)
+  ) {
+    return;
+  }
+  const active = document.activeElement;
+  if (
+    editor === null ||
+    (active !== editor.view.contentDOM &&
+      !editor.view.contentDOM.contains(active))
+  ) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  linkImageEditorPanel.value?.focusFirstField();
+}
+
 /**
  * Application shortcuts run in the capture phase so a registered binding such
  * as Windows Ctrl+Shift+L wins over CodeMirror's editor keymap instead of
@@ -4895,6 +5058,7 @@ onMounted(async () => {
   window.addEventListener("pagehide", saveBeforeExit);
   window.addEventListener("resize", handleWindowResize);
   window.addEventListener("keydown", noteSlashEscape, true);
+  window.addEventListener("keydown", handleLinkImageCapture, true);
   window.addEventListener("keydown", handleGlobalKeydown);
   window.addEventListener("keydown", handleAppShortcutCapture, true);
   document.addEventListener("pointerdown", handleOutlinePointerDown, true);
@@ -4960,6 +5124,7 @@ onBeforeUnmount(() => {
   window.removeEventListener("pagehide", saveBeforeExit);
   window.removeEventListener("resize", handleWindowResize);
   window.removeEventListener("keydown", noteSlashEscape, true);
+  window.removeEventListener("keydown", handleLinkImageCapture, true);
   window.removeEventListener("keydown", handleGlobalKeydown);
   window.removeEventListener("keydown", handleAppShortcutCapture, true);
   document.removeEventListener("pointerdown", handleOutlinePointerDown, true);
@@ -5179,6 +5344,21 @@ defineExpose({
       @run-command="runPaletteCommand"
       @open-file="openPaletteFile"
       @jump-heading="jumpToPaletteHeading"
+    />
+
+    <LinkImageEditor
+      v-if="linkImageEditor"
+      ref="linkImageEditorPanel"
+      :key="linkImageEditor.id"
+      :session="linkImageEditor.session"
+      :initial-text="linkImageEditor.initialText"
+      :initial-url="linkImageEditor.initialUrl"
+      :platform="platform"
+      :is-revealable-path="isLinkImageRevealable"
+      @cancel="closeLinkImageEditor()"
+      @complete="completeLinkImage"
+      @remove="removeLinkImage"
+      @reveal="revealLinkImage"
     />
 
     <RecoveryDialog

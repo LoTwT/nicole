@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { resolveImageUrl } from "./image-url";
+import { resolveImageUrl, resolveLocalImagePath } from "./image-url";
 
 const DOC = "notes/chapter/one.md";
 const GENERATION = 4;
@@ -89,5 +89,36 @@ describe("resolveImageUrl", () => {
   it("rejects relative paths without a document or generation", () => {
     expect(resolveImageUrl("photo.png", null, GENERATION)).toBeNull();
     expect(resolveImageUrl("photo.png", DOC, 0)).toBeNull();
+  });
+});
+
+describe("resolveLocalImagePath", () => {
+  it("returns the workspace path for local images", () => {
+    expect(resolveLocalImagePath("photo.png", DOC)).toBe(
+      "notes/chapter/photo.png",
+    );
+    expect(resolveLocalImagePath("../assets/图片 1.png", DOC)).toBe(
+      "notes/assets/图片 1.png",
+    );
+    expect(resolveLocalImagePath("/assets/photo.JPG", DOC)).toBe(
+      "assets/photo.JPG",
+    );
+  });
+
+  it("does not enable reveal for remote, data or unresolved paths", () => {
+    for (const src of [
+      "https://example.com/a.png",
+      "data:image/png;base64,AAAA",
+      "photo.txt",
+      "../../../photo.png",
+      ".hidden/photo.png",
+      "node_modules/pkg/photo.png",
+      "photo.png?raw=1",
+      "",
+    ]) {
+      expect(resolveLocalImagePath(src, DOC)).toBeNull();
+    }
+    expect(resolveLocalImagePath("photo.png", null)).toBeNull();
+    expect(resolveLocalImagePath("photo.png", "")).toBeNull();
   });
 });

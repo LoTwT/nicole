@@ -35,6 +35,7 @@ const mocks = vi.hoisted(() => ({
   trashEntry: vi.fn(),
   openWithDefaultApp: vi.fn(),
   revealEntry: vi.fn(),
+  revealImage: vi.fn(),
   popupNativeMenu: vi.fn(),
   copyText: vi.fn(),
   getSettings: vi.fn(),
@@ -89,6 +90,7 @@ vi.mock("./services/files", () => ({
   trashEntry: mocks.trashEntry,
   openWithDefaultApp: mocks.openWithDefaultApp,
   revealEntry: mocks.revealEntry,
+  revealImage: mocks.revealImage,
 }));
 vi.mock("./services/menu", () => ({ popupNativeMenu: mocks.popupNativeMenu }));
 vi.mock("./services/clipboard", () => ({ copyText: mocks.copyText }));
@@ -284,16 +286,43 @@ function typeSlashAtEnd() {
   });
 }
 
-function pressMod(key: string, code: string, platform: AppPlatform) {
+function pressMod(
+  key: string,
+  code: string,
+  platform: AppPlatform,
+  shift = false,
+) {
   editorView().contentDOM.dispatchEvent(
     new KeyboardEvent("keydown", {
       key,
       code,
+      shiftKey: shift,
       ctrlKey: platform !== "macos",
       metaKey: platform === "macos",
       bubbles: true,
       cancelable: true,
     }),
+  );
+}
+
+function typeDirect(character: string) {
+  const view = editorView();
+  view.contentDOM.dispatchEvent(
+    new KeyboardEvent("keydown", {
+      key: character,
+      code: character === "[" ? "BracketLeft" : "Digit8",
+      bubbles: true,
+      cancelable: true,
+    }),
+  );
+  const range = view.state.selection.main;
+  return view.state.facet(EditorView.inputHandler).some((handler) =>
+    handler(view, range.from, range.to, character, () =>
+      view.state.update({
+        changes: { from: range.from, to: range.to, insert: character },
+        selection: { anchor: range.from + character.length },
+      }),
+    ),
   );
 }
 
@@ -335,6 +364,68 @@ function typePalette(value: string) {
 
 function paletteOffers(label: string): boolean {
   return paletteOptions().some((item) => item.textContent?.includes(label));
+}
+
+function linkImageDialog(): HTMLElement | null {
+  return document.querySelector<HTMLElement>("[data-link-image-editor]");
+}
+
+function linkImageInput(label: string): HTMLInputElement {
+  const input = linkImageDialog()?.querySelector<HTMLInputElement>(
+    `input[aria-label="${label}"]`,
+  );
+  if (!input) throw new Error(`link image input ${label} not found`);
+  return input;
+}
+
+function typeLinkImageField(label: string, value: string) {
+  const input = linkImageInput(label);
+  input.value = value;
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function pressEnter(input: HTMLElement) {
+  input.dispatchEvent(
+    new KeyboardEvent("keydown", {
+      key: "Enter",
+      code: "Enter",
+      bubbles: true,
+      cancelable: true,
+    }),
+  );
+}
+
+function pressEscape(target: EventTarget) {
+  target.dispatchEvent(
+    new KeyboardEvent("keydown", {
+      key: "Escape",
+      code: "Escape",
+      bubbles: true,
+      cancelable: true,
+    }),
+  );
+}
+
+function clickElementAt(
+  element: Element,
+  position: number,
+  modifiers: MouseEventInit = {},
+) {
+  const view = editorView();
+  vi.spyOn(view, "posAtCoords").mockReturnValue(position);
+  element.dispatchEvent(
+    new MouseEvent("click", {
+      bubbles: true,
+      cancelable: true,
+      clientX: 10,
+      clientY: 10,
+      ...modifiers,
+    }),
+  );
+}
+
+function clickEditorAt(position: number, modifiers: MouseEventInit = {}) {
+  clickElementAt(editorView().contentDOM, position, modifiers);
 }
 
 function findPanel(): HTMLElement | null {
@@ -656,6 +747,7 @@ beforeEach(async () => {
   mocks.trashEntry.mockResolvedValue(undefined);
   mocks.openWithDefaultApp.mockResolvedValue(undefined);
   mocks.revealEntry.mockResolvedValue(undefined);
+  mocks.revealImage.mockResolvedValue(undefined);
   mocks.popupNativeMenu.mockResolvedValue("");
   mocks.copyText.mockResolvedValue(true);
   mocks.getSettings.mockResolvedValue({
@@ -9074,5 +9166,316 @@ describe("workspace search", () => {
     app?.unmount();
     app = null;
     expect(session.close).toHaveBeenCalled();
+  });
+});
+
+describe("link and image editing", () => {
+  it("opens a new link from Mod-K in all three modes and cancels with Escape", async () => {
+    for (const stored of ["live", "immersive", "source"] as const) {
+      await remountWithSettings({ editorMode: stored });
+      await openFile("a.md", "text\n");
+      const view = editorView();
+      view.dispatch({ selection: { anchor: view.state.doc.length } });
+      view.focus();
+      pressMod("k", "KeyK", "macos");
+      await settle();
+
+      expect(linkImageDialog()).not.toBeNull();
+      expect(document.activeElement).toBe(linkImageInput("文本"));
+      expect(view.state.doc.toString()).toBe("text\n");
+
+      pressEscape(linkImageInput("文本"));
+      await settle();
+      expect(linkImageDialog()).toBeNull();
+      expect(view.state.doc.toString()).toBe("text\n");
+      expect(document.activeElement).toBe(view.contentDOM);
+    }
+  });
+
+  it("opens an immersive [ dialog and restores selected text on Escape", async () => {
+    await remountWithSettings({ editorMode: "immersive" });
+    await openFile("a.md", "文字\n");
+    const view = editorView();
+    view.dispatch({ selection: { anchor: 0, head: 2 } });
+    view.focus();
+    expect(typeDirect("[")).toBe(true);
+    await settle();
+    expect(linkImageDialog()).not.toBeNull();
+    expect(view.state.doc.toString()).toBe("文字\n");
+
+    pressEscape(linkImageInput("文本"));
+    await settle();
+    expect(linkImageDialog()).toBeNull();
+    expect(view.state.doc.toString()).toBe("文字\n");
+    expect(view.state.doc.toString()).not.toContain("[文字]()");
+    expect(document.activeElement).toBe(view.contentDOM);
+  });
+
+  it("completes a new link once and undoes it as one step", async () => {
+    await openFile("a.md", "text\n");
+    const view = editorView();
+    view.dispatch({ selection: { anchor: view.state.doc.length } });
+    view.focus();
+    pressMod("k", "KeyK", "macos");
+    await settle();
+
+    typeLinkImageField("文本", "链接");
+    typeLinkImageField("链接", "https://example.com");
+    pressEnter(linkImageInput("链接"));
+    await settle();
+    expect(linkImageDialog()).toBeNull();
+    expect(view.state.doc.toString()).toBe("text\n[链接](https://example.com)");
+    expect(document.activeElement).toBe(view.contentDOM);
+
+    pressMod("z", "KeyZ", "macos");
+    await settle();
+    expect(view.state.doc.toString()).toBe("text\n");
+  });
+
+  it("keeps body focus on an immersive click and enters the dialog with Tab", async () => {
+    await remountWithSettings({ editorMode: "immersive" });
+    await openFile("a.md", "[文字](url)\n");
+    const view = editorView();
+    view.focus();
+    clickEditorAt(view.state.doc.toString().indexOf("文字"));
+    await settle();
+
+    expect(linkImageDialog()).not.toBeNull();
+    expect(document.activeElement).toBe(view.contentDOM);
+    view.contentDOM.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Tab",
+        code: "Tab",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    expect(document.activeElement).toBe(linkImageInput("文本"));
+
+    pressEscape(linkImageInput("文本"));
+    await settle();
+    expect(linkImageDialog()).toBeNull();
+    expect(view.state.doc.toString()).toBe("[文字](url)\n");
+    expect(document.activeElement).toBe(view.contentDOM);
+  });
+
+  it("does not open the dialog from a click in live or source mode", async () => {
+    for (const stored of ["live", "source"] as const) {
+      await remountWithSettings({ editorMode: stored });
+      await openFile("a.md", "[文字](url)\n");
+      const view = editorView();
+      view.focus();
+      clickEditorAt(view.state.doc.toString().indexOf("文字"));
+      await settle();
+      expect(linkImageDialog()).toBeNull();
+    }
+  });
+
+  it("leaves modifier-click link behavior pending without opening the dialog", async () => {
+    await remountWithSettings({ editorMode: "immersive" });
+    await openFile("a.md", "[文字](url)\n");
+    const view = editorView();
+    view.focus();
+    clickEditorAt(view.state.doc.toString().indexOf("文字"), {
+      metaKey: true,
+    });
+    await settle();
+    expect(linkImageDialog()).toBeNull();
+  });
+
+  it("keeps body edits across Esc, undo and redo while a draft stays virtual", async () => {
+    await remountWithSettings({ editorMode: "immersive" });
+    await openFile("a.md", "[文字](url)\nend\n");
+    const view = editorView();
+    view.focus();
+    clickEditorAt(view.state.doc.toString().indexOf("文字"));
+    await settle();
+    expect(linkImageDialog()).not.toBeNull();
+
+    vi.useFakeTimers();
+    const at = view.state.doc.length;
+    view.dispatch({
+      changes: { from: at, insert: "X" },
+      selection: { anchor: at + 1 },
+      userEvent: "input.type",
+    });
+    await settle();
+    await vi.advanceTimersByTimeAsync(1000);
+    await settle();
+    expect(mocks.writeFile).toHaveBeenCalledWith(
+      "a.md",
+      "[文字](url)\nend\nX",
+      1,
+    );
+
+    pressEscape(view.contentDOM);
+    await settle();
+    expect(linkImageDialog()).toBeNull();
+    expect(view.state.doc.toString()).toBe("[文字](url)\nend\nX");
+    expect(view.state.doc.toString()).not.toContain("[]()");
+
+    pressMod("z", "KeyZ", "macos");
+    await settle();
+    expect(view.state.doc.toString()).toBe("[文字](url)\nend\n");
+    pressMod("z", "KeyZ", "macos", true);
+    await settle();
+    expect(view.state.doc.toString()).toBe("[文字](url)\nend\nX");
+
+    const next = view.state.doc.length;
+    view.dispatch({
+      changes: { from: next, insert: "Y" },
+      selection: { anchor: next + 1 },
+      userEvent: "input.type",
+    });
+    await settle();
+    await vi.advanceTimersByTimeAsync(1000);
+    await settle();
+    expect(mocks.writeFile).toHaveBeenLastCalledWith(
+      "a.md",
+      "[文字](url)\nend\nXY",
+      1,
+    );
+  });
+
+  it("closes the dialog when a body edit invalidates its target", async () => {
+    await remountWithSettings({ editorMode: "immersive" });
+    await openFile("a.md", "before [文字](url) after\n");
+    const view = editorView();
+    view.focus();
+    clickEditorAt(view.state.doc.toString().indexOf("文字") + 1);
+    await settle();
+    expect(linkImageDialog()).not.toBeNull();
+
+    view.dispatch({
+      changes: { from: view.state.doc.toString().indexOf("文字"), insert: "X" },
+      selection: { anchor: view.state.doc.toString().indexOf("文字") + 1 },
+      userEvent: "input.type",
+    });
+    await settle();
+    expect(linkImageDialog()).toBeNull();
+    expect(view.state.doc.toString()).toBe("before [X文字](url) after\n");
+  });
+
+  it("closes the dialog when the target tab is switched", async () => {
+    await remountWithSettings({ editorMode: "immersive" });
+    await setupWorkspace({
+      "a.md": "[文字](url)\n",
+      "b.md": "second\n",
+    });
+    await openPath("/notes/a.md");
+    const view = editorView();
+    view.focus();
+    clickEditorAt(view.state.doc.toString().indexOf("文字"));
+    await settle();
+    expect(linkImageDialog()).not.toBeNull();
+
+    await openPath("/notes/b.md");
+    tabNamed("b.md").click();
+    await settle();
+    expect(linkImageDialog()).toBeNull();
+  });
+
+  it("closes the dialog when an external replacement changes the active document", async () => {
+    await remountWithSettings({ editorMode: "immersive" });
+    await openFile("a.md", "[文字](url)\n");
+    const view = editorView();
+    view.focus();
+    clickEditorAt(view.state.doc.toString().indexOf("文字"));
+    await settle();
+    expect(linkImageDialog()).not.toBeNull();
+
+    openFileText = "[新文字](new)\n";
+    mocks.readFile.mockResolvedValue(openFileText);
+    watchEvents?.([{ op: "write", path: "a.md", isDir: false }]);
+    await settle();
+    expect(linkImageDialog()).toBeNull();
+    expect(view.state.doc.toString()).toBe("[新文字](new)\n");
+  });
+
+  it("lets the slash menu replace the link dialog without stacking popovers", async () => {
+    await remountWithSettings({ editorMode: "immersive" });
+    await openFile("a.md", "[文字](url)\n");
+    const view = editorView();
+    view.focus();
+    clickEditorAt(view.state.doc.toString().indexOf("文字"));
+    await settle();
+    expect(linkImageDialog()).not.toBeNull();
+
+    typeSlashAtEnd();
+    await settle();
+    expect(linkImageDialog()).toBeNull();
+    expect(slashMenuElement()).not.toBeNull();
+  });
+
+  it("reports a rejected image reveal without closing the dialog", async () => {
+    await remountWithSettings({ editorMode: "immersive" });
+    await openFile("a.md", "![图](assets/a.png)\n");
+    const view = editorView();
+    view.focus();
+    clickEditorAt(0);
+    await settle();
+    mocks.revealImage.mockRejectedValue(new Error("workspace: unsupported image"));
+    const reveal = [...linkImageDialog()!.querySelectorAll("button")].find(
+      (item) => item.textContent?.trim() === "在 Finder 中显示",
+    )!;
+    reveal.click();
+    await settle();
+    expect(linkImageDialog()).not.toBeNull();
+    expect(host.querySelector("footer")?.textContent).toContain(
+      "显示图片失败",
+    );
+  });
+
+  it("closes the link dialog when the command palette opens", async () => {
+    await remountWithSettings({ editorMode: "immersive" });
+    await openFile("a.md", "[文字](url)\n");
+    const view = editorView();
+    view.focus();
+    clickEditorAt(view.state.doc.toString().indexOf("文字"));
+    await settle();
+    expect(linkImageDialog()).not.toBeNull();
+
+    pressAppShortcut("p", true);
+    await settle();
+    expect(linkImageDialog()).toBeNull();
+    expect(paletteInput()).not.toBeNull();
+  });
+
+  it("reveals only images the current workspace can resolve", async () => {
+    await remountWithSettings({ editorMode: "immersive" });
+    const doc =
+      "![图](assets/a.png)\n\n![远程](https://example.com/a.png)\n";
+    await openFile("a.md", doc);
+    const view = editorView();
+    view.focus();
+    const images = [
+      ...view.contentDOM.querySelectorAll<HTMLImageElement>(".cm-nicole-image"),
+    ];
+    clickElementAt(images[0]!, doc.indexOf("图"));
+    await settle();
+    expect(linkImageDialog()).not.toBeNull();
+    expect(linkImageInput("路径").value).toBe("assets/a.png");
+    const reveal = [...linkImageDialog()!.querySelectorAll("button")].find(
+      (item) => item.textContent?.trim() === "在 Finder 中显示",
+    )!;
+    expect(reveal.disabled).toBe(false);
+    reveal.click();
+    await settle();
+    expect(mocks.revealImage).toHaveBeenCalledWith("assets/a.png", 1);
+
+    pressEscape(view.contentDOM);
+    await settle();
+    clickElementAt(images[1]!, doc.indexOf("远程"));
+    await settle();
+    expect(linkImageDialog()).not.toBeNull();
+    expect(linkImageInput("路径").value).toBe("https://example.com/a.png");
+    const remoteReveal = [...linkImageDialog()!.querySelectorAll("button")].find(
+      (item) => item.textContent?.trim() === "在 Finder 中显示",
+    )!;
+    expect(remoteReveal.disabled).toBe(true);
+    remoteReveal.click();
+    await settle();
+    expect(mocks.revealImage).toHaveBeenCalledOnce();
   });
 });

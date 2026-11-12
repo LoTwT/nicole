@@ -3,6 +3,7 @@ import type { EditorView } from "@codemirror/view";
 import type { AppPlatform } from "../app/platform";
 import type { CommandDefinition } from "../commands/types";
 import type { FindReplaceController, FindReplaceOptions } from "./find";
+import type { LinkImageEditorSession } from "./link-editor";
 
 export type EditorMode = "live" | "immersive" | "source";
 
@@ -70,6 +71,12 @@ export interface CreateEditorOptions {
   onCompositionEnd?: () => void;
   /** Called on the DOM compositionstart event of this view. */
   onCompositionStart?: () => void;
+  /**
+   * Receives the link or image editing session requested by Mod-K, a direct
+   * `[`, an immersive click or the slash link command. Null means the target
+   * became invalid and the dialog must close without writing.
+   */
+  onEditLinkImage?: (session: LinkImageEditorSession | null) => void;
 }
 
 export interface EditorHandle {

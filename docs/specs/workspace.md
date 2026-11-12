@@ -35,6 +35,7 @@ Go 的 `Workspace` 服务通过 `mygo.Bind` 暴露，前端经 `src/services/wor
 | `TrashEntry(path, generation)` | 移到废纸篓或回收站。 |
 | `OpenWithDefaultApp(path, generation)` | 用系统默认应用打开文件。 |
 | `RevealEntry(path, generation)` | 在 Finder、资源管理器或文件管理器中显示。 |
+| `RevealImage(path, generation)` | 在文件管理器中显示当前工作区的一张本地图片；重新校验 generation、路径、隐藏目录、`node_modules`、图片扩展名和普通文件，不接受任意文件。 |
 | `Watch(generation)` | 通过 Channel 流式返回工作区变化，见[文件监听](#文件监听)。 |
 | `Search(request)` | 在**当前根目录**的磁盘 Markdown 文件中搜索，通过 Channel 流式返回匹配行和汇总，见[搜索](#搜索)。请求不包含路径，页面不能指定搜索范围。 |
 | 单文件的 `SingleFileService` | 只访问用户通过对话框或系统“打开方式”明确选择的 `.md` 文件，见[单文件标签页](#单文件标签页)。 |
@@ -318,6 +319,7 @@ Go 在 `PathUserData/recovery/` 保存未保存内容的副本；界面流程见
 - 编辑器把图片 URL 交给 `resolveImage`。相对路径按当前文件所在目录解析，开头的 `/` 表示工作区根；结果转换成 `nicole-image://localhost/<generation>/<工作区相对路径>`。
 - `http`、`https` 和 `data:image/*` 原样保留。其他绝对 URL、协议相对 URL（`//`）、越出工作区、隐藏目录、`node_modules`、不支持的扩展名，以及含 `?` 或 `#` 的本地路径都返回 null，编辑器保留 Markdown 原文。
 - 协议只提供当前工作区里的图片，扩展名清单为 `.png`、`.jpg`、`.jpeg`、`.gif`、`.webp`、`.svg`，比较不区分大小写。路径经与[路径守卫](#路径守卫)相同的检查和 `os.Root` 打开；越界、隐藏目录、`node_modules`、符号链接逃逸、非图片扩展名和旧 generation 都返回 404。响应带正确的 `Content-Type`；安全约束见[架构](../architecture.md#安全)。
+- 图片弹框的“在 Finder 中显示”只在当前文档属于工作区且路径能解析成本地图片时启用；remote、data、无根和工作区外单文件不启用。页面把相对当前文档目录或工作区根得到的未转义相对路径交给 `RevealImage`，Go 在显示前重新执行图片路径守卫并确认目标是普通图片文件，不把任意 `RevealEntry` 当作图片授权。
 
 ## 拖入文件夹
 

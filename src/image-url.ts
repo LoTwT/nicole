@@ -13,30 +13,31 @@ function imageExtension(name: string): string | null {
   return IMAGE_EXTENSIONS.has(extension) ? extension : null;
 }
 
-/**
- * Turns an image URL from a Markdown document into something the editor can
- * display. Relative paths resolve against the document's folder and become a
- * generation-bound nicole-image URL; http(s) and image data URLs are left
- * alone. Anything else is not displayable, so the caller keeps the source.
- */
-export function resolveImageUrl(
+type ImageSource =
+  | { kind: "remote"; url: string }
+  | { kind: "local"; path: string };
+
+function resolveImageSource(
   src: string,
   docPath: string | null,
-  generation: number,
-): string | null {
+): ImageSource | null {
   const trimmed = src.trim();
   if (trimmed === "") return null;
 
   const scheme = ABSOLUTE_URL.exec(trimmed)?.[1]?.toLowerCase();
   if (scheme !== undefined) {
-    if (scheme === "http" || scheme === "https") return trimmed;
-    if (scheme === "data" && /^data:image\//i.test(trimmed)) return trimmed;
+    if (scheme === "http" || scheme === "https") {
+      return { kind: "remote", url: trimmed };
+    }
+    if (scheme === "data" && /^data:image\//i.test(trimmed)) {
+      return { kind: "remote", url: trimmed };
+    }
     return null;
   }
   // A protocol-relative URL would inherit the custom scheme and name a
   // workspace file that the document did not choose.
   if (trimmed.startsWith("//")) return null;
-  if (docPath === null || docPath === "" || generation <= 0) return null;
+  if (docPath === null || docPath === "") return null;
   if (trimmed.includes("\\") || trimmed.includes(":") || /[?#]/.test(trimmed)) {
     return null;
   }
@@ -73,7 +74,39 @@ export function resolveImageUrl(
   const name = segments[segments.length - 1];
   if (name === undefined || imageExtension(name) === null) return null;
 
-  return `${IMAGE_ORIGIN}/${generation}/${segments
+  return { kind: "local", path: segments.join("/") };
+}
+
+/**
+ * Turns an image URL from a Markdown document into something the editor can
+ * display. Relative paths resolve against the document's folder and become a
+ * generation-bound nicole-image URL; http(s) and image data URLs are left
+ * alone. Anything else is not displayable, so the caller keeps the source.
+ */
+export function resolveImageUrl(
+  src: string,
+  docPath: string | null,
+  generation: number,
+): string | null {
+  const source = resolveImageSource(src, docPath);
+  if (source === null) return null;
+  if (source.kind === "remote") return source.url;
+  if (generation <= 0) return null;
+  return `${IMAGE_ORIGIN}/${generation}/${source.path
+    .split("/")
     .map((part) => encodeURIComponent(part))
     .join("/")}`;
+}
+
+/**
+ * Returns the workspace-relative path only for an image the current workspace
+ * can resolve. Remote, data and document-less images return null; Go still
+ * rechecks the path, type and generation before revealing it.
+ */
+export function resolveLocalImagePath(
+  src: string,
+  docPath: string | null,
+): string | null {
+  const source = resolveImageSource(src, docPath);
+  return source?.kind === "local" ? source.path : null;
 }

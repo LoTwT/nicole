@@ -57,11 +57,26 @@ import {
 } from "./find";
 import { createCommandKeymap } from "./keymap";
 import {
+  createLinkImageEditorSession,
+  inlineTargetAt,
+  linkEditorTarget,
+  openLinkEditorEffect,
+  type LinkImageEditorSession,
+} from "./link-editor";
+import {
   scrollAnchor,
   scrollTopForAnchor,
   visibleTopHeight,
   type ScrollAnchor,
 } from "./scroll";
+import {
+  isWrapCharacter,
+  noteDirectInput,
+  planBracketInput,
+  planWrapInput,
+  takeDirectInput,
+  type DirectInputState,
+} from "./wrap";
 import type {
   CreateEditorOptions,
   EditorHandle,
@@ -89,6 +104,11 @@ export type {
   FindReplaceOptions,
   FindReplaceState,
 } from "./find";
+export type {
+  LinkImageEditorSession,
+  LinkImageKind,
+  PopoverAnchor,
+} from "./link-editor";
 
 class BulletWidget extends WidgetType {
   override eq(other: WidgetType) {
@@ -184,6 +204,12 @@ class ImageWidget extends WidgetType {
 
   override eq(other: ImageWidget) {
     return other.src === this.src && other.alt === this.alt;
+  }
+
+  // A click must reach the editor's link/image handler. Keyboard events still
+  // belong to the document rather than to the non-focusable image.
+  override ignoreEvent(event: Event) {
+    return event.type.startsWith("key");
   }
 
   toDOM() {
@@ -1460,10 +1486,12 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     onChange,
     onCompositionEnd,
     onCompositionStart,
+    onEditLinkImage,
   } = options;
 
   const modeCompartment = new Compartment();
   let mode = initialMode;
+  let linkSession: LinkImageEditorSession | null = null;
 
   const enabledCommands = [...commands, ...commandRegistry];
 
@@ -1560,6 +1588,28 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     tickets.set(ticket.id, ticket);
     return ticket;
   };
+
+  const presentLinkImage = (
+    target: Parameters<typeof createLinkImageEditorSession>[1],
+    preserveEditorFocus: boolean,
+  ) => {
+    linkSession?.dispose();
+    const session = createLinkImageEditorSession(
+      view,
+      target,
+      preserveEditorFocus,
+      (invalidated) => {
+        if (linkSession === invalidated) {
+          linkSession = null;
+          onEditLinkImage?.(null);
+        }
+      },
+    );
+    linkSession = session;
+    onEditLinkImage?.(session);
+  };
+
+  const directInput: DirectInputState = { character: null };
 
   const insertTextAt = (at: number, text: string) => {
     const position = Math.max(0, Math.min(at, view.state.doc.length));
@@ -1702,6 +1752,76 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
   let focusedCheckbox: HTMLInputElement | null = null;
   let recoverRemovedCheckbox: () => void = () => {};
   const extensions: Extension[] = [
+    Prec.highest(
+      EditorView.domEventHandlers({
+        keydown(event) {
+          noteDirectInput(directInput, event);
+          return false;
+        },
+        click(event, editorView) {
+          if (
+            mode !== "immersive" ||
+            event.defaultPrevented ||
+            editorView.compositionStarted ||
+            editorView.composing ||
+            event.metaKey ||
+            event.ctrlKey ||
+            event.altKey ||
+            event.shiftKey
+          ) {
+            return false;
+          }
+          if (
+            event.target instanceof Element &&
+            event.target.closest(".cm-nicole-checkbox")
+          ) {
+            return false;
+          }
+          const at = editorView.posAtCoords({
+            x: event.clientX,
+            y: event.clientY,
+          });
+          if (at === null) return false;
+          const target = inlineTargetAt(editorView.state, at);
+          if (!target) return false;
+          presentLinkImage(target, true);
+          return false;
+        },
+      }),
+    ),
+    Prec.highest(
+      EditorView.inputHandler.of((editorView, _from, _to, text) => {
+        const character = takeDirectInput(directInput, text);
+        if (
+          character === null ||
+          editorView.compositionStarted ||
+          editorView.composing
+        ) {
+          return false;
+        }
+        const plan = isWrapCharacter(character)
+          ? planWrapInput(editorView.state, character)
+          : planBracketInput(editorView.state, character);
+        if (plan === null) return false;
+        if (
+          isWrapCharacter(character) &&
+          character === "[" &&
+          mode === "immersive" &&
+          plan.linkDraft
+        ) {
+          presentLinkImage(plan.linkDraft, false);
+          return true;
+        }
+        if (plan.noop) return true;
+        editorView.dispatch({
+          changes: plan.changes,
+          selection: plan.selection,
+          userEvent: "input.type",
+          annotations: isolateHistory.of("full"),
+        });
+        return true;
+      }),
+    ),
     basicSetup,
     EditorView.lineWrapping,
     markdown({ base: markdownLanguage }),
@@ -1714,6 +1834,14 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     createCommandKeymap(enabledCommands, platform),
     imageHandlers(onPasteImage, createTicketAt),
     EditorView.updateListener.of((update) => {
+      linkSession?.update(update);
+      for (const transaction of update.transactions) {
+        if (!transaction.effects.some((effect) => effect.is(openLinkEditorEffect))) {
+          continue;
+        }
+        presentLinkImage(linkEditorTarget(update.state), false);
+        break;
+      }
       notifyFindController(update);
       if (focusedCheckbox !== null && !focusedCheckbox.isConnected) {
         window.setTimeout(recoverRemovedCheckbox, 0);
@@ -2045,6 +2173,8 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     },
     destroy() {
       destroyed = true;
+      linkSession?.dispose();
+      linkSession = null;
       find.destroy();
       editorDocument.removeEventListener("selectstart", onSelectStart, true);
       window.removeEventListener("focus", recoverRemovedCheckbox);

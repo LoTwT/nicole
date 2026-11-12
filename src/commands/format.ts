@@ -7,6 +7,7 @@ import type {
   TransactionSpec,
 } from "@codemirror/state";
 
+import { openLinkEditorEffect } from "../editor/link-editor";
 import type { CommandDefinition, CommandTarget } from "./types";
 
 interface InlineFormat {
@@ -652,17 +653,18 @@ export const formatCommands: readonly CommandDefinition[] = [
     },
   },
   {
-    id: "insert.link",
+    id: "format.link",
     label: "链接",
     pinyin: "lianjie link",
     icon: "link",
     glyph: "↗",
     group: "inline",
     scope: "editor",
+    keys: [{ key: "Mod-k" }],
     inSlashMenu: true,
     run: ({ view }) => {
       if (!view) return false;
-      insertInline(view, "[链接文字](https://)", "链接文字");
+      view.dispatch({ effects: openLinkEditorEffect.of(null) });
       return true;
     },
   },

@@ -459,6 +459,14 @@ export const Workspace = {
     return call("Workspace.RevealEntry", rel, generation);
   },
   /**
+   * RevealImage shows an image of the current workspace in the file manager.
+   * Unlike RevealEntry, the path must still resolve to a regular file with an
+   * allowed image extension, so the link dialog cannot reveal arbitrary files.
+   */
+  revealImage(rel: string, generation: number): Promise<void> {
+    return call("Workspace.RevealImage", rel, generation);
+  },
+  /**
    * Search scans the Markdown files of the open workspace and streams matching
    * lines on parts. It reads the disk, not unsaved editor text. Hidden folders,
    * node_modules, symlinks and files that are not regular Markdown files are
