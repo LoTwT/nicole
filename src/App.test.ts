@@ -10701,12 +10701,10 @@ describe("link and image editing", () => {
     const caret = doc.indexOf("跳");
     view.dispatch({ selection: { anchor: caret } });
     view.focus();
-    headingMocks.extract
-      .mockReturnValueOnce({ headings: [], complete: false })
-      .mockReturnValueOnce({
-        headings: [{ level: 1, text: "目标", position: 0, line: 1 }],
-        complete: true,
-      });
+    headingMocks.extract.mockReturnValueOnce({
+      headings: [],
+      complete: false,
+    });
     clickEditorSequenceAt(caret, { metaKey: true });
     pressMod("k", "KeyK", "macos");
     await settle();
@@ -10747,6 +10745,96 @@ describe("link and image editing", () => {
       ),
     ).toBe(false);
   });
+
+  it("completes an owned deferred heading handoff", async () => {
+    await remountWithSettings({ editorMode: "source" });
+    const target = "prefix\n\n# 目标\n\nend\n";
+    await setupWorkspace({
+      "a.md": "[去](b.md#目标)\n",
+      "b.md": target,
+    });
+    await openPath("/notes/a.md");
+    const read = deferred<string>();
+    mocks.readFile.mockImplementationOnce(() => read.promise);
+    clickEditorSequenceAt(2, { metaKey: true });
+    read.resolve(target);
+    await settle();
+    expect(tabNamed("b.md").getAttribute("aria-selected")).toBe("true");
+    expect(editorView().state.selection.main.head).toBe(8);
+    expect(editorView().hasFocus).toBe(true);
+  });
+
+  it("preserves ordinary open selection with one shared read", async () => {
+    await remountWithSettings({ editorMode: "source" });
+    const target = "prefix\n\n# 目标\n\nend\n";
+    await setupWorkspace({
+      "a.md": "source\n",
+      "b.md": target,
+    });
+    await openPath("/notes/a.md");
+    const read = deferred<string>();
+    mocks.readFile.mockImplementationOnce(() => read.promise);
+    const row = host.querySelector<HTMLElement>('[data-tree-path="b.md"]');
+    expect(row).not.toBeNull();
+    row!.click();
+    row!.click();
+    expect(
+      mocks.readFile.mock.calls.filter(([path]) => path === "b.md"),
+    ).toHaveLength(1);
+    read.resolve(target);
+    await settle();
+    expect(tabNamed("b.md").getAttribute("aria-selected")).toBe("true");
+    expect(editorView().state.selection.main.head).toBe(0);
+  });
+
+  it.each(["popup-cycle", "source-rebuild"])(
+    "drops a stale heading intent when an ordinary open joins its pending read: %s",
+    async (invalidate) => {
+      await remountWithSettings({ editorMode: "source" });
+      const target = "prefix\n\n# 目标\n\nend\n";
+      await setupWorkspace({
+        "a.md": "[去](b.md#目标)\n",
+        "b.md": target,
+      });
+      await openPath("/notes/a.md");
+      const source = editorView();
+      source.focus();
+      const read = deferred<string>();
+      mocks.readFile.mockImplementationOnce(() => read.promise);
+      clickEditorSequenceAt(2, { metaKey: true });
+      expect(mocks.readFile).toHaveBeenLastCalledWith("b.md");
+      if (invalidate === "popup-cycle") {
+        pressMod("k", "KeyK", "macos");
+        await settle();
+        expect(linkImageDialog()).not.toBeNull();
+        typeLinkImageField("链接", "https://example.com/new-owner");
+        pressEscape(linkImageInput("链接"));
+        await settle();
+        expect(linkImageDialog()).toBeNull();
+      } else {
+        await appSetupState().mountActive(false);
+        await settle();
+        expect(editorView()).not.toBe(source);
+        expect(editorView().state.doc.toString()).toBe(
+          source.state.doc.toString(),
+        );
+      }
+      const targetRow = host.querySelector<HTMLElement>(
+        '[data-tree-path="b.md"]',
+      );
+      expect(targetRow).not.toBeNull();
+      targetRow!.click();
+      await settle();
+      expect(
+        mocks.readFile.mock.calls.filter(([path]) => path === "b.md"),
+      ).toHaveLength(1);
+      read.resolve(target);
+      await settle();
+      expect(tabNamed("b.md").getAttribute("aria-selected")).toBe("true");
+      expect(editorView().state.doc.toString()).toBe(target);
+      expect(editorView().state.selection.main.head).toBe(0);
+    },
+  );
 
   it("retries an incomplete heading parse once before declaring it missing", async () => {
     await remountWithSettings({ editorMode: "source" });

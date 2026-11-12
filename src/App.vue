@@ -353,13 +353,38 @@ let applyingExternal = false;
 let restoringTabs = false;
 // Two entry points can request the same file before either read finishes.
 const openingTabs = new Map<string, Promise<boolean>>();
-// A pending workspace read keeps the latest caller's navigation intent. A
-// normal open makes it unconditional; a newer search result replaces an older
-// result's guard so the shared read can still satisfy the current click.
-const openingTabIntents = new Map<
-  string,
-  { isRequestCurrent?: () => boolean }
->();
+// A pending workspace read can satisfy several callers, but only the latest
+// caller whose intent is still current may own the activation and its
+// follow-up work (a search jump or heading anchor). Ordinary opens have no
+// guard, so a stale link request cannot cancel them.
+interface WorkspaceOpenRequest {
+  isRequestCurrent?: () => boolean;
+  onHandoff?: () => void;
+  handedOff: boolean;
+}
+const openingRequests = new Map<string, WorkspaceOpenRequest[]>();
+
+function workspaceOpenRequestCurrent(request: WorkspaceOpenRequest): boolean {
+  return (
+    request.isRequestCurrent === undefined || request.isRequestCurrent()
+  );
+}
+
+function latestCurrentWorkspaceOpenRequest(
+  requests: readonly WorkspaceOpenRequest[],
+): WorkspaceOpenRequest | undefined {
+  for (let index = requests.length - 1; index >= 0; index -= 1) {
+    const request = requests[index]!;
+    if (workspaceOpenRequestCurrent(request)) return request;
+  }
+  return undefined;
+}
+
+function grantWorkspaceOpenHandoff(request: WorkspaceOpenRequest) {
+  if (request.handedOff) return;
+  request.handedOff = true;
+  request.onHandoff?.();
+}
 let recentSelfRename:
   | { oldPath: string; newPath: string; at: number }
   | null = null;
@@ -2457,15 +2482,23 @@ async function openWorkspaceFile(
     reveal?: boolean;
     /** A caller-owned intent that must still be current before activation. */
     isRequestCurrent?: () => boolean;
+    /** Called once when this caller wins the shared activation handoff. */
+    onHandoff?: () => void;
   } = {},
 ): Promise<boolean> {
   const context = currentWorkspaceContext();
   if (context === null) {
     return false;
   }
+  const request: WorkspaceOpenRequest = {
+    isRequestCurrent: options.isRequestCurrent,
+    onHandoff: options.onHandoff,
+    handedOff: false,
+  };
   const existing = findOpenTabForWorkspacePath(context.root, path);
   if (existing !== undefined) {
     if (options.isRequestCurrent && !options.isRequestCurrent()) return false;
+    grantWorkspaceOpenHandoff(request);
     await activateTab(existing.id);
     if (options.reveal ?? true) {
       void sidebar.value?.reveal(path);
@@ -2479,23 +2512,11 @@ async function openWorkspaceFile(
   );
   const pending = openingTabs.get(key);
   if (pending !== undefined) {
-    const intent = openingTabIntents.get(key);
-    if (intent !== undefined) {
-      if (options.isRequestCurrent === undefined) {
-        intent.isRequestCurrent = undefined;
-      } else if (intent.isRequestCurrent !== undefined) {
-        intent.isRequestCurrent = options.isRequestCurrent;
-      }
-    }
+    openingRequests.get(key)?.push(request);
     return pending;
   }
 
-  const sharedIntent: { isRequestCurrent?: () => boolean } = {
-    isRequestCurrent: options.isRequestCurrent,
-  };
-  const requestCurrent = () =>
-    sharedIntent.isRequestCurrent === undefined ||
-    sharedIntent.isRequestCurrent();
+  const requests = [request];
   const task = (async (): Promise<boolean> => {
     let text: string;
     try {
@@ -2503,29 +2524,27 @@ async function openWorkspaceFile(
     } catch (error) {
       if (
         isCurrentWorkspace(context.root, context.generation) &&
-        requestCurrent() &&
+        requests.some(workspaceOpenRequestCurrent) &&
         !options.silent
       ) {
         showNotice(`读取失败：${errorText(error)}`, "danger");
       }
       return false;
     }
-    if (
-      !isCurrentWorkspace(context.root, context.generation) ||
-      !requestCurrent()
-    ) {
+    if (!isCurrentWorkspace(context.root, context.generation)) {
       return false;
     }
+    const owner = latestCurrentWorkspaceOpenRequest(requests);
+    if (owner === undefined) return false;
+    grantWorkspaceOpenHandoff(owner);
     const current = findOpenTabForWorkspacePath(context.root, path);
     if (current !== undefined) {
-      if (!requestCurrent()) return false;
       await activateTab(current.id);
       if (options.reveal ?? true) {
         void sidebar.value?.reveal(path);
       }
       return true;
     }
-    if (!requestCurrent()) return false;
     const tab = makeMarkdownTab(
       "workspace",
       path,
@@ -2542,13 +2561,13 @@ async function openWorkspaceFile(
   })();
 
   openingTabs.set(key, task);
-  openingTabIntents.set(key, sharedIntent);
+  openingRequests.set(key, requests);
   try {
     return await task;
   } finally {
     if (openingTabs.get(key) === task) {
       openingTabs.delete(key);
-      openingTabIntents.delete(key);
+      openingRequests.delete(key);
     }
   }
 }
@@ -4419,12 +4438,17 @@ async function openLinkAddress(
   }
 
   if (sourceRoot === null || sourceGeneration === 0) return;
+  let handoffGranted = false;
   const opened = await openWorkspaceFile(destination.path, undefined, {
     reveal: false,
     isRequestCurrent: sourceCurrent,
+    onHandoff: () => {
+      handoffGranted = true;
+    },
   });
   if (
     !opened ||
+    !handoffGranted ||
     linkNavigationSequence !== sequence ||
     !isCurrentWorkspace(sourceRoot, sourceGeneration)
   ) {
@@ -4689,12 +4713,17 @@ async function openSearchResult(target: SearchOpenTarget): Promise<boolean> {
     tabNavigationRevision === navigationRevision &&
     searchSequence === searchNavigationSequence &&
     isCurrentWorkspace(root, generation);
+  let handoffGranted = false;
   const opened = await openWorkspaceFile(target.line.path, undefined, {
     reveal: false,
     isRequestCurrent,
+    onHandoff: () => {
+      handoffGranted = true;
+    },
   });
   if (
     !opened ||
+    !handoffGranted ||
     searchSequence !== searchNavigationSequence ||
     !isCurrentWorkspace(root, generation)
   ) {
