@@ -24,6 +24,7 @@ vi.hoisted(() => {
 
 const mocks = vi.hoisted(() => ({
   getAppInfo: vi.fn(),
+  openExternalURL: vi.fn(),
   pickFolder: vi.fn(),
   openFolder: vi.fn(),
   openDroppedFolder: vi.fn(),
@@ -76,7 +77,10 @@ const mocks = vi.hoisted(() => ({
   searchWorkspace: vi.fn(),
 }));
 
-vi.mock("./services/app", () => ({ getAppInfo: mocks.getAppInfo }));
+vi.mock("./services/app", () => ({
+  getAppInfo: mocks.getAppInfo,
+  openExternalURL: mocks.openExternalURL,
+}));
 vi.mock("./services/workspace", () => ({
   pickFolder: mocks.pickFolder,
   openFolder: mocks.openFolder,
@@ -763,6 +767,7 @@ beforeEach(async () => {
     goVersion: "go1.27",
     homeDir: "/Users/tester",
   });
+  mocks.openExternalURL.mockResolvedValue(undefined);
   mocks.pickFolder.mockResolvedValue({ path: "/notes", canceled: false });
   mocks.openFolder.mockResolvedValue(folder("/notes"));
   mocks.openDroppedFolder.mockResolvedValue(folder("/dropped"));
@@ -10238,5 +10243,255 @@ describe("link and image editing", () => {
       );
       expect(popup.style.maxWidth).toBe("632px");
     });
+  });
+
+  it("opens HTTP(S) links from Mod-click in every mode without adding a selection", async () => {
+    const doc = "[链接](https://example.com/a?x=1&amp;y=2)\n";
+    for (const editorMode of ["source", "live", "immersive"] as const) {
+      await remountWithSettings({ editorMode });
+      await openFile("a.md", doc);
+      const view = editorView();
+      const before = view.state.selection.ranges.length;
+      mocks.openExternalURL.mockClear();
+      clickEditorAt(doc.indexOf("链接"), { metaKey: true });
+      await settle();
+      expect(mocks.openExternalURL).toHaveBeenCalledWith(
+        "https://example.com/a?x=1&y=2",
+      );
+      expect(linkImageDialog()).toBeNull();
+      expect(view.state.selection.ranges).toHaveLength(before);
+      expect(view.state.doc.toString()).toBe(doc);
+    }
+  });
+
+  it("opens the current link field without committing the draft", async () => {
+    await remountWithSettings({ editorMode: "immersive" });
+    const doc = "[链接](https://example.com/a)\n";
+    await openFile("a.md", doc);
+    const view = editorView();
+    clickEditorAt(doc.indexOf("链接"));
+    await settle();
+    expect(linkImageDialog()).not.toBeNull();
+    typeLinkImageField("链接", "https://example.com/b?x=1&amp;y=2");
+    const open = [...linkImageDialog()!.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "打开",
+    );
+    expect(open).toBeDefined();
+    open!.click();
+    await settle();
+    expect(mocks.openExternalURL).toHaveBeenCalledWith(
+      "https://example.com/b?x=1&y=2",
+    );
+    expect(view.state.doc.toString()).toBe(doc);
+    expect(linkImageDialog()).not.toBeNull();
+  });
+
+  it("jumps to a current-document heading from the link dialog", async () => {
+    await remountWithSettings({ editorMode: "source" });
+    const doc = "# 第一节\n\n[跳](#第一节)\n";
+    await openFile("a.md", doc);
+    const view = editorView();
+    view.dispatch({ selection: { anchor: doc.indexOf("跳") } });
+    view.focus();
+    pressMod("k", "KeyK", "macos");
+    await settle();
+    const open = [...linkImageDialog()!.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "打开",
+    )!;
+    open.click();
+    await settle();
+    expect(linkImageDialog()).toBeNull();
+    expect(view.state.selection.main.head).toBe(0);
+  });
+
+  it("does not open an empty link field", async () => {
+    await remountWithSettings({ editorMode: "immersive" });
+    const doc = "[链接](https://example.com/a)\n";
+    await openFile("a.md", doc);
+    clickEditorAt(doc.indexOf("链接"));
+    await settle();
+    typeLinkImageField("链接", "");
+    const open = [...linkImageDialog()!.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "打开",
+    )!;
+    open.click();
+    await settle();
+    expect(mocks.openExternalURL).not.toHaveBeenCalled();
+    expect(linkImageDialog()).not.toBeNull();
+    expect(host.textContent).toContain("链接地址为空");
+  });
+
+  it("does not open a link during composition and retries after it ends", async () => {
+    await remountWithSettings({ editorMode: "source" });
+    const doc = "[链接](https://example.com/a)\n";
+    await openFile("a.md", doc);
+    const view = editorView();
+    startDeadKeyComposition(view);
+    clickEditorAt(doc.indexOf("链接"), { metaKey: true });
+    await settle();
+    expect(mocks.openExternalURL).not.toHaveBeenCalled();
+    view.contentDOM.dispatchEvent(
+      new CompositionEvent("compositionend", { bubbles: true }),
+    );
+    await settle();
+    clickEditorAt(doc.indexOf("链接"), { metaKey: true });
+    await settle();
+    expect(mocks.openExternalURL).toHaveBeenCalledWith(
+      "https://example.com/a",
+    );
+  });
+
+  it("keeps a missing-heading dialog open with a clear notice", async () => {
+    await remountWithSettings({ editorMode: "source" });
+    const doc = "# 目标\n\n[跳](#不存在)\n";
+    await openFile("a.md", doc);
+    const view = editorView();
+    view.dispatch({ selection: { anchor: doc.indexOf("跳") } });
+    view.focus();
+    pressMod("k", "KeyK", "macos");
+    await settle();
+    const open = [...linkImageDialog()!.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "打开",
+    )!;
+    open.click();
+    await settle();
+    expect(linkImageDialog()).not.toBeNull();
+    expect(host.textContent).toContain("找不到标题");
+  });
+
+  it("keeps a dialog open when heading parsing remains incomplete", async () => {
+    await remountWithSettings({ editorMode: "source" });
+    const doc = "# 目标\n\n[跳](#目标)\n";
+    await openFile("a.md", doc);
+    const view = editorView();
+    view.dispatch({ selection: { anchor: doc.indexOf("跳") } });
+    view.focus();
+    pressMod("k", "KeyK", "macos");
+    await settle();
+    headingMocks.extract
+      .mockReturnValueOnce({ headings: [], complete: false })
+      .mockReturnValueOnce({ headings: [], complete: false });
+    const open = [...linkImageDialog()!.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "打开",
+    )!;
+    open.click();
+    await settle();
+    await nextTask();
+    expect(linkImageDialog()).not.toBeNull();
+    expect(host.textContent).toContain("标题仍在解析，请稍后重试");
+  });
+
+  it("does not navigate a modifier click on ordinary prose", async () => {
+    await remountWithSettings({ editorMode: "source" });
+    await openFile("a.md", "alpha beta\n");
+    const view = editorView();
+    view.dispatch({ selection: { anchor: 0 } });
+    view.focus();
+    vi.spyOn(view, "posAtCoords").mockReturnValue(6);
+    view.contentDOM.dispatchEvent(
+      new MouseEvent("mousedown", {
+        bubbles: true,
+        cancelable: true,
+        clientX: 10,
+        clientY: 10,
+        metaKey: true,
+      }),
+    );
+    view.contentDOM.dispatchEvent(
+      new MouseEvent("click", {
+        bubbles: true,
+        cancelable: true,
+        clientX: 10,
+        clientY: 10,
+        metaKey: true,
+      }),
+    );
+    await settle();
+    expect(mocks.openExternalURL).not.toHaveBeenCalled();
+    expect(linkImageDialog()).toBeNull();
+  });
+
+  it("drops a late workspace link result after the source document changes", async () => {
+    await setupWorkspace({
+      "a.md": "[去](b.md)\n",
+      "b.md": "# B\n",
+    });
+    await openPath("/notes/a.md");
+    const view = editorView();
+    const read = deferred<string>();
+    mocks.readFile.mockImplementationOnce(() => read.promise);
+    clickEditorAt(view.state.doc.toString().indexOf("去"), { metaKey: true });
+    await settle();
+    view.dispatch({ changes: { from: 0, insert: "X" } });
+    read.resolve("# B\n");
+    await settle();
+    expect(tabNamed("a.md").getAttribute("aria-selected")).toBe("true");
+    expect(
+      [...host.querySelectorAll('[role="tab"]')].some((tab) =>
+        tab.textContent?.includes("b.md"),
+      ),
+    ).toBe(false);
+  });
+
+  it("opens a workspace Markdown target and its heading", async () => {
+    await setupWorkspace({
+      "a.md": "[去](b.md#目标)\n",
+      "b.md": "# 目标\n\nold\n",
+    });
+    await openPath("/notes/a.md");
+    const view = editorView();
+    clickEditorAt(view.state.doc.toString().indexOf("去"), { metaKey: true });
+    await settle();
+    expect(tabNamed("b.md").getAttribute("aria-selected")).toBe("true");
+    expect(editorView().state.doc.toString()).toBe("# 目标\n\nold\n");
+    expect(editorView().state.selection.main.head).toBe(0);
+    expect(mocks.openExternalURL).not.toHaveBeenCalled();
+  });
+
+  it("reuses a dirty target tab and finds the heading in its in-memory document", async () => {
+    await setupWorkspace({
+      "a.md": "[去](b.md#目标)\n",
+      "b.md": "# 目标\n\nold\n",
+    });
+    await openPath("/notes/a.md");
+    await openPath("/notes/b.md");
+    const targetView = editorView();
+    targetView.dispatch({
+      selection: { anchor: targetView.state.doc.length },
+    });
+    typeIntoEditor("dirty");
+    tabNamed("a.md").click();
+    await settle();
+    const view = editorView();
+    clickEditorAt(view.state.doc.toString().indexOf("去"), { metaKey: true });
+    await settle();
+    expect(tabNamed("b.md").getAttribute("aria-selected")).toBe("true");
+    expect(editorView().state.doc.toString()).toBe("# 目标\n\nold\ndirty");
+    expect(editorView().state.selection.main.head).toBe(0);
+  });
+
+  it("retries an incomplete heading parse once before declaring it missing", async () => {
+    await remountWithSettings({ editorMode: "source" });
+    const doc = "# 目标\n\n[跳](#目标)\n";
+    await openFile("a.md", doc);
+    const view = editorView();
+    view.dispatch({ selection: { anchor: doc.indexOf("跳") } });
+    view.focus();
+    pressMod("k", "KeyK", "macos");
+    await settle();
+    headingMocks.extract
+      .mockReturnValueOnce({ headings: [], complete: false })
+      .mockReturnValueOnce({
+        headings: [{ level: 1, text: "目标", position: 0, line: 1 }],
+        complete: true,
+      });
+    const open = [...linkImageDialog()!.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "打开",
+    )!;
+    open.click();
+    await settle();
+    await nextTask();
+    expect(linkImageDialog()).toBeNull();
+    expect(view.state.selection.main.head).toBe(0);
   });
 });

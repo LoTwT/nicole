@@ -1,9 +1,12 @@
 package main
 
 import (
+	"errors"
 	"log"
+	"net/url"
 	"os"
 	"runtime"
+	"strings"
 
 	"github.com/egoist/mygo"
 	_ "github.com/egoist/mygo/locales/zh-Hans"
@@ -48,6 +51,9 @@ type Application struct {
 	version string
 }
 
+// The test seam keeps system browser calls out of unit tests.
+var openExternal = mygo.Shell.OpenExternal
+
 // NewApplication returns the service with the version of the packaged app.
 func NewApplication(version string) Application {
 	return Application{version: version}
@@ -63,6 +69,32 @@ func (app Application) Info() AppInfo {
 		GoVersion: runtime.Version(),
 		HomeDir:   home,
 	}
+}
+
+func validExternalURL(target string) bool {
+	if strings.IndexFunc(target, func(character rune) bool {
+		return character < 0x20 || character == 0x7f
+	}) != -1 {
+		return false
+	}
+	parsed, err := url.Parse(target)
+	if err != nil {
+		return false
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return false
+	}
+	return parsed.Opaque == "" && parsed.Host != "" && parsed.Hostname() != ""
+}
+
+// OpenExternalURL opens a complete HTTP(S) URL in the system browser. No
+// local path or other scheme reaches the operating system from the page.
+func (app Application) OpenExternalURL(target string) error {
+	if !validExternalURL(target) {
+		return errors.New("external URL must be a complete HTTP(S) URL")
+	}
+	return openExternal(target)
 }
 
 func main() {

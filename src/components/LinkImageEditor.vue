@@ -32,6 +32,7 @@ const emit = defineEmits<{
   complete: [values: readonly LinkImageFieldValues[]];
   remove: [];
   reveal: [path: string];
+  open: [address: string];
 }>();
 
 const popover = ref<HTMLElement | null>(null);
@@ -143,6 +144,10 @@ function remove() {
 function reveal() {
   if (!revealable.value) return;
   emit("reveal", fields.value[0]?.url ?? "");
+}
+
+function open() {
+  emit("open", fields.value[0]?.url ?? "");
 }
 
 function handleKeydown(event: KeyboardEvent) {
@@ -278,6 +283,14 @@ defineExpose({ focusFirstField });
             @click="reveal"
           >
             {{ revealText }}
+          </button>
+          <button
+            v-if="session.kind === 'link'"
+            type="button"
+            class="button-secondary focus-ring h-[26px] rounded-[var(--radius-control)] border px-2 text-[12px]"
+            @click="open"
+          >
+            打开
           </button>
           <button
             v-if="session.canRemove"

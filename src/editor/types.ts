@@ -77,6 +77,8 @@ export interface CreateEditorOptions {
    * became invalid and the dialog must close without writing.
    */
   onEditLinkImage?: (session: LinkImageEditorSession | null) => void;
+  /** Receives the raw destination source of a Mod/Ctrl-clicked link. */
+  onOpenLink?: (source: string) => void;
 }
 
 export interface EditorHandle {

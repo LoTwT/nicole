@@ -6,3 +6,8 @@ export type { AppInfo };
 export function getAppInfo(): Promise<AppInfo> {
   return Application.info();
 }
+
+/** Opens a validated HTTP(S) URL in the system browser. */
+export function openExternalURL(target: string): Promise<void> {
+  return Application.openExternalURL(target);
+}

@@ -19,6 +19,7 @@ import {
   type CommandPaletteMode,
 } from "./app/command-palette";
 import { buildContextMenu } from "./app/context-menu";
+import { classifyLinkDestination, findHeadingByFragment } from "./app/link-navigation";
 import { outlinePlacement } from "./app/outline";
 import {
   absoluteBaseName,
@@ -114,7 +115,7 @@ import {
 } from "./editor/slash";
 import { createImageInsertion } from "./image-insertion";
 import { resolveImageUrl, resolveLocalImagePath } from "./image-url";
-import { getAppInfo, type AppInfo } from "./services/app";
+import { getAppInfo, openExternalURL, type AppInfo } from "./services/app";
 import { onWindowFileDrop, type AssetDrop } from "./services/assets";
 import { copyText } from "./services/clipboard";
 import {
@@ -338,6 +339,7 @@ const linkImageEditorPanel = ref<InstanceType<typeof LinkImageEditor> | null>(
 );
 let linkImageReturnFocus: HTMLElement | null = null;
 let nextLinkImageEditorID = 1;
+let linkNavigationSequence = 0;
 // The current root's user templates. Loading starts only when a command menu
 // opens, and a newer request or a root change makes older results stale.
 const workspaceSnippetCommands = shallowRef<readonly CommandDefinition[]>([]);
@@ -2360,6 +2362,9 @@ async function mountActive(focus = true) {
     onCompositionStart: () => handleEditorCompositionStart(tab.id),
     onCompositionEnd: () => handleEditorCompositionEnd(tab.id),
     onEditLinkImage: handleEditLinkImage,
+    onOpenLink: (source) => {
+      void openLinkAddress(source);
+    },
   });
   editorRevision.value += 1;
   slashMenu = createSlashMenu({
@@ -4257,6 +4262,159 @@ async function revealLinkImage(path: string) {
   }
 }
 
+type HeadingJumpResult = "found" | "missing" | "pending" | "stale";
+
+async function jumpToHeading(
+  view: EditorView,
+  fragment: string,
+  current: () => boolean,
+): Promise<HeadingJumpResult> {
+  if (!current()) return "stale";
+  if (fragment === "") {
+    view.dispatch({
+      selection: { anchor: 0 },
+      effects: EditorView.scrollIntoView(0, { y: "start" }),
+    });
+    view.focus();
+    return "found";
+  }
+  let extraction = extractHeadingsWithStatus(view.state);
+  if (!extraction.complete) {
+    // One bounded handoff lets an already-running parse finish without
+    // turning navigation into a polling loop.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    if (!current()) return "stale";
+    extraction = extractHeadingsWithStatus(view.state);
+  }
+  if (!extraction.complete) {
+    if (current()) showNotice("标题仍在解析，请稍后重试", "muted");
+    return "pending";
+  }
+  const heading = findHeadingByFragment(extraction.headings, fragment);
+  if (heading === null) {
+    if (current()) showNotice("找不到标题", "danger");
+    return "missing";
+  }
+  if (!current()) return "stale";
+  view.dispatch({
+    selection: { anchor: heading.position },
+    effects: EditorView.scrollIntoView(heading.position, { y: "start" }),
+  });
+  view.focus();
+  return "found";
+}
+
+/**
+ * The single opening entry used by Mod/Ctrl-click and the link dialog. It
+ * classifies the source destination, then delegates HTTP(S) to Go and
+ * workspace/fragment navigation to the normal tab and heading flows.
+ */
+async function openLinkAddress(
+  sourceAddress: string,
+  options: { fromDialog?: boolean } = {},
+) {
+  const sourceTab = currentMarkdown.value;
+  const sourceEditor = editor;
+  if (sourceTab === null || sourceEditor === null) return;
+  const sourceKind: "workspace" | "single" =
+    sourceTab.kind === "workspace" ? "workspace" : "single";
+  const sourceRoot = workspace.value?.root ?? null;
+  const sourceGeneration = workspace.value?.generation ?? 0;
+  const sourceTabId = sourceTab.id;
+  const sourceText = sourceTab.text;
+  const sourceDoc = sourceEditor.view.state.doc;
+  const sequence = ++linkNavigationSequence;
+  const sourceCurrent = () =>
+    linkNavigationSequence === sequence &&
+    activeTabId.value === sourceTabId &&
+    findTab(sourceTabId)?.text === sourceText &&
+    sourceEditor.view.state.doc === sourceDoc &&
+    (sourceKind === "single" ||
+      isCurrentWorkspace(sourceRoot ?? "", sourceGeneration));
+  const destination = classifyLinkDestination(sourceAddress, {
+    kind: sourceKind,
+    path: sourceTab.path,
+    root: sourceRoot,
+  });
+
+  if (destination.kind === "empty") {
+    showNotice("链接地址为空", "muted");
+    return;
+  }
+  if (destination.kind === "unsupported") {
+    showNotice(destination.message, "danger");
+    return;
+  }
+  if (destination.kind === "external") {
+    try {
+      await openExternalURL(destination.url);
+    } catch (error) {
+      showNotice(`打开链接失败：${errorText(error)}`, "danger");
+    }
+    return;
+  }
+  if (destination.kind === "fragment") {
+    if (!sourceCurrent()) return;
+    const result = await jumpToHeading(
+      sourceEditor.view,
+      destination.fragment,
+      sourceCurrent,
+    );
+    if (result === "found" && options.fromDialog) {
+      closeLinkImageEditor({ restoreFocus: false });
+    }
+    return;
+  }
+
+  if (sourceRoot === null || sourceGeneration === 0) return;
+  const opened = await openWorkspaceFile(destination.path, undefined, {
+    reveal: false,
+    isRequestCurrent: sourceCurrent,
+  });
+  if (
+    !opened ||
+    linkNavigationSequence !== sequence ||
+    !isCurrentWorkspace(sourceRoot, sourceGeneration)
+  ) {
+    return;
+  }
+  const targetTab = currentMarkdown.value;
+  const targetEditor = editor;
+  if (
+    targetTab === null ||
+    targetTab.kind !== "workspace" ||
+    targetTab.path !== destination.path ||
+    targetEditor === null ||
+    activeTabId.value !== targetTab.id
+  ) {
+    return;
+  }
+  if (destination.fragment === null) {
+    if (options.fromDialog) closeLinkImageEditor({ restoreFocus: false });
+    return;
+  }
+  const targetTabId = targetTab.id;
+  const targetText = targetTab.text;
+  const targetDoc = targetEditor.view.state.doc;
+  const targetCurrent = () =>
+    linkNavigationSequence === sequence &&
+    activeTabId.value === targetTabId &&
+    findTab(targetTabId)?.text === targetText &&
+    editor === targetEditor &&
+    targetEditor.view.state.doc === targetDoc &&
+    isCurrentWorkspace(sourceRoot, sourceGeneration);
+  await jumpToHeading(
+    targetEditor.view,
+    destination.fragment,
+    targetCurrent,
+  );
+  if (options.fromDialog) closeLinkImageEditor({ restoreFocus: false });
+}
+
+function openLinkImage(address: string) {
+  void openLinkAddress(address, { fromDialog: true });
+}
+
 function closePopoverMenus() {
   closeLinkImageEditor({ restoreFocus: false });
   slashMenu?.close();
@@ -5498,6 +5656,7 @@ defineExpose({
       @complete="completeLinkImage"
       @remove="removeLinkImage"
       @reveal="revealLinkImage"
+      @open="openLinkImage"
     />
 
     <RecoveryDialog

@@ -96,6 +96,7 @@ export interface InlineLinkTarget {
   urlTo: number;
   text: string;
   url: string;
+  urlSource: string;
   hasTitle: boolean;
 }
 
@@ -109,6 +110,7 @@ export interface ImageTarget {
   urlTo: number;
   text: string;
   url: string;
+  urlSource: string;
   hasTitle: boolean;
 }
 
@@ -142,6 +144,7 @@ function inlineTarget(
     urlTo,
     text: state.sliceDoc(open.to, close.from),
     url: parseMarkdownDestination(urlSource),
+    urlSource,
     hasTitle: node.node.getChild("LinkTitle") !== null,
   };
 }
@@ -264,6 +267,7 @@ interface SessionTarget {
   urlTo: number;
   text: string;
   url: string;
+  urlSource: string;
   hasTitle: boolean;
   leading: string;
   trailing: string;
@@ -285,6 +289,7 @@ function newSessionTarget(
     urlTo: draft.to,
     text: draft.text,
     url: "",
+    urlSource: "",
     hasTitle: false,
     leading: draft.leading,
     trailing: draft.trailing,

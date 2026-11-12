@@ -1492,6 +1492,7 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     onCompositionEnd,
     onCompositionStart,
     onEditLinkImage,
+    onOpenLink,
   } = options;
 
   const modeCompartment = new Compartment();
@@ -1776,20 +1777,37 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
         },
         click(event, editorView) {
           if (
-            mode !== "immersive" ||
             event.defaultPrevented ||
             editorView.compositionStarted ||
-            editorView.composing ||
+            editorView.composing
+          ) {
+            return false;
+          }
+          if (event.target instanceof Element && event.target.closest(".cm-nicole-checkbox")) {
+            return false;
+          }
+          const modifierClick =
+            (event.metaKey || event.ctrlKey) &&
+            !event.altKey &&
+            !event.shiftKey;
+          if (modifierClick && onOpenLink !== undefined) {
+            const at = editorView.posAtCoords({
+              x: event.clientX,
+              y: event.clientY,
+            });
+            if (at === null) return false;
+            const target = inlineTargetAt(editorView.state, at);
+            if (target?.kind !== "link") return false;
+            event.preventDefault();
+            onOpenLink(target.urlSource);
+            return true;
+          }
+          if (
+            mode !== "immersive" ||
             event.metaKey ||
             event.ctrlKey ||
             event.altKey ||
             event.shiftKey
-          ) {
-            return false;
-          }
-          if (
-            event.target instanceof Element &&
-            event.target.closest(".cm-nicole-checkbox")
           ) {
             return false;
           }

@@ -353,6 +353,13 @@ export const Application = {
   info(): Promise<AppInfo> {
     return call("Application.Info");
   },
+  /**
+   * OpenExternalURL opens a complete HTTP(S) URL in the system browser. No
+   * local path or other scheme reaches the operating system from the page.
+   */
+  openExternalURL(target: string): Promise<void> {
+    return call("Application.OpenExternalURL", target);
+  },
 } as const;
 
 /**

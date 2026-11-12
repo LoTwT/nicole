@@ -57,3 +57,46 @@ func TestApplicationInfo(t *testing.T) {
 		t.Errorf("HomeDir = %q, want %q", info.HomeDir, home)
 	}
 }
+
+func TestApplicationOpenExternalURL(t *testing.T) {
+	original := openExternal
+	t.Cleanup(func() {
+		openExternal = original
+	})
+	var calls []string
+	openExternal = func(target string) error {
+		calls = append(calls, target)
+		return nil
+	}
+
+	app := NewApplication("0.0.1")
+	for _, target := range []string{
+		"",
+		"http://",
+		"https:///path",
+		"https://example.com/\nnext",
+		"ftp://example.com/a",
+		"file:///tmp/a.md",
+		"javascript:alert(1)",
+		"mailto:user@example.com",
+	} {
+		if err := app.OpenExternalURL(target); err == nil {
+			t.Errorf("OpenExternalURL(%q) returned nil error", target)
+		}
+	}
+	if len(calls) != 0 {
+		t.Fatalf("invalid URLs reached Shell.OpenExternal: %v", calls)
+	}
+
+	for _, target := range []string{
+		"https://example.com/a?x=1&y=2",
+		"HTTP://Example.com",
+	} {
+		if err := app.OpenExternalURL(target); err != nil {
+			t.Errorf("OpenExternalURL(%q) error = %v", target, err)
+		}
+	}
+	if len(calls) != 2 || calls[0] != "https://example.com/a?x=1&y=2" || calls[1] != "HTTP://Example.com" {
+		t.Fatalf("calls = %v, want the two valid HTTP(S) targets", calls)
+	}
+}
