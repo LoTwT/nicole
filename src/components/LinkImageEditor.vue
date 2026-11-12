@@ -33,6 +33,7 @@ const emit = defineEmits<{
   remove: [];
   reveal: [path: string];
   open: [address: string];
+  "fields-change": [];
 }>();
 
 const popover = ref<HTMLElement | null>(null);
@@ -191,9 +192,10 @@ onBeforeUnmount(() => {
 watch(
   fields,
   () => {
+    emit("fields-change");
     void nextTick(updatePosition);
   },
-  { deep: true },
+  { deep: true, flush: "sync" },
 );
 
 defineExpose({ focusFirstField });

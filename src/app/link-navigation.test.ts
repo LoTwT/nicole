@@ -36,6 +36,15 @@ describe("decodeLinkDestination", () => {
       decodeLinkDestination("https://example.com/?a=1&amp;b=2"),
     ).toBe("https://example.com/?a=1&b=2");
   });
+
+  it("requires a complete named character reference", () => {
+    expect(decodeLinkDestination("a&notin;.md")).toBe("a∉.md");
+    expect(decodeLinkDestination("a&bogus;.md")).toBe("a&bogus;.md");
+    expect(decodeLinkDestination("a&notit;.md")).toBe("a&notit;.md");
+    expect(
+      decodeLinkDestination("https://example.com/?a&notit;=1&notin;=2"),
+    ).toBe("https://example.com/?a&notit;=1∉=2");
+  });
 });
 
 describe("classifyLinkDestination", () => {
@@ -139,5 +148,13 @@ describe("heading anchors", () => {
       heading(3, "A", 5, 5),
     ];
     expect(headingAnchorIds(collided)).toEqual(["a", "a-1", "a-2"]);
+  });
+
+  it("uses only spaces as hyphens in heading ids", () => {
+    const whitespace = [heading(1, "A\tB", 0, 1)];
+    expect(visibleHeadingText("A\tB")).toBe("A B");
+    expect(headingAnchorIds(whitespace)).toEqual(["ab"]);
+    expect(findHeadingByFragment(whitespace, "ab")).toBe(whitespace[0]);
+    expect(findHeadingByFragment(whitespace, "A B")).toBe(whitespace[0]);
   });
 });

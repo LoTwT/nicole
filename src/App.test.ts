@@ -457,6 +457,32 @@ function clickEditorAt(position: number, modifiers: MouseEventInit = {}) {
   clickElementAt(editorView().contentDOM, position, modifiers);
 }
 
+function clickEditorSequenceAt(
+  position: number,
+  modifiers: MouseEventInit = {},
+) {
+  const view = editorView();
+  vi.spyOn(view, "posAtCoords").mockReturnValue(position);
+  vi.spyOn(view as any, "posAndSideAtCoords").mockReturnValue({
+    pos: position,
+    assoc: 1,
+  });
+  for (const type of ["mousedown", "mouseup", "click"] as const) {
+    view.contentDOM.dispatchEvent(
+      new MouseEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        clientX: 10,
+        clientY: 10,
+        button: 0,
+        buttons: type === "mousedown" ? 1 : 0,
+        detail: 1,
+        ...modifiers,
+      }),
+    );
+  }
+}
+
 /** Reads the mounted App's setup state for lifecycle snapshot assertions. */
 function appSetupState(): Record<string, any> {
   const instance = (
@@ -10245,16 +10271,18 @@ describe("link and image editing", () => {
     });
   });
 
-  it("opens HTTP(S) links from Mod-click in every mode without adding a selection", async () => {
+  it("opens HTTP(S) links from a full Mod-click gesture in every mode without adding a selection", async () => {
     const doc = "[链接](https://example.com/a?x=1&amp;y=2)\n";
     for (const editorMode of ["source", "live", "immersive"] as const) {
       await remountWithSettings({ editorMode });
       await openFile("a.md", doc);
       const view = editorView();
+      view.dispatch({ selection: { anchor: 0 } });
       const before = view.state.selection.ranges.length;
       mocks.openExternalURL.mockClear();
-      clickEditorAt(doc.indexOf("链接"), { metaKey: true });
+      clickEditorSequenceAt(doc.indexOf("链接"), { metaKey: true });
       await settle();
+      expect(mocks.openExternalURL).toHaveBeenCalledTimes(1);
       expect(mocks.openExternalURL).toHaveBeenCalledWith(
         "https://example.com/a?x=1&y=2",
       );
@@ -10381,34 +10409,17 @@ describe("link and image editing", () => {
     expect(host.textContent).toContain("标题仍在解析，请稍后重试");
   });
 
-  it("does not navigate a modifier click on ordinary prose", async () => {
+  it("keeps a full modifier-click gesture on ordinary prose as a multi-selection", async () => {
     await remountWithSettings({ editorMode: "source" });
     await openFile("a.md", "alpha beta\n");
     const view = editorView();
     view.dispatch({ selection: { anchor: 0 } });
     view.focus();
-    vi.spyOn(view, "posAtCoords").mockReturnValue(6);
-    view.contentDOM.dispatchEvent(
-      new MouseEvent("mousedown", {
-        bubbles: true,
-        cancelable: true,
-        clientX: 10,
-        clientY: 10,
-        metaKey: true,
-      }),
-    );
-    view.contentDOM.dispatchEvent(
-      new MouseEvent("click", {
-        bubbles: true,
-        cancelable: true,
-        clientX: 10,
-        clientY: 10,
-        metaKey: true,
-      }),
-    );
+    clickEditorSequenceAt(6, { metaKey: true });
     await settle();
     expect(mocks.openExternalURL).not.toHaveBeenCalled();
     expect(linkImageDialog()).toBeNull();
+    expect(view.state.selection.ranges).toHaveLength(2);
   });
 
   it("drops a late workspace link result after the source document changes", async () => {
@@ -10468,6 +10479,220 @@ describe("link and image editing", () => {
     expect(tabNamed("b.md").getAttribute("aria-selected")).toBe("true");
     expect(editorView().state.doc.toString()).toBe("# 目标\n\nold\ndirty");
     expect(editorView().state.selection.main.head).toBe(0);
+  });
+
+  it("reuses an authorized dirty single target and finds its heading", async () => {
+    mocks.acceptSingleFile.mockResolvedValue({
+      path: "/notes/b.md",
+      name: "b.md",
+    });
+    mocks.readSingleFile.mockResolvedValue("# B\n\nend\n");
+    pendingFiles = ["/notes/b.md"];
+    openHandler?.();
+    await settle();
+    dialogButton("只打开这个文件").click();
+    await settle();
+    const singleView = editorView();
+    singleView.dispatch({ selection: { anchor: singleView.state.doc.length } });
+    typeIntoEditor("dirty");
+    await setupWorkspace({
+      "a.md": "[去](b.md#b)\n",
+      "b.md": "# disk\n",
+    });
+    const row = host.querySelector<HTMLElement>('[data-tree-path="a.md"]');
+    if (!row) throw new Error("workspace a.md row not found");
+    row.click();
+    await settle();
+    const readCount = mocks.readFile.mock.calls.length;
+    const view = editorView();
+    clickEditorAt(view.state.doc.toString().indexOf("去"), { metaKey: true });
+    await settle();
+    expect(tabNamed("b.md").getAttribute("aria-selected")).toBe("true");
+    expect(editorView().state.doc.toString()).toBe("# B\n\nend\ndirty");
+    expect(mocks.readFile.mock.calls.length).toBe(readCount);
+    expect(editorView().state.selection.main.head).toBe(0);
+  });
+
+  it("does not activate a pending workspace link after the dialog is cancelled", async () => {
+    await setupWorkspace({
+      "a.md": "[去](b.md)\n",
+      "b.md": "# B\n",
+    });
+    await openPath("/notes/a.md");
+    const view = editorView();
+    view.dispatch({ selection: { anchor: 2 } });
+    view.focus();
+    pressMod("k", "KeyK", "macos");
+    await settle();
+    const read = deferred<string>();
+    mocks.readFile.mockImplementationOnce(() => read.promise);
+    const open = [...linkImageDialog()!.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "打开",
+    )!;
+    open.click();
+    expect(mocks.readFile).toHaveBeenLastCalledWith("b.md");
+    pressEscape(linkImageInput("链接"));
+    await settle();
+    expect(linkImageDialog()).toBeNull();
+    read.resolve("# B\n");
+    await settle();
+    expect(tabNamed("a.md").getAttribute("aria-selected")).toBe("true");
+    expect(
+      [...host.querySelectorAll('[role="tab"]')].some((tab) =>
+        tab.textContent?.includes("b.md"),
+      ),
+    ).toBe(false);
+  });
+
+  it("does not activate a pending workspace link after its dialog field changes", async () => {
+    await setupWorkspace({
+      "a.md": "[去](b.md)\n",
+      "b.md": "# B\n",
+    });
+    await openPath("/notes/a.md");
+    const view = editorView();
+    view.dispatch({ selection: { anchor: 2 } });
+    view.focus();
+    pressMod("k", "KeyK", "macos");
+    await settle();
+    const read = deferred<string>();
+    mocks.readFile.mockImplementationOnce(() => read.promise);
+    const open = [...linkImageDialog()!.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "打开",
+    )!;
+    open.click();
+    typeLinkImageField("链接", "different.md");
+    read.resolve("# B\n");
+    await settle();
+    expect(tabNamed("a.md").getAttribute("aria-selected")).toBe("true");
+    expect(linkImageDialog()).not.toBeNull();
+    expect(
+      [...host.querySelectorAll('[role="tab"]')].some((tab) =>
+        tab.textContent?.includes("b.md"),
+      ),
+    ).toBe(false);
+  });
+
+  it("does not close a replacement dialog when an older pending link resolves", async () => {
+    await setupWorkspace({
+      "a.md": "[去](b.md)\n",
+      "b.md": "# B\n",
+    });
+    await openPath("/notes/a.md");
+    const view = editorView();
+    view.dispatch({ selection: { anchor: 2 } });
+    view.focus();
+    pressMod("k", "KeyK", "macos");
+    await settle();
+    const read = deferred<string>();
+    mocks.readFile.mockImplementationOnce(() => read.promise);
+    [...linkImageDialog()!.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "打开",
+    )!.click();
+    pressEscape(linkImageInput("链接"));
+    await settle();
+    pressMod("k", "KeyK", "macos");
+    await settle();
+    const replacement = linkImageDialog()!;
+    read.resolve("# B\n");
+    await settle();
+    expect(linkImageDialog()).toBe(replacement);
+    expect(tabNamed("a.md").getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("does not publish a stale external-link error after tab navigation", async () => {
+    await setupWorkspace({
+      "a.md": "[去](https://example.com)\n",
+      "b.md": "# B\n",
+    });
+    await openPath("/notes/a.md");
+    await openPath("/notes/b.md");
+    tabNamed("a.md").click();
+    await settle();
+    const pending = deferred<void>();
+    mocks.openExternalURL.mockImplementationOnce(() => pending.promise);
+    clickEditorAt(2, { metaKey: true });
+    tabNamed("b.md").click();
+    await settle();
+    tabNamed("a.md").click();
+    await settle();
+    pending.reject(new Error("stale external failure"));
+    await settle();
+    expect(host.textContent).not.toContain("stale external failure");
+  });
+
+  it("does not activate an older pending link after a newer navigation", async () => {
+    await setupWorkspace({
+      "a.md": "[旧](b.md) [新](https://example.com)\n",
+      "b.md": "# B\n",
+    });
+    await openPath("/notes/a.md");
+    const view = editorView();
+    view.dispatch({ selection: { anchor: 0 } });
+    view.focus();
+    const read = deferred<string>();
+    mocks.readFile.mockImplementationOnce(() => read.promise);
+    mocks.openExternalURL.mockClear();
+    clickEditorAt(view.state.doc.toString().indexOf("旧"), { metaKey: true });
+    await settle();
+    expect(mocks.readFile).toHaveBeenLastCalledWith("b.md");
+    clickEditorAt(view.state.doc.toString().indexOf("新"), { metaKey: true });
+    await settle();
+    expect(mocks.openExternalURL).toHaveBeenCalledWith(
+      "https://example.com",
+    );
+    read.resolve("# B\n");
+    await settle();
+    expect(tabNamed("a.md").getAttribute("aria-selected")).toBe("true");
+    expect(
+      [...host.querySelectorAll('[role="tab"]')].some((tab) =>
+        tab.textContent?.includes("b.md"),
+      ),
+    ).toBe(false);
+  });
+
+  it("does not publish a stale external-link error after the root changes", async () => {
+    await setupWorkspace({ "a.md": "[去](https://example.com)\n" });
+    await openPath("/notes/a.md");
+    const view = editorView();
+    const pending = deferred<void>();
+    mocks.openExternalURL.mockImplementationOnce(() => pending.promise);
+    clickEditorAt(view.state.doc.toString().indexOf("去"), { metaKey: true });
+    mocks.pickFolder.mockResolvedValue({ path: "/other", canceled: false });
+    mocks.openFolder.mockResolvedValue(folder("/other", 2));
+    sidebarButton("切换文件夹").click();
+    await settle();
+    dialogButton("切换").click();
+    await settle();
+    pending.reject(new Error("stale root failure"));
+    await settle();
+    expect(host.textContent).not.toContain("stale root failure");
+  });
+
+  it("does not move the caret after cancelling a heading retry", async () => {
+    await remountWithSettings({ editorMode: "source" });
+    const doc = "# 目标\n\n[跳](#目标)\n";
+    await openFile("a.md", doc);
+    const view = editorView();
+    const caret = doc.indexOf("跳");
+    view.dispatch({ selection: { anchor: caret } });
+    view.focus();
+    pressMod("k", "KeyK", "macos");
+    await settle();
+    headingMocks.extract
+      .mockReturnValueOnce({ headings: [], complete: false })
+      .mockReturnValueOnce({
+        headings: [{ level: 1, text: "目标", position: 0, line: 1 }],
+        complete: true,
+      });
+    [...linkImageDialog()!.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "打开",
+    )!.click();
+    pressEscape(linkImageInput("链接"));
+    await settle();
+    await nextTask();
+    expect(view.state.selection.main.head).toBe(caret);
+    expect(host.textContent).not.toContain("找不到标题");
   });
 
   it("retries an incomplete heading parse once before declaring it missing", async () => {

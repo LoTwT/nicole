@@ -1775,6 +1775,34 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
           }
           return false;
         },
+        mousedown(event, editorView) {
+          if (
+            event.defaultPrevented ||
+            editorView.compositionStarted ||
+            editorView.composing ||
+            event.button !== 0 ||
+            onOpenLink === undefined ||
+            !(event.metaKey || event.ctrlKey) ||
+            event.altKey ||
+            event.shiftKey ||
+            (event.target instanceof Element &&
+              event.target.closest(".cm-nicole-checkbox"))
+          ) {
+            return false;
+          }
+          const at = editorView.posAtCoords({
+            x: event.clientX,
+            y: event.clientY,
+          });
+          if (at === null) return false;
+          const target = inlineTargetAt(editorView.state, at);
+          if (target?.kind !== "link") return false;
+          // CodeMirror adds a selection range during mousedown. Consume the
+          // modified link gesture here so the later click can open it without
+          // changing the selection or starting a drag.
+          event.preventDefault();
+          return true;
+        },
         click(event, editorView) {
           if (
             event.defaultPrevented ||

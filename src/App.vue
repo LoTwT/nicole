@@ -243,6 +243,7 @@ interface LinkImageEditorState {
   id: number;
   session: LinkImageEditorSession;
   initialFields: readonly LinkImageFieldValues[];
+  fieldRevision: number;
 }
 
 interface RecoveryWriteState {
@@ -770,6 +771,19 @@ function sameFilePath(left: string, right: string): boolean {
   return left.replace(/\\/g, "/") === right.replace(/\\/g, "/");
 }
 
+/** True when a tab already represents a workspace-relative file path. */
+function isTabForWorkspacePath(
+  tab: Pick<TabModel, "kind" | "path">,
+  root: string,
+  path: string,
+): boolean {
+  if (tab.kind === "workspace") return tab.path === path;
+  return (
+    tab.kind === "single" &&
+    sameFilePath(tab.path, workspaceAbsolutePath(root, path))
+  );
+}
+
 /** Finds a workspace tab or a single-file tab for the same physical path. */
 function findOpenTabForWorkspacePathIn(
   list: readonly TabModel[],
@@ -782,9 +796,8 @@ function findOpenTabForWorkspacePathIn(
   if (workspaceTab !== undefined) {
     return workspaceTab;
   }
-  const absolute = workspaceAbsolutePath(root, path);
   return list.find(
-    (tab) => tab.kind === "single" && sameFilePath(tab.path, absolute),
+    (tab) => tab.kind === "single" && isTabForWorkspacePath(tab, root, path),
   );
 }
 
@@ -4220,7 +4233,15 @@ function handleEditLinkImage(session: LinkImageEditorSession | null) {
     id: nextLinkImageEditorID++,
     session,
     initialFields: session.fields,
+    fieldRevision: 0,
   };
+}
+
+function handleLinkImageFieldsChange() {
+  const state = linkImageEditor.value;
+  if (state !== null) {
+    state.fieldRevision += 1;
+  }
 }
 
 function completeLinkImage(values: readonly LinkImageFieldValues[]) {
@@ -4318,19 +4339,41 @@ async function openLinkAddress(
   if (sourceTab === null || sourceEditor === null) return;
   const sourceKind: "workspace" | "single" =
     sourceTab.kind === "workspace" ? "workspace" : "single";
-  const sourceRoot = workspace.value?.root ?? null;
-  const sourceGeneration = workspace.value?.generation ?? 0;
+  const sourceWorkspaceRoot = workspace.value?.root ?? null;
+  const sourceWorkspaceGeneration = workspace.value?.generation ?? 0;
+  const sourceWorkspaceCurrent = () =>
+    (workspace.value?.root ?? null) === sourceWorkspaceRoot &&
+    (workspace.value?.generation ?? 0) === sourceWorkspaceGeneration;
+  const sourceRoot = sourceWorkspaceRoot;
+  const sourceGeneration = sourceWorkspaceGeneration;
   const sourceTabId = sourceTab.id;
   const sourceText = sourceTab.text;
   const sourceDoc = sourceEditor.view.state.doc;
+  const sourceNavigationRevision = tabNavigationRevision;
+  const dialogState = options.fromDialog ? linkImageEditor.value : null;
+  if (options.fromDialog && dialogState === null) return;
+  const dialogId = dialogState?.id ?? null;
+  const dialogSession = dialogState?.session ?? null;
+  const dialogFieldRevision = dialogState?.fieldRevision ?? 0;
   const sequence = ++linkNavigationSequence;
+  const dialogCurrent = () => {
+    if (!options.fromDialog) return true;
+    const current = linkImageEditor.value;
+    return (
+      current !== null &&
+      current.id === dialogId &&
+      current.session === dialogSession &&
+      current.fieldRevision === dialogFieldRevision
+    );
+  };
   const sourceCurrent = () =>
     linkNavigationSequence === sequence &&
+    tabNavigationRevision === sourceNavigationRevision &&
     activeTabId.value === sourceTabId &&
     findTab(sourceTabId)?.text === sourceText &&
     sourceEditor.view.state.doc === sourceDoc &&
-    (sourceKind === "single" ||
-      isCurrentWorkspace(sourceRoot ?? "", sourceGeneration));
+    sourceWorkspaceCurrent() &&
+    dialogCurrent();
   const destination = classifyLinkDestination(sourceAddress, {
     kind: sourceKind,
     path: sourceTab.path,
@@ -4349,6 +4392,7 @@ async function openLinkAddress(
     try {
       await openExternalURL(destination.url);
     } catch (error) {
+      if (!sourceCurrent()) return;
       showNotice(`打开链接失败：${errorText(error)}`, "danger");
     }
     return;
@@ -4360,7 +4404,7 @@ async function openLinkAddress(
       destination.fragment,
       sourceCurrent,
     );
-    if (result === "found" && options.fromDialog) {
+    if (result === "found" && dialogCurrent()) {
       closeLinkImageEditor({ restoreFocus: false });
     }
     return;
@@ -4382,33 +4426,53 @@ async function openLinkAddress(
   const targetEditor = editor;
   if (
     targetTab === null ||
-    targetTab.kind !== "workspace" ||
-    targetTab.path !== destination.path ||
+    !isTabForWorkspacePath(targetTab, sourceRoot, destination.path) ||
     targetEditor === null ||
     activeTabId.value !== targetTab.id
   ) {
     return;
   }
-  if (destination.fragment === null) {
-    if (options.fromDialog) closeLinkImageEditor({ restoreFocus: false });
-    return;
-  }
   const targetTabId = targetTab.id;
   const targetText = targetTab.text;
   const targetDoc = targetEditor.view.state.doc;
+  const targetNavigationRevision = tabNavigationRevision;
+  const targetIsSource = targetTabId === sourceTabId;
+  // A normal open may destroy the source view and its dialog. After that
+  // permitted handoff, continue with target identity; a replacement dialog
+  // or field revision still invalidates the old intent.
+  const dialogAfterActivation = () => {
+    if (!options.fromDialog) return true;
+    const current = linkImageEditor.value;
+    if (current === null) return !targetIsSource;
+    return (
+      current.id === dialogId &&
+      current.session === dialogSession &&
+      current.fieldRevision === dialogFieldRevision
+    );
+  };
   const targetCurrent = () =>
     linkNavigationSequence === sequence &&
+    tabNavigationRevision === targetNavigationRevision &&
     activeTabId.value === targetTabId &&
     findTab(targetTabId)?.text === targetText &&
     editor === targetEditor &&
     targetEditor.view.state.doc === targetDoc &&
-    isCurrentWorkspace(sourceRoot, sourceGeneration);
-  await jumpToHeading(
+    isCurrentWorkspace(sourceRoot, sourceGeneration) &&
+    dialogAfterActivation();
+  if (destination.fragment === null) {
+    if (options.fromDialog && dialogCurrent()) {
+      closeLinkImageEditor({ restoreFocus: false });
+    }
+    return;
+  }
+  const result = await jumpToHeading(
     targetEditor.view,
     destination.fragment,
     targetCurrent,
   );
-  if (options.fromDialog) closeLinkImageEditor({ restoreFocus: false });
+  if (result === "found" && options.fromDialog && dialogCurrent()) {
+    closeLinkImageEditor({ restoreFocus: false });
+  }
 }
 
 function openLinkImage(address: string) {
@@ -5657,6 +5721,7 @@ defineExpose({
       @remove="removeLinkImage"
       @reveal="revealLinkImage"
       @open="openLinkImage"
+      @fields-change="handleLinkImageFieldsChange"
     />
 
     <RecoveryDialog

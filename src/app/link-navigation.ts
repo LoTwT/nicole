@@ -61,10 +61,13 @@ function decodeCharacterReference(reference: string): string | null {
   }
   if (!/^&[A-Za-z][A-Za-z0-9]+;$/.test(reference)) return null;
   if (typeof document === "undefined") return null;
-  // Decode only the already-matched entity, never the surrounding address.
-  const textarea = document.createElement("textarea");
-  textarea.innerHTML = reference;
-  const decoded = textarea.textContent ?? "";
+  // Attribute parsing keeps the full-name requirement: a legacy prefix such
+  // as `&not` is not expanded when the next character is alphanumeric, so
+  // `&notit;` stays literal while a complete reference such as `&notin;`
+  // decodes. Text content parsing would wrongly accept the prefix.
+  const container = document.createElement("div");
+  container.innerHTML = `<span data-entity="${reference}"></span>`;
+  const decoded = container.firstElementChild?.getAttribute("data-entity") ?? "";
   return decoded === reference ? null : decoded;
 }
 
@@ -222,7 +225,7 @@ function decodeHeadingEntity(source: string, node: {
  * titles are not visible, while code content, link labels and entity text
  * remain part of the heading.
  */
-export function visibleHeadingText(source: string): string {
+function visibleHeadingSource(source: string): string {
   const replacements: { from: number; to: number; text: string }[] = [];
   markdownLanguage.parser.parse(source).iterate({
     enter(node) {
@@ -259,13 +262,18 @@ export function visibleHeadingText(source: string): string {
     position = replacement.to;
   }
   text += source.slice(position);
-  return text.replace(/\s+/g, " ").trim();
+  return text;
+}
+
+/** Visible heading text for display and exact-text fragment aliases. */
+export function visibleHeadingText(source: string): string {
+  return visibleHeadingSource(source).replace(/\s+/g, " ").trim();
 }
 
 function slugifyHeading(text: string): string {
   return text
     .toLowerCase()
-    .replace(/\s+/g, "-")
+    .replace(/ /g, "-")
     .replace(/[^\p{L}\p{N}_-]/gu, "");
 }
 
@@ -275,7 +283,7 @@ export function headingAnchorIds(
 ): string[] {
   const used = new Set<string>();
   return headings.map((heading) => {
-    const base = slugifyHeading(visibleHeadingText(heading.text));
+    const base = slugifyHeading(visibleHeadingSource(heading.text));
     let id = base;
     let suffix = 1;
     while (used.has(id)) {
