@@ -47,7 +47,9 @@ scripts/measure-memory.sh --budget 120
 
 脚本依赖 `footprint`，只在 macOS 上可用，**不接入 CI**：runner 的环境数据不代表真实机器。
 
-十篇文档场景不使用上述空载流程：脚本只测空载并在结束时退出应用。十标签验收在隔离实例中按真实的 `tabs.json` / `settings.json` 恢复十篇文档，确认十个标签和内容后，对同一已核验 PID 按 resource coalition 重新发现 WebKit 助手进程，逐进程取 `footprint` 的 MB 值合计并采样。临时采样脚本复用 `scripts/measure-memory.sh` 的 coalition 归属、`phys_footprint` 解析和启动/停止身份核验，不加入仓库或 CI；固定样本、时间序列和限制见[内存基线](../references/memory-baseline.md#2026-11-11main-0ffdd47-的十标签测量)。
+十篇文档场景不使用上述空载流程：脚本只测空载并在结束时退出应用。2026-11-12 的验收在隔离实例中按真实的 `tabs.json` / `settings.json` 恢复十篇文档，确认十个标签和内容后，在应用前台持续 30 分钟：每分钟轮换标签、真实编辑并确认自动保存、Undo/Redo、切换三种模式和滚动；在 0/5/10/15/20/25/30 分钟对同一已核验 PID 按 resource coalition 重新发现 WebKit 助手进程，逐进程取 `footprint` 的 MB 值合计。临时采样/前台驱动不加入仓库或 CI。
+
+当前状态：该 30 分钟协议执行完成，但性能验收 **FAILED**——峰值 286MB，7 个样本全部超过 160MB，末 3 个为 261/268/286MB 且持续上升，WebContent 从 109MB 升到 217MB。协议完成不等于性能通过；预算和“不持续增长”要求仍待定位，不能写成 merge-ready。2026-11-11 的静态 155MB 是恢复后等待 60 秒、约 5 分钟窗口的结果，条件不同，不能替代 30 分钟验收。完整环境、样本、操作证据、七行序列和限制见[内存基线](../references/memory-baseline.md#2026-11-12冻结构建-0ffdd47-的十标签-30-分钟前台序列)。
 
 ## 内存基线的更新约定
 
