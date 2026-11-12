@@ -191,6 +191,63 @@ export interface SavedImage {
 }
 
 /**
+ * SearchMatch is one occurrence on a result line. Column is the match start
+ * within the line in UTF-16 code units, independent of where earlier lines
+ * end. Length is the full match length in UTF-16 code units, including text
+ * after the displayed line. Fingerprint identifies the full match text so the
+ * page can prove the selected range is unchanged; it is a pair of FNV-64
+ * values over the normalized UTF-16 code units. EndLine and its fingerprint
+ * cover the line containing the end of a cross-line match, and the four
+ * boundary flags preserve RE2's document/line anchor semantics after a move.
+ * HighlightStart and HighlightEnd are offsets in the sent line text; -1 means
+ * the match lies outside the bounded snippet.
+ */
+export interface SearchMatch {
+  column: number;
+  length: number;
+  fingerprint: string;
+  endLine: number;
+  endLineFingerprint: string;
+  startsAtDocumentStart: boolean;
+  startsAtLineStart: boolean;
+  endsAtDocumentEnd: boolean;
+  endsAtLineEnd: boolean;
+  highlightStart: number;
+  highlightEnd: number;
+}
+
+/**
+ * SearchPart is one streamed value of Workspace.Search: a matching line, then
+ * a final summary. Type is "line" or "done". One line part carries every match
+ * that starts on that line. LineFingerprint covers the full line text, not the
+ * bounded snippet.
+ */
+export interface SearchPart {
+  type: string;
+  path?: string;
+  line?: number;
+  text?: string;
+  lineFingerprint?: string;
+  prefixTruncated?: boolean;
+  suffixTruncated?: boolean;
+  matches?: SearchMatch[];
+  fileCount?: number;
+  matchCount?: number;
+  truncated?: boolean;
+}
+
+/**
+ * SearchRequest describes one workspace search. It names no path: Go always
+ * scans the open workspace and checks Generation against it.
+ */
+export interface SearchRequest {
+  generation: number;
+  query: string;
+  caseSensitive: boolean;
+  regex: boolean;
+}
+
+/**
  * SingleFile names a file the user explicitly chose outside the workspace.
  * Path is absolute and has its symlinks resolved; it is the only path the
  * single-file methods accept, and no other file in its folder is accessible.
@@ -400,6 +457,20 @@ export const Workspace = {
    */
   revealEntry(rel: string, generation: number): Promise<void> {
     return call("Workspace.RevealEntry", rel, generation);
+  },
+  /**
+   * Search scans the Markdown files of the open workspace and streams matching
+   * lines on parts. It reads the disk, not unsaved editor text. Hidden folders,
+   * node_modules, symlinks and files that are not regular Markdown files are
+   * skipped with the same facts ListFiles uses. The page may close the channel
+   * to cancel; Go also stops when the workspace generation changes.
+   *
+   * Results are newline-normalized and use UTF-16 offsets for the page's
+   * CodeMirror document. At most searchMatchLimit matches are sent; the final
+   * part distinguishes an exact limit from a truncated result.
+   */
+  search(request: SearchRequest, parts: Channel<SearchPart>): Promise<void> {
+    return call("Workspace.Search", request, parts);
   },
   /**
    * TrashEntry moves a file or folder to the platform's trash. The trash itself
