@@ -386,6 +386,20 @@ function outlineHeadingTexts(): string[] {
   ].map((button) => button.textContent?.trim() ?? "");
 }
 
+function startDeadKeyComposition(view: EditorView) {
+  view.contentDOM.dispatchEvent(
+    new CompositionEvent("compositionstart", { bubbles: true }),
+  );
+  view.contentDOM.dispatchEvent(
+    new InputEvent("beforeinput", {
+      bubbles: true,
+      cancelable: true,
+      inputType: "insertText",
+      data: "x",
+    }),
+  );
+}
+
 function sidebarToggle(which: "show" | "hide"): HTMLButtonElement {
   const selector =
     which === "show" ? "[data-sidebar-toggle]" : "[data-sidebar-hide]";
@@ -4914,6 +4928,42 @@ describe("outline panel", () => {
       await settle();
       expect(outlinePanel()?.dataset.placement).toBe("fixed");
       expect(mocks.setOutlineVisible).toHaveBeenLastCalledWith(true);
+    });
+  });
+
+  it("refreshes a remounted fixed outline after a real dead-key composition", async () => {
+    await withViewportWidth(1100, async () => {
+      await remountWithSettings({ outlineVisible: true });
+      await openFile("a.md", "# 文章\n\n## 第一节\n");
+      expect(outlineHeadingTexts()).toEqual(["第一节"]);
+
+      vi.useFakeTimers();
+      await resizeTo(1000);
+      expect(outlinePanel()).toBeNull();
+
+      // The panel is closed when the edit arrives. Expanding the window before
+      // CodeMirror's own 20ms ending mounts the outline with the stale pause.
+      const view = editorView();
+      startDeadKeyComposition(view);
+      expect(view.compositionStarted).toBe(true);
+      expect(view.composing).toBe(false);
+      view.dispatch({
+        changes: { from: view.state.doc.length, insert: "\n## 第二节\n" },
+      });
+      await settle();
+      await resizeTo(1100);
+      expect(outlinePanel()?.dataset.placement).toBe("fixed");
+      expect(outlineHeadingTexts()).toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(20);
+      expect(view.compositionStarted).toBe(false);
+      expect(view.composing).toBe(false);
+      await vi.advanceTimersByTimeAsync(279);
+      await settle();
+      expect(outlineHeadingTexts()).toEqual([]);
+      await vi.advanceTimersByTimeAsync(1);
+      await settle();
+      expect(outlineHeadingTexts()).toEqual(["第一节", "第二节"]);
     });
   });
 

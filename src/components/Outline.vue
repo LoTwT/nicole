@@ -256,7 +256,12 @@ onMounted(() => {
     viewportObserver = new ResizeObserver(() => syncActiveHeading());
     viewportObserver.observe(props.view.scrollDOM);
   }
-  if (!domComposing) {
+  if (domComposing) {
+    // CodeMirror's dead-key fallback can end a composition internally after
+    // this outline mounted. Start the same single check here: without it, a
+    // mount after the last document change would stay paused forever.
+    scheduleCompositionEndCheck();
+  } else {
     refresh();
   }
 });

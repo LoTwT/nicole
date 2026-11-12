@@ -39,7 +39,26 @@ async function settle() {
   }
 }
 
-function mount(doc: string, fixed = false, composeFirst = false) {
+function startDeadKeyComposition(view: EditorView) {
+  view.contentDOM.dispatchEvent(
+    new CompositionEvent("compositionstart", { bubbles: true }),
+  );
+  view.contentDOM.dispatchEvent(
+    new InputEvent("beforeinput", {
+      bubbles: true,
+      cancelable: true,
+      inputType: "insertText",
+      data: "x",
+    }),
+  );
+}
+
+function mount(
+  doc: string,
+  fixed = false,
+  composeFirst = false,
+  beforeMount?: (view: EditorView) => void,
+) {
   const parent = document.createElement("div");
   document.body.append(parent);
   host = document.createElement("div");
@@ -59,6 +78,7 @@ function mount(doc: string, fixed = false, composeFirst = false) {
       new CompositionEvent("compositionstart", { bubbles: true }),
     );
   }
+  beforeMount?.(outline.view);
   const Wrapper = defineComponent({
     setup() {
       return () =>
@@ -271,40 +291,39 @@ describe("Outline", () => {
     expect(host.textContent).toContain("没有标题");
   });
 
-  it("recovers when CodeMirror ends a dead-key composition after the edit", async () => {
+  it("recovers after a real CodeMirror dead-key composition ends", async () => {
     vi.useFakeTimers();
     mount("# 文章\n\n## 第一节\n");
     await settle();
     const view = (editor as EditorHandle).view;
-    let internallyEnded = false;
-    vi.spyOn(view, "compositionStarted", "get").mockImplementation(
-      () => !internallyEnded,
-    );
-    vi.spyOn(view, "composing", "get").mockImplementation(
-      () => !internallyEnded,
-    );
+    startDeadKeyComposition(view);
+    expect(view.compositionStarted).toBe(true);
+    expect(view.composing).toBe(false);
 
-    view.contentDOM.dispatchEvent(
-      new CompositionEvent("compositionstart", { bubbles: true }),
-    );
     view.dispatch({
       changes: { from: view.state.doc.length, insert: "\n## 第二节\n" },
     });
     await settle();
     expect(headingTexts()).toEqual(["第一节"]);
+    const callsBeforeEnd = headingMocks.extract.mock.calls.length;
 
-    // The document change comes first. Later CodeMirror's Safari dead-key
-    // fallback ends the composition on its own, without a DOM compositionend
-    // and without another edit. No polling is allowed to remain afterwards.
-    // The public flags flip at the 20ms point instead of running the internal
-    // Safari branch, which jsdom cannot select.
-    await vi.advanceTimersByTimeAsync(20);
-    internallyEnded = true;
+    // The document change comes first. CodeMirror's own 20ms Safari fallback
+    // then ends the composition without a DOM compositionend or another edit.
+    await vi.advanceTimersByTimeAsync(19);
+    expect(view.compositionStarted).toBe(true);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(view.compositionStarted).toBe(false);
+    expect(view.composing).toBe(false);
+    expect(headingMocks.extract).toHaveBeenCalledTimes(callsBeforeEnd);
+
     await vi.advanceTimersByTimeAsync(130);
     await settle();
     expect(headingTexts()).toEqual(["第一节"]);
 
-    await vi.advanceTimersByTimeAsync(150);
+    await vi.advanceTimersByTimeAsync(149);
+    await settle();
+    expect(headingTexts()).toEqual(["第一节"]);
+    await vi.advanceTimersByTimeAsync(1);
     await settle();
     expect(headingTexts()).toEqual(["第一节", "第二节"]);
     const callsAfterRefresh = headingMocks.extract.mock.calls.length;
@@ -314,12 +333,44 @@ describe("Outline", () => {
     expect(headingMocks.extract).toHaveBeenCalledTimes(callsAfterRefresh);
   });
 
+  it("recovers when mounted after the edit but before a real dead-key composition ends", async () => {
+    vi.useFakeTimers();
+    mount("# 文章\n\n## 第一节\n", false, false, (view) => {
+      startDeadKeyComposition(view);
+      expect(view.compositionStarted).toBe(true);
+      expect(view.composing).toBe(false);
+      view.dispatch({
+        changes: { from: view.state.doc.length, insert: "\n## 第二节\n" },
+      });
+    });
+    await settle();
+    const view = (editor as EditorHandle).view;
+    expect(headingTexts()).toEqual([]);
+    expect(host.textContent).not.toContain("没有标题");
+
+    await vi.advanceTimersByTimeAsync(20);
+    expect(view.compositionStarted).toBe(false);
+    expect(view.composing).toBe(false);
+    await vi.advanceTimersByTimeAsync(279);
+    await settle();
+    expect(headingTexts()).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    await settle();
+    expect(headingTexts()).toEqual(["第一节", "第二节"]);
+  });
+
   it("waits for the composition to end before the first extraction", async () => {
     vi.useFakeTimers();
     mount("# 文章\n\n## 第一节\n", false, true);
     await settle();
     expect(headingTexts()).toEqual([]);
     expect(host.textContent).not.toContain("没有标题");
+
+    // The mount check must not release a real composition just because a
+    // timer fired; only its own compositionend may resume extraction.
+    await vi.advanceTimersByTimeAsync(1000);
+    await settle();
+    expect(headingMocks.extract).not.toHaveBeenCalled();
 
     const view = (editor as EditorHandle).view;
     view.contentDOM.dispatchEvent(
