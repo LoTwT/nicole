@@ -413,6 +413,71 @@ describe("link and image editor sessions", () => {
     editor.destroy();
   });
 
+  it("keeps an edited remote image destination and its title parseable", () => {
+    for (const [doc, address] of [
+      [
+        '![图](<https://example.com/a).png> "标题")',
+        "https://example.com/b).png",
+      ],
+      [
+        '![图](https://example.com/a.png "标题")',
+        "https://example.com/图 1.png?x=1#top",
+      ],
+    ] as const) {
+      const editor = createEditor({
+        parent: parent(),
+        doc,
+        mode: "source",
+        platform: "macos",
+      });
+      const target = inlineTargetAt(editor.view.state, doc.indexOf("图"))!;
+      const first = createLinkImageEditorSession(
+        editor.view,
+        target,
+        false,
+        () => {},
+      );
+      expect(first.complete([{ text: target.text, url: address }])).toBe(true);
+      const updated = inlineTargetAt(
+        editor.view.state,
+        editor.view.state.doc.toString().indexOf("图"),
+      );
+      expect(updated?.kind).toBe("image");
+      expect(updated?.url).toBe(address);
+      expect(updated?.to).toBe(editor.view.state.doc.length);
+      expect(editor.view.state.doc.toString()).toContain(' "标题")');
+      editor.destroy();
+    }
+  });
+
+  it("uses the same legal destination boundary for a changed link address", () => {
+    const doc = '[文字](https://example.com/a.png "标题")';
+    const address = "https://example.com/图 1.png?x=1#top";
+    const editor = createEditor({
+      parent: parent(),
+      doc,
+      mode: "source",
+      platform: "macos",
+    });
+    const target = inlineTargetAt(editor.view.state, doc.indexOf("文字"))!;
+    const first = createLinkImageEditorSession(
+      editor.view,
+      target,
+      false,
+      () => {},
+    );
+    expect(first.complete([{ text: target.text, url: address }])).toBe(true);
+    const updated = inlineTargetAt(
+      editor.view.state,
+      editor.view.state.doc.toString().indexOf("文字"),
+    );
+    expect(updated?.kind).toBe("link");
+    expect(updated?.url).toBe(address);
+    expect(updated?.to).toBe(editor.view.state.doc.length);
+    expect(editor.view.state.doc.toString()).toContain(' "标题")');
+    editor.destroy();
+  });
+
   it("keeps an angle-wrapped link destination on text-only completion", () => {
     const doc = "[文字](<https://example.com/a b>)";
     const editor = createEditor({

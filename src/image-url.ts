@@ -40,6 +40,92 @@ export function parseMarkdownDestination(source: string): string {
     : trimmed;
 }
 
+const DESTINATION_SPACE_OR_CONTROL = /[\u0000-\u0020\u007F]/;
+const ASCII_PUNCTUATION = /[!-/:-@[-`{-~]/;
+
+function endsWithOddBackslashes(value: string): boolean {
+  let count = 0;
+  for (let index = value.length - 1; index >= 0; index--) {
+    if (value[index] !== "\\") break;
+    count += 1;
+  }
+  return count % 2 === 1;
+}
+
+function hasBalancedDestinationParens(value: string): boolean {
+  let depth = 0;
+  for (let index = 0; index < value.length; index++) {
+    const character = value[index]!;
+    if (
+      character === "\\" &&
+      index + 1 < value.length &&
+      ASCII_PUNCTUATION.test(value[index + 1]!)
+    ) {
+      index += 1;
+      continue;
+    }
+    if (character === "(") depth += 1;
+    else if (character === ")") {
+      depth -= 1;
+      if (depth < 0) return false;
+    }
+  }
+  return depth === 0;
+}
+
+function isBareMarkdownDestination(value: string): boolean {
+  return (
+    value !== "" &&
+    !value.startsWith("<") &&
+    !DESTINATION_SPACE_OR_CONTROL.test(value) &&
+    !endsWithOddBackslashes(value) &&
+    hasBalancedDestinationParens(value)
+  );
+}
+
+function escapeAngleDestination(value: string): string {
+  const source = endsWithOddBackslashes(value)
+    ? `${value.slice(0, -1)}%5C`
+    : value;
+  let result = "";
+  for (let index = 0; index < source.length; index++) {
+    const character = source[index]!;
+    if (
+      character === "\\" &&
+      index + 1 < source.length &&
+      ASCII_PUNCTUATION.test(source[index + 1]!)
+    ) {
+      result += character + source[index + 1]!;
+      index += 1;
+      continue;
+    }
+    if (
+      character === "<" ||
+      character === ">" ||
+      character === "\n" ||
+      character === "\r" ||
+      /[\u0000-\u001F\u007F]/.test(character)
+    ) {
+      result += `%${character.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`;
+      continue;
+    }
+    result += character;
+  }
+  return result;
+}
+
+/**
+ * Serializes an address value as a legal CommonMark inline destination. A
+ * value that can be bare stays byte-for-byte; otherwise it is angle-wrapped.
+ * Unescaped syntax breakers inside an angle destination are percent-escaped,
+ * which only affects characters that could not appear literally there.
+ */
+export function formatMarkdownDestination(value: string): string {
+  if (value === "") return "";
+  if (isBareMarkdownDestination(value)) return value;
+  return `<${escapeAngleDestination(value)}>`;
+}
+
 function resolveImageSource(
   src: string,
   docPath: string | null,

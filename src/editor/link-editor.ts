@@ -11,7 +11,7 @@ import type { EditorView, ViewUpdate } from "@codemirror/view";
 
 import {
   formatImageDestination,
-  hasMarkdownDestinationShell,
+  formatMarkdownDestination,
   parseMarkdownDestination,
 } from "../image-url";
 import { splitEdgeWhitespace } from "./whitespace";
@@ -96,7 +96,6 @@ export interface InlineLinkTarget {
   urlTo: number;
   text: string;
   url: string;
-  urlWrapped: boolean;
 }
 
 export interface ImageTarget {
@@ -109,7 +108,6 @@ export interface ImageTarget {
   urlTo: number;
   text: string;
   url: string;
-  urlWrapped: boolean;
 }
 
 export type InlineTarget = InlineLinkTarget | ImageTarget;
@@ -142,7 +140,6 @@ function inlineTarget(
     urlTo,
     text: state.sliceDoc(open.to, close.from),
     url: parseMarkdownDestination(urlSource),
-    urlWrapped: hasMarkdownDestinationShell(urlSource),
   };
 }
 
@@ -264,7 +261,6 @@ interface SessionTarget {
   urlTo: number;
   text: string;
   url: string;
-  urlWrapped: boolean;
   leading: string;
   trailing: string;
   preserveEditorFocus: boolean;
@@ -285,7 +281,6 @@ function newSessionTarget(
     urlTo: draft.to,
     text: draft.text,
     url: "",
-    urlWrapped: false,
     leading: draft.leading,
     trailing: draft.trailing,
     preserveEditorFocus,
@@ -322,18 +317,15 @@ function sessionTargets(
 }
 
 /**
- * Serializes an edited address value. Images use the path escaping contract;
- * links keep their typed value. A source `<...>` shell is retained for links
- * and whenever whitespace would otherwise end a bare destination.
+ * Serializes an edited address value. Images keep the existing path escaping
+ * contract; both link and image then pass through the same final Markdown
+ * destination legality boundary.
  */
 function destinationForTarget(target: SessionTarget, value: string): string {
-  const destination =
-    target.kind === "image" ? formatImageDestination(value) : value;
-  if (!target.urlWrapped) return destination;
-  const semantic = parseMarkdownDestination(destination);
-  return target.kind === "link" || /\s/.test(semantic)
-    ? `<${semantic}>`
-    : destination;
+  const address = parseMarkdownDestination(value);
+  return formatMarkdownDestination(
+    target.kind === "image" ? formatImageDestination(address) : address,
+  );
 }
 
 class EditorLinkImageSession implements LinkImageEditorSession {
@@ -531,9 +523,10 @@ class EditorLinkImageSession implements LinkImageEditorSession {
     this.targets.forEach((target, index) => {
       const value = values[index]!;
       if (target.isNew) {
+        const destination = destinationForTarget(target, value.url);
         const replacement =
           target.leading +
-          `[${value.text}](${value.url})` +
+          `[${value.text}](${destination})` +
           target.trailing;
         if (state.sliceDoc(target.from, target.to) !== replacement) {
           changes.push({

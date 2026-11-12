@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   formatImageDestination,
+  formatMarkdownDestination,
   parseMarkdownDestination,
   resolveImageUrl,
   resolveLocalImagePath,
@@ -137,6 +138,33 @@ describe("resolveLocalImagePath", () => {
     }
     expect(resolveLocalImagePath("photo.png", null)).toBeNull();
     expect(resolveLocalImagePath("photo.png", "")).toBeNull();
+  });
+});
+
+describe("formatMarkdownDestination", () => {
+  it("keeps a legal bare destination and wraps values that cannot be bare", () => {
+    expect(formatMarkdownDestination("https://example.com/a(b).png")).toBe(
+      "https://example.com/a(b).png",
+    );
+    expect(formatMarkdownDestination("assets/%E5%9B%BE%201.png")).toBe(
+      "assets/%E5%9B%BE%201.png",
+    );
+    expect(formatMarkdownDestination("https://example.com/b).png")).toBe(
+      "<https://example.com/b).png>",
+    );
+    expect(
+      formatMarkdownDestination("https://example.com/图 1.png?x=1#top"),
+    ).toBe("<https://example.com/图 1.png?x=1#top>");
+    expect(formatMarkdownDestination("")).toBe("");
+  });
+
+  it("escapes syntax breakers only when an angle wrapper is required", () => {
+    expect(formatMarkdownDestination("a b<c>d")).toBe("<a b%3Cc%3Ed>");
+    expect(formatMarkdownDestination("a(b")).toBe("<a(b>");
+    expect(formatMarkdownDestination("a\\")).toBe("<a%5C>");
+    expect(formatMarkdownDestination("assets/%253Cnew%253E.png")).toBe(
+      "assets/%253Cnew%253E.png",
+    );
   });
 });
 
