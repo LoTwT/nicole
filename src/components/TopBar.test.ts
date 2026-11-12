@@ -26,12 +26,14 @@ function mount(
   tabList: TopBarTab[],
   activeTabId: number | null,
   showOutline = true,
+  outline: { enabled: boolean; on: boolean } = { enabled: false, on: false },
 ) {
   const emitted: {
     activate: number[];
     close: number[];
     menu: [number, number, number][];
-  } = { activate: [], close: [], menu: [] };
+    outline: number;
+  } = { activate: [], close: [], menu: [], outline: 0 };
   const Component = defineComponent({
     setup() {
       return () =>
@@ -45,15 +47,17 @@ function mount(
           showSidebarToggle: false,
           showOpenFolder: false,
           showOutline,
-          outlineEnabled: false,
-          outlineOn: false,
+          outlineEnabled: outline.enabled,
+          outlineOn: outline.on,
           onActivateTab: (id: number) => emitted.activate.push(id),
           onCloseTab: (id: number) => emitted.close.push(id),
           onTabMenu: (id: number, x: number, y: number) =>
             emitted.menu.push([id, x, y]),
           onSetMode: () => {},
           onToggleSidebar: () => {},
-          onToggleOutline: () => {},
+          onToggleOutline: () => {
+            emitted.outline += 1;
+          },
           onOpenFolder: () => {},
         });
     },
@@ -228,6 +232,34 @@ describe("TopBar tabs", () => {
         }),
       );
     expect(emitted.menu).toEqual([[1, 42, 17]]);
+  });
+
+  it("reflects outline availability and pressed state", async () => {
+    const disabledEmitted = mount([], null, true);
+    await settle();
+    let toggle = host.querySelector<HTMLButtonElement>(
+      'button[aria-label^="显示或隐藏大纲"]',
+    )!;
+    expect(toggle.disabled).toBe(true);
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(toggle.getAttribute("aria-controls")).toBe("outline-panel");
+    expect(toggle.title).not.toContain("后续版本");
+    toggle.click();
+    expect(disabledEmitted.outline).toBe(0);
+
+    app?.unmount();
+    app = null;
+    const emitted = mount([], null, true, { enabled: true, on: true });
+    await settle();
+    toggle = host.querySelector<HTMLButtonElement>(
+      'button[aria-label^="显示或隐藏大纲"]',
+    )!;
+    expect(toggle.disabled).toBe(false);
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(toggle.className).toContain("bg-[var(--surface-subtle)]");
+    toggle.click();
+    expect(emitted.outline).toBe(1);
   });
 
   it("hides the outline toggle when there is no workspace", async () => {

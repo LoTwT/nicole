@@ -60,7 +60,7 @@
 
 Slash 菜单、快捷键、命令面板、格式工具栏和右键菜单都从这一份注册表读取，命令只注册一次。它们在界面上的位置和行为见[界面与交互](ui.md)。
 
-应用命令当前的状态要求：`app.new-file`、`nav.toggle-sidebar`、`app.close-workspace`、`app.collapse-folders`、`app.reveal-workspace` 和 `tab.reopen` 需要工作区；`tab.close` 需要打开的标签页；`app.save` 需要活动标签页是 Markdown 文件；`tab.next`、`tab.previous` 需要至少两个打开的标签页；`tab.reopen` 还需要关闭历史非空。关闭历史只记录工作区标签页，单文件标签页关闭后不进入历史。
+应用命令当前的状态要求：`app.new-file`、`nav.toggle-sidebar`、`app.close-workspace`、`app.collapse-folders`、`app.reveal-workspace` 和 `tab.reopen` 需要工作区；`tab.close` 需要打开的标签页；`app.save` 和 `nav.toggle-outline` 需要活动标签页是 Markdown 文件；`tab.next`、`tab.previous` 需要至少两个打开的标签页；`tab.reopen` 还需要关闭历史非空。关闭历史只记录工作区标签页，单文件标签页关闭后不进入历史。
 
 ## 与编辑模式的关系
 
@@ -69,9 +69,9 @@ Slash 命令的作用只是插入 Markdown 文本，所以和编辑模式无关�
 ## 当前实现（PR7a、PR7b-1、PR7b-2）
 
 - 注册表在 `src/commands/registry.ts`，命令定义和格式、插入、应用与文件树命令都在 `src/commands/`；键位显示函数也在这里，slash 菜单、`KeyHint`、悬停提示和右键菜单共用同一份转换结果。
-- 编辑器命令由 `createEditor` 统一注册为 CodeMirror keymap，并使用 `Prec.highest` 覆盖 `basicSetup` 的同名键位（例如 ⌘I）。应用命令由 `App.vue` 的窗口 `keydown` 分发，文件树命令只在文件树有焦点时由 `FileTree.vue` 分发；两者都使用 `src/commands/keybinding.ts` 的匹配器，不在组件里另写键位。
+- 编辑器命令由 `createEditor` 统一注册为 CodeMirror keymap，并使用 `Prec.highest` 覆盖 `basicSetup` 的同名键位（例如 ⌘I）。应用命令由 `App.vue` 在窗口 `keydown` 捕获阶段分发，因此注册表键位先于 CodeMirror 的编辑器键位，例如 Windows 的 Ctrl+Shift+L 切大纲而不是选中相同文字；文件树命令只在文件树有焦点时由 `FileTree.vue` 分发；两者都使用 `src/commands/keybinding.ts` 的匹配器，不在组件里另写键位。
 - 匹配器先按字符精确匹配全部命令；只有字符没有命中、事件带命令修饰键时，才进入物理键回退。回退使用 `event.code` 和 `keyCode` 表，支持 ⇧⌘[ / ⇧⌘] 在 US 布局报告 `{`/`}`、非 US 布局和 AZERTY 数字行；但事件已产生单个 ASCII 字符时不会按物理位置推出字母，避免 AZERTY ⌘Z、Dvorak ⌘, / ⌘B 误触其他命令。非 ASCII 输入（例如西里尔字母）仍可按物理位置匹配。Windows 和 Linux 的 Ctrl+Alt 不会被当成 Ctrl 快捷键。
-- `available: false` 的占位命令（设置、全文搜索、大纲）保留键位以便界面显示，但匹配器跳过它们；slash 菜单和命令面板也只列出可用命令。
+- `available: false` 的占位命令（设置、全文搜索）保留键位以便界面显示，但匹配器跳过它们；slash 菜单和命令面板也只列出可用命令。大纲在 PR8 已启用，需要活动 Markdown 文件。
 - slash 菜单的触发、查询、最近使用和按键归属在 `src/editor/slash.ts`，渲染和定位在 `src/components/SlashMenu.vue`。菜单宽 260px、最多 8 项，锚定光标下方并在空间不足时翻到上方，窗口内保留 8px。
 - 执行命令时删除触发字符和查询后运行命令，删除查询和执行命令合并为一个撤销步；Esc、光标离开、出现空白和没有匹配项都只关闭菜单，不删除正文。组合输入期间 Enter、↑、↓、Esc 交给输入法，空白或无匹配也要等组合结束后再关闭。代码块、frontmatter 和 HTML 块内不触发。
 - 格式命令的事务使用 `input.format` 并通过 `isolateHistory` 与之前的输入分开。

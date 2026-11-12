@@ -160,8 +160,11 @@ export const appCommands: readonly CommandDefinition[] = [
     keys: [
       { mac: "Ctrl-Mod-o", win: "Ctrl-Shift-l", linux: "Ctrl-Shift-l" },
     ],
-    available: false,
-    run: () => false,
+    requiresActiveMarkdown: true,
+    run: ({ app }) => {
+      void app?.toggleOutline();
+      return app !== undefined;
+    },
   },
   {
     id: "file-tree.open",

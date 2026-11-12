@@ -226,12 +226,17 @@ describe("command registry", () => {
   });
 
   it("registers unavailable placeholders without dispatching them", () => {
-    for (const id of ["app.settings", "nav.search", "nav.toggle-outline"]) {
+    for (const id of ["app.settings", "nav.search"]) {
       const command = getCommand(id);
       expect(command, id).toBeDefined();
       expect(isCommandAvailable(command!), id).toBe(false);
       expect(formatCommandShortcut(command!, "macos"), id).not.toBeNull();
     }
+    const outline = getCommand("nav.toggle-outline");
+    expect(outline).toBeDefined();
+    expect(isCommandAvailable(outline!)).toBe(true);
+    expect(outline!.requiresActiveMarkdown).toBe(true);
+    expect(formatCommandShortcut(outline!, "macos")).toBe("⌃⌘O");
     expect(getCommand("app.toggle-theme")?.keys).toBeUndefined();
     expect(commandShortcut("missing.command", "macos")).toBe("");
   });
