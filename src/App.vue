@@ -453,6 +453,111 @@ function workspaceActivationCurrent(activation: WorkspaceActivation): boolean {
   );
 }
 
+// A source can be absent for workspace search (the start page or a preview),
+// while link navigation itself still requires an active Markdown editor. The
+// optional editor/view/doc fields therefore record both "present and exactly
+// this instance" and "absent". The popup fields also record the initial null
+// state so opening and closing a popup cannot restore an old request.
+interface NavigationSourceSnapshot {
+  navigationIntent: number;
+  tabNavigationRevision: number;
+  workspaceRoot: string | null;
+  workspaceGeneration: number;
+  tabId: number | null;
+  tabKind: TabModel["kind"] | null;
+  tabPath: string | null;
+  tabText: string | null;
+  editor: EditorHandle | null;
+  view: EditorView | null;
+  doc: Text | null;
+  dialogRevision: number;
+  dialogId: number | null;
+  dialogSession: LinkImageEditorSession | null;
+  dialogFieldRevision: number;
+}
+
+function captureNavigationSource(
+  navigationIntent: number,
+): NavigationSourceSnapshot {
+  const tab = currentTab.value;
+  const sourceEditor = editor;
+  const view = sourceEditor?.view ?? null;
+  return {
+    navigationIntent,
+    tabNavigationRevision,
+    workspaceRoot: workspace.value?.root ?? null,
+    workspaceGeneration: workspace.value?.generation ?? 0,
+    tabId: tab?.id ?? null,
+    tabKind: tab?.kind ?? null,
+    tabPath: tab?.path ?? null,
+    tabText: tab?.text ?? null,
+    editor: sourceEditor,
+    view,
+    doc: view?.state.doc ?? null,
+    dialogRevision: linkImageEditorRevision,
+    dialogId: linkImageEditor.value?.id ?? null,
+    dialogSession: linkImageEditor.value?.session ?? null,
+    dialogFieldRevision: linkImageEditor.value?.fieldRevision ?? 0,
+  };
+}
+
+function sourceDialogCurrent(source: NavigationSourceSnapshot): boolean {
+  if (linkImageEditorRevision !== source.dialogRevision) return false;
+  const current = linkImageEditor.value;
+  if (source.dialogId === null) return current === null;
+  return (
+    current !== null &&
+    current.id === source.dialogId &&
+    current.session === source.dialogSession &&
+    current.fieldRevision === source.dialogFieldRevision
+  );
+}
+
+function navigationSourceCurrent(source: NavigationSourceSnapshot): boolean {
+  if (source.navigationIntent !== workspaceNavigationIntentRevision) {
+    return false;
+  }
+  if (source.tabNavigationRevision !== tabNavigationRevision) return false;
+  if (
+    (workspace.value?.root ?? null) !== source.workspaceRoot ||
+    (workspace.value?.generation ?? 0) !== source.workspaceGeneration
+  ) {
+    return false;
+  }
+  if (source.tabId === null) {
+    if (
+      currentTab.value !== null ||
+      activeTabId.value !== null ||
+      editor !== null
+    ) {
+      return false;
+    }
+  } else {
+    if (activeTabId.value !== source.tabId) return false;
+    const tab = findTab(source.tabId);
+    if (
+      tab === null ||
+      tab.kind !== source.tabKind ||
+      tab.path !== source.tabPath ||
+      tab.text !== source.tabText
+    ) {
+      return false;
+    }
+    if (source.editor === null) {
+      if (editor !== null) return false;
+    } else if (
+      editor !== source.editor ||
+      source.view === null ||
+      source.doc === null ||
+      editor.view !== source.view ||
+      source.view.state.doc !== source.doc
+    ) {
+      return false;
+    }
+  }
+  return sourceDialogCurrent(source);
+}
+
 function workspaceOpenRequestCurrent(request: WorkspaceOpenRequest): boolean {
   return (
     request.isRequestCurrent === undefined || request.isRequestCurrent()
@@ -4484,50 +4589,16 @@ async function openLinkAddress(
   const sourceTab = currentMarkdown.value;
   const sourceEditor = editor;
   if (sourceTab === null || sourceEditor === null) return;
+  const navigationIntent = beginWorkspaceNavigationIntent();
+  const source = captureNavigationSource(navigationIntent);
+  if (options.fromDialog && source.dialogId === null) return;
+  const sequence = ++linkNavigationSequence;
+  const sourceCurrent = () =>
+    linkNavigationSequence === sequence && navigationSourceCurrent(source);
   const sourceKind: "workspace" | "single" =
     sourceTab.kind === "workspace" ? "workspace" : "single";
-  const sourceWorkspaceRoot = workspace.value?.root ?? null;
-  const sourceWorkspaceGeneration = workspace.value?.generation ?? 0;
-  const sourceWorkspaceCurrent = () =>
-    (workspace.value?.root ?? null) === sourceWorkspaceRoot &&
-    (workspace.value?.generation ?? 0) === sourceWorkspaceGeneration;
-  const sourceRoot = sourceWorkspaceRoot;
-  const sourceGeneration = sourceWorkspaceGeneration;
-  const sourceTabId = sourceTab.id;
-  const sourceText = sourceTab.text;
-  const sourceView = sourceEditor.view;
-  const sourceDoc = sourceView.state.doc;
-  const sourceNavigationRevision = tabNavigationRevision;
-  const navigationIntent = beginWorkspaceNavigationIntent();
-  const dialogRevision = linkImageEditorRevision;
-  const dialogState = linkImageEditor.value;
-  if (options.fromDialog && dialogState === null) return;
-  const dialogId = dialogState?.id ?? null;
-  const dialogSession = dialogState?.session ?? null;
-  const dialogFieldRevision = dialogState?.fieldRevision ?? 0;
-  const sequence = ++linkNavigationSequence;
-  const dialogCurrent = () => {
-    if (linkImageEditorRevision !== dialogRevision) return false;
-    const current = linkImageEditor.value;
-    if (dialogId === null) return current === null;
-    return (
-      current !== null &&
-      current.id === dialogId &&
-      current.session === dialogSession &&
-      current.fieldRevision === dialogFieldRevision
-    );
-  };
-  const sourceCurrent = () =>
-    linkNavigationSequence === sequence &&
-    workspaceNavigationIntentRevision === navigationIntent &&
-    tabNavigationRevision === sourceNavigationRevision &&
-    activeTabId.value === sourceTabId &&
-    findTab(sourceTabId)?.text === sourceText &&
-    editor === sourceEditor &&
-    sourceEditor.view === sourceView &&
-    sourceView.state.doc === sourceDoc &&
-    sourceWorkspaceCurrent() &&
-    dialogCurrent();
+  const sourceRoot = source.workspaceRoot;
+  const sourceGeneration = source.workspaceGeneration;
   const destination = classifyLinkDestination(sourceAddress, {
     kind: sourceKind,
     path: sourceTab.path,
@@ -4558,7 +4629,11 @@ async function openLinkAddress(
       destination.fragment,
       sourceCurrent,
     );
-    if (result === "found" && options.fromDialog && dialogCurrent()) {
+    if (
+      result === "found" &&
+      options.fromDialog &&
+      sourceDialogCurrent(source)
+    ) {
       closeLinkImageEditor({ restoreFocus: false });
     }
     return;
@@ -4594,7 +4669,7 @@ async function openLinkAddress(
   if (destination.fragment === null) {
     if (
       options.fromDialog &&
-      dialogCurrent() &&
+      sourceDialogCurrent(source) &&
       workspaceActivationCurrent(activation)
     ) {
       closeLinkImageEditor({ restoreFocus: false });
@@ -4609,7 +4684,7 @@ async function openLinkAddress(
   if (
     result === "found" &&
     options.fromDialog &&
-    dialogCurrent() &&
+    sourceDialogCurrent(source) &&
     workspaceActivationCurrent(activation)
   ) {
     closeLinkImageEditor({ restoreFocus: false });
@@ -4798,11 +4873,12 @@ function closeWorkspaceSearch(options: { restoreFocus?: boolean } = {}) {
 
 /**
  * Opens a result through the normal tab flow, so an existing dirty tab is
- * switched to rather than reread. The navigation intent is captured before
- * the disk read: a later active-tab change makes this request stale before it
- * can insert, activate or focus another tab. The open flow still protects the
- * workspace generation, and the stable line and UTF-16 column plus full
- * line/match fingerprints decide whether the target is still provable.
+ * switched to rather than reread. The navigation intent and full source
+ * snapshot are captured before the disk read; a later source or active-tab
+ * change makes this request stale before it can insert, activate or focus
+ * another tab. The open flow still protects the workspace generation, and the
+ * stable line and UTF-16 column plus full line/match fingerprints decide
+ * whether the target is still provable.
  */
 async function openSearchResult(target: SearchOpenTarget): Promise<boolean> {
   const current = workspace.value;
@@ -4812,14 +4888,12 @@ async function openSearchResult(target: SearchOpenTarget): Promise<boolean> {
   }
   const root = current.root;
   const generation = current.generation;
-  const navigationRevision = tabNavigationRevision;
-  const searchSequence = ++searchNavigationSequence;
   const navigationIntent = beginWorkspaceNavigationIntent();
+  const source = captureNavigationSource(navigationIntent);
+  const searchSequence = ++searchNavigationSequence;
   const isRequestCurrent = () =>
-    workspaceNavigationIntentRevision === navigationIntent &&
-    tabNavigationRevision === navigationRevision &&
     searchSequence === searchNavigationSequence &&
-    isCurrentWorkspace(root, generation);
+    navigationSourceCurrent(source);
   const handoff: { activation: WorkspaceActivation | null } = {
     activation: null,
   };

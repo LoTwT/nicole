@@ -9813,6 +9813,122 @@ describe("workspace search", () => {
     expect(host.querySelector("[data-search-panel]")).not.toBeNull();
   });
 
+  it.each(["popup-cycle", "source-edit", "source-rebuild"] as const)(
+    "drops a pending search result when its source changes: %s",
+    async (change) => {
+      await remountWithSettings({ editorMode: "source" });
+      const target = "prefix\n\n# 目标\n\nend\n";
+      await setupWorkspace({ "a.md": "source\n", "b.md": target });
+      await openPath("/notes/a.md");
+      const source = editorView();
+      const read = deferred<string>();
+      mocks.readFile.mockImplementationOnce(() => read.promise);
+      const line = searchLineFromPart(
+        searchLine("b.md", 3, "# 目标", 2, "目标"),
+      )!;
+      const opening = appSetupState().openSearchResult({
+        generation: 1,
+        line,
+        match: line.matches[0],
+      });
+      expect(mocks.readFile).toHaveBeenLastCalledWith("b.md");
+      if (change === "popup-cycle") {
+        source.focus();
+        pressMod("k", "KeyK", "macos");
+        await settle();
+        expect(linkImageDialog()).not.toBeNull();
+        typeLinkImageField("链接", "https://example.com/new-owner");
+      } else if (change === "source-edit") {
+        typeIntoEditor("X");
+      } else {
+        await appSetupState().mountActive(false);
+        expect(editorView()).not.toBe(source);
+      }
+      read.resolve(target);
+      const result = await opening;
+      await settle();
+      expect(result).toBe(false);
+      expect(tabNamed("a.md").getAttribute("aria-selected")).toBe("true");
+      expect(
+        [...host.querySelectorAll('[role="tab"]')].some((tab) =>
+          tab.textContent?.includes("b.md"),
+        ),
+      ).toBe(false);
+      if (change === "popup-cycle") {
+        expect(linkImageDialog()).not.toBeNull();
+      }
+    },
+  );
+
+  it("keeps a pending search result when its source remains current", async () => {
+    await remountWithSettings({ editorMode: "source" });
+    const target = "prefix\n\n# 目标\n\nend\n";
+    await setupWorkspace({ "a.md": "source\n", "b.md": target });
+    await openPath("/notes/a.md");
+    const read = deferred<string>();
+    mocks.readFile.mockImplementationOnce(() => read.promise);
+    const line = searchLineFromPart(
+      searchLine("b.md", 3, "# 目标", 2, "目标"),
+    )!;
+    const opening = appSetupState().openSearchResult({
+      generation: 1,
+      line,
+      match: line.matches[0],
+    });
+    expect(mocks.readFile).toHaveBeenLastCalledWith("b.md");
+    read.resolve(target);
+    await expect(opening).resolves.toBe(true);
+    await settle();
+    expect(tabNamed("b.md").getAttribute("aria-selected")).toBe("true");
+    expect(editorView().state.selection.main.from).toBe(10);
+    expect(editorView().state.selection.main.to).toBe(12);
+  });
+
+  it("opens a search result from the start page without a source tab", async () => {
+    await remountWithSettings({ editorMode: "source" });
+    const target = "prefix\n\n# 目标\n\nend\n";
+    await setupWorkspace({ "b.md": target });
+    expect(tabElements()).toHaveLength(0);
+    const line = searchLineFromPart(
+      searchLine("b.md", 3, "# 目标", 2, "目标"),
+    )!;
+    await expect(
+      appSetupState().openSearchResult({
+        generation: 1,
+        line,
+        match: line.matches[0],
+      }),
+    ).resolves.toBe(true);
+    await settle();
+    expect(tabNamed("b.md").getAttribute("aria-selected")).toBe("true");
+    expect(editorView().state.selection.main.from).toBe(10);
+    expect(editorView().state.selection.main.to).toBe(12);
+  });
+
+  it("opens a search result from a preview tab without an editor", async () => {
+    await setupWorkspace({
+      "b.md": "prefix\n\n# 目标\n\nend\n",
+      "cover.png": "png",
+    });
+    treeRow("cover.png").click();
+    await settle();
+    expect(tabNamed("cover.png").getAttribute("aria-selected")).toBe("true");
+    const line = searchLineFromPart(
+      searchLine("b.md", 3, "# 目标", 2, "目标"),
+    )!;
+    await expect(
+      appSetupState().openSearchResult({
+        generation: 1,
+        line,
+        match: line.matches[0],
+      }),
+    ).resolves.toBe(true);
+    await settle();
+    expect(tabNamed("b.md").getAttribute("aria-selected")).toBe("true");
+    expect(editorView().state.selection.main.from).toBe(10);
+    expect(editorView().state.selection.main.to).toBe(12);
+  });
+
   it("closes the search channel when the page is destroyed", async () => {
     await openFolder();
     pressAppShortcut("f", true);
