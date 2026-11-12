@@ -24,6 +24,7 @@ Go 的 `Workspace` 服务通过 `mygo.Bind` 暴露，前端经 `src/services/wor
 | `OpenDroppedFolder(token)` | 打开一次原生拖入授权的单个文件夹，见[拖入文件夹](#拖入文件夹)。页面只提交 token，不提交路径。 |
 | `CloseWorkspace()` | 关闭当前工作区：清空根目录、递增 `generation`，并更新关闭状态，语义见[设置存储](#设置存储)。`tabs.json` 布局保留，见[没有打开的根目录](#没有打开的根目录)。 |
 | `ListFiles()` | 返回当前工作区的 Markdown 文件，规则见[列文件规则](#列文件规则)。没有打开工作区时返回错误。 |
+| `ListSnippets(generation)` | 返回当前根固定 `.nicole/snippets/` 的有界只读快照，规则见[用户模板目录](#用户模板目录)。请求只有 `generation`，页面不能指定路径。 |
 | `ReadFile(path)` | 返回 Markdown 文件原始内容的字符串，不做换行或编码转换。 |
 | `WriteFile(path, content, generation)` | 原子替换文件；`generation` 与当前工作区不一致时拒绝。保证见[写入保证](#写入保证)。 |
 | `ConfirmDiscard()` | 单文档界面遗留的放弃确认。多标签页界面改用页面对话框，不再调用它（见[界面与交互](ui.md#切换文件夹)）。 |
@@ -51,7 +52,7 @@ Go 的 `Workspace` 服务通过 `mygo.Bind` 暴露，前端经 `src/services/wor
 
 | 服务 | 无根状态 |
 |---|---|
-| `ListFiles`、`ReadFile`、`WriteFile` | 返回 `workspace: no folder is open`；写入不会再落到上一个根。 |
+| `ListFiles`、`ListSnippets`、`ReadFile`、`WriteFile` | 返回 `workspace: no folder is open`；写入不会再落到上一个根。 |
 | `ListDirectory`、`CreateFile`、`CreateFolder`、`RenameEntry`、`TrashEntry`、`OpenWithDefaultApp`、`RevealEntry` | 返回同一个“没有打开工作区”错误；没有任何路径能被解析。 |
 | `Watch` | 返回“没有打开工作区”，不启动 watcher；旧 watcher 在下一批事件前结束。 |
 | `Search` | 返回“没有打开工作区”，不扫描磁盘。`generation` 与当前根不一致时返回“工作区已切换”。 |
@@ -72,6 +73,18 @@ Go 的 `Workspace` 服务通过 `mygo.Bind` 暴露，前端经 `src/services/wor
 - 返回相对工作区的路径，统一用 `/` 分隔，并按字符串排序。
 - 列表失败时返回错误，不返回部分结果。
 - 名字以 `.` 开头的文件仍会列出，例如 `.draft.md`；只有隐藏目录被跳过。
+
+## 用户模板目录
+
+`ListSnippets(generation)` 读取当前根固定的 `.nicole/snippets/`，供 slash 菜单和命令面板使用。它有自己的一条只读路径，不放宽其他文件 API 的规则：
+
+- 只读一级目录，不递归；候选是名字以 `.md` 结尾的目录项，扩展名比较不区分大小写，非普通文件也计入候选数但随后跳过。不自动创建 `.nicole/` 或 `snippets/`；目录不存在时返回空快照和空警告。
+- 请求只有 `generation`。`generation` 与当前根不一致时返回“工作区已切换”；没有根时返回“没有打开工作区”。页面不能指定路径，也不能借单文件标签页的授权读取其父目录。
+- 上限为 100 个候选文件、单文件 64 KiB、有效正文合计 1 MiB。候选数超限或正文总量超限时整个用户目录不加载，并返回可直接显示的原因；单文件过大、非法 UTF-8、读取失败、是符号链接或不是普通文件时只跳过该文件，并返回带文件名的警告。权限不足返回普通用户能理解的提示。内置命令不依赖这些模板。
+- 读取通过当前根的 `os.Root`。`.nicole` 和 `snippets` 都以 `Lstat` 确认是真实目录，打开后按 FD 和前后 `Lstat` 核对目录身份，替换竞态时停止；任一层是符号链接或普通文件时不读取。文件沿用搜索的非阻塞打开和 FD/路径身份核对，FIFO 等非常规文件不会阻塞读取；符号链接和替换后的目标不会作为模板内容返回。
+- 单文件在读取前和读取中检查上限，不会先读完整文件再判断；正文总大小也按已接受文件累计。读取期间根或 `generation` 变化时停止；共享读取器的取消在模板层转为整体失败，并会在返回前再次复查，所以不会把停止前的文件当成成功快照返回，也不返回另一个根的迟到快照。
+- BOM 会被去掉，CRLF 和单独的 CR 归一化为 LF；内容必须是合法 UTF-8。模板正文保持 `{{date}}` 和 `{{cursor}}` 原样交给页面，展开时机和语义见[Slash 命令](slash-commands.md#用户模板)。
+- 模板文件只读，不出现在 `ReadFile`/`WriteFile` 的可用范围内，不自动打开为标签页，也不会写入工作区。文件树和搜索对隐藏目录的现有规则不变；`.nicole/` 在文件树中的显示行为沿用[文件树接口](#文件树接口)。
 
 ## 文件树接口
 

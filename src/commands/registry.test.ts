@@ -242,6 +242,23 @@ describe("command registry", () => {
     expect(commandShortcut("missing.command", "macos")).toBe("");
   });
 
+  it("resolves a menu id against built-ins before workspace templates", () => {
+    const template: CommandDefinition = {
+      id: "snippet:letter.md",
+      label: "letter",
+      group: "insert",
+      scope: "editor",
+      inSlashMenu: true,
+      run: () => true,
+    };
+    expect(getCommand("format.bold", [template])?.label).toBe("加粗");
+    expect(getCommand(template.id, [template])).toBe(template);
+    expect(getCommand("missing", [template])).toBeUndefined();
+
+    const impostor = { ...template, id: "format.bold", label: "impostor" };
+    expect(getCommand("format.bold", [impostor])?.label).toBe("加粗");
+  });
+
   it("supports platform-specific and multiple key bindings", () => {
     const binding = {
       key: "Mod-Shift-x",

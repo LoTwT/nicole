@@ -1,7 +1,9 @@
 import type { EditorView } from "@codemirror/view";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { CommandStorage } from "../commands/search";
+import { createSnippetCommands } from "../commands/snippets";
+import type { CommandDefinition } from "../commands/types";
 import { createEditor, type EditorHandle } from "./index";
 import {
   createSlashMenu,
@@ -15,6 +17,17 @@ let editor: EditorHandle | null = null;
 let controller: SlashMenuController | null = null;
 let state: SlashMenuSnapshot = null;
 let storage: CommandStorage;
+
+function placeholderCommand(): CommandDefinition {
+  return {
+    id: "test.placeholder",
+    label: "placeholder",
+    group: "insert",
+    scope: "editor",
+    inSlashMenu: true,
+    run: () => true,
+  };
+}
 
 function fakeStorage(): CommandStorage {
   const values = new Map<string, string>();
@@ -36,6 +49,11 @@ function mount(
     full: (text: string) => text,
     initials: (text: string) => text,
   }),
+  options: {
+    commands?: Parameters<typeof createSlashMenu>[0]["commands"];
+    onOpen?: () => void;
+    onClose?: () => void;
+  } = {},
 ) {
   controller?.destroy();
   editor?.destroy();
@@ -48,6 +66,7 @@ function mount(
       state = next;
     },
     loadPinyin,
+    ...options,
   });
   return editor.view;
 }
@@ -361,6 +380,194 @@ describe("slash search and execution", () => {
     expect(view.state.doc.toString()).toBe("");
   });
 
+  it("adds a lazily loaded template and undoes it as one step", async () => {
+    let commands = [placeholderCommand()];
+    const onOpen = vi.fn();
+    const view = mount("", undefined, {
+      commands: () => commands,
+      onOpen,
+    });
+    type(view, "/");
+    expect(onOpen).toHaveBeenCalledOnce();
+
+    commands = [
+      ...commands,
+      ...createSnippetCommands([
+        { id: "snippet:letter.md", label: "letter", body: "Hi{{cursor}}!" },
+      ]),
+    ];
+    controller?.refreshCommands();
+    expect(state?.items.some((item) => item.id === "snippet:letter.md")).toBe(
+      true,
+    );
+
+    type(view, "letter");
+    await settle();
+    const index = state?.items.findIndex(
+      (item) => item.id === "snippet:letter.md",
+    );
+    controller?.execute(index);
+
+    expect(view.state.doc.toString()).toBe("Hi!");
+    expect(view.state.selection.main.head).toBe(2);
+    expect(editor?.undo()).toBe(true);
+    expect(view.state.doc.toString()).toBe("/letter");
+    expect(editor?.undo()).toBe(true);
+    expect(view.state.doc.toString()).toBe("");
+  });
+
+  it("refreshes the command list on every open but not during composition", async () => {
+    let commands = [placeholderCommand()];
+    const onOpen = vi.fn();
+    const view = mount("", undefined, {
+      commands: () => commands,
+      onOpen,
+    });
+    type(view, "/");
+    expect(onOpen).toHaveBeenCalledOnce();
+
+    commands = [
+      ...commands,
+      ...createSnippetCommands([
+        { id: "snippet:letter.md", label: "letter", body: "Hi" },
+      ]),
+    ];
+    composition(view, "compositionstart");
+    controller?.setCommandLoading(true);
+    controller?.refreshCommands();
+    expect(state?.loading).toBe(false);
+    expect(state?.items.some((item) => item.id === "snippet:letter.md")).toBe(
+      false,
+    );
+
+    composition(view, "compositionend");
+    await settle();
+    expect(state?.loading).toBe(true);
+    expect(state?.items.some((item) => item.id === "snippet:letter.md")).toBe(
+      true,
+    );
+    controller?.setCommandLoading(false);
+
+    controller?.close();
+    view.dispatch({ selection: { anchor: view.state.doc.length } });
+    type(view, " ");
+    type(view, "/");
+    expect(onOpen).toHaveBeenCalledTimes(2);
+  });
+
+  it("closes through the full lifecycle after executing a template", async () => {
+    const onClose = vi.fn();
+    const commands = createSnippetCommands([
+      { id: "snippet:letters.md", label: "letters", body: "Hi{{cursor}}!" },
+    ]);
+    const view = mount("", undefined, {
+      commands: () => commands,
+      onClose,
+    });
+    type(view, "/");
+    type(view, "letters");
+    await settle();
+    const index = state?.items.findIndex(
+      (item) => item.id === "snippet:letters.md",
+    );
+    expect(index).toBeGreaterThanOrEqual(0);
+
+    controller?.execute(index);
+
+    expect(state).toBeNull();
+    expect(view.state.doc.toString()).toBe("Hi!");
+    expect(view.state.selection.main.head).toBe(2);
+    expect(onClose).toHaveBeenCalledOnce();
+
+    // A later close/destroy must not notify again or disturb the history.
+    controller?.close();
+    controller?.destroy();
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(editor?.undo()).toBe(true);
+    expect(view.state.doc.toString()).toBe("/letters");
+    expect(editor?.undo()).toBe(true);
+    expect(view.state.doc.toString()).toBe("");
+  });
+
+  it("destroys an open menu through the close lifecycle once", async () => {
+    const onClose = vi.fn();
+    const commands = createSnippetCommands([
+      { id: "snippet:letters.md", label: "letters", body: "Hi" },
+    ]);
+    const view = mount("", undefined, {
+      commands: () => commands,
+      onClose,
+    });
+    type(view, "/");
+    expect(state).not.toBeNull();
+
+    controller?.destroy();
+    expect(state).toBeNull();
+    expect(onClose).toHaveBeenCalledOnce();
+
+    controller?.destroy();
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a template-only query open while commands load", async () => {
+    let commands = [placeholderCommand()];
+    const view = mount("", undefined, { commands: () => commands });
+    type(view, "/");
+    controller?.setCommandLoading(true);
+    type(view, "letter");
+    await settle();
+
+    expect(state).not.toBeNull();
+    expect(state?.loading).toBe(true);
+    expect(state?.items).toHaveLength(0);
+
+    commands = [
+      ...commands,
+      ...createSnippetCommands([
+        { id: "snippet:letter.md", label: "letter", body: "Hi{{cursor}}!" },
+      ]),
+    ];
+    controller?.setCommandLoading(false);
+    const index = state?.items.findIndex(
+      (item) => item.id === "snippet:letter.md",
+    );
+    expect(index).toBeGreaterThanOrEqual(0);
+    controller?.execute(index);
+    expect(view.state.doc.toString()).toBe("Hi!");
+  });
+
+  it("closes after a load with no match and preserves the query", async () => {
+    const view = mount("", undefined, {
+      commands: () => [placeholderCommand()],
+    });
+    type(view, "/");
+    controller?.setCommandLoading(true);
+    type(view, "zzz");
+    await settle();
+    expect(state?.loading).toBe(true);
+
+    controller?.setCommandLoading(false);
+    controller?.refreshCommands();
+    expect(state).toBeNull();
+    expect(view.state.doc.toString()).toBe("/zzz");
+  });
+
+  it("treats Enter as normal input when the loading row has no items", async () => {
+    const view = mount("", undefined, {
+      commands: () => [placeholderCommand()],
+    });
+    type(view, "/");
+    controller?.setCommandLoading(true);
+    type(view, "letter");
+    await settle();
+    expect(state?.items).toHaveLength(0);
+
+    key(view, "Enter", "Enter");
+
+    expect(state).toBeNull();
+    expect(view.state.doc.toString()).toBe("/letter\n");
+  });
+
   it("closes without a match and keeps typing in the document", async () => {
     const view = mount();
     type(view, "/");
@@ -391,6 +598,40 @@ describe("slash IME handling", () => {
     expect(state?.selectedIndex).toBe(selected);
     expect(view.state.doc.toString()).not.toContain("# ");
     composition(view, "compositionend");
+  });
+
+  it("keeps a new snapshot hidden while composition input continues", async () => {
+    let commands = [placeholderCommand()];
+    const view = mount("", undefined, { commands: () => commands });
+    type(view, "/");
+    controller?.setCommandLoading(true);
+    composition(view, "compositionstart");
+    type(view, "letter", true);
+    await settle();
+
+    commands = [
+      ...commands,
+      ...createSnippetCommands([
+        { id: "snippet:letters.md", label: "letters", body: "Hi" },
+      ]),
+    ];
+    controller?.setCommandLoading(false);
+    controller?.refreshCommands();
+    expect(
+      state?.items.some((item) => item.id === "snippet:letters.md"),
+    ).toBe(false);
+
+    type(view, "s", true);
+    await settle();
+    expect(
+      state?.items.some((item) => item.id === "snippet:letters.md"),
+    ).toBe(false);
+
+    composition(view, "compositionend");
+    await settle();
+    expect(
+      state?.items.some((item) => item.id === "snippet:letters.md"),
+    ).toBe(true);
   });
 
   it("waits for composition to end before closing on no match", async () => {

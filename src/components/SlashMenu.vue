@@ -23,7 +23,12 @@ const emit = defineEmits<{
 }>();
 
 const menu = ref<HTMLElement | null>(null);
-const estimatedHeight = computed(() => 40 + props.state.items.length * 32);
+const showLoading = computed(
+  () => props.state.loading && props.state.items.length === 0,
+);
+const estimatedHeight = computed(
+  () => 40 + props.state.items.length * 32 + (showLoading.value ? 32 : 0),
+);
 // Start at the estimated position so the first frame does not flash at (0, 0).
 const position = ref<SlashMenuPlacement>(
   placeSlashMenu(
@@ -92,6 +97,13 @@ watch(
         class="border-b border-[var(--border-subtle)] px-2.5 py-1.5 text-[12px] text-[var(--text-muted)]"
       >
         {{ state.trigger }}{{ state.query }}
+      </div>
+      <div
+        v-if="showLoading"
+        class="flex h-8 items-center px-2.5 text-[12px] text-[var(--text-muted)]"
+        role="status"
+      >
+        正在读取用户模板
       </div>
       <div class="py-1" role="presentation">
         <button

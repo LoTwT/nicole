@@ -10,6 +10,7 @@ import {
   ref,
   shallowRef,
   watch,
+  watchEffect,
 } from "vue";
 
 import {
@@ -32,7 +33,9 @@ import {
   commandRegistry,
   getCommand,
   isCommandAvailable,
+  slashCommands as slashCommandList,
 } from "./commands/registry";
+import { createSnippetCommands } from "./commands/snippets";
 import {
   readRecentCommandIds,
   rememberRecentCommandId,
@@ -158,6 +161,7 @@ import {
   closeWorkspace as closeWorkspaceInGo,
   finishClose,
   listFiles,
+  listSnippets,
   onSaveBeforeClose,
   openDroppedFolder as openDroppedFolderInGo,
   openFolder as openFolderAtPath,
@@ -318,6 +322,11 @@ watch(
 let lastWorkspaceActivePath: string | null = null;
 let slashMenu: SlashMenuController | null = null;
 const slashState = shallowRef<SlashMenuSnapshot>(null);
+// The current root's user templates. Loading starts only when a command menu
+// opens, and a newer request or a root change makes older results stale.
+const workspaceSnippetCommands = shallowRef<readonly CommandDefinition[]>([]);
+const workspaceSnippetCommandsLoading = ref(false);
+let snippetLoadSequence = 0;
 let noticeTimer: ReturnType<typeof setTimeout> | null = null;
 let saveQueue: Promise<boolean> = Promise.resolve(true);
 let applyingExternal = false;
@@ -445,15 +454,31 @@ function commandContextAllows(command: CommandDefinition): boolean {
   );
 }
 
-const paletteCommands = computed(() =>
-  commandRegistry.filter(
+function buildPaletteCommands(): readonly CommandDefinition[] {
+  return [...commandRegistry, ...workspaceSnippetCommands.value].filter(
     (command) =>
       isCommandAvailable(command) &&
       commandContextAllows(command) &&
       (command.scope === "app" ||
         (command.scope === "editor" && isMarkdownOpen.value && editor !== null)),
-  ),
-);
+  );
+}
+
+/**
+ * The command array the open palette actually renders. Keeping it in an
+ * explicit ref instead of a computed cache lets close and root cleanup replace
+ * the array synchronously, releasing the previous template definitions and
+ * bodies even while the panel is unmounted.
+ */
+const paletteMenuCommands = shallowRef<readonly CommandDefinition[]>([]);
+
+watchEffect(() => {
+  if (paletteSession.value === null) {
+    paletteMenuCommands.value = [];
+    return;
+  }
+  paletteMenuCommands.value = buildPaletteCommands();
+});
 
 const sidebarShown = computed(
   () =>
@@ -2319,6 +2344,15 @@ async function mountActive(focus = true) {
   slashMenu = createSlashMenu({
     view: editor.view,
     platform: platform.value,
+    commands: () => slashCommandList(workspaceSnippetCommands.value),
+    onOpen: () => {
+      void refreshSnippetCommands();
+    },
+    onClose: () => {
+      // Closing the menu also releases the definitions and bodies it was
+      // showing and invalidates any read for that menu.
+      clearSnippetCommands();
+    },
     onChange: (state) => {
       slashState.value = state;
     },
@@ -2525,10 +2559,84 @@ async function openTreeEntry(entry: TreeNode) {
   }
 }
 
+/**
+ * Forgets the previous root's templates immediately. The body text lives in
+ * the command closures, so dropping the list also drops every loaded body.
+ */
+function clearSnippetCommands() {
+  snippetLoadSequence += 1;
+  workspaceSnippetCommands.value = [];
+  // Drop the palette's rendered snapshot in the same synchronous cleanup.
+  // A closed panel must not keep the previous definitions or bodies through a
+  // stale derived array.
+  paletteMenuCommands.value = [];
+  workspaceSnippetCommandsLoading.value = false;
+  slashMenu?.setCommandLoading(false);
+  slashMenu?.refreshCommands();
+}
+
+/**
+ * Reads one fresh `.nicole/snippets/` snapshot when slash or the command
+ * palette opens. A later request, a root switch, or a close makes an older
+ * response stale before it can reach the current menus. Missing directories
+ * and per-file warnings still leave the built-in commands usable.
+ */
+async function refreshSnippetCommands() {
+  const current = workspace.value;
+  if (current === null) {
+    clearSnippetCommands();
+    return;
+  }
+  const { root, generation } = current;
+  const sequence = ++snippetLoadSequence;
+  // A menu that opens shows the snapshot being read, not the previous open's
+  // list. Reopening after a template change cannot execute the old body while
+  // the new read is in flight.
+  workspaceSnippetCommands.value = [];
+  workspaceSnippetCommandsLoading.value = true;
+  slashMenu?.setCommandLoading(true);
+  slashMenu?.refreshCommands();
+  try {
+    const snapshot = await listSnippets(generation);
+    if (
+      sequence !== snippetLoadSequence ||
+      !isCurrentWorkspace(root, generation)
+    ) {
+      return;
+    }
+    workspaceSnippetCommands.value = createSnippetCommands(snapshot.snippets);
+    workspaceSnippetCommandsLoading.value = false;
+    slashMenu?.setCommandLoading(false);
+    slashMenu?.refreshCommands();
+    const firstWarning = snapshot.warnings[0];
+    if (firstWarning !== undefined) {
+      showNotice(
+        firstWarning,
+        "danger",
+        undefined,
+        snapshot.warnings.join("\n"),
+      );
+    }
+  } catch (error) {
+    if (
+      sequence !== snippetLoadSequence ||
+      !isCurrentWorkspace(root, generation)
+    ) {
+      return;
+    }
+    workspaceSnippetCommands.value = [];
+    workspaceSnippetCommandsLoading.value = false;
+    slashMenu?.setCommandLoading(false);
+    slashMenu?.refreshCommands();
+    showNotice(`无法读取用户模板：${errorText(error)}`, "danger");
+  }
+}
+
 function applyWorkspaceState(folder: {
   root: string;
   generation: number;
 }) {
+  clearSnippetCommands();
   workspace.value = { root: folder.root, generation: folder.generation };
   missingLastFolder.value = null;
   workspaceClosed.value = false;
@@ -2910,6 +3018,7 @@ async function closeWorkspace() {
     activeTabId.value = null;
     lastWorkspaceActivePath = null;
     closedTabs.value = [];
+    clearSnippetCommands();
     workspace.value = null;
     missingLastFolder.value = null;
     overlaySidebar.value = false;
@@ -4112,6 +4221,7 @@ function openCommandPalette(mode: CommandPaletteMode) {
     recentFiles: [...recentFilesForRoot(workspace.value?.root ?? "")],
     recentCommandIds: readRecentCommandIds(),
   };
+  void refreshSnippetCommands();
 }
 
 /**
@@ -4157,7 +4267,12 @@ function paletteModeForShortcut(
 
 
 function closeCommandPalette() {
+  if (paletteSession.value === null) return;
   paletteSession.value = null;
+  // The panel no longer owns a visible list. Release its snapshot and make
+  // any pending response stale before it can show a warning or repopulate a
+  // later menu. Command execution captures its command before this call.
+  clearSnippetCommands();
 }
 
 function showSidebarForSearch() {
@@ -4403,11 +4518,28 @@ function commandContext(view: CommandContext["view"]): CommandContext {
 async function runPaletteCommand(id: string) {
   const session = paletteSession.value;
   if (session === null) return;
+  // Capture the exact command the open panel displayed before closing, which
+  // now releases the workspace snapshot. A command that differs from the
+  // static registry entry came from the workspace menu snapshot.
+  const command = getCommand(id, paletteMenuCommands.value);
+  const isSnippetCommand =
+    command !== undefined && command !== getCommand(id);
+  const sourceWorkspace = workspace.value;
   closeCommandPalette();
   await nextTick();
-  const command = getCommand(id);
   if (command === undefined || !isCommandAvailable(command)) {
     return;
+  }
+  if (isSnippetCommand) {
+    const current = workspace.value;
+    if (
+      current === null ||
+      sourceWorkspace === null ||
+      current.root !== sourceWorkspace.root ||
+      current.generation !== sourceWorkspace.generation
+    ) {
+      return;
+    }
   }
   if (!commandContextAllows(command)) {
     return;
@@ -4990,6 +5122,7 @@ onBeforeUnmount(() => {
   }
   void saveAllTabs();
   void persistTabsNow();
+  clearSnippetCommands();
   clearEditor();
 });
 
@@ -5166,7 +5299,8 @@ defineExpose({
       ref="palette"
       :mode="paletteSession.mode"
       :platform="platform"
-      :commands="paletteCommands"
+      :commands="paletteMenuCommands"
+      :commands-loading="workspaceSnippetCommandsLoading"
       :workspace-open="hasWorkspace"
       :recent-files="paletteSession.recentFiles"
       :recent-command-ids="paletteSession.recentCommandIds"

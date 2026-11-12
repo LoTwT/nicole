@@ -56,15 +56,28 @@ export interface SlashMenuState {
   anchor: SlashAnchor;
   items: readonly SlashMenuItem[];
   selectedIndex: number;
+  /** The workspace snapshot is still loading; no item may be executed yet. */
+  loading: boolean;
 }
 
 export type SlashMenuSnapshot = SlashMenuState | null;
 
 export interface SlashMenuOptions {
   view: EditorView;
-  commands?: readonly CommandDefinition[];
+  /**
+   * The command source for every refresh. A function lets a lazily loaded
+   * workspace snapshot join the menu without rebuilding it; the registry's
+   * static list remains the default.
+   */
+  commands?:
+    | readonly CommandDefinition[]
+    | (() => readonly CommandDefinition[]);
   platform: AppPlatform;
   onChange: (state: SlashMenuSnapshot) => void;
+  /** Called after the menu opens, so the page can refresh its snapshot. */
+  onOpen?: () => void;
+  /** Called once when an open menu closes or is destroyed. */
+  onClose?: () => void;
   loadPinyin?: () => Promise<PinyinMatcher>;
   storage?: CommandStorage | null;
 }
@@ -73,6 +86,14 @@ export interface SlashMenuController {
   /** Runs the item at the index (defaults to the current selection). */
   execute(index?: number): void;
   highlight(index: number): void;
+  /** Re-reads the command source after a dynamic list arrives. */
+  refreshCommands(): void;
+  /**
+   * Marks the dynamic command source as loading. While true, an empty query
+   * match shows a status row instead of closing the menu, so a template-only
+   * query can wait for the first snapshot.
+   */
+  setCommandLoading(loading: boolean): void;
   close(): void;
   destroy(): void;
 }
@@ -171,7 +192,11 @@ function inExcludedContext(state: EditorState, position: number): boolean {
 
 export function createSlashMenu(options: SlashMenuOptions): SlashMenuController {
   const { view, platform, onChange, storage } = options;
-  const commands = options.commands ?? registeredSlashCommands();
+  const commandOption = options.commands;
+  const readCommands: () => readonly CommandDefinition[] =
+    typeof commandOption === "function"
+      ? commandOption
+      : () => commandOption ?? registeredSlashCommands();
   const loadPinyin = options.loadPinyin ?? loadPinyinMatcher;
   const compartment = new Compartment();
 
@@ -187,6 +212,7 @@ export function createSlashMenu(options: SlashMenuOptions): SlashMenuController 
   let pinyinLoading = false;
   let recentIds = readRecentCommandIds(storage);
   let destroyed = false;
+  let commandsLoading = false;
   let imeKeyPending = false;
   let imeKeyTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -208,6 +234,7 @@ export function createSlashMenu(options: SlashMenuOptions): SlashMenuController 
       anchor: anchorAtCursor(),
       items,
       selectedIndex,
+      loading: commandsLoading,
     };
   }
 
@@ -215,15 +242,23 @@ export function createSlashMenu(options: SlashMenuOptions): SlashMenuController 
     onChange(snapshot());
   }
 
-  function close() {
-    if (!open) return;
+  /** Drops every item and query reference the closed menu no longer needs. */
+  function clearMenuState() {
     open = false;
     triggerPosition = -1;
     queryEnd = -1;
+    triggerCharacter = "/";
     query = "";
+    selectedIndex = 0;
     matches = [];
     items = [];
+  }
+
+  function close() {
+    if (!open) return;
+    clearMenuState();
     onChange(null);
+    options.onClose?.();
   }
 
   function composing(): boolean {
@@ -231,8 +266,12 @@ export function createSlashMenu(options: SlashMenuOptions): SlashMenuController 
   }
 
   function refresh() {
-    if (!open || destroyed) return;
-    const filtered = filterCommands(commands, query, {
+    // Every list refresh goes through here. While the IME owns the input the
+    // menu keeps its current items and selection; composition-end sync reads
+    // the latest query and dynamic snapshot. Position mapping still happens in
+    // the update listener before this guard.
+    if (!open || destroyed || composing()) return;
+    const filtered = filterCommands(readCommands(), query, {
       matcher: pinyinMatcher,
       recentIds,
     });
@@ -247,7 +286,7 @@ export function createSlashMenu(options: SlashMenuOptions): SlashMenuController 
     if (matches.length === 0) {
       const waitingForPinyin =
         query !== "" && pinyinMatcher === null && pinyinLoading;
-      if (!waitingForPinyin && !composing()) {
+      if (!waitingForPinyin && !commandsLoading) {
         close();
         return;
       }
@@ -270,6 +309,10 @@ export function createSlashMenu(options: SlashMenuOptions): SlashMenuController 
     matches = [];
     items = [];
     refresh();
+    // A source with no usable entry can close during the initial refresh; do
+    // not start a read for a menu that is no longer showing.
+    if (!open) return;
+    options.onOpen?.();
     if (!pinyinMatcher && !pinyinLoading) {
       pinyinLoading = true;
       void loadPinyin()
@@ -411,10 +454,10 @@ export function createSlashMenu(options: SlashMenuOptions): SlashMenuController 
     };
 
     command.run({ view: target, platform });
-    open = false;
-    triggerPosition = -1;
-    queryEnd = -1;
-    onChange(null);
+    // Keep the selected command in this local scope, but close through the
+    // same lifecycle as every other exit. The controller no longer retains
+    // matches, items, query or a template body after execution.
+    close();
 
     const changes = capture.changes
       ? deletion.changes.compose(capture.changes)
@@ -448,8 +491,14 @@ export function createSlashMenu(options: SlashMenuOptions): SlashMenuController 
       }
       return true;
     }
-    if (items.length > 0) execute(selectedIndex);
-    return true;
+    if (items.length > 0) {
+      execute(selectedIndex);
+      return true;
+    }
+    // A loading row is not executable. Close and let Enter behave as normal
+    // input, including the newline, instead of swallowing the key.
+    close();
+    return false;
   }
 
   function markImeKey() {
@@ -548,18 +597,35 @@ export function createSlashMenu(options: SlashMenuOptions): SlashMenuController 
       selectedIndex = Math.min(Math.max(index, 0), items.length - 1);
       emit();
     },
+    refreshCommands() {
+      // An IME owns the query and the selection while composing. The regular
+      // composition-end sync reads the new list without moving keys or items
+      // in the middle of the composition.
+      if (!open || destroyed || composing()) return;
+      refresh();
+    },
+    setCommandLoading(loading) {
+      if (commandsLoading === loading) return;
+      commandsLoading = loading;
+      // Defer the visual refresh during composition; the composition-end sync
+      // reads both flags without taking the key from the IME.
+      if (!open || destroyed || composing()) return;
+      refresh();
+    },
     close,
     destroy() {
       if (destroyed) return;
       destroyed = true;
-      open = false;
+      if (open) close();
+      // Also clear any state left by an exit that did not run through close()
+      // before this contract was unified.
+      clearMenuState();
       if (imeKeyTimer !== null) clearTimeout(imeKeyTimer);
       imeKeyTimer = null;
       imeKeyPending = false;
       view.contentDOM.removeEventListener("compositionend", compositionEnd);
       view.contentDOM.removeEventListener("blur", blur);
       view.dispatch({ effects: compartment.reconfigure([]) });
-      onChange(null);
     },
   };
 }

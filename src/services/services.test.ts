@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   pickFolder: vi.fn(),
   openFolder: vi.fn(),
+  listSnippets: vi.fn(),
   listDirectory: vi.fn(),
   createFile: vi.fn(),
   createFolder: vi.fn(),
@@ -39,6 +40,7 @@ vi.mock("./mygo", () => ({
   Workspace: {
     pickFolder: mocks.pickFolder,
     openFolder: mocks.openFolder,
+    listSnippets: mocks.listSnippets,
     listDirectory: mocks.listDirectory,
     createFile: mocks.createFile,
     createFolder: mocks.createFolder,
@@ -95,7 +97,7 @@ import {
   revealEntry,
   trashEntry,
 } from "./files";
-import { openFolder, pickFolder } from "./workspace";
+import { listSnippets, openFolder, pickFolder } from "./workspace";
 import { popupNativeMenu } from "./menu";
 import { onOpenFile, takePendingOpenedFiles } from "./open-file";
 import {
@@ -133,6 +135,10 @@ beforeEach(() => {
     files: [],
     canceled: false,
     generation: 1,
+  });
+  mocks.listSnippets.mockResolvedValue({
+    snippets: [{ id: "snippet:a.md", label: "a", body: "x" }],
+    warnings: [],
   });
   mocks.listDirectory.mockResolvedValue({ path: ".", entries: [] });
   mocks.createFile.mockResolvedValue("note.md");
@@ -227,6 +233,14 @@ describe("service wrappers", () => {
     });
     expect(mocks.pickFolder).toHaveBeenCalledOnce();
     expect(mocks.openFolder).toHaveBeenCalledWith("/notes");
+  });
+
+  it("reads user templates by generation only", async () => {
+    await expect(listSnippets(3)).resolves.toEqual({
+      snippets: [{ id: "snippet:a.md", label: "a", body: "x" }],
+      warnings: [],
+    });
+    expect(mocks.listSnippets).toHaveBeenCalledWith(3);
   });
 
   it("forwards settings calls", async () => {
