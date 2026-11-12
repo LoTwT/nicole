@@ -41,6 +41,7 @@ const mocks = vi.hoisted(() => ({
   migrateLegacyTheme: vi.fn(),
   setTheme: vi.fn(),
   setEditorMode: vi.fn(),
+  setOutlineVisible: vi.fn(),
   setSidebarWidth: vi.fn(),
   setExpandedFolders: vi.fn(),
   addRecentFolder: vi.fn(),
@@ -96,6 +97,7 @@ vi.mock("./services/settings", () => ({
   migrateLegacyTheme: mocks.migrateLegacyTheme,
   setTheme: mocks.setTheme,
   setEditorMode: mocks.setEditorMode,
+  setOutlineVisible: mocks.setOutlineVisible,
   setSidebarWidth: mocks.setSidebarWidth,
   setExpandedFolders: mocks.setExpandedFolders,
   addRecentFolder: mocks.addRecentFolder,
@@ -216,6 +218,12 @@ async function settle() {
     await Promise.resolve();
     await nextTick();
   }
+}
+
+/** Waits for a macrotask, such as the delayed focus settlement. */
+async function nextTask() {
+  await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+  await settle();
 }
 
 /** Advances the command palette's clear-before-write announcement delay. */
@@ -463,6 +471,42 @@ function themeToggle(where: "sidebar" | "status"): HTMLButtonElement {
   return toggle;
 }
 
+function outlineToggle(): HTMLButtonElement | null {
+  return host.querySelector<HTMLButtonElement>(
+    'button[aria-label^="显示或隐藏大纲"]',
+  );
+}
+
+function outlinePanel(): HTMLElement | null {
+  return host.querySelector<HTMLElement>("[data-outline-panel]");
+}
+
+function outlineHeadingButtons(): HTMLButtonElement[] {
+  return [
+    ...host.querySelectorAll<HTMLButtonElement>("[data-outline-heading]"),
+  ];
+}
+
+function outlineHeadingTexts(): string[] {
+  return [
+    ...host.querySelectorAll<HTMLElement>("[data-outline-heading]"),
+  ].map((button) => button.textContent?.trim() ?? "");
+}
+
+function startDeadKeyComposition(view: EditorView) {
+  view.contentDOM.dispatchEvent(
+    new CompositionEvent("compositionstart", { bubbles: true }),
+  );
+  view.contentDOM.dispatchEvent(
+    new InputEvent("beforeinput", {
+      bubbles: true,
+      cancelable: true,
+      inputType: "insertText",
+      data: "x",
+    }),
+  );
+}
+
 function sidebarToggle(which: "show" | "hide"): HTMLButtonElement {
   const selector =
     which === "show" ? "[data-sidebar-toggle]" : "[data-sidebar-hide]";
@@ -628,6 +672,7 @@ beforeEach(async () => {
   });
   mocks.setTheme.mockResolvedValue(undefined);
   mocks.setEditorMode.mockResolvedValue(undefined);
+  mocks.setOutlineVisible.mockResolvedValue(undefined);
   mocks.setSidebarWidth.mockResolvedValue(undefined);
   mocks.setExpandedFolders.mockResolvedValue(undefined);
   mocks.addRecentFolder.mockResolvedValue(undefined);
@@ -2757,6 +2802,35 @@ describe("single files and dialogs", () => {
     );
   });
 
+  it("toggles the outline from the registered macOS shortcut", async () => {
+    await openFile("a.md", "# A\n\n## 一\n");
+    const first = new KeyboardEvent("keydown", {
+      key: "o",
+      ctrlKey: true,
+      metaKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    window.dispatchEvent(first);
+    await settle();
+    expect(first.defaultPrevented).toBe(true);
+    expect(outlinePanel()).not.toBeNull();
+    expect(outlineToggle()!.getAttribute("aria-expanded")).toBe("true");
+
+    const second = new KeyboardEvent("keydown", {
+      key: "o",
+      ctrlKey: true,
+      metaKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    window.dispatchEvent(second);
+    await settle();
+    expect(second.defaultPrevented).toBe(true);
+    expect(outlinePanel()).toBeNull();
+    expect(outlineToggle()!.getAttribute("aria-expanded")).toBe("false");
+  });
+
   it("keeps the outline toggle and close-tab command for a single-file tab", async () => {
     await settle();
     expect(
@@ -2774,7 +2848,7 @@ describe("single files and dialogs", () => {
       'button[aria-label^="显示或隐藏大纲"]',
     );
     expect(outline).not.toBeNull();
-    expect(outline!.disabled).toBe(true);
+    expect(outline!.disabled).toBe(false);
 
     pressPaletteShortcut("P");
     await settle();
@@ -3110,15 +3184,15 @@ describe("theme and accessibility", () => {
 
   it("skips unavailable placeholder shortcuts", async () => {
     await openFile();
-    const outline = new KeyboardEvent("keydown", {
-      key: "o",
-      ctrlKey: true,
+    const settings = new KeyboardEvent("keydown", {
+      key: ",",
+      code: "Comma",
       metaKey: true,
       bubbles: true,
       cancelable: true,
     });
-    window.dispatchEvent(outline);
-    expect(outline.defaultPrevented).toBe(false);
+    window.dispatchEvent(settings);
+    expect(settings.defaultPrevented).toBe(false);
   });
 
   it("swallows tab shortcuts when their commands cannot run", async () => {
@@ -4918,6 +4992,750 @@ describe("review round 3 fixes", () => {
     expect(tabNamed("c.md").getAttribute("aria-selected")).toBe("true");
     expect(tabNamed("a.md").getAttribute("aria-selected")).not.toBe("true");
     expect(editorView().state.doc.toString()).toBe("# C\n");
+  });
+});
+
+describe("outline panel", () => {
+  it("enables the outline only for an active Markdown tab", async () => {
+    await settle();
+    expect(outlineToggle()).toBeNull();
+    pressPaletteShortcut("P");
+    await settle();
+    expect(paletteOffers("显示或隐藏大纲")).toBe(false);
+    await closePalette();
+
+    await setupWorkspace({
+      "a.md": "# A\n\n## 一\n",
+      "cover.png": "",
+    });
+    expect(outlineToggle()).not.toBeNull();
+    expect(outlineToggle()!.disabled).toBe(true);
+    expect(outlineToggle()!.getAttribute("aria-expanded")).toBe("false");
+    pressPaletteShortcut("P");
+    await settle();
+    expect(paletteOffers("显示或隐藏大纲")).toBe(false);
+    await closePalette();
+
+    await openPath("/notes/cover.png");
+    await settle();
+    expect(host.textContent).toContain("无法预览此类型的文件");
+    expect(outlineToggle()!.disabled).toBe(true);
+    expect(outlinePanel()).toBeNull();
+    pressPaletteShortcut("P");
+    await settle();
+    expect(paletteOffers("显示或隐藏大纲")).toBe(false);
+    await closePalette();
+
+    await openPath("/notes/a.md");
+    await settle();
+    expect(outlineToggle()!.disabled).toBe(false);
+    pressPaletteShortcut("P");
+    await settle();
+    expect(paletteOffers("显示或隐藏大纲")).toBe(true);
+    await closePalette();
+  });
+
+  it("restores a fixed outline and persists wide-layout toggles", async () => {
+    await withViewportWidth(1100, async () => {
+      await remountWithSettings({ outlineVisible: true });
+      await openFile("a.md", "# 文章\n\n## 一\n\n### 二\n");
+
+      const toggle = outlineToggle()!;
+      expect(toggle.disabled).toBe(false);
+      expect(toggle.getAttribute("aria-expanded")).toBe("true");
+      expect(outlinePanel()?.dataset.placement).toBe("fixed");
+      expect(outlinePanel()?.getAttribute("aria-label")).toBe("大纲");
+      expect(outlineHeadingTexts()).toEqual(["一", "二"]);
+      expect(mocks.setOutlineVisible).not.toHaveBeenCalled();
+
+      toggle.click();
+      await settle();
+      expect(outlinePanel()).toBeNull();
+      expect(mocks.setOutlineVisible).toHaveBeenLastCalledWith(false);
+      expect(outlineToggle()!.getAttribute("aria-expanded")).toBe("false");
+
+      outlineToggle()!.click();
+      await settle();
+      expect(outlinePanel()?.dataset.placement).toBe("fixed");
+      expect(mocks.setOutlineVisible).toHaveBeenLastCalledWith(true);
+    });
+  });
+
+  it("refreshes a remounted fixed outline after a real dead-key composition", async () => {
+    await withViewportWidth(1100, async () => {
+      await remountWithSettings({ outlineVisible: true });
+      await openFile("a.md", "# 文章\n\n## 第一节\n");
+      expect(outlineHeadingTexts()).toEqual(["第一节"]);
+
+      vi.useFakeTimers();
+      await resizeTo(1000);
+      expect(outlinePanel()).toBeNull();
+
+      // The panel is closed when the edit arrives. Expanding the window before
+      // CodeMirror's own 20ms ending mounts the outline with the stale pause.
+      const view = editorView();
+      startDeadKeyComposition(view);
+      expect(view.compositionStarted).toBe(true);
+      expect(view.composing).toBe(false);
+      view.dispatch({
+        changes: { from: view.state.doc.length, insert: "\n## 第二节\n" },
+      });
+      await settle();
+      await resizeTo(1100);
+      expect(outlinePanel()?.dataset.placement).toBe("fixed");
+      expect(outlineHeadingTexts()).toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(20);
+      expect(view.compositionStarted).toBe(false);
+      expect(view.composing).toBe(false);
+      await vi.advanceTimersByTimeAsync(279);
+      await settle();
+      expect(outlineHeadingTexts()).toEqual([]);
+      await vi.advanceTimersByTimeAsync(1);
+      await settle();
+      expect(outlineHeadingTexts()).toEqual(["第一节", "第二节"]);
+    });
+  });
+
+  it("keeps a fixed outline open beside find", async () => {
+    await withViewportWidth(1100, async () => {
+      await remountWithSettings({ outlineVisible: true });
+      await openFile("a.md", "# 文章\n\n## 一\n");
+      expect(outlinePanel()?.dataset.placement).toBe("fixed");
+
+      editorView().focus();
+      pressMod("f", "KeyF", "macos");
+      await settle();
+      expect(findPanel()).not.toBeNull();
+      expect(outlinePanel()?.dataset.placement).toBe("fixed");
+
+      findInput().dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          code: "Escape",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await settle();
+      expect(findPanel()).toBeNull();
+      expect(outlinePanel()?.dataset.placement).toBe("fixed");
+    });
+  });
+
+  it("keeps the floating outline and find mutually exclusive", async () => {
+    await openFile("a.md", "# A\n\n## 一\n");
+    await withViewportWidth(800, async () => {
+      editorView().focus();
+      pressMod("f", "KeyF", "macos");
+      await settle();
+      expect(findPanel()).not.toBeNull();
+
+      outlineToggle()!.click();
+      await settle();
+      expect(findPanel()).toBeNull();
+      expect(outlinePanel()).not.toBeNull();
+      expect(outlinePanel()?.contains(document.activeElement)).toBe(true);
+
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await settle();
+      expect(outlinePanel()).toBeNull();
+
+      outlineToggle()!.click();
+      await settle();
+      expect(outlinePanel()).not.toBeNull();
+      editorView().focus();
+      pressMod("f", "KeyF", "macos");
+      await settle();
+      expect(outlinePanel()).toBeNull();
+      expect(findPanel()).not.toBeNull();
+
+      findInput().dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          code: "Escape",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await settle();
+      expect(findPanel()).toBeNull();
+      expect(outlinePanel()).toBeNull();
+    });
+  });
+
+  it("hands Esc from slash to find without reopening the floating outline", async () => {
+    await openFile("a.md", "hello\n");
+    await withViewportWidth(800, async () => {
+      outlineToggle()!.click();
+      await settle();
+      expect(outlinePanel()).not.toBeNull();
+
+      editorView().focus();
+      pressMod("f", "KeyF", "macos");
+      await settle();
+      expect(findPanel()).not.toBeNull();
+      expect(outlinePanel()).toBeNull();
+
+      editorView().focus();
+      typeSlashAtEnd();
+      await settle();
+      expect(slashMenuElement()).not.toBeNull();
+      expect(outlinePanel()).toBeNull();
+
+      editorView().contentDOM.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          code: "Escape",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await settle();
+      expect(slashMenuElement()).toBeNull();
+      expect(findPanel()).not.toBeNull();
+
+      editorView().contentDOM.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          code: "Escape",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await settle();
+      expect(findPanel()).toBeNull();
+      expect(outlinePanel()).toBeNull();
+    });
+  });
+
+  it("uses content width for the breakpoint and keeps the overlay temporary", async () => {
+    await withViewportWidth(1100, async () => {
+      await remountWithSettings();
+      await openFile("a.md", "# 文章\n\n## 一\n\n### 二\n");
+
+      outlineToggle()!.click();
+      await settle();
+      expect(outlinePanel()?.dataset.placement).toBe("fixed");
+      expect(mocks.setOutlineVisible).toHaveBeenLastCalledWith(true);
+
+      await resizeTo(1090);
+      expect(outlinePanel()).toBeNull();
+      expect(mocks.setOutlineVisible).toHaveBeenCalledTimes(1);
+
+      outlineToggle()!.click();
+      await settle();
+      expect(outlinePanel()?.dataset.placement).toBe("floating");
+      expect(outlinePanel()?.contains(document.activeElement)).toBe(true);
+      expect(mocks.setOutlineVisible).toHaveBeenCalledTimes(1);
+      expect(outlineToggle()!.getAttribute("aria-expanded")).toBe("true");
+
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await settle();
+      expect(outlinePanel()).toBeNull();
+      expect(editorView().dom.contains(document.activeElement)).toBe(true);
+      expect(mocks.setOutlineVisible).toHaveBeenCalledTimes(1);
+
+      outlineToggle()!.click();
+      await settle();
+      document.body.dispatchEvent(
+        new MouseEvent("pointerdown", { bubbles: true, cancelable: true }),
+      );
+      document.body.dispatchEvent(
+        new MouseEvent("mousedown", { bubbles: true, cancelable: true }),
+      );
+      document.body.dispatchEvent(
+        new MouseEvent("pointerup", { bubbles: true, cancelable: true }),
+      );
+      await nextTask();
+      expect(outlinePanel()).toBeNull();
+
+      outlineToggle()!.click();
+      await settle();
+      expect(outlinePanel()?.dataset.placement).toBe("floating");
+      await resizeTo(1100);
+      expect(outlinePanel()?.dataset.placement).toBe("fixed");
+      expect(mocks.setOutlineVisible).toHaveBeenCalledTimes(1);
+
+      // At 1000px the content area is 748px even after the sidebar hides;
+      // the outline must not jump to a fixed column just because the sidebar
+      // stopped occupying the layout.
+      await resizeTo(1000);
+      expect(outlinePanel()).toBeNull();
+      outlineToggle()!.click();
+      await settle();
+      expect(outlinePanel()?.dataset.placement).toBe("floating");
+      pressSidebarShortcut();
+      await settle();
+      expect(host.querySelector("aside[aria-label=\"侧栏\"]")).toBeNull();
+      expect(outlinePanel()?.dataset.placement).toBe("floating");
+      expect(mocks.setOutlineVisible).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("keeps the compact mode menu and floating outline mutually exclusive", async () => {
+    await openFile("a.md", "# A\n\n## 一\n");
+    await withViewportWidth(700, async () => {
+      const modeButton = host.querySelector<HTMLButtonElement>(
+        'button[aria-haspopup="menu"]',
+      )!;
+      expect(modeButton).not.toBeNull();
+      modeButton.click();
+      await settle();
+      expect(host.querySelector('[role="menu"]')).not.toBeNull();
+      const menuItem = host.querySelector<HTMLButtonElement>(
+        '[role="menu"] [role="menuitemradio"]',
+      )!;
+      menuItem.focus();
+
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "o",
+          ctrlKey: true,
+          metaKey: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await settle();
+      expect(host.querySelector('[role="menu"]')).toBeNull();
+      expect(outlinePanel()).not.toBeNull();
+      expect(outlinePanel()!.contains(document.activeElement)).toBe(true);
+
+      // The focused menu item is unmounted with its menu; closing the outline
+      // must fall back to a control that still exists.
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await settle();
+      expect(outlinePanel()).toBeNull();
+      expect(document.activeElement).toBe(outlineToggle());
+
+      modeButton.click();
+      await settle();
+      expect(host.querySelector('[role="menu"]')).not.toBeNull();
+      outlineToggle()!.click();
+      await settle();
+      expect(host.querySelector('[role="menu"]')).toBeNull();
+      expect(outlinePanel()).not.toBeNull();
+
+      modeButton.click();
+      await settle();
+      expect(host.querySelector('[role="menu"]')).not.toBeNull();
+      pressPaletteShortcut("P");
+      await settle();
+      expect(host.querySelector('[role="menu"]')).toBeNull();
+      typePalette("大纲");
+      await settle();
+      paletteOptions()
+        .find((item) => item.textContent?.includes("显示或隐藏大纲"))!
+        .click();
+      await settle();
+      expect(
+        document.querySelector('[role="combobox"][aria-label^="命令面板"]'),
+      ).toBeNull();
+      expect(host.querySelector('[role="menu"]')).toBeNull();
+      expect(outlinePanel()).not.toBeNull();
+
+      modeButton.click();
+      await settle();
+      expect(host.querySelector('[role="menu"]')).not.toBeNull();
+      expect(outlinePanel()).toBeNull();
+    });
+  });
+
+  it("settles focus after the full outside mouse sequence", async () => {
+    await openFile("a.md", "# A\n\n## 一\n");
+
+    const footer = host.querySelector("footer")!;
+    outlineToggle()!.click();
+    await settle();
+    expect(outlinePanel()).not.toBeNull();
+    footer.dispatchEvent(
+      new MouseEvent("pointerdown", { bubbles: true, cancelable: true }),
+    );
+    await settle();
+    expect(outlinePanel()).toBeNull();
+    // The old microtask restore happened here and was then undone by the
+    // browser's default mousedown focus action.
+    expect(editorView().dom.contains(document.activeElement)).toBe(false);
+    footer.dispatchEvent(
+      new MouseEvent("mousedown", { bubbles: true, cancelable: true }),
+    );
+    // jsdom does not perform the browser's default blur for a non-focusable
+    // mousedown target; apply it after dispatch to model that step.
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+    footer.dispatchEvent(
+      new MouseEvent("pointerup", { bubbles: true, cancelable: true }),
+    );
+    footer.dispatchEvent(
+      new MouseEvent("click", { bubbles: true, cancelable: true }),
+    );
+    await nextTask();
+    expect(editorView().dom.contains(document.activeElement)).toBe(true);
+
+    const focusTarget = document.createElement("button");
+    focusTarget.textContent = "外部控件";
+    document.body.append(focusTarget);
+    outlineToggle()!.click();
+    await settle();
+    expect(outlinePanel()).not.toBeNull();
+    focusTarget.dispatchEvent(
+      new MouseEvent("pointerdown", { bubbles: true, cancelable: true }),
+    );
+    await settle();
+    expect(outlinePanel()).toBeNull();
+    expect(editorView().dom.contains(document.activeElement)).toBe(false);
+    focusTarget.dispatchEvent(
+      new MouseEvent("mousedown", { bubbles: true, cancelable: true }),
+    );
+    // jsdom does not apply mousedown's default focus action; focus after the
+    // event dispatch models the browser's post-handler default.
+    focusTarget.focus();
+    focusTarget.dispatchEvent(
+      new MouseEvent("pointerup", { bubbles: true, cancelable: true }),
+    );
+    focusTarget.dispatchEvent(
+      new MouseEvent("click", { bubbles: true, cancelable: true }),
+    );
+    await nextTask();
+    expect(document.activeElement).toBe(focusTarget);
+
+    outlineToggle()!.click();
+    await settle();
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    expect(outlinePanel()).toBeNull();
+    expect(document.activeElement).toBe(focusTarget);
+
+    outlineToggle()!.click();
+    await settle();
+    outlineHeadingButtons()[0]!.click();
+    await settle();
+    expect(outlinePanel()).toBeNull();
+    expect(editorView().dom.contains(document.activeElement)).toBe(true);
+    expect(document.activeElement).not.toBe(focusTarget);
+  });
+
+  it("cancels a pending focus restore when another owner appears", async () => {
+    await openFile("a.md", "# A\n\n## 一\n");
+    const footer = host.querySelector("footer")!;
+
+    outlineToggle()!.click();
+    await settle();
+    footer.dispatchEvent(
+      new MouseEvent("pointerdown", { bubbles: true, cancelable: true }),
+    );
+    await settle();
+    expect(outlinePanel()).toBeNull();
+    pressPaletteShortcut("P");
+    await settle();
+    const input = paletteInput();
+    expect(document.activeElement).toBe(input);
+    footer.dispatchEvent(
+      new MouseEvent("mousedown", { bubbles: true, cancelable: true }),
+    );
+    footer.dispatchEvent(
+      new MouseEvent("pointerup", { bubbles: true, cancelable: true }),
+    );
+    footer.dispatchEvent(
+      new MouseEvent("click", { bubbles: true, cancelable: true }),
+    );
+    await nextTask();
+    expect(document.activeElement).toBe(input);
+    await closePalette();
+
+    outlineToggle()!.click();
+    await settle();
+    footer.dispatchEvent(
+      new MouseEvent("pointerdown", { bubbles: true, cancelable: true }),
+    );
+    await settle();
+    outlineToggle()!.click();
+    await settle();
+    expect(outlinePanel()).not.toBeNull();
+    footer.dispatchEvent(
+      new MouseEvent("mousedown", { bubbles: true, cancelable: true }),
+    );
+    // jsdom does not perform the browser's default blur for a non-focusable
+    // mousedown target; apply it after dispatch to model that step.
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+    footer.dispatchEvent(
+      new MouseEvent("pointerup", { bubbles: true, cancelable: true }),
+    );
+    footer.dispatchEvent(
+      new MouseEvent("click", { bubbles: true, cancelable: true }),
+    );
+    await nextTask();
+    expect(outlinePanel()).not.toBeNull();
+    expect(editorView().dom.contains(document.activeElement)).toBe(false);
+
+    footer.dispatchEvent(
+      new MouseEvent("pointerdown", { bubbles: true, cancelable: true }),
+    );
+    await settle();
+    app?.unmount();
+    app = null;
+    footer.dispatchEvent(
+      new MouseEvent("mousedown", { bubbles: true, cancelable: true }),
+    );
+    footer.dispatchEvent(
+      new MouseEvent("pointerup", { bubbles: true, cancelable: true }),
+    );
+    await nextTask();
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it("jumps from the temporary outline and closes it", async () => {
+    const doc = "# 文章\n\n## 第一节\n\n正文\n\n### 第二节\n";
+    await openFile("a.md", doc);
+    outlineToggle()!.click();
+    await settle();
+    const scroll = vi.spyOn(EditorView, "scrollIntoView");
+    const target = host.querySelectorAll<HTMLButtonElement>(
+      "[data-outline-heading]",
+    )[1]!;
+
+    target.click();
+    await settle();
+
+    const position = doc.indexOf("### 第二节");
+    expect(editorView().state.selection.main.head).toBe(position);
+    expect(scroll).toHaveBeenCalledWith(position, {
+      y: "start",
+      yMargin: 24,
+    });
+    expect(outlinePanel()).toBeNull();
+    expect(editorView().dom.contains(document.activeElement)).toBe(true);
+  });
+
+  it("refreshes on tab switches and external loads without stale timers", async () => {
+    await setupWorkspace({
+      "a.md": "# A\n\n## A1\n",
+      "b.md": "# B\n\n## B1\n",
+    });
+    await openPath("/notes/a.md");
+    await openPath("/notes/b.md");
+    tabNamed("a.md").click();
+    await settle();
+    outlineToggle()!.click();
+    await settle();
+    expect(outlineHeadingTexts()).toEqual(["A1"]);
+
+    vi.useFakeTimers();
+    const view = editorView();
+    view.dispatch({
+      changes: { from: view.state.doc.length, insert: "\n## A2\n" },
+    });
+    await settle();
+    tabNamed("b.md").click();
+    await settle();
+    expect(outlineHeadingTexts()).toEqual(["B1"]);
+
+    await vi.advanceTimersByTimeAsync(350);
+    await settle();
+    expect(outlineHeadingTexts()).toEqual(["B1"]);
+
+    openFileText = "# B2 前言\n\n## B2\n";
+    mocks.readFile.mockResolvedValue(openFileText);
+    watchEvents?.([{ op: "write", path: "b.md", isDir: false }]);
+    await settle();
+    expect(outlineHeadingTexts()).toEqual(["B1"]);
+    const beforeStaleClick = editorView().state.selection.main;
+    host.querySelector<HTMLButtonElement>("[data-outline-heading]")!.click();
+    await settle();
+    expect(editorView().state.selection.main.eq(beforeStaleClick)).toBe(true);
+    expect(outlinePanel()).not.toBeNull();
+
+    await vi.advanceTimersByTimeAsync(350);
+    await settle();
+    expect(outlineHeadingTexts()).toEqual(["B2"]);
+    host.querySelector<HTMLButtonElement>("[data-outline-heading]")!.click();
+    await settle();
+    expect(editorView().state.selection.main.head).toBe(
+      openFileText.indexOf("## B2"),
+    );
+  });
+
+  it("closes the temporary outline before other overlays and dialogs", async () => {
+    await openFile("a.md", "# A\n\n## 一\n");
+    await withViewportWidth(800, async () => {
+      outlineToggle()!.click();
+      await settle();
+      expect(outlinePanel()).not.toBeNull();
+      pressPaletteShortcut("P");
+      await settle();
+      expect(paletteInput()).not.toBeNull();
+      expect(outlinePanel()).toBeNull();
+      await closePalette();
+      expect(document.activeElement).toBe(outlineToggle());
+
+      outlineToggle()!.click();
+      await settle();
+      pressSidebarShortcut();
+      await settle();
+      expect(host.querySelector("aside[aria-label=\"侧栏\"]")).not.toBeNull();
+      expect(outlinePanel()).toBeNull();
+
+      outlineToggle()!.click();
+      await settle();
+      expect(outlinePanel()).not.toBeNull();
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await settle();
+      expect(outlinePanel()).toBeNull();
+      expect(
+        host.querySelector("aside[aria-label=\"侧栏\"]"),
+      ).not.toBeNull();
+
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await settle();
+      expect(host.querySelector("aside[aria-label=\"侧栏\"]")).toBeNull();
+
+      outlineToggle()!.click();
+      await settle();
+      expect(outlinePanel()).not.toBeNull();
+      pendingFiles = ["/tmp/offered.md"];
+      openHandler?.();
+      await settle();
+      expect(dialog()).not.toBeNull();
+      expect(outlinePanel()).toBeNull();
+      dialogButton("取消").click();
+      await settle();
+    });
+  });
+
+  it("keeps an outline choice made while settings are still loading", async () => {
+    await withViewportWidth(1200, async () => {
+      const settings = deferred<Record<string, unknown>>();
+      mocks.getSettings.mockImplementation(() => settings.promise);
+      await mountAppWithApi();
+
+      mocks.readSingleFile.mockResolvedValue("# Late\n\n## 一\n");
+      await exposedApp!.value.openSingleFile("/tmp/late.md", "late.md");
+      await settle();
+      outlineToggle()!.click();
+      await settle();
+      expect(outlinePanel()?.dataset.placement).toBe("fixed");
+      expect(mocks.setOutlineVisible).toHaveBeenCalledWith(true);
+
+      settings.resolve({
+        theme: "dark",
+        editorMode: "source",
+        outlineVisible: false,
+        sidebarWidth: 300,
+        recentFolders: [],
+        expandedFolders: {},
+      });
+      await settle();
+
+      expect(outlinePanel()?.dataset.placement).toBe("fixed");
+      expect(document.documentElement.classList.contains("dark")).toBe(true);
+      expect(
+        (host.firstElementChild as HTMLElement).style.getPropertyValue(
+          "--sidebar-width",
+        ),
+      ).toBe("300px");
+      expect(mocks.setOutlineVisible).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("toggles from the palette and beats select-same-word on Windows", async () => {
+    mocks.getAppInfo.mockResolvedValue({
+      version: "0.0.1",
+      os: "windows",
+      arch: "x64",
+      goVersion: "go1.27",
+      homeDir: "C:\\Users\\tester",
+    });
+    await remountWithSettings();
+    await openFile("a.md", "alpha alpha\n\n## 一\n");
+
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "p",
+        ctrlKey: true,
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    typePalette("大纲");
+    await settle();
+    const outlineCommand = paletteOptions().find((item) =>
+      item.textContent?.includes("显示或隐藏大纲"),
+    );
+    expect(outlineCommand).toBeDefined();
+    outlineCommand!.click();
+    await settle();
+    expect(outlinePanel()).not.toBeNull();
+    expect(mocks.setOutlineVisible).not.toHaveBeenCalled();
+
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    expect(outlinePanel()).toBeNull();
+
+    const view = editorView();
+    view.dispatch({ selection: { anchor: 0 } });
+    const selectSameWord = new KeyboardEvent("keydown", {
+      key: "l",
+      code: "KeyL",
+      ctrlKey: true,
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    view.contentDOM.dispatchEvent(selectSameWord);
+    await settle();
+
+    expect(selectSameWord.defaultPrevented).toBe(true);
+    expect(view.state.selection.main.empty).toBe(true);
+    expect(view.state.selection.main.head).toBe(0);
+    expect(outlinePanel()).not.toBeNull();
   });
 });
 
@@ -8041,6 +8859,32 @@ describe("workspace search", () => {
     expect(input!.value).toBe("未命名.md");
   });
 
+  it("leaves the narrow search overlay in the tree before creating a file", async () => {
+    await openFile();
+    await withViewportWidth(800, async () => {
+      pressAppShortcut("f", true);
+      await settle();
+      expect(host.querySelector("aside")?.className).toContain(
+        "sidebar--overlay",
+      );
+      expect(host.querySelector("[data-search-panel]")).not.toBeNull();
+
+      editorView().focus();
+      pressAppShortcut("n");
+      await settle();
+      expect(host.querySelector("[data-search-panel]")).toBeNull();
+      expect(host.querySelector('[data-tree-path="a.md"]')).not.toBeNull();
+      expect(host.querySelector("aside")?.className).toContain(
+        "sidebar--overlay",
+      );
+      const input = host.querySelector<HTMLInputElement>(
+        'input[aria-label="新建文件"]',
+      );
+      expect(input).not.toBeNull();
+      expect(input!.value).toBe("未命名.md");
+    });
+  });
+
   it("lets a slash menu own Escape without closing search", async () => {
     await openFile("a.md", "# A\n");
     pressAppShortcut("f", true);
@@ -8071,6 +8915,67 @@ describe("workspace search", () => {
     );
     await settle();
     expect(host.querySelector("[data-search-panel]")).toBeNull();
+  });
+
+  it("closes a floating outline before search from the search input", async () => {
+    await openFile("a.md", "# 文章\n\n## 一\n");
+    await withViewportWidth(800, async () => {
+      pressAppShortcut("f", true);
+      await settle();
+      expect(host.querySelector("[data-search-panel]")).not.toBeNull();
+
+      outlineToggle()!.click();
+      await settle();
+      expect(outlinePanel()).not.toBeNull();
+      expect(host.querySelector("[data-search-panel]")).not.toBeNull();
+
+      searchInput().focus();
+      const escape = new KeyboardEvent("keydown", {
+        key: "Escape",
+        code: "Escape",
+        bubbles: true,
+        cancelable: true,
+      });
+      searchInput().dispatchEvent(escape);
+      await settle();
+      expect(escape.defaultPrevented).toBe(true);
+      expect(outlinePanel()).toBeNull();
+      expect(document.activeElement).toBe(searchInput());
+      expect(host.querySelector("[data-search-panel]")).not.toBeNull();
+    });
+  });
+
+  it("keeps a fixed outline while find closes before search", async () => {
+    await withViewportWidth(1100, async () => {
+      await remountWithSettings({ outlineVisible: true });
+      await openFile("a.md", "# 文章\n\n## 一\n");
+      expect(outlinePanel()?.dataset.placement).toBe("fixed");
+      pressAppShortcut("f", true);
+      await settle();
+      expect(host.querySelector("[data-search-panel]")).not.toBeNull();
+
+      editorView().focus();
+      pressMod("f", "KeyF", "macos");
+      await settle();
+      expect(findPanel()).not.toBeNull();
+      expect(outlinePanel()?.dataset.placement).toBe("fixed");
+      expect(host.querySelector("[data-search-panel]")).not.toBeNull();
+
+      searchInput().focus();
+      const escape = new KeyboardEvent("keydown", {
+        key: "Escape",
+        code: "Escape",
+        bubbles: true,
+        cancelable: true,
+      });
+      searchInput().dispatchEvent(escape);
+      await settle();
+      expect(escape.defaultPrevented).toBe(true);
+      expect(findPanel()).toBeNull();
+      expect(outlinePanel()?.dataset.placement).toBe("fixed");
+      expect(editorView().hasFocus).toBe(true);
+      expect(host.querySelector("[data-search-panel]")).not.toBeNull();
+    });
   });
 
   it("lets a slash menu and find panel each consume Escape before search", async () => {

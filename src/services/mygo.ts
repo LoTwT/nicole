@@ -30,6 +30,11 @@ export interface AppSettings {
    */
   editorMode: string;
   /**
+   * OutlineVisible remembers whether the outline is open. The narrow
+   * floating outline is temporary and does not change this value.
+   */
+  outlineVisible: boolean;
+  /**
    * SidebarWidth is the sidebar width in CSS pixels, within
    * [200, 400].
    */
@@ -572,6 +577,13 @@ export const Settings = {
    */
   setExpandedFolders(root: string, folders: string[]): Promise<void> {
     return call("Settings.SetExpandedFolders", root, folders);
+  },
+  /**
+   * SetOutlineVisible remembers the global outline switch. Narrow windows keep
+   * their temporary floating outline in the page, not here.
+   */
+  setOutlineVisible(visible: boolean): Promise<void> {
+    return call("Settings.SetOutlineVisible", visible);
   },
   /**
    * SetSidebarWidth saves the sidebar width, clamped to the range the interface

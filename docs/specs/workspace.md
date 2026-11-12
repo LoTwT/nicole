@@ -163,11 +163,12 @@ Go 的 `Workspace` 服务通过 `mygo.Bind` 暴露，前端经 `src/services/wor
 | `MigrateLegacyTheme(legacy)` | 旧版存在 `localStorage` 的 `nicole-theme` 迁移到设置；文件已经有 `theme` 字段时不覆盖。调用方成功后删除旧值。 |
 | `SetTheme(theme)` | 保存 `system`、`light` 或 `dark`，并调用 `mygo.Theme.SetSource`，让原生菜单和对话框跟随。 |
 | `SetEditorMode(mode)` | 保存全局编辑模式 `live`、`immersive` 或 `source`；非法值返回错误且不改写文件。 |
+| `SetOutlineVisible(visible)` | 保存宽布局下的大纲开关；窄窗口的临时浮层只存在页面内，不调用这个接口。 |
 | `SetSidebarWidth(width)` | 保存侧栏宽度，限制在 200–400px。 |
 | `SetExpandedFolders(root, folders)` | 按根目录保存文件树展开状态；`folders` 是相对路径，只存显示状态，不用于访问文件。 |
 | `AddRecentFolder(folder)` / `RemoveRecentFolder(folder)` | `AddRecentFolder` 只接受当前已打开的根目录，页面不能用它授权另一个目录；`Workspace.open` 成功后由 Go 写入最近列表，页面只更新本地显示。`RemoveRecentFolder` 只移除记录。 |
 
-`settings.json` 的字段为 `theme`、`editorMode`、`sidebarWidth`、`recentFolders`、`expandedFolders`（根目录绝对路径 → 展开的相对路径数组）和 `workspaceClosed`。默认主题是 `system`，默认编辑模式是 `live`（实时预览），默认宽度 252px，最近文件夹和展开状态为空，`workspaceClosed` 缺省为 `false`；`editorMode` 缺失或非法时按 `live` 读取。`workspaceClosed` 由 `Workspace.CloseWorkspace()` 写成 `true`，由任何一次成功打开文件夹（`ChooseFolder`、`OpenFolder`、`OpenDroppedFolder`）清除；页面只在启动时读取它来决定是否恢复上次的文件夹，没有单独写入它的接口。写入在目标目录创建临时文件后改名替换，一次只写一个完整文件；损坏的设置文件不会被部分覆盖。
+`settings.json` 的字段为 `theme`、`editorMode`、`outlineVisible`、`sidebarWidth`、`recentFolders`、`expandedFolders`（根目录绝对路径 → 展开的相对路径数组）和 `workspaceClosed`。默认主题是 `system`，默认编辑模式是 `live`（实时预览），大纲默认隐藏，默认宽度 252px，最近文件夹和展开状态为空，`workspaceClosed` 缺省为 `false`；`editorMode` 缺失或非法时按 `live` 读取，`outlineVisible` 缺失或类型不对时按 `false` 读取。这两项的容错只影响自己的值，不会把其他合法字段重置为默认值。`workspaceClosed` 由 `Workspace.CloseWorkspace()` 写成 `true`，由任何一次成功打开文件夹（`ChooseFolder`、`OpenFolder`、`OpenDroppedFolder`）清除；页面只在启动时读取它来决定是否恢复上次的文件夹，没有单独写入它的接口。写入在目标目录创建临时文件后改名替换，一次只写一个完整文件；损坏的设置文件不会被部分覆盖。
 
 文件已存在但不是合法 JSON 时，读取会先把原文件重命名为 `settings.json.corrupt-<UTC 时间>`，再以默认值继续，后续设置可以正常保存；原文件保留下来供排查。备份重命名失败时返回错误，不覆盖损坏文件。启动时的主题读取也遵循这个行为，失败时保持系统外观。
 

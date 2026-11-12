@@ -317,10 +317,13 @@ describe("keyboard matcher", () => {
 
   it("skips unavailable commands while still registering their keys", () => {
     expect(getCommand("nav.search")?.available).not.toBe(false);
+    expect(getCommand("nav.toggle-outline")?.available).not.toBe(false);
     expect(idFor(key("f", { meta: true, shift: true }), "macos")).toBe(
       "nav.search",
     );
-    expect(idFor(key("o", { meta: true, ctrl: true }), "macos")).toBeNull();
+    expect(idFor(key("o", { meta: true, ctrl: true }), "macos")).toBe(
+      "nav.toggle-outline",
+    );
     expect(idFor(key(",", { meta: true }), "macos")).toBeNull();
 
     const placeholder: CommandDefinition = {

@@ -18,6 +18,7 @@ import {
   type CommandPaletteMode,
 } from "./app/command-palette";
 import { buildContextMenu } from "./app/context-menu";
+import { outlinePlacement } from "./app/outline";
 import {
   absoluteBaseName,
   absoluteParent,
@@ -81,6 +82,7 @@ import CommandPalette from "./components/CommandPalette.vue";
 import EmptyState from "./components/EmptyState.vue";
 import FindReplacePanel from "./components/FindReplacePanel.vue";
 import NonMarkdownPlaceholder from "./components/NonMarkdownPlaceholder.vue";
+import Outline from "./components/Outline.vue";
 import SlashMenu from "./components/SlashMenu.vue";
 import StatusBar from "./components/StatusBar.vue";
 import TopBar, { type TopBarTab } from "./components/TopBar.vue";
@@ -122,6 +124,7 @@ import {
   migrateLegacyTheme,
   setEditorMode,
   setExpandedFolders,
+  setOutlineVisible,
   setSidebarWidth,
   setTheme,
   removeRecentFolder,
@@ -271,6 +274,17 @@ const isCompactTopBar = computed(() => viewportWidth.value < 760);
 const sidebarOpen = ref(true);
 const overlaySidebar = ref(false);
 
+const outlineVisible = ref(false);
+const outlineOverlayOpen = ref(false);
+const outlinePanel = ref<InstanceType<typeof Outline> | null>(null);
+// `editor` is intentionally not reactive: only a changed view should rebuild
+// the outline, not every transaction.
+const editorRevision = ref(0);
+let outlineChosen = false;
+let outlineOverlayReturnFocus: HTMLElement | null = null;
+let outlineFocusSettlement: (() => void) | null = null;
+const handledAppShortcutEvents = new WeakSet<KeyboardEvent>();
+
 const dialog = ref<DialogState | null>(null);
 const recoveryDialog = ref<RecoveryDialogState | null>(null);
 let dialogResolve: ((value: string) => void) | null = null;
@@ -343,8 +357,8 @@ let offFileDrop: (() => void) | null = null;
 let openedFilesQueue: Promise<void> = Promise.resolve();
 let appReady = false;
 let pendingOpenSignal = false;
-// A startup settings response must not replace a mode the user picked while
-// that response was still pending.
+// A startup settings response must not replace a mode or outline choice the
+// user picked while that response was still pending.
 let editorModeChosen = false;
 
 const imageInsertion = createImageInsertion({
@@ -386,6 +400,39 @@ const currentPreview = computed<TabModel | null>(() => {
   return tab?.kind === "preview" ? tab : null;
 });
 const isMarkdownOpen = computed(() => currentMarkdown.value !== null);
+
+/**
+ * The content area is the editor-side region to the right of the sidebar. Its
+ * width excludes the sidebar even while the sidebar is hidden, so toggling the
+ * sidebar does not move the outline between fixed and floating layouts. At
+ * window widths where the sidebar floats over the content, it does not take
+ * layout width.
+ */
+const outlineContentWidth = computed(() => {
+  if (!hasWorkspace.value || !isWide.value) {
+    return viewportWidth.value;
+  }
+  return Math.max(0, viewportWidth.value - sidebarWidth.value);
+});
+const outlineWide = computed(
+  () => outlinePlacement(outlineContentWidth.value) === "fixed",
+);
+const outlineEnabled = computed(() => currentMarkdown.value !== null);
+const outlineDisplayed = computed(
+  () =>
+    outlineEnabled.value &&
+    (outlineWide.value ? outlineVisible.value : outlineOverlayOpen.value),
+);
+const activeEditorView = computed(() => {
+  // The editor handle is not reactive; bumping the revision after creating or
+  // destroying a view is the signal that this computed depends on.
+  void editorRevision.value;
+  return editor?.view ?? null;
+});
+const outlinePanelKey = computed(() => {
+  const tab = currentMarkdown.value;
+  return tab === null ? "" : `${tab.id}:${editorRevision.value}`;
+});
 
 /** Whether the current page state satisfies a command's runtime requirements. */
 function commandContextAllows(command: CommandDefinition): boolean {
@@ -471,6 +518,8 @@ let overlayDismissal: {
 watch(overlaySidebar, (open) => {
   if (open) {
     overlaySidebarReturnFocus = focusedControl();
+    focusOutlineToggleIfInside();
+    closeOutlineOverlay(false);
   }
 });
 
@@ -763,6 +812,9 @@ function applySettings(loaded: AppSettings) {
     mode.value = restored;
     editor?.setMode(restored);
   }
+  if (!outlineChosen) {
+    outlineVisible.value = loaded.outlineVisible === true;
+  }
   sidebarWidth.value = Math.min(400, Math.max(200, loaded.sidebarWidth || 252));
   recentFolders.value = [...loaded.recentFolders].slice(0, 10);
   expandedByRoot.value = { ...loaded.expandedFolders };
@@ -921,6 +973,198 @@ function handleContentPointerDown(event: PointerEvent) {
   }
   dismissOverlaySidebar();
 }
+
+function cancelPendingOutlineFocusSettlement() {
+  const cancel = outlineFocusSettlement;
+  outlineFocusSettlement = null;
+  cancel?.();
+}
+
+function closeOutlineOverlay(restoreFocus = false) {
+  cancelPendingOutlineFocusSettlement();
+  const origin = outlineOverlayReturnFocus;
+  outlineOverlayReturnFocus = null;
+  if (!outlineOverlayOpen.value) {
+    return;
+  }
+  outlineOverlayOpen.value = false;
+  if (!restoreFocus) {
+    return;
+  }
+  void nextTick().then(() => {
+    if (origin?.isConnected) {
+      origin.focus();
+      return;
+    }
+    outlineToggleElement()?.focus();
+  });
+}
+
+function outlineToggleElement(): HTMLButtonElement | null {
+  return document.querySelector<HTMLButtonElement>("[data-outline-toggle]");
+}
+
+/**
+ * Keeps keyboard focus on a surviving control when another surface replaces
+ * the outline. Its return-focus handlers would otherwise point at a heading
+ * button that is about to unmount.
+ */
+function focusOutlineToggleIfInside() {
+  const panel = document.querySelector("[data-outline-panel]");
+  if (panel?.contains(document.activeElement)) {
+    outlineToggleElement()?.focus();
+  }
+}
+
+function toggleOutline() {
+  if (!outlineEnabled.value) {
+    return;
+  }
+  cancelPendingOutlineFocusSettlement();
+  // Opening the floating outline from the top bar or a shortcut must follow
+  // the same popover-exclusion path as the command palette.
+  topBar.value?.closeModeMenu();
+  slashMenu?.close();
+  if (outlineWide.value) {
+    outlineChosen = true;
+    const next = !outlineVisible.value;
+    const panelElement = document.querySelector<HTMLElement>(
+      "[data-outline-panel]",
+    );
+    const focusWasInside =
+      panelElement?.contains(document.activeElement) ?? false;
+    outlineVisible.value = next;
+    if (!next && focusWasInside) {
+      void nextTick().then(() => outlineToggleElement()?.focus());
+    }
+    void setOutlineVisible(next).catch(() => {
+      // Keep this session's choice if the write fails.
+    });
+    return;
+  }
+  if (outlineOverlayOpen.value) {
+    closeOutlineOverlay(true);
+    return;
+  }
+  // The floating outline and the find panel are both popovers. Closing find
+  // first restores a connected return target before the outline takes focus.
+  editor?.search.close();
+  outlineOverlayReturnFocus = focusedControl();
+  outlineOverlayOpen.value = true;
+  void nextTick().then(() => {
+    if (!outlineOverlayOpen.value) {
+      return;
+    }
+    // Closing the mode menu can unmount the focused item. Keep a return
+    // target that still exists before moving focus into the outline.
+    if (
+      outlineOverlayReturnFocus !== null &&
+      !outlineOverlayReturnFocus.isConnected
+    ) {
+      outlineOverlayReturnFocus = outlineToggleElement();
+    }
+    outlinePanel.value?.focusActiveHeading();
+  });
+}
+
+function handleOutlineNavigate() {
+  cancelPendingOutlineFocusSettlement();
+  outlineOverlayOpen.value = false;
+  outlineOverlayReturnFocus = null;
+}
+
+/**
+ * An outside pointer's default focus action runs after the pointerdown and
+ * mousedown listeners, so deciding in a microtask is too early. Wait for the
+ * mouse sequence to finish, then respect a control that took focus; only a
+ * click that leaves the page body focused restores the pre-open control.
+ */
+function closeOutlineOverlayAfterPointer() {
+  const origin = outlineOverlayReturnFocus;
+  outlineOverlayReturnFocus = null;
+  if (!outlineOverlayOpen.value) {
+    return;
+  }
+  cancelPendingOutlineFocusSettlement();
+  outlineOverlayOpen.value = false;
+
+  let finished = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  function cleanup() {
+    document.removeEventListener("mousedown", settleLater, true);
+    document.removeEventListener("pointerup", settleLater, true);
+    document.removeEventListener("pointercancel", settleLater, true);
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    if (outlineFocusSettlement === cleanup) {
+      outlineFocusSettlement = null;
+    }
+  }
+
+  function finish() {
+    if (finished) {
+      return;
+    }
+    finished = true;
+    cleanup();
+    if (focusedControl() !== null) {
+      return;
+    }
+    if (origin?.isConnected) {
+      origin.focus();
+      return;
+    }
+    outlineToggleElement()?.focus();
+  }
+
+  function settleLater() {
+    if (timer !== null || finished) {
+      return;
+    }
+    timer = setTimeout(finish, 0);
+  }
+
+  outlineFocusSettlement = cleanup;
+  document.addEventListener("mousedown", settleLater, true);
+  document.addEventListener("pointerup", settleLater, true);
+  document.addEventListener("pointercancel", settleLater, true);
+}
+
+function handleOutlinePointerDown(event: PointerEvent) {
+  if (!outlineOverlayOpen.value) {
+    return;
+  }
+  if (
+    event.target instanceof Element &&
+    event.target.closest("[data-outline-panel], [data-outline-toggle]")
+  ) {
+    return;
+  }
+  closeOutlineOverlayAfterPointer();
+}
+
+watch(outlineWide, () => {
+  // A remembered wide-layout choice must not turn into an automatic floating
+  // panel when the content narrows; the floating panel is always user-opened.
+  focusOutlineToggleIfInside();
+  closeOutlineOverlay(false);
+});
+
+watch(outlineEnabled, (enabled) => {
+  if (!enabled) {
+    focusOutlineToggleIfInside();
+    closeOutlineOverlay(false);
+  }
+});
+
+watch(slashState, (state) => {
+  if (state !== null) {
+    closeOutlineOverlay(false);
+  }
+});
 
 function updateSidebarWidth(width: number) {
   sidebarWidth.value = width;
@@ -2029,6 +2273,7 @@ function clearEditor() {
   findController.value = null;
   editor?.destroy();
   editor = null;
+  editorRevision.value += 1;
   editorHost.value?.replaceChildren();
 }
 
@@ -2070,6 +2315,7 @@ async function mountActive(focus = true) {
     onCompositionStart: () => handleEditorCompositionStart(tab.id),
     onCompositionEnd: () => handleEditorCompositionEnd(tab.id),
   });
+  editorRevision.value += 1;
   slashMenu = createSlashMenu({
     view: editor.view,
     platform: platform.value,
@@ -3803,11 +4049,21 @@ function isWorkspaceSearchInput(target: EventTarget | null): boolean {
 function closePopoverMenus() {
   slashMenu?.close();
   topBar.value?.closeModeMenu();
+  focusOutlineToggleIfInside();
+  closeOutlineOverlay(false);
 }
 
-/** The compact mode menu is a popover; opening it replaces the find panel. */
+/** The compact mode menu is a popover; opening it replaces other popovers. */
 function handleModeMenuWillOpen() {
   editor?.search.close({ restoreFocus: false });
+  focusOutlineToggleIfInside();
+  closeOutlineOverlay(false);
+}
+
+/** Find is a popover, so opening it replaces the temporary outline. */
+function handleFindOpened() {
+  topBar.value?.closeModeMenu();
+  closeOutlineOverlay(false);
 }
 
 function closePalettePopovers() {
@@ -4114,6 +4370,7 @@ function commandContext(view: CommandContext["view"]): CommandContext {
         }
       },
       toggleSidebar,
+      toggleOutline,
       setMode,
       toggleTheme: () => {
         void toggleTheme();
@@ -4251,6 +4508,11 @@ function handleGlobalKeydown(event: KeyboardEvent) {
       editor.search.close();
       return;
     }
+    if (outlineOverlayOpen.value) {
+      event.preventDefault();
+      closeOutlineOverlay(true);
+      return;
+    }
     if (overlaySidebar.value) {
       event.preventDefault();
       dismissOverlaySidebar();
@@ -4260,23 +4522,53 @@ function handleGlobalKeydown(event: KeyboardEvent) {
     }
     return;
   }
+  runAppShortcutEvent(event);
+}
+
+/**
+ * Runs one application shortcut, swallowing it even when its runtime
+ * requirements are not met so WebView and system defaults do not act on it.
+ */
+function runAppShortcutEvent(event: KeyboardEvent): boolean {
+  if (handledAppShortcutEvents.has(event)) {
+    return true;
+  }
   if (event.defaultPrevented || isTextInput(event.target)) {
-    return;
+    return false;
   }
   const command = matchCommand(event, platform.value, commandRegistry, "app");
   if (command === null) {
-    return;
+    return false;
   }
+  handledAppShortcutEvents.add(event);
   if (!commandContextAllows(command)) {
-    // The command stays registered for its shortcut, but it is not runnable
-    // here. Swallow the key so it does not reach WebView/system defaults.
     event.preventDefault();
-    return;
+    return true;
   }
   const handled = command.run(commandContext(editor?.view ?? null));
   if (handled) {
     event.preventDefault();
   }
+  return true;
+}
+
+/**
+ * Application shortcuts run in the capture phase so a registered binding such
+ * as Windows Ctrl+Shift+L wins over CodeMirror's editor keymap instead of
+ * selecting the same word first. Escape and panel keys stay in the bubble
+ * handler, where their overlay order is decided.
+ */
+function handleAppShortcutCapture(event: KeyboardEvent) {
+  if (event.key === "Escape") {
+    return;
+  }
+  if (event.isComposing || event.keyCode === 229) {
+    return;
+  }
+  if (dialogOpen || recoveryDialog.value !== null || paletteSession.value !== null) {
+    return;
+  }
+  runAppShortcutEvent(event);
 }
 
 async function newFile() {
@@ -4604,6 +4896,8 @@ onMounted(async () => {
   window.addEventListener("resize", handleWindowResize);
   window.addEventListener("keydown", noteSlashEscape, true);
   window.addEventListener("keydown", handleGlobalKeydown);
+  window.addEventListener("keydown", handleAppShortcutCapture, true);
+  document.addEventListener("pointerdown", handleOutlinePointerDown, true);
   document.addEventListener("visibilitychange", handleVisibilityChange);
   systemTheme.addEventListener("change", handleSystemThemeChange);
   window.addEventListener("nicole:edit-command", handleEditCommand);
@@ -4661,11 +4955,14 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  cancelPendingOutlineFocusSettlement();
   window.removeEventListener("beforeunload", saveBeforeExit);
   window.removeEventListener("pagehide", saveBeforeExit);
   window.removeEventListener("resize", handleWindowResize);
   window.removeEventListener("keydown", noteSlashEscape, true);
   window.removeEventListener("keydown", handleGlobalKeydown);
+  window.removeEventListener("keydown", handleAppShortcutCapture, true);
+  document.removeEventListener("pointerdown", handleOutlinePointerDown, true);
   document.removeEventListener("visibilitychange", handleVisibilityChange);
   systemTheme.removeEventListener("change", handleSystemThemeChange);
   window.removeEventListener("nicole:edit-command", handleEditCommand);
@@ -4763,18 +5060,19 @@ defineExpose({
         :show-sidebar-toggle="showSidebarToggle"
         :show-open-folder="!hasWorkspace && tabs.length > 0"
         :show-outline="!startState"
-        :outline-enabled="false"
-        :outline-on="false"
+        :outline-enabled="outlineEnabled"
+        :outline-on="outlineDisplayed"
         @close-tab="closeTab"
         @activate-tab="activateTab"
         @tab-menu="openTabMenu"
         @set-mode="setMode"
         @toggle-sidebar="toggleSidebar"
+        @toggle-outline="toggleOutline"
         @open-folder="chooseFolder"
         @mode-menu-will-open="handleModeMenuWillOpen"
       />
 
-      <div class="flex min-h-0 flex-1">
+      <div class="relative flex min-h-0 flex-1">
         <main class="flex min-w-0 flex-1 flex-col">
           <AppBanner
             v-if="banner"
@@ -4829,11 +5127,20 @@ defineExpose({
               v-if="findController"
               :controller="findController"
               :platform="platform"
-              @opened="topBar?.closeModeMenu()"
+              @opened="handleFindOpened"
               @open-palette="openCommandPalette"
             />
           </div>
         </main>
+        <Outline
+          v-if="outlineDisplayed && activeEditorView && currentMarkdown"
+          :key="outlinePanelKey"
+          ref="outlinePanel"
+          :view="activeEditorView"
+          :text="currentMarkdown.text"
+          :fixed="outlineWide"
+          @navigate="handleOutlineNavigate"
+        />
       </div>
 
       <StatusBar
