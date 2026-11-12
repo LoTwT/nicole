@@ -10,7 +10,7 @@ import type {
   SearchRequest,
   WorkspaceSnippets,
 } from "./services/mygo";
-import { searchFingerprint } from "./app/workspace-search";
+import { searchFingerprint, searchLineFromPart } from "./app/workspace-search";
 
 // jsdom reports an empty navigator.platform, which CodeMirror treats as
 // non-Mac when it resolves `Mod` at module load. Pin it so `Mod` follows the
@@ -10332,6 +10332,30 @@ describe("link and image editing", () => {
     expect(view.state.selection.main.head).toBe(0);
   });
 
+  it("jumps to a workspace heading from the link dialog", async () => {
+    await remountWithSettings({ editorMode: "source" });
+    await setupWorkspace({
+      "a.md": "prefix [跳](b.md#目标) end\n",
+      "b.md": "prefix\n\n# 目标\n\nend\n",
+    });
+    await openPath("/notes/a.md");
+    const view = editorView();
+    view.dispatch({
+      selection: { anchor: view.state.doc.toString().indexOf("跳") },
+    });
+    view.focus();
+    pressMod("k", "KeyK", "macos");
+    await settle();
+    const open = [...linkImageDialog()!.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "打开",
+    )!;
+    open.click();
+    await settle();
+    expect(linkImageDialog()).toBeNull();
+    expect(tabNamed("b.md").getAttribute("aria-selected")).toBe("true");
+    expect(editorView().state.selection.main.head).toBe(8);
+  });
+
   it("does not open an empty link field", async () => {
     await remountWithSettings({ editorMode: "immersive" });
     const doc = "[链接](https://example.com/a)\n";
@@ -10833,6 +10857,132 @@ describe("link and image editing", () => {
       expect(tabNamed("b.md").getAttribute("aria-selected")).toBe("true");
       expect(editorView().state.doc.toString()).toBe(target);
       expect(editorView().state.selection.main.head).toBe(0);
+    },
+  );
+
+  it.each(["existing", "pending"] as const)(
+    "allows an owned deferred heading handoff: %s",
+    async (mode) => {
+      await remountWithSettings({ editorMode: "source" });
+      const target = "prefix\n\n# 目标\n\nend\n";
+      await setupWorkspace({
+        "a.md": "[去](b.md#目标)\n",
+        "b.md": target,
+      });
+      await openPath("/notes/a.md");
+      if (mode === "existing") {
+        await openPath("/notes/b.md");
+        tabNamed("a.md").click();
+        await settle();
+      }
+      const read = deferred<string>();
+      if (mode === "pending") {
+        mocks.readFile.mockImplementationOnce(() => read.promise);
+      }
+      clickEditorSequenceAt(2, { metaKey: true });
+      if (mode === "pending") read.resolve(target);
+      await settle();
+      expect(tabNamed("b.md").getAttribute("aria-selected")).toBe("true");
+      expect(editorView().state.selection.main.head).toBe(8);
+    },
+  );
+
+  it.each(["existing", "pending"] as const)(
+    "keeps a newer ordinary same-file open after handoff: %s",
+    async (mode) => {
+      await remountWithSettings({ editorMode: "source" });
+      const target = "prefix\n\n# 目标\n\nend\n";
+      await setupWorkspace({
+        "a.md": "[去](b.md#目标)\n",
+        "b.md": target,
+      });
+      await openPath("/notes/a.md");
+      if (mode === "existing") {
+        await openPath("/notes/b.md");
+        tabNamed("a.md").click();
+        await settle();
+      }
+      const read = deferred<string>();
+      if (mode === "pending") {
+        mocks.readFile.mockImplementationOnce(() => read.promise);
+      }
+      clickEditorSequenceAt(2, { metaKey: true });
+      if (mode === "pending") {
+        read.resolve(target);
+        await Promise.resolve();
+      }
+      await nextTick();
+      expect(tabNamed("b.md").getAttribute("aria-selected")).toBe("true");
+      expect(editorView().state.selection.main.head).toBe(0);
+      host.querySelector<HTMLElement>('[data-tree-path="b.md"]')!.click();
+      await settle();
+      expect(editorView().state.selection.main.head).toBe(0);
+    },
+  );
+
+  it.each(["popup-cycle", "view-rebuild", "target-edit"] as const)(
+    "drops a changed target after handoff: %s",
+    async (change) => {
+      await remountWithSettings({ editorMode: "source" });
+      const target = "prefix\n\n# 目标\n\nend\n";
+      await setupWorkspace({
+        "a.md": "[去](b.md#目标)\n",
+        "b.md": target,
+      });
+      await openPath("/notes/a.md");
+      await openPath("/notes/b.md");
+      tabNamed("a.md").click();
+      await settle();
+      clickEditorSequenceAt(2, { metaKey: true });
+      await nextTick();
+      expect(editorView().state.selection.main.head).toBe(0);
+      if (change === "popup-cycle") {
+        pressMod("k", "KeyK", "macos");
+        expect(appSetupState().linkImageEditor).not.toBeNull();
+        pressEscape(editorView().contentDOM);
+        expect(appSetupState().linkImageEditor).toBeNull();
+      } else if (change === "view-rebuild") {
+        await appSetupState().mountActive(false);
+      } else {
+        typeIntoEditor("X");
+      }
+      await settle();
+      expect(editorView().state.selection.main.head).toBe(
+        change === "target-edit" ? 1 : 0,
+      );
+    },
+  );
+
+  it.each([false, true] as const)(
+    "keeps a normal search handoff while ignoring a newer ordinary open: %s",
+    async (ordinary) => {
+      await remountWithSettings({ editorMode: "source" });
+      const target = "prefix\n\n# 目标\n\nend\n";
+      await setupWorkspace({
+        "a.md": "source\n",
+        "b.md": target,
+      });
+      await openPath("/notes/a.md");
+      await openPath("/notes/b.md");
+      tabNamed("a.md").click();
+      await settle();
+      const line = searchLineFromPart(
+        searchLine("b.md", 3, "# 目标", 2, "目标"),
+      )!;
+      const opening = appSetupState().openSearchResult({
+        generation: 1,
+        line,
+        match: line.matches[0],
+      });
+      await nextTick();
+      expect(editorView().state.selection.main.head).toBe(0);
+      if (ordinary) {
+        host.querySelector<HTMLElement>('[data-tree-path="b.md"]')!.click();
+      }
+      await opening;
+      await settle();
+      expect(editorView().state.selection.main.from).toBe(ordinary ? 0 : 10);
+      expect(editorView().state.selection.main.to).toBe(ordinary ? 0 : 12);
     },
   );
 

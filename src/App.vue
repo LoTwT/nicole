@@ -73,9 +73,7 @@ import {
 import { classifyWatchEvents } from "./app/watch-events";
 import {
   locateSearchMatch,
-  searchTargetStillCurrent,
   type SearchOpenTarget,
-  type SearchTargetSnapshot,
 } from "./app/workspace-search";
 import type { TreeNode } from "./app/file-tree";
 import AppBanner from "./components/AppBanner.vue";
@@ -359,10 +357,101 @@ const openingTabs = new Map<string, Promise<boolean>>();
 // guard, so a stale link request cannot cancel them.
 interface WorkspaceOpenRequest {
   isRequestCurrent?: () => boolean;
-  onHandoff?: () => void;
+  onHandoff?: (activation: WorkspaceActivation) => void;
   handedOff: boolean;
+  navigationIntent: number;
 }
 const openingRequests = new Map<string, WorkspaceOpenRequest[]>();
+
+let workspaceNavigationIntentRevision = 0;
+
+function beginWorkspaceNavigationIntent(): number {
+  workspaceNavigationIntentRevision += 1;
+  return workspaceNavigationIntentRevision;
+}
+
+// A fixed, invalidatable snapshot of the target at the synchronous activation
+// boundary. Follow-up work uses this credential instead of re-reading "current"
+// state after an await; any later navigation or target lifecycle change makes
+// it stale so an old caller cannot inherit a newer target's authority.
+interface WorkspaceActivation {
+  navigationIntent: number;
+  tabNavigationRevision: number;
+  tabId: number;
+  kind: "workspace" | "single";
+  path: string;
+  workspaceRoot: string | null;
+  workspaceGeneration: number;
+  text: string;
+  view: EditorView;
+  doc: Text;
+  dialogRevision: number;
+  dialogId: number | null;
+  dialogSession: LinkImageEditorSession | null;
+  dialogFieldRevision: number;
+}
+
+function captureWorkspaceActivation(
+  tab: TabModel,
+  navigationIntent: number,
+): WorkspaceActivation | null {
+  if (editor === null || tab.kind === "preview") return null;
+  return {
+    navigationIntent,
+    tabNavigationRevision: tabNavigationRevision,
+    tabId: tab.id,
+    kind: tab.kind,
+    path: tab.path,
+    workspaceRoot: workspace.value?.root ?? null,
+    workspaceGeneration: workspace.value?.generation ?? 0,
+    text: tab.text,
+    view: editor.view,
+    doc: editor.view.state.doc,
+    dialogRevision: linkImageEditorRevision,
+    dialogId: linkImageEditor.value?.id ?? null,
+    dialogSession: linkImageEditor.value?.session ?? null,
+    dialogFieldRevision: linkImageEditor.value?.fieldRevision ?? 0,
+  };
+}
+
+function workspaceActivationCurrent(activation: WorkspaceActivation): boolean {
+  if (activation.navigationIntent !== workspaceNavigationIntentRevision) {
+    return false;
+  }
+  if (activation.tabNavigationRevision !== tabNavigationRevision) return false;
+  if (
+    (workspace.value?.root ?? null) !== activation.workspaceRoot ||
+    (workspace.value?.generation ?? 0) !== activation.workspaceGeneration
+  ) {
+    return false;
+  }
+  if (activeTabId.value !== activation.tabId) return false;
+  const tab = findTab(activation.tabId);
+  if (
+    tab === null ||
+    tab.kind !== activation.kind ||
+    tab.path !== activation.path ||
+    tab.text !== activation.text
+  ) {
+    return false;
+  }
+  if (
+    editor === null ||
+    editor.view !== activation.view ||
+    activation.view.state.doc !== activation.doc
+  ) {
+    return false;
+  }
+  if (linkImageEditorRevision !== activation.dialogRevision) return false;
+  const current = linkImageEditor.value;
+  if (activation.dialogId === null) return current === null;
+  return (
+    current !== null &&
+    current.id === activation.dialogId &&
+    current.session === activation.dialogSession &&
+    current.fieldRevision === activation.dialogFieldRevision
+  );
+}
 
 function workspaceOpenRequestCurrent(request: WorkspaceOpenRequest): boolean {
   return (
@@ -380,10 +469,14 @@ function latestCurrentWorkspaceOpenRequest(
   return undefined;
 }
 
-function grantWorkspaceOpenHandoff(request: WorkspaceOpenRequest) {
+function grantWorkspaceOpenHandoff(
+  request: WorkspaceOpenRequest,
+  activation: WorkspaceActivation,
+) {
   if (request.handedOff) return;
+  if (!workspaceActivationCurrent(activation)) return;
   request.handedOff = true;
-  request.onHandoff?.();
+  request.onHandoff?.(activation);
 }
 let recentSelfRename:
   | { oldPath: string; newPath: string; at: number }
@@ -2363,24 +2456,27 @@ function clearEditor() {
   editorHost.value?.replaceChildren();
 }
 
-async function mountActive(focus = true) {
+async function mountActive(
+  focus = true,
+  navigationIntent?: number,
+): Promise<WorkspaceActivation | null> {
   const sequence = ++mountSequence;
   clearEditor();
   const target = findTab(activeTabId.value);
   if (target === null || target.kind === "preview") {
-    return;
+    return null;
   }
   await nextTick();
   if (sequence !== mountSequence) {
-    return;
+    return null;
   }
   const tab = findTab(activeTabId.value);
   if (tab === null || tab.id !== target.id || tab.kind === "preview") {
-    return;
+    return null;
   }
   const host = editorHost.value;
   if (!host) {
-    return;
+    return null;
   }
   const restore = tab.snapshot;
   tab.snapshot = null;
@@ -2405,6 +2501,10 @@ async function mountActive(focus = true) {
       void openLinkAddress(source);
     },
   });
+  const activation =
+    navigationIntent === undefined
+      ? null
+      : captureWorkspaceActivation(tab, navigationIntent);
   editorRevision.value += 1;
   slashMenu = createSlashMenu({
     view: editor.view,
@@ -2426,6 +2526,7 @@ async function mountActive(focus = true) {
   if (focus) {
     editor.focus();
   }
+  return activation;
 }
 
 function executeSlashCommand(index: number) {
@@ -2436,10 +2537,14 @@ function highlightSlashCommand(index: number) {
   slashMenu?.highlight(index);
 }
 
-async function activateTab(id: number, focus = true) {
+async function activateTab(
+  id: number,
+  focus = true,
+  navigationIntent?: number,
+): Promise<WorkspaceActivation | null> {
   const target = findTab(id);
   if (target === null) {
-    return;
+    return null;
   }
   if (activeTabId.value === id) {
     if (target.kind === "workspace" && workspace.value !== null) {
@@ -2449,7 +2554,9 @@ async function activateTab(id: number, focus = true) {
     if (focus) {
       editor?.focus();
     }
-    return;
+    return navigationIntent === undefined
+      ? null
+      : captureWorkspaceActivation(target, navigationIntent);
   }
   snapshotActiveEditor();
   activeTabId.value = id;
@@ -2459,9 +2566,10 @@ async function activateTab(id: number, focus = true) {
   if (target.kind === "workspace" && workspace.value !== null) {
     rememberRecentWorkspaceFile(workspace.value.root, target.path);
   }
-  await mountActive(focus);
+  const activation = await mountActive(focus, navigationIntent);
   closeOverlaySidebar();
   schedulePersistTabs();
+  return activation;
 }
 
 function cycleTab(delta: number) {
@@ -2483,7 +2591,9 @@ async function openWorkspaceFile(
     /** A caller-owned intent that must still be current before activation. */
     isRequestCurrent?: () => boolean;
     /** Called once when this caller wins the shared activation handoff. */
-    onHandoff?: () => void;
+    onHandoff?: (activation: WorkspaceActivation) => void;
+    /** A navigation intent already begun by the caller. */
+    navigationIntent?: number;
   } = {},
 ): Promise<boolean> {
   const context = currentWorkspaceContext();
@@ -2494,12 +2604,18 @@ async function openWorkspaceFile(
     isRequestCurrent: options.isRequestCurrent,
     onHandoff: options.onHandoff,
     handedOff: false,
+    navigationIntent:
+      options.navigationIntent ?? beginWorkspaceNavigationIntent(),
   };
   const existing = findOpenTabForWorkspacePath(context.root, path);
   if (existing !== undefined) {
     if (options.isRequestCurrent && !options.isRequestCurrent()) return false;
-    grantWorkspaceOpenHandoff(request);
-    await activateTab(existing.id);
+    const activation = await activateTab(
+      existing.id,
+      true,
+      request.navigationIntent,
+    );
+    if (activation !== null) grantWorkspaceOpenHandoff(request, activation);
     if (options.reveal ?? true) {
       void sidebar.value?.reveal(path);
     }
@@ -2536,10 +2652,14 @@ async function openWorkspaceFile(
     }
     const owner = latestCurrentWorkspaceOpenRequest(requests);
     if (owner === undefined) return false;
-    grantWorkspaceOpenHandoff(owner);
     const current = findOpenTabForWorkspacePath(context.root, path);
     if (current !== undefined) {
-      await activateTab(current.id);
+      const activation = await activateTab(
+        current.id,
+        true,
+        owner.navigationIntent,
+      );
+      if (activation !== null) grantWorkspaceOpenHandoff(owner, activation);
       if (options.reveal ?? true) {
         void sidebar.value?.reveal(path);
       }
@@ -2553,7 +2673,12 @@ async function openWorkspaceFile(
       { generation: context.generation },
     );
     insertTab(tab);
-    await activateTab(tab.id);
+    const activation = await activateTab(
+      tab.id,
+      true,
+      owner.navigationIntent,
+    );
+    if (activation !== null) grantWorkspaceOpenHandoff(owner, activation);
     if (options.reveal ?? true) {
       void sidebar.value?.reveal(path);
     }
@@ -4373,6 +4498,7 @@ async function openLinkAddress(
   const sourceView = sourceEditor.view;
   const sourceDoc = sourceView.state.doc;
   const sourceNavigationRevision = tabNavigationRevision;
+  const navigationIntent = beginWorkspaceNavigationIntent();
   const dialogRevision = linkImageEditorRevision;
   const dialogState = linkImageEditor.value;
   if (options.fromDialog && dialogState === null) return;
@@ -4393,6 +4519,7 @@ async function openLinkAddress(
   };
   const sourceCurrent = () =>
     linkNavigationSequence === sequence &&
+    workspaceNavigationIntentRevision === navigationIntent &&
     tabNavigationRevision === sourceNavigationRevision &&
     activeTabId.value === sourceTabId &&
     findTab(sourceTabId)?.text === sourceText &&
@@ -4438,75 +4565,53 @@ async function openLinkAddress(
   }
 
   if (sourceRoot === null || sourceGeneration === 0) return;
-  let handoffGranted = false;
+  const handoff: { activation: WorkspaceActivation | null } = {
+    activation: null,
+  };
   const opened = await openWorkspaceFile(destination.path, undefined, {
     reveal: false,
     isRequestCurrent: sourceCurrent,
-    onHandoff: () => {
-      handoffGranted = true;
+    navigationIntent,
+    onHandoff: (granted) => {
+      handoff.activation = granted;
     },
   });
+  const activation = handoff.activation;
   if (
     !opened ||
-    !handoffGranted ||
+    activation === null ||
+    !workspaceActivationCurrent(activation) ||
     linkNavigationSequence !== sequence ||
     !isCurrentWorkspace(sourceRoot, sourceGeneration)
   ) {
     return;
   }
-  const targetTab = currentMarkdown.value;
-  const targetEditor = editor;
   if (
-    targetTab === null ||
-    !isTabForWorkspacePath(targetTab, sourceRoot, destination.path) ||
-    targetEditor === null ||
-    activeTabId.value !== targetTab.id
+    !isTabForWorkspacePath(activation, sourceRoot, destination.path)
   ) {
     return;
   }
-  const targetTabId = targetTab.id;
-  const targetText = targetTab.text;
-  const targetView = targetEditor.view;
-  const targetDoc = targetView.state.doc;
-  const targetNavigationRevision = tabNavigationRevision;
-  const targetIsSource = targetTabId === sourceTabId;
-  const targetDialogRevision = linkImageEditorRevision;
-  // A normal open may destroy the source view and its dialog. After that
-  // permitted handoff, continue with target identity. A newer dialog
-  // lifecycle or field revision still invalidates the old intent.
-  const targetDialogCurrent = () => {
-    if (targetIsSource) return dialogCurrent();
-    if (linkImageEditorRevision !== targetDialogRevision) return false;
-    const current = linkImageEditor.value;
-    if (current === null) return true;
-    return (
-      current.id === dialogId &&
-      current.session === dialogSession &&
-      current.fieldRevision === dialogFieldRevision
-    );
-  };
-  const targetCurrent = () =>
-    linkNavigationSequence === sequence &&
-    tabNavigationRevision === targetNavigationRevision &&
-    activeTabId.value === targetTabId &&
-    findTab(targetTabId)?.text === targetText &&
-    editor === targetEditor &&
-    targetEditor.view === targetView &&
-    targetView.state.doc === targetDoc &&
-    isCurrentWorkspace(sourceRoot, sourceGeneration) &&
-    targetDialogCurrent();
   if (destination.fragment === null) {
-    if (options.fromDialog && targetCurrent()) {
+    if (
+      options.fromDialog &&
+      dialogCurrent() &&
+      workspaceActivationCurrent(activation)
+    ) {
       closeLinkImageEditor({ restoreFocus: false });
     }
     return;
   }
   const result = await jumpToHeading(
-    targetEditor.view,
+    activation.view,
     destination.fragment,
-    targetCurrent,
+    () => workspaceActivationCurrent(activation),
   );
-  if (result === "found" && options.fromDialog && targetCurrent()) {
+  if (
+    result === "found" &&
+    options.fromDialog &&
+    dialogCurrent() &&
+    workspaceActivationCurrent(activation)
+  ) {
     closeLinkImageEditor({ restoreFocus: false });
   }
 }
@@ -4709,76 +4814,56 @@ async function openSearchResult(target: SearchOpenTarget): Promise<boolean> {
   const generation = current.generation;
   const navigationRevision = tabNavigationRevision;
   const searchSequence = ++searchNavigationSequence;
+  const navigationIntent = beginWorkspaceNavigationIntent();
   const isRequestCurrent = () =>
+    workspaceNavigationIntentRevision === navigationIntent &&
     tabNavigationRevision === navigationRevision &&
     searchSequence === searchNavigationSequence &&
     isCurrentWorkspace(root, generation);
-  let handoffGranted = false;
+  const handoff: { activation: WorkspaceActivation | null } = {
+    activation: null,
+  };
   const opened = await openWorkspaceFile(target.line.path, undefined, {
     reveal: false,
     isRequestCurrent,
-    onHandoff: () => {
-      handoffGranted = true;
+    navigationIntent,
+    onHandoff: (granted) => {
+      handoff.activation = granted;
     },
   });
+  const activation = handoff.activation;
   if (
     !opened ||
-    !handoffGranted ||
+    activation === null ||
+    !workspaceActivationCurrent(activation) ||
     searchSequence !== searchNavigationSequence ||
     !isCurrentWorkspace(root, generation)
   ) {
     return false;
   }
 
-  const tab = currentMarkdown.value;
-  const matchesTarget =
-    tab !== null &&
-    (tab.kind === "workspace"
-      ? tab.path === target.line.path
-      : tab.kind === "single" &&
-        sameFilePath(
-          tab.path,
-          workspaceAbsolutePath(root, target.line.path),
-        ));
-  if (tab === null || !matchesTarget || editor === null) return false;
-
-  const tabId = tab.id;
-  const text = tab.text;
-  const view = editor.view;
-  const doc = view.state.doc;
-  const snapshot: SearchTargetSnapshot = {
-    root,
-    generation,
-    tabId,
-    text,
-    view,
-    doc,
-  };
-  const located = locateSearchMatch(text, target.line, target.match);
-  if (located === null) {
-    showNotice("搜索结果已过期，请重新搜索", "danger");
+  if (
+    activation.workspaceRoot !== root ||
+    activation.workspaceGeneration !== generation ||
+    !isTabForWorkspacePath(activation, root, target.line.path)
+  ) {
     return false;
   }
-  // The open above awaited a tab switch or mount. Do not dispatch into a
-  // newer workspace, another tab, or a document that changed meanwhile.
-  const active = currentMarkdown.value;
-  const currentTarget: SearchTargetSnapshot | null =
-    active === null || editor === null || workspace.value === null
-      ? null
-      : {
-          root: workspace.value.root,
-          generation: workspace.value.generation,
-          tabId: active.id,
-          text: active.text,
-          view: editor.view,
-          doc: editor.view.state.doc,
-        };
-  if (!searchTargetStillCurrent(snapshot, currentTarget)) return false;
-  view.dispatch({
+  const located = locateSearchMatch(activation.text, target.line, target.match);
+  if (located === null) {
+    if (workspaceActivationCurrent(activation)) {
+      showNotice("搜索结果已过期，请重新搜索", "danger");
+    }
+    return false;
+  }
+  if (!workspaceActivationCurrent(activation)) {
+    return false;
+  }
+  activation.view.dispatch({
     selection: EditorSelection.single(located.from, located.to),
     effects: EditorView.scrollIntoView(located.from, { y: "center" }),
   });
-  view.focus();
+  activation.view.focus();
   return true;
 }
 
