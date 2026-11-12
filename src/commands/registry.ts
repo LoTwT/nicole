@@ -1,5 +1,6 @@
 import { isMac, type AppPlatform } from "../app/platform";
 import { appCommands } from "./app";
+import { findCommands } from "./find";
 import { formatCommands } from "./format";
 import type { CommandDefinition, CommandKeyBinding } from "./types";
 
@@ -9,6 +10,7 @@ import type { CommandDefinition, CommandKeyBinding } from "./types";
  */
 export const commandRegistry: readonly CommandDefinition[] = [
   ...formatCommands,
+  ...findCommands,
   ...appCommands,
 ];
 

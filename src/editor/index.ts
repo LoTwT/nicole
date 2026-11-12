@@ -48,7 +48,13 @@ import { tags } from "@lezer/highlight";
 import { basicSetup } from "codemirror";
 
 import { isMac, type AppPlatform } from "../app/platform";
+import { matchCommand } from "../commands/keybinding";
 import { commandRegistry } from "../commands/registry";
+import {
+  createFindReplaceController,
+  findSearchExtension,
+  notifyFindController,
+} from "./find";
 import { createCommandKeymap } from "./keymap";
 import {
   scrollAnchor,
@@ -77,6 +83,12 @@ export type {
   PasteImageHandler,
   SavedSelection,
 } from "./types";
+export type {
+  FindReplaceController,
+  FindReplaceError,
+  FindReplaceOptions,
+  FindReplaceState,
+} from "./find";
 
 class BulletWidget extends WidgetType {
   override eq(other: WidgetType) {
@@ -1208,6 +1220,23 @@ const editorTheme = EditorView.theme({
   // and bracket-match highlights keep their own background.
   ".cm-nicole-code-line span:not(.cm-searchMatch):not(.cm-searchMatch-selected):not(.cm-selectionMatch):not(.cm-matchingBracket):not(.cm-nonmatchingBracket)":
     { backgroundColor: "transparent" },
+  // Nicole renders find/replace above the editor. The built-in search panel
+  // stays state-only, so an old key binding or a test cannot create a second
+  // visible panel or an extra 1px panel border.
+  ".cm-panels": { display: "none" },
+  // `search()` installs a base theme for these classes. The extra `.cm-content`
+  // makes Nicole's variables win without `!important`.
+  "&.cm-editor .cm-content .cm-searchMatch": {
+    backgroundColor: "var(--status-warning-bg)",
+    outlineWidth: "1px",
+    outlineStyle: "solid",
+    outlineColor: "var(--status-warning-border)",
+    borderRadius: "2px",
+  },
+  "&.cm-editor .cm-content .cm-searchMatch.cm-searchMatch-selected": {
+    backgroundColor: "var(--accent-soft)",
+    outlineColor: "var(--focus-ring-color)",
+  },
   ".cm-nicole-code-bg": {
     backgroundColor: "var(--reading-code-bg)",
   },
@@ -1339,6 +1368,13 @@ const editorTheme = EditorView.theme({
 
 const defaultResolveImage: ImageResolver = (src) => src;
 
+const forwardableFindCommands = new Set([
+  "edit.find",
+  "edit.find-replace",
+  "edit.find-next",
+  "edit.find-previous",
+]);
+
 function clipboardHasImage(data: DataTransfer | null): boolean {
   if (!data) return false;
   for (let index = 0; index < data.items.length; index++) {
@@ -1418,6 +1454,7 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     platform = runtimePlatform(),
     commands = [],
     restore,
+    find: initialFind,
     resolveImage = defaultResolveImage,
     onPasteImage,
     onChange,
@@ -1669,6 +1706,7 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     EditorView.lineWrapping,
     markdown({ base: markdownLanguage }),
     syntaxHighlighting(highlightStyle),
+    findSearchExtension,
     codeBlockPlugin,
     codeBlockBackground,
     selectionLayerClip,
@@ -1676,6 +1714,7 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     createCommandKeymap(enabledCommands, platform),
     imageHandlers(onPasteImage, createTicketAt),
     EditorView.updateListener.of((update) => {
+      notifyFindController(update);
       if (focusedCheckbox !== null && !focusedCheckbox.isConnected) {
         window.setTimeout(recoverRemovedCheckbox, 0);
       }
@@ -1727,6 +1766,7 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
         extensions,
       }),
   });
+  const find = createFindReplaceController(view, initialFind);
   view.contentDOM.addEventListener("compositionstart", handleCompositionStart);
   view.contentDOM.addEventListener("compositionend", handleCompositionEnd);
 
@@ -1833,6 +1873,9 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
   };
   const onCheckboxKeydown = (event: KeyboardEvent) => {
     if (!checkboxFocused()) return;
+    // The IME owns every key while composing; forwarding a candidate key would
+    // navigate or replace instead of committing text.
+    if (event.isComposing || event.keyCode === 229) return;
     // A bare Space toggles the checkbox natively. Any modified Space is an
     // editing/IME/system shortcut, not a task toggle.
     if (event.key === " ") {
@@ -1841,12 +1884,25 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
       }
       return;
     }
+    // Forward every registry find shortcut (including Alt+Mod-F, Ctrl+H and
+    // F3/Shift-F3) before focus leaves the checkbox. Controller.open() records
+    // the checkbox as the opener so closing the panel can return there.
+    const findCommand = matchCommand(
+      event,
+      platform,
+      commandRegistry,
+      "editor",
+    );
+    if (findCommand !== null && forwardableFindCommands.has(findCommand.id)) {
+      event.preventDefault();
+      runScopeHandlers(view, event, "editor");
+      focusEditor();
+      return;
+    }
     const primaryModifier = isMac(platform) ? event.metaKey : event.ctrlKey;
     if (primaryModifier) {
-      // Find, find-next, find-previous (with Shift for g) and select-all are
-      // editor commands, not menu actions. Give the editor focus, then run the
-      // same keymap CodeMirror would have run if the event had targeted the
-      // contentEditable.
+      // Select-all and any additional editor commands without a registry find
+      // binding keep the existing forwarding behavior.
       const key = event.key.toLowerCase();
       if (
         !event.altKey &&
@@ -1929,6 +1985,7 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     get mode() {
       return mode;
     },
+    search: find,
     setMode(next) {
       if (next === mode) return;
       mode = next;
@@ -1988,6 +2045,7 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     },
     destroy() {
       destroyed = true;
+      find.destroy();
       editorDocument.removeEventListener("selectstart", onSelectStart, true);
       window.removeEventListener("focus", recoverRemovedCheckbox);
       view.contentDOM.removeEventListener("focusout", onCheckboxFocusOut, true);
