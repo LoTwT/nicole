@@ -2331,6 +2331,11 @@ async function mountActive(focus = true) {
     onOpen: () => {
       void refreshSnippetCommands();
     },
+    onClose: () => {
+      // Closing the menu also releases the definitions and bodies it was
+      // showing and invalidates any read for that menu.
+      clearSnippetCommands();
+    },
     onChange: (state) => {
       slashState.value = state;
     },
@@ -4241,7 +4246,12 @@ function paletteModeForShortcut(
 
 
 function closeCommandPalette() {
+  if (paletteSession.value === null) return;
   paletteSession.value = null;
+  // The panel no longer owns a visible list. Release its snapshot and make
+  // any pending response stale before it can show a warning or repopulate a
+  // later menu. Command execution captures its command before this call.
+  clearSnippetCommands();
 }
 
 function showSidebarForSearch() {
@@ -4487,11 +4497,28 @@ function commandContext(view: CommandContext["view"]): CommandContext {
 async function runPaletteCommand(id: string) {
   const session = paletteSession.value;
   if (session === null) return;
+  // Capture the exact command the open panel displayed before closing, which
+  // now releases the workspace snapshot.
+  const snippetCommand = workspaceSnippetCommands.value.find(
+    (candidate) => candidate.id === id,
+  );
+  const command = getCommand(id, workspaceSnippetCommands.value);
+  const sourceWorkspace = workspace.value;
   closeCommandPalette();
   await nextTick();
-  const command = getCommand(id, workspaceSnippetCommands.value);
   if (command === undefined || !isCommandAvailable(command)) {
     return;
+  }
+  if (command === snippetCommand) {
+    const current = workspace.value;
+    if (
+      current === null ||
+      sourceWorkspace === null ||
+      current.root !== sourceWorkspace.root ||
+      current.generation !== sourceWorkspace.generation
+    ) {
+      return;
+    }
   }
   if (!commandContextAllows(command)) {
     return;

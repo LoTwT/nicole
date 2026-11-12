@@ -76,6 +76,8 @@ export interface SlashMenuOptions {
   onChange: (state: SlashMenuSnapshot) => void;
   /** Called after the menu opens, so the page can refresh its snapshot. */
   onOpen?: () => void;
+  /** Called once when an open menu closes or is destroyed. */
+  onClose?: () => void;
   loadPinyin?: () => Promise<PinyinMatcher>;
   storage?: CommandStorage | null;
 }
@@ -249,6 +251,7 @@ export function createSlashMenu(options: SlashMenuOptions): SlashMenuController 
     matches = [];
     items = [];
     onChange(null);
+    options.onClose?.();
   }
 
   function composing(): boolean {
@@ -256,7 +259,11 @@ export function createSlashMenu(options: SlashMenuOptions): SlashMenuController 
   }
 
   function refresh() {
-    if (!open || destroyed) return;
+    // Every list refresh goes through here. While the IME owns the input the
+    // menu keeps its current items and selection; composition-end sync reads
+    // the latest query and dynamic snapshot. Position mapping still happens in
+    // the update listener before this guard.
+    if (!open || destroyed || composing()) return;
     const filtered = filterCommands(readCommands(), query, {
       matcher: pinyinMatcher,
       recentIds,
@@ -272,7 +279,7 @@ export function createSlashMenu(options: SlashMenuOptions): SlashMenuController 
     if (matches.length === 0) {
       const waitingForPinyin =
         query !== "" && pinyinMatcher === null && pinyinLoading;
-      if (!waitingForPinyin && !commandsLoading && !composing()) {
+      if (!waitingForPinyin && !commandsLoading) {
         close();
         return;
       }
@@ -295,6 +302,9 @@ export function createSlashMenu(options: SlashMenuOptions): SlashMenuController 
     matches = [];
     items = [];
     refresh();
+    // A source with no usable entry can close during the initial refresh; do
+    // not start a read for a menu that is no longer showing.
+    if (!open) return;
     options.onOpen?.();
     if (!pinyinMatcher && !pinyinLoading) {
       pinyinLoading = true;
@@ -452,6 +462,7 @@ export function createSlashMenu(options: SlashMenuOptions): SlashMenuController 
       userEvent: "input.format",
       annotations: isolateHistory.of("full"),
     });
+    options.onClose?.();
     recentIds = rememberRecentCommandId(command.id, storage);
     view.focus();
   }
@@ -598,6 +609,7 @@ export function createSlashMenu(options: SlashMenuOptions): SlashMenuController 
     close,
     destroy() {
       if (destroyed) return;
+      const wasOpen = open;
       destroyed = true;
       open = false;
       if (imeKeyTimer !== null) clearTimeout(imeKeyTimer);
@@ -607,6 +619,7 @@ export function createSlashMenu(options: SlashMenuOptions): SlashMenuController 
       view.contentDOM.removeEventListener("blur", blur);
       view.dispatch({ effects: compartment.reconfigure([]) });
       onChange(null);
+      if (wasOpen) options.onClose?.();
     },
   };
 }

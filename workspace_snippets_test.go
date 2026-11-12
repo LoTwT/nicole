@@ -271,6 +271,55 @@ func TestListSnippetsStopsWhenWorkspaceChanges(t *testing.T) {
 	}
 }
 
+func TestListSnippetsTreatsReadCancellationAsWholeSnapshot(t *testing.T) {
+	root := t.TempDir()
+	writeSnippet(t, root, "one.md", bytes.Repeat([]byte("a"), snippetMaxFileBytes))
+	rootFS, err := os.OpenRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rootFS.Close()
+
+	// Stop during the file read (the second read-loop guard) so the shared
+	// reader returns errSearchStopped rather than the directory walk ending.
+	calls := 0
+	snippets, warnings, err := listSnippetsFromRoot(rootFS, func() bool {
+		calls++
+		return calls >= 10
+	})
+	if !errors.Is(err, errWorkspaceChange) {
+		t.Fatalf("read cancellation error = %v, want workspace change", err)
+	}
+	if len(snippets) != 0 || len(warnings) != 0 {
+		t.Fatalf("partial snapshot = %#v, warnings = %#v", snippets, warnings)
+	}
+}
+
+func TestListSnippetsRechecksStopBeforeReturningEmptySnapshot(t *testing.T) {
+	root := t.TempDir()
+	snippetsDir := filepath.Join(root, ".nicole", "snippets")
+	if err := os.MkdirAll(snippetsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rootFS, err := os.OpenRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rootFS.Close()
+
+	calls := 0
+	snippets, warnings, err := listSnippetsFromRoot(rootFS, func() bool {
+		calls++
+		return calls >= 6
+	})
+	if !errors.Is(err, errWorkspaceChange) {
+		t.Fatalf("final stop error = %v, want workspace change", err)
+	}
+	if len(snippets) != 0 || len(warnings) != 0 {
+		t.Fatalf("snapshot = %#v, warnings = %#v", snippets, warnings)
+	}
+}
+
 func TestListSnippetsReportsPermissionErrors(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows does not enforce these permission bits")

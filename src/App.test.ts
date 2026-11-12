@@ -290,13 +290,13 @@ function typeSlashAtEnd() {
   });
 }
 
-function typeIntoEditor(text: string) {
+function typeIntoEditor(text: string, compose = false) {
   const view = editorView();
   const at = view.state.selection.main.to;
   view.dispatch({
     changes: { from: at, insert: text },
     selection: { anchor: at + text.length },
-    userEvent: "input.type",
+    userEvent: compose ? "input.type.compose" : "input.type",
   });
 }
 
@@ -6902,6 +6902,93 @@ describe("workspace user templates", () => {
 
     expect(slashMenuElement()).toBeNull();
     expect(editorView().state.doc.toString()).toBe("/letter\n");
+  });
+
+  it("keeps a template hidden while composition input continues", async () => {
+    await openFile("a.md", "");
+    const snapshot = deferred<WorkspaceSnippets>();
+    mocks.listSnippets.mockReturnValue(snapshot.promise);
+
+    typeSlashAtEnd();
+    await settle();
+    const content = editorView().contentDOM;
+    content.dispatchEvent(
+      new CompositionEvent("compositionstart", { bubbles: true }),
+    );
+    typeIntoEditor("letter", true);
+    await settle();
+
+    snapshot.resolve({
+      snippets: [
+        { id: "snippet:letters.md", label: "letters", body: "Hi" },
+      ],
+      warnings: [],
+    });
+    await settle();
+    expect(slashOption("letters")).toBeUndefined();
+
+    typeIntoEditor("s", true);
+    await settle();
+    expect(slashOption("letters")).toBeUndefined();
+
+    content.dispatchEvent(
+      new CompositionEvent("compositionend", { bubbles: true }),
+    );
+    await settle();
+    expect(slashOption("letters")).not.toBeUndefined();
+  });
+
+  it("invalidates a pending slash snapshot when the menu closes", async () => {
+    await openFile("a.md", "");
+    const snapshot = deferred<WorkspaceSnippets>();
+    mocks.listSnippets.mockReturnValue(snapshot.promise);
+
+    typeSlashAtEnd();
+    await settle();
+    typeIntoEditor("letter");
+    await settle();
+    editorView().contentDOM.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Escape",
+        code: "Escape",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    expect(slashMenuElement()).toBeNull();
+
+    snapshot.resolve({
+      snippets: [{ id: "snippet:letter.md", label: "letter", body: "Hi" }],
+      warnings: ["用户模板“late-slash.md”超过 64 KiB，已跳过"],
+    });
+    await settle();
+
+    expect(slashMenuElement()).toBeNull();
+    expect(host.textContent).not.toContain("late-slash.md");
+  });
+
+  it("invalidates a pending palette snapshot when the panel closes", async () => {
+    await openFile("a.md", "");
+    const snapshot = deferred<WorkspaceSnippets>();
+    mocks.listSnippets.mockReturnValue(snapshot.promise);
+
+    pressPaletteShortcut("P");
+    await settle();
+    typePalette("letter");
+    await settle();
+    expect(dialog()?.textContent).toContain("正在读取用户模板");
+    await closePalette();
+    expect(dialog()).toBeNull();
+
+    snapshot.resolve({
+      snippets: [{ id: "snippet:letter.md", label: "letter", body: "Hi" }],
+      warnings: ["用户模板“late-palette.md”超过 64 KiB，已跳过"],
+    });
+    await settle();
+
+    expect(dialog()).toBeNull();
+    expect(host.textContent).not.toContain("late-palette.md");
   });
 
   it("does not leak a late same-name template into the next root's menu", async () => {

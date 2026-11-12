@@ -120,8 +120,8 @@ func listSnippetsFromRoot(root *os.Root, stop func() bool) ([]WorkspaceSnippet, 
 
 	names, err := snippetFileNames(snippetsRoot, stop)
 	if err != nil {
-		if errors.Is(err, errWorkspaceChange) {
-			return nil, nil, err
+		if errors.Is(err, errWorkspaceChange) || errors.Is(err, errSearchStopped) {
+			return nil, nil, errWorkspaceChange
 		}
 		if errors.Is(err, errSnippetTooMany) {
 			return nil, []string{fmt.Sprintf(
@@ -141,8 +141,11 @@ func listSnippetsFromRoot(root *os.Root, stop func() bool) ([]WorkspaceSnippet, 
 		}
 		data, err := readSnippetFile(snippetsRoot, name, stop)
 		if err != nil {
-			if errors.Is(err, errWorkspaceChange) {
-				return nil, nil, err
+			// The shared reader reports cancellation as errSearchStopped. For
+			// templates that means the whole snapshot is stale, not that one
+			// file should be skipped and the earlier files returned.
+			if errors.Is(err, errWorkspaceChange) || errors.Is(err, errSearchStopped) {
+				return nil, nil, errWorkspaceChange
 			}
 			warnings = append(warnings, snippetFileWarning(name, err))
 			continue
@@ -172,6 +175,11 @@ func listSnippetsFromRoot(root *os.Root, stop func() bool) ([]WorkspaceSnippet, 
 			Label: label,
 			Body:  body,
 		})
+	}
+	// A change can arrive after the last read but before the snapshot returns;
+	// do not hand the page content for a root that is no longer current.
+	if stop() {
+		return nil, nil, errWorkspaceChange
 	}
 	return snippets, warnings, nil
 }

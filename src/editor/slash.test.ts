@@ -545,6 +545,40 @@ describe("slash IME handling", () => {
     composition(view, "compositionend");
   });
 
+  it("keeps a new snapshot hidden while composition input continues", async () => {
+    let commands = [placeholderCommand()];
+    const view = mount("", undefined, { commands: () => commands });
+    type(view, "/");
+    controller?.setCommandLoading(true);
+    composition(view, "compositionstart");
+    type(view, "letter", true);
+    await settle();
+
+    commands = [
+      ...commands,
+      ...createSnippetCommands([
+        { id: "snippet:letters.md", label: "letters", body: "Hi" },
+      ]),
+    ];
+    controller?.setCommandLoading(false);
+    controller?.refreshCommands();
+    expect(
+      state?.items.some((item) => item.id === "snippet:letters.md"),
+    ).toBe(false);
+
+    type(view, "s", true);
+    await settle();
+    expect(
+      state?.items.some((item) => item.id === "snippet:letters.md"),
+    ).toBe(false);
+
+    composition(view, "compositionend");
+    await settle();
+    expect(
+      state?.items.some((item) => item.id === "snippet:letters.md"),
+    ).toBe(true);
+  });
+
   it("waits for composition to end before closing on no match", async () => {
     const view = mount();
     type(view, "/");
