@@ -361,6 +361,17 @@ function paletteOffers(label: string): boolean {
   return paletteOptions().some((item) => item.textContent?.includes(label));
 }
 
+/** Reads the mounted App's setup state for lifecycle snapshot assertions. */
+function appSetupState(): Record<string, any> {
+  const instance = (
+    app as unknown as {
+      _instance?: { setupState: Record<string, any> };
+    } | null
+  )?._instance;
+  if (!instance) throw new Error("app instance not mounted");
+  return instance.setupState;
+}
+
 function findPanel(): HTMLElement | null {
   return document.querySelector<HTMLElement>("[data-find-replace]");
 }
@@ -7113,6 +7124,7 @@ describe("workspace user templates", () => {
     await settle();
     expect(mocks.closeWorkspace).toHaveBeenCalledOnce();
     expect(slashMenuElement()).toBeNull();
+    expect(appSetupState().paletteMenuCommands).toHaveLength(0);
 
     oldSnapshot.resolve({
       snippets: [{ id: "snippet:same.md", label: "same", body: "old-root" }],
@@ -7171,6 +7183,49 @@ describe("workspace user templates", () => {
     expect(localStorage.getItem("nicole:commands:recent")).toContain(
       "snippet:frame.md",
     );
+    expect(appSetupState().paletteMenuCommands).toHaveLength(0);
+    expect(appSetupState().workspaceSnippetCommands).toHaveLength(0);
+  });
+
+  it("releases the rendered palette snapshot on close and root switch", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    await openPath("/notes/a.md");
+    mocks.listSnippets.mockResolvedValue({
+      snippets: [{ id: "snippet:letter.md", label: "letter", body: "body" }],
+      warnings: [],
+    });
+
+    pressPaletteShortcut("P");
+    await settle();
+    typePalette("letter");
+    await settle();
+    expect(paletteOffers("letter")).toBe(true);
+    expect(
+      appSetupState().paletteMenuCommands.some(
+        (command: { id: string }) => command.id === "snippet:letter.md",
+      ),
+    ).toBe(true);
+
+    await closePalette();
+    expect(appSetupState().paletteMenuCommands).toHaveLength(0);
+    expect(appSetupState().workspaceSnippetCommands).toHaveLength(0);
+
+    pressPaletteShortcut("P");
+    await settle();
+    typePalette("letter");
+    await settle();
+    expect(paletteOffers("letter")).toBe(true);
+    await closePalette();
+
+    mocks.pickFolder.mockResolvedValue({ path: "/second", canceled: false });
+    mocks.openFolder.mockResolvedValue(folder("/second", 2));
+    sidebarButton("切换文件夹").click();
+    await settle();
+    dialogButton("切换").click();
+    await settle();
+
+    expect(appSetupState().paletteMenuCommands).toHaveLength(0);
+    expect(appSetupState().workspaceSnippetCommands).toHaveLength(0);
   });
 
   it("refreshes on every open and ignores a snapshot from the previous root", async () => {

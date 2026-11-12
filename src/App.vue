@@ -10,6 +10,7 @@ import {
   ref,
   shallowRef,
   watch,
+  watchEffect,
 } from "vue";
 
 import {
@@ -453,15 +454,31 @@ function commandContextAllows(command: CommandDefinition): boolean {
   );
 }
 
-const paletteCommands = computed(() =>
-  [...commandRegistry, ...workspaceSnippetCommands.value].filter(
+function buildPaletteCommands(): readonly CommandDefinition[] {
+  return [...commandRegistry, ...workspaceSnippetCommands.value].filter(
     (command) =>
       isCommandAvailable(command) &&
       commandContextAllows(command) &&
       (command.scope === "app" ||
         (command.scope === "editor" && isMarkdownOpen.value && editor !== null)),
-  ),
-);
+  );
+}
+
+/**
+ * The command array the open palette actually renders. Keeping it in an
+ * explicit ref instead of a computed cache lets close and root cleanup replace
+ * the array synchronously, releasing the previous template definitions and
+ * bodies even while the panel is unmounted.
+ */
+const paletteMenuCommands = shallowRef<readonly CommandDefinition[]>([]);
+
+watchEffect(() => {
+  if (paletteSession.value === null) {
+    paletteMenuCommands.value = [];
+    return;
+  }
+  paletteMenuCommands.value = buildPaletteCommands();
+});
 
 const sidebarShown = computed(
   () =>
@@ -2549,6 +2566,10 @@ async function openTreeEntry(entry: TreeNode) {
 function clearSnippetCommands() {
   snippetLoadSequence += 1;
   workspaceSnippetCommands.value = [];
+  // Drop the palette's rendered snapshot in the same synchronous cleanup.
+  // A closed panel must not keep the previous definitions or bodies through a
+  // stale derived array.
+  paletteMenuCommands.value = [];
   workspaceSnippetCommandsLoading.value = false;
   slashMenu?.setCommandLoading(false);
   slashMenu?.refreshCommands();
@@ -4498,18 +4519,18 @@ async function runPaletteCommand(id: string) {
   const session = paletteSession.value;
   if (session === null) return;
   // Capture the exact command the open panel displayed before closing, which
-  // now releases the workspace snapshot.
-  const snippetCommand = workspaceSnippetCommands.value.find(
-    (candidate) => candidate.id === id,
-  );
-  const command = getCommand(id, workspaceSnippetCommands.value);
+  // now releases the workspace snapshot. A command that differs from the
+  // static registry entry came from the workspace menu snapshot.
+  const command = getCommand(id, paletteMenuCommands.value);
+  const isSnippetCommand =
+    command !== undefined && command !== getCommand(id);
   const sourceWorkspace = workspace.value;
   closeCommandPalette();
   await nextTick();
   if (command === undefined || !isCommandAvailable(command)) {
     return;
   }
-  if (command === snippetCommand) {
+  if (isSnippetCommand) {
     const current = workspace.value;
     if (
       current === null ||
@@ -5278,7 +5299,7 @@ defineExpose({
       ref="palette"
       :mode="paletteSession.mode"
       :platform="platform"
-      :commands="paletteCommands"
+      :commands="paletteMenuCommands"
       :commands-loading="workspaceSnippetCommandsLoading"
       :workspace-open="hasWorkspace"
       :recent-files="paletteSession.recentFiles"
