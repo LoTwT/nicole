@@ -242,14 +242,21 @@ export function createSlashMenu(options: SlashMenuOptions): SlashMenuController 
     onChange(snapshot());
   }
 
-  function close() {
-    if (!open) return;
+  /** Drops every item and query reference the closed menu no longer needs. */
+  function clearMenuState() {
     open = false;
     triggerPosition = -1;
     queryEnd = -1;
+    triggerCharacter = "/";
     query = "";
+    selectedIndex = 0;
     matches = [];
     items = [];
+  }
+
+  function close() {
+    if (!open) return;
+    clearMenuState();
     onChange(null);
     options.onClose?.();
   }
@@ -447,10 +454,10 @@ export function createSlashMenu(options: SlashMenuOptions): SlashMenuController 
     };
 
     command.run({ view: target, platform });
-    open = false;
-    triggerPosition = -1;
-    queryEnd = -1;
-    onChange(null);
+    // Keep the selected command in this local scope, but close through the
+    // same lifecycle as every other exit. The controller no longer retains
+    // matches, items, query or a template body after execution.
+    close();
 
     const changes = capture.changes
       ? deletion.changes.compose(capture.changes)
@@ -462,7 +469,6 @@ export function createSlashMenu(options: SlashMenuOptions): SlashMenuController 
       userEvent: "input.format",
       annotations: isolateHistory.of("full"),
     });
-    options.onClose?.();
     recentIds = rememberRecentCommandId(command.id, storage);
     view.focus();
   }
@@ -609,17 +615,17 @@ export function createSlashMenu(options: SlashMenuOptions): SlashMenuController 
     close,
     destroy() {
       if (destroyed) return;
-      const wasOpen = open;
       destroyed = true;
-      open = false;
+      if (open) close();
+      // Also clear any state left by an exit that did not run through close()
+      // before this contract was unified.
+      clearMenuState();
       if (imeKeyTimer !== null) clearTimeout(imeKeyTimer);
       imeKeyTimer = null;
       imeKeyPending = false;
       view.contentDOM.removeEventListener("compositionend", compositionEnd);
       view.contentDOM.removeEventListener("blur", blur);
       view.dispatch({ effects: compartment.reconfigure([]) });
-      onChange(null);
-      if (wasOpen) options.onClose?.();
     },
   };
 }

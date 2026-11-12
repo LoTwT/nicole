@@ -6991,6 +6991,52 @@ describe("workspace user templates", () => {
     expect(host.textContent).not.toContain("late-palette.md");
   });
 
+  it("rejects a same-root response from the preceding slash menu", async () => {
+    await openFile("a.md", "");
+    const oldSnapshot = deferred<WorkspaceSnippets>();
+    const newSnapshot = deferred<WorkspaceSnippets>();
+    mocks.listSnippets
+      .mockReturnValueOnce(oldSnapshot.promise)
+      .mockReturnValueOnce(newSnapshot.promise);
+
+    typeSlashAtEnd();
+    await settle();
+    editorView().contentDOM.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Escape",
+        code: "Escape",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    typeIntoEditor(" ");
+    typeSlashAtEnd();
+    typeIntoEditor("letter");
+    await settle();
+    expect(slashMenuElement()?.textContent).toContain("正在读取用户模板");
+
+    oldSnapshot.resolve({
+      snippets: [{ id: "snippet:letter.md", label: "letter", body: "old" }],
+      warnings: ["用户模板“old-menu.md”超过 64 KiB，已跳过"],
+    });
+    await settle();
+    expect(slashOption("letter")).toBeUndefined();
+    expect(host.textContent).not.toContain("old-menu.md");
+
+    newSnapshot.resolve({
+      snippets: [{ id: "snippet:letter.md", label: "letter", body: "fresh" }],
+      warnings: [],
+    });
+    await settle();
+    const option = slashOption("letter");
+    expect(option).not.toBeUndefined();
+    option!.click();
+    await settle();
+
+    expect(editorView().state.doc.toString()).toBe("/ fresh");
+  });
+
   it("does not leak a late same-name template into the next root's menu", async () => {
     await setupWorkspace({ "a.md": "# A\n" });
     await openPath("/notes/a.md");

@@ -52,6 +52,7 @@ function mount(
   options: {
     commands?: Parameters<typeof createSlashMenu>[0]["commands"];
     onOpen?: () => void;
+    onClose?: () => void;
   } = {},
 ) {
   controller?.destroy();
@@ -452,6 +453,60 @@ describe("slash search and execution", () => {
     type(view, " ");
     type(view, "/");
     expect(onOpen).toHaveBeenCalledTimes(2);
+  });
+
+  it("closes through the full lifecycle after executing a template", async () => {
+    const onClose = vi.fn();
+    const commands = createSnippetCommands([
+      { id: "snippet:letters.md", label: "letters", body: "Hi{{cursor}}!" },
+    ]);
+    const view = mount("", undefined, {
+      commands: () => commands,
+      onClose,
+    });
+    type(view, "/");
+    type(view, "letters");
+    await settle();
+    const index = state?.items.findIndex(
+      (item) => item.id === "snippet:letters.md",
+    );
+    expect(index).toBeGreaterThanOrEqual(0);
+
+    controller?.execute(index);
+
+    expect(state).toBeNull();
+    expect(view.state.doc.toString()).toBe("Hi!");
+    expect(view.state.selection.main.head).toBe(2);
+    expect(onClose).toHaveBeenCalledOnce();
+
+    // A later close/destroy must not notify again or disturb the history.
+    controller?.close();
+    controller?.destroy();
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(editor?.undo()).toBe(true);
+    expect(view.state.doc.toString()).toBe("/letters");
+    expect(editor?.undo()).toBe(true);
+    expect(view.state.doc.toString()).toBe("");
+  });
+
+  it("destroys an open menu through the close lifecycle once", async () => {
+    const onClose = vi.fn();
+    const commands = createSnippetCommands([
+      { id: "snippet:letters.md", label: "letters", body: "Hi" },
+    ]);
+    const view = mount("", undefined, {
+      commands: () => commands,
+      onClose,
+    });
+    type(view, "/");
+    expect(state).not.toBeNull();
+
+    controller?.destroy();
+    expect(state).toBeNull();
+    expect(onClose).toHaveBeenCalledOnce();
+
+    controller?.destroy();
+    expect(onClose).toHaveBeenCalledOnce();
   });
 
   it("keeps a template-only query open while commands load", async () => {
