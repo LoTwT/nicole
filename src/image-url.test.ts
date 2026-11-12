@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   formatImageDestination,
+  parseMarkdownDestination,
   resolveImageUrl,
   resolveLocalImagePath,
 } from "./image-url";
@@ -40,6 +41,18 @@ describe("resolveImageUrl", () => {
     );
     expect(resolveImageUrl("my%20photo.png", DOC, GENERATION)).toBe(
       "nicole-image://localhost/4/notes/chapter/my%20photo.png",
+    );
+  });
+
+  it("reads angle-wrapped destinations as URL/path values", () => {
+    expect(resolveImageUrl("<photo.png>", DOC, GENERATION)).toBe(
+      "nicole-image://localhost/4/notes/chapter/photo.png",
+    );
+    expect(
+      resolveImageUrl("<https://example.com/a%20b.png>", DOC, GENERATION),
+    ).toBe("https://example.com/a%20b.png");
+    expect(resolveLocalImagePath("<assets/photo.png>", DOC)).toBe(
+      "notes/chapter/assets/photo.png",
     );
   });
 
@@ -128,6 +141,34 @@ describe("resolveLocalImagePath", () => {
 });
 
 describe("formatImageDestination", () => {
+  it("parses Markdown angle wrappers without treating encoded brackets as syntax", () => {
+    expect(parseMarkdownDestination(" <assets/a.png> ")).toBe("assets/a.png");
+    expect(parseMarkdownDestination("<https://example.com/a.png>")).toBe(
+      "https://example.com/a.png",
+    );
+    expect(parseMarkdownDestination("assets/%3Cpic%3E.png")).toBe(
+      "assets/%3Cpic%3E.png",
+    );
+    expect(parseMarkdownDestination("<assets/%3Cpic%3E.png>")).toBe(
+      "assets/%3Cpic%3E.png",
+    );
+    expect(parseMarkdownDestination("assets/<pic>.png")).toBe(
+      "assets/<pic>.png",
+    );
+  });
+
+  it("serializes the address inside an angle wrapper, not the wrapper", () => {
+    expect(formatImageDestination("<assets/图 1.png>")).toBe(
+      "assets/%E5%9B%BE%201.png",
+    );
+    expect(formatImageDestination("<https://example.com/a.png>")).toBe(
+      "https://example.com/a.png",
+    );
+    expect(formatImageDestination("assets/%3Cpic%3E.png")).toBe(
+      "assets/%3Cpic%3E.png",
+    );
+  });
+
   it("escapes spaces and Unicode one segment at a time", () => {
     expect(formatImageDestination("assets/图 1.png")).toBe(
       "assets/%E5%9B%BE%201.png",

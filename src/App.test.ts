@@ -9555,4 +9555,63 @@ describe("link and image editing", () => {
     await settle();
     expect(mocks.revealImage).toHaveBeenCalledOnce();
   });
+
+  it("keeps the link dialog inside the editor host beside a fixed outline", async () => {
+    await remountWithSettings({ editorMode: "source", outlineVisible: true });
+    await openFile("a.md", "# Heading\n[文字](url)\n");
+    await withViewportWidth(1200, async () => {
+      const view = editorView();
+      const rect = {
+        left: 252,
+        right: 980,
+        top: 60,
+        bottom: 700,
+        x: 252,
+        y: 60,
+        width: 728,
+        height: 640,
+        toJSON() {
+          return {};
+        },
+      };
+      const elements = [
+        host.querySelector<HTMLElement>("[data-editor-host]")!,
+        host.querySelector<HTMLElement>('[aria-label="Markdown 编辑器"]')!,
+        view.dom,
+        view.scrollDOM,
+      ];
+      for (const element of elements) {
+        vi.spyOn(element, "getBoundingClientRect").mockReturnValue(
+          rect as unknown as DOMRect,
+        );
+      }
+      vi.spyOn(view, "coordsAtPos").mockReturnValue({
+        left: 950,
+        right: 960,
+        top: 100,
+        bottom: 120,
+      });
+      view.dispatch({
+        selection: { anchor: view.state.doc.toString().indexOf("文字") },
+      });
+      view.focus();
+      pressMod("k", "KeyK", "macos");
+      await settle();
+      const popup = linkImageDialog()!;
+      expect(popup).not.toBeNull();
+      expect(popup.style.display).not.toBe("none");
+      expect(Number.parseFloat(popup.style.left) + 340).toBeLessThanOrEqual(
+        rect.right - 8,
+      );
+      expect(popup.style.maxWidth).toBe("712px");
+
+      rect.right = 900;
+      window.dispatchEvent(new Event("resize"));
+      await settle();
+      expect(Number.parseFloat(popup.style.left) + 340).toBeLessThanOrEqual(
+        rect.right - 8,
+      );
+      expect(popup.style.maxWidth).toBe("632px");
+    });
+  });
 });

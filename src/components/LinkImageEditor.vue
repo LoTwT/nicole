@@ -11,7 +11,9 @@ import {
 import type { AppPlatform } from "../app/platform";
 import { revealLabel } from "../app/platform";
 import {
+  LINK_IMAGE_POPOVER_MARGIN,
   LINK_IMAGE_POPOVER_WIDTH,
+  intersectPopoverBounds,
   placeLinkImagePopover,
   type LinkImageEditorSession,
   type LinkImageFieldValues,
@@ -42,6 +44,9 @@ const position = ref<PopoverPlacement>({
   top: 8,
   placement: "below",
 });
+const positioned = ref(false);
+const availableWidth = ref(LINK_IMAGE_POPOVER_WIDTH);
+const availableHeight = ref(0);
 let unsubscribe: (() => void) | null = null;
 let resizeObserver: ResizeObserver | null = null;
 
@@ -66,18 +71,51 @@ function labelFor(base: string, index: number): string {
 }
 
 function updatePosition() {
-  const anchor = props.session.anchor();
-  if (anchor === null) return;
-  const rect = popover.value?.getBoundingClientRect();
-  position.value = placeLinkImagePopover(
-    anchor,
-    {
-      width:
-        rect && rect.width > 0 ? rect.width : LINK_IMAGE_POPOVER_WIDTH,
-      height: rect && rect.height > 0 ? rect.height : 160,
-    },
-    { width: window.innerWidth, height: window.innerHeight },
+  const host = props.session.hostBounds();
+  if (host === null) {
+    positioned.value = false;
+    return;
+  }
+  const bounds = intersectPopoverBounds(host, {
+    width: window.innerWidth,
+    height: window.innerHeight,
+  });
+  if (bounds === null) {
+    positioned.value = false;
+    return;
+  }
+  const width = Math.max(
+    0,
+    bounds.right - bounds.left - LINK_IMAGE_POPOVER_MARGIN * 2,
   );
+  const height = Math.max(
+    0,
+    bounds.bottom - bounds.top - LINK_IMAGE_POPOVER_MARGIN * 2,
+  );
+  if (width <= 0 || height <= 0) {
+    positioned.value = false;
+    return;
+  }
+  const anchor = props.session.anchor();
+  const rect = popover.value?.getBoundingClientRect();
+  const size = {
+    width: rect && rect.width > 0 ? rect.width : LINK_IMAGE_POPOVER_WIDTH,
+    height: rect && rect.height > 0 ? rect.height : 160,
+  };
+  if (anchor === null) {
+    const fallback = bounds.left + LINK_IMAGE_POPOVER_MARGIN;
+    const top = bounds.top + LINK_IMAGE_POPOVER_MARGIN;
+    position.value = placeLinkImagePopover(
+      { left: fallback, right: fallback, top, bottom: top },
+      size,
+      bounds,
+    );
+  } else {
+    position.value = placeLinkImagePopover(anchor, size, bounds);
+  }
+  availableWidth.value = width;
+  availableHeight.value = height;
+  positioned.value = true;
 }
 
 function focusFirstField() {
@@ -160,10 +198,13 @@ defineExpose({ focusFirstField });
   <Teleport to="body">
     <div
       ref="popover"
-      class="fixed w-[340px] max-w-[calc(100vw-16px)] rounded-[var(--radius-card)] border border-[var(--border-default)] bg-[var(--surface-elevated)] p-3 text-[13px] text-[var(--text-primary)] shadow-[var(--shadow-lg)]"
+      v-show="positioned"
+      class="fixed flex w-[340px] flex-col overflow-hidden rounded-[var(--radius-card)] border border-[var(--border-default)] bg-[var(--surface-elevated)] p-3 text-[13px] text-[var(--text-primary)] shadow-[var(--shadow-lg)]"
       :style="{
         left: `${position.left}px`,
         top: `${position.top}px`,
+        maxWidth: `${availableWidth}px`,
+        maxHeight: `${availableHeight}px`,
         zIndex: 'var(--z-popover)',
       }"
       role="dialog"
@@ -173,9 +214,9 @@ defineExpose({ focusFirstField });
       data-link-image-editor
       @keydown="handleKeydown"
     >
-      <div class="flex max-h-[calc(100vh-32px)] flex-col gap-2">
+      <div class="flex min-h-0 flex-col gap-2">
         <div
-          class="max-h-[min(50vh,320px)] space-y-3 overflow-y-auto pr-1"
+          class="max-h-[min(50vh,320px)] min-h-0 space-y-3 overflow-y-auto pr-1"
           data-link-image-fields
         >
           <fieldset
@@ -227,7 +268,7 @@ defineExpose({ focusFirstField });
             </div>
           </fieldset>
         </div>
-        <div class="mt-1 flex flex-wrap justify-end gap-1.5">
+        <div class="mt-1 flex shrink-0 flex-wrap justify-end gap-1.5">
           <button
             v-if="session.kind === 'image'"
             type="button"

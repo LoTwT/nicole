@@ -112,6 +112,7 @@ export type {
   LinkImageFieldValues,
   LinkImageKind,
   PopoverAnchor,
+  PopoverBounds,
 } from "./link-editor";
 
 class BulletWidget extends WidgetType {

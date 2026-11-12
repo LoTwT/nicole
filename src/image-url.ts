@@ -17,11 +17,34 @@ type ImageSource =
   | { kind: "remote"; url: string }
   | { kind: "local"; path: string };
 
+/**
+ * Whether a destination uses the Markdown `<...>` source wrapper. Only the
+ * literal outer brackets count; percent-encoded `%3C`/`%3E` stay data.
+ */
+export function hasMarkdownDestinationShell(source: string): boolean {
+  const trimmed = source.trim();
+  return (
+    trimmed.length >= 2 && trimmed.startsWith("<") && trimmed.endsWith(">")
+  );
+}
+
+/**
+ * Returns the address value of a Markdown link/image destination. The
+ * surrounding `<...>` belongs to Markdown source syntax, not to the URL or
+ * path, so it is removed before URL classification.
+ */
+export function parseMarkdownDestination(source: string): string {
+  const trimmed = source.trim();
+  return hasMarkdownDestinationShell(trimmed)
+    ? trimmed.slice(1, -1)
+    : trimmed;
+}
+
 function resolveImageSource(
   src: string,
   docPath: string | null,
 ): ImageSource | null {
-  const trimmed = src.trim();
+  const trimmed = parseMarkdownDestination(src);
   if (trimmed === "") return null;
 
   const scheme = ABSOLUTE_URL.exec(trimmed)?.[1]?.toLowerCase();
@@ -112,9 +135,10 @@ export function resolveLocalImagePath(
 }
 
 /**
- * Serializes a local image destination with one URL escape per path segment.
- * Existing escapes are decoded first, so `%20` is not doubled, while query and
- * fragment suffixes and absolute/remote URLs keep their original meaning.
+ * Serializes an image destination value with one URL escape per path segment.
+ * A Markdown `<...>` wrapper is stripped as source syntax first. Existing
+ * escapes are decoded before re-encoding, so `%20` is not doubled, while
+ * query and fragment suffixes and remote URLs keep their original meaning.
  */
 function encodePathSegment(part: string): string {
   // Match the path-segment escaping used for inserted images: parentheses,
@@ -127,7 +151,7 @@ function encodePathSegment(part: string): string {
 }
 
 export function formatImageDestination(raw: string): string {
-  const trimmed = raw.trim();
+  const trimmed = parseMarkdownDestination(raw);
   if (trimmed === "" || trimmed.startsWith("//") || ABSOLUTE_URL.test(trimmed)) {
     return trimmed;
   }

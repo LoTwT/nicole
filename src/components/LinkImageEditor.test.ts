@@ -29,6 +29,12 @@ function session(
     canRemove: true,
     valid: true,
     anchor: () => ({ left: 100, right: 160, top: 100, bottom: 120 }),
+    hostBounds: () => ({
+      left: 0,
+      right: window.innerWidth,
+      top: 0,
+      bottom: window.innerHeight,
+    }),
     update: () => {},
     complete: () => true,
     remove: () => true,
@@ -110,6 +116,76 @@ describe("LinkImageEditor", () => {
     document.dispatchEvent(new Event("scroll"));
     await nextTick();
     expect(dialog().style.left).toBe("20px");
+  });
+
+  it("constrains the dialog to the editor host and follows host layout changes", async () => {
+    const listeners = new Set<() => void>();
+    let host: PopoverAnchor = { left: 252, right: 980, top: 60, bottom: 700 };
+    let anchor: PopoverAnchor = { left: 950, right: 960, top: 100, bottom: 120 };
+    mount(
+      session({
+        subscribe(listener) {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+        anchor: () => anchor,
+        hostBounds: () => host,
+      }),
+    );
+    await nextTick();
+    expect(Number.parseFloat(dialog().style.left) + 340).toBe(972);
+    expect(dialog().style.maxWidth).toBe("712px");
+    expect(dialog().style.maxHeight).toBe("624px");
+
+    host = { left: 100, right: 500, top: 60, bottom: 300 };
+    anchor = { left: 450, right: 460, top: 120, bottom: 140 };
+    for (const listener of listeners) listener();
+    await nextTick();
+    expect(Number.parseFloat(dialog().style.left) + 340).toBe(492);
+    expect(dialog().style.maxWidth).toBe("384px");
+  });
+
+  it("keeps scrollable content and the footer inside a small host", async () => {
+    mount(
+      session({
+        anchor: () => ({ left: 180, right: 190, top: 120, bottom: 140 }),
+        hostBounds: () => ({ left: 100, right: 300, top: 100, bottom: 200 }),
+      }),
+    );
+    await nextTick();
+    expect(dialog().style.maxWidth).toBe("184px");
+    expect(dialog().style.maxHeight).toBe("84px");
+    expect(
+      dialog().querySelector("[data-link-image-fields]")?.className,
+    ).toContain("overflow-y-auto");
+    expect(
+      [...dialog().querySelectorAll("button")].some(
+        (button) => button.textContent?.trim() === "完成",
+      ),
+    ).toBe(true);
+  });
+
+  it("does not draw over other areas when the host is unavailable", async () => {
+    mount(session({ hostBounds: () => null }));
+    await nextTick();
+    expect(dialog().style.display).toBe("none");
+  });
+
+  it("removes window and scroll listeners when unmounted", async () => {
+    const anchor = vi.fn(() => ({
+      left: 100,
+      right: 160,
+      top: 100,
+      bottom: 120,
+    }));
+    mount(session({ anchor }));
+    await nextTick();
+    const calls = anchor.mock.calls.length;
+    app?.unmount();
+    app = null;
+    window.dispatchEvent(new Event("resize"));
+    document.dispatchEvent(new Event("scroll"));
+    expect(anchor).toHaveBeenCalledTimes(calls);
   });
 
   it("focuses the first field unless a click kept body focus", async () => {

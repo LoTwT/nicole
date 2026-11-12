@@ -9,7 +9,11 @@ import {
 } from "@codemirror/state";
 import type { EditorView, ViewUpdate } from "@codemirror/view";
 
-import { formatImageDestination } from "../image-url";
+import {
+  formatImageDestination,
+  hasMarkdownDestinationShell,
+  parseMarkdownDestination,
+} from "../image-url";
 import { splitEdgeWhitespace } from "./whitespace";
 
 /** Asks the editor to show the link dialog for the current selection. */
@@ -34,31 +38,50 @@ export interface PopoverPlacement {
   placement: "above" | "below";
 }
 
+export type PopoverBounds = PopoverAnchor;
+
+/** Clips the editor host to the window viewport, or null if they do not meet. */
+export function intersectPopoverBounds(
+  host: PopoverBounds,
+  viewport: { width: number; height: number },
+): PopoverBounds | null {
+  const left = Math.max(host.left, 0);
+  const top = Math.max(host.top, 0);
+  const right = Math.min(host.right, viewport.width);
+  const bottom = Math.min(host.bottom, viewport.height);
+  if (right <= left || bottom <= top) return null;
+  return { left, right, top, bottom };
+}
+
 /** The fixed 340px dialog flips above its target when the lower edge is short. */
 export function placeLinkImagePopover(
   anchor: PopoverAnchor,
   size: { width: number; height: number },
-  viewport: { width: number; height: number },
+  bounds: PopoverBounds,
   margin = LINK_IMAGE_POPOVER_MARGIN,
 ): PopoverPlacement {
-  const width = Math.min(size.width, Math.max(0, viewport.width - margin * 2));
-  const maxLeft = Math.max(margin, viewport.width - width - margin);
-  const left = Math.min(Math.max(anchor.left, margin), maxLeft);
+  const leftLimit = bounds.left + margin;
+  const rightLimit = bounds.right - margin;
+  const topLimit = bounds.top + margin;
+  const bottomLimit = bounds.bottom - margin;
+  const width = Math.min(size.width, Math.max(0, rightLimit - leftLimit));
+  const maxLeft = Math.max(leftLimit, rightLimit - width);
+  const left = Math.min(Math.max(anchor.left, leftLimit), maxLeft);
 
   const below = anchor.bottom + LINK_IMAGE_POPOVER_GAP;
   const above = anchor.top - LINK_IMAGE_POPOVER_GAP - size.height;
   let top = below;
   let placement: PopoverPlacement["placement"] = "below";
 
-  if (below + size.height > viewport.height - margin) {
-    if (above >= margin) {
+  if (below + size.height > bottomLimit) {
+    if (above >= topLimit) {
       top = above;
       placement = "above";
     } else {
-      top = Math.max(margin, viewport.height - size.height - margin);
+      top = Math.max(topLimit, bottomLimit - size.height);
     }
   }
-  if (top < margin) top = margin;
+  if (top < topLimit) top = topLimit;
 
   return { left, top, placement };
 }
@@ -73,6 +96,7 @@ export interface InlineLinkTarget {
   urlTo: number;
   text: string;
   url: string;
+  urlWrapped: boolean;
 }
 
 export interface ImageTarget {
@@ -85,6 +109,7 @@ export interface ImageTarget {
   urlTo: number;
   text: string;
   url: string;
+  urlWrapped: boolean;
 }
 
 export type InlineTarget = InlineLinkTarget | ImageTarget;
@@ -106,6 +131,7 @@ function inlineTarget(
   const url = node.node.getChild("URL");
   const urlFrom = url ? url.from : parenOpen.to;
   const urlTo = url ? url.to : parenClose.from;
+  const urlSource = state.sliceDoc(urlFrom, urlTo).trim();
   return {
     kind: node.name === "Image" ? "image" : "link",
     from: node.from,
@@ -115,7 +141,8 @@ function inlineTarget(
     urlFrom,
     urlTo,
     text: state.sliceDoc(open.to, close.from),
-    url: state.sliceDoc(urlFrom, urlTo).trim(),
+    url: parseMarkdownDestination(urlSource),
+    urlWrapped: hasMarkdownDestinationShell(urlSource),
   };
 }
 
@@ -217,6 +244,8 @@ export interface LinkImageEditorSession {
   readonly canRemove: boolean;
   readonly valid: boolean;
   anchor(): PopoverAnchor | null;
+  /** Bounds of the editor host; the dialog must not render outside them. */
+  hostBounds(): PopoverBounds | null;
   update(update: ViewUpdate): void;
   complete(values: readonly LinkImageFieldValues[]): boolean;
   remove(): boolean;
@@ -235,6 +264,7 @@ interface SessionTarget {
   urlTo: number;
   text: string;
   url: string;
+  urlWrapped: boolean;
   leading: string;
   trailing: string;
   preserveEditorFocus: boolean;
@@ -255,6 +285,7 @@ function newSessionTarget(
     urlTo: draft.to,
     text: draft.text,
     url: "",
+    urlWrapped: false,
     leading: draft.leading,
     trailing: draft.trailing,
     preserveEditorFocus,
@@ -290,12 +321,28 @@ function sessionTargets(
   return [newSessionTarget(target, preserveEditorFocus)];
 }
 
+/**
+ * Serializes an edited address value. Images use the path escaping contract;
+ * links keep their typed value. A source `<...>` shell is retained for links
+ * and whenever whitespace would otherwise end a bare destination.
+ */
+function destinationForTarget(target: SessionTarget, value: string): string {
+  const destination =
+    target.kind === "image" ? formatImageDestination(value) : value;
+  if (!target.urlWrapped) return destination;
+  const semantic = parseMarkdownDestination(destination);
+  return target.kind === "link" || /\s/.test(semantic)
+    ? `<${semantic}>`
+    : destination;
+}
+
 class EditorLinkImageSession implements LinkImageEditorSession {
   private disposed = false;
   private stillValid = true;
   private listeners = new Set<() => void>();
   private targets: SessionTarget[];
   private anchorIndex: number;
+  private hostObserver: ResizeObserver | null = null;
 
   constructor(
     private view: EditorView,
@@ -308,6 +355,14 @@ class EditorLinkImageSession implements LinkImageEditorSession {
       Math.max(0, anchorIndex),
       Math.max(0, targets.length - 1),
     );
+    // CodeMirror reports its own geometry changes, but a sidebar or fixed
+    // outline can resize the host without changing the document viewport.
+    if (typeof ResizeObserver !== "undefined") {
+      this.hostObserver = new ResizeObserver(() => {
+        if (this.valid) this.notifyGeometry();
+      });
+      this.hostObserver.observe(view.dom);
+    }
   }
 
   get kind() {
@@ -370,6 +425,39 @@ class EditorLinkImageSession implements LinkImageEditorSession {
     };
   }
 
+  hostBounds(): PopoverBounds | null {
+    if (!this.valid || !this.view.dom.isConnected) return null;
+    const rect = this.view.dom.getBoundingClientRect();
+    if (rect.width > 0 && rect.height > 0) {
+      return {
+        left: rect.left,
+        right: rect.right,
+        top: rect.top,
+        bottom: rect.bottom,
+      };
+    }
+    // Layout-less DOMs (jsdom) report zero for every element. Their window
+    // still provides a viewport, while a hidden host in a real layout does
+    // not; gating on the document's zero layout keeps hidden editors hidden.
+    const document = this.view.dom.ownerDocument;
+    const window = document.defaultView;
+    if (
+      document.documentElement.clientWidth === 0 &&
+      document.documentElement.clientHeight === 0 &&
+      window !== null &&
+      window.innerWidth > 0 &&
+      window.innerHeight > 0
+    ) {
+      return {
+        left: 0,
+        right: window.innerWidth,
+        top: 0,
+        bottom: window.innerHeight,
+      };
+    }
+    return null;
+  }
+
   subscribe(listener: () => void): () => void {
     if (this.disposed) return () => {};
     this.listeners.add(listener);
@@ -426,13 +514,13 @@ class EditorLinkImageSession implements LinkImageEditorSession {
     this.disposed = true;
     this.stillValid = false;
     this.listeners.clear();
+    this.hostObserver?.disconnect();
+    this.hostObserver = null;
   }
 
   private invalidate() {
     if (!this.valid) return;
-    this.stillValid = false;
-    this.disposed = true;
-    this.listeners.clear();
+    this.finish();
     this.onInvalidate(this);
   }
 
@@ -456,10 +544,6 @@ class EditorLinkImageSession implements LinkImageEditorSession {
         }
         return;
       }
-      const url =
-        target.kind === "image"
-          ? formatImageDestination(value.url)
-          : value.url;
       if (value.text !== target.text) {
         changes.push({
           from: target.textFrom,
@@ -467,12 +551,15 @@ class EditorLinkImageSession implements LinkImageEditorSession {
           insert: value.text,
         });
       }
-      if (url !== target.url) {
-        changes.push({
-          from: target.urlFrom,
-          to: target.urlTo,
-          insert: url,
-        });
+      if (value.url !== target.url) {
+        const url = destinationForTarget(target, value.url);
+        if (url !== target.url) {
+          changes.push({
+            from: target.urlFrom,
+            to: target.urlTo,
+            insert: url,
+          });
+        }
       }
     });
     this.finish();

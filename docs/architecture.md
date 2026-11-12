@@ -35,7 +35,7 @@ src/
   main.ts                 挂载 Vue
   sample.ts               示例文本
   style.css               Tailwind、主题和字体变量
-  image-url.ts            把 Markdown 图片 URL 解析成自定义协议地址
+  image-url.ts            解析/序列化 Markdown destination 与图片协议地址
   image-insertion.ts      粘贴、拖入图片与编辑器插入凭据的接线
   app/                    界面状态与纯逻辑辅助
     command-palette.ts    命令面板模式、文件/标题筛选与最近文件列表
@@ -76,7 +76,7 @@ src/
     index.ts              createEditor、三种模式、widgets、核心命令、图片插入
     find.ts               CodeMirror 查询状态、查找/替换控制器、匹配高亮
     headings.ts           Lezer 语法树的 ATX/Setext 标题提取，供命令面板与大纲复用
-    link-editor.ts        链接/图片目标、纯 UI 草稿会话、位置映射与弹框定位
+    link-editor.ts        链接/图片目标、纯 UI 草稿会话、宿主边界与弹框定位
     markdown-context.ts   代码、HTML、前置元数据的公共上下文判断
     whitespace.ts         标记外首尾 Unicode 空白的统一切分
     wrap.ts               直接键入标记字符时的选区包裹规则
