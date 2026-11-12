@@ -340,6 +340,7 @@ const linkImageEditorPanel = ref<InstanceType<typeof LinkImageEditor> | null>(
 );
 let linkImageReturnFocus: HTMLElement | null = null;
 let nextLinkImageEditorID = 1;
+let linkImageEditorRevision = 0;
 let linkNavigationSequence = 0;
 // The current root's user templates. Loading starts only when a command menu
 // opens, and a newer request or a root change makes older results stale.
@@ -4198,6 +4199,7 @@ function isWorkspaceSearchInput(target: EventTarget | null): boolean {
 function closeLinkImageEditor(options: { restoreFocus?: boolean } = {}) {
   const state = linkImageEditor.value;
   if (state === null) return;
+  linkImageEditorRevision += 1;
   const returnFocus = linkImageReturnFocus;
   linkImageEditor.value = null;
   linkImageReturnFocus = null;
@@ -4226,6 +4228,7 @@ function handleEditLinkImage(session: LinkImageEditorSession | null) {
     closeLinkImageEditor();
     return;
   }
+  linkImageEditorRevision += 1;
   closePopoverMenus();
   linkImageReturnFocus =
     focusedControl() ?? editor?.view.contentDOM ?? null;
@@ -4348,17 +4351,20 @@ async function openLinkAddress(
   const sourceGeneration = sourceWorkspaceGeneration;
   const sourceTabId = sourceTab.id;
   const sourceText = sourceTab.text;
-  const sourceDoc = sourceEditor.view.state.doc;
+  const sourceView = sourceEditor.view;
+  const sourceDoc = sourceView.state.doc;
   const sourceNavigationRevision = tabNavigationRevision;
-  const dialogState = options.fromDialog ? linkImageEditor.value : null;
+  const dialogRevision = linkImageEditorRevision;
+  const dialogState = linkImageEditor.value;
   if (options.fromDialog && dialogState === null) return;
   const dialogId = dialogState?.id ?? null;
   const dialogSession = dialogState?.session ?? null;
   const dialogFieldRevision = dialogState?.fieldRevision ?? 0;
   const sequence = ++linkNavigationSequence;
   const dialogCurrent = () => {
-    if (!options.fromDialog) return true;
+    if (linkImageEditorRevision !== dialogRevision) return false;
     const current = linkImageEditor.value;
+    if (dialogId === null) return current === null;
     return (
       current !== null &&
       current.id === dialogId &&
@@ -4371,7 +4377,9 @@ async function openLinkAddress(
     tabNavigationRevision === sourceNavigationRevision &&
     activeTabId.value === sourceTabId &&
     findTab(sourceTabId)?.text === sourceText &&
-    sourceEditor.view.state.doc === sourceDoc &&
+    editor === sourceEditor &&
+    sourceEditor.view === sourceView &&
+    sourceView.state.doc === sourceDoc &&
     sourceWorkspaceCurrent() &&
     dialogCurrent();
   const destination = classifyLinkDestination(sourceAddress, {
@@ -4404,7 +4412,7 @@ async function openLinkAddress(
       destination.fragment,
       sourceCurrent,
     );
-    if (result === "found" && dialogCurrent()) {
+    if (result === "found" && options.fromDialog && dialogCurrent()) {
       closeLinkImageEditor({ restoreFocus: false });
     }
     return;
@@ -4434,16 +4442,19 @@ async function openLinkAddress(
   }
   const targetTabId = targetTab.id;
   const targetText = targetTab.text;
-  const targetDoc = targetEditor.view.state.doc;
+  const targetView = targetEditor.view;
+  const targetDoc = targetView.state.doc;
   const targetNavigationRevision = tabNavigationRevision;
   const targetIsSource = targetTabId === sourceTabId;
+  const targetDialogRevision = linkImageEditorRevision;
   // A normal open may destroy the source view and its dialog. After that
-  // permitted handoff, continue with target identity; a replacement dialog
-  // or field revision still invalidates the old intent.
-  const dialogAfterActivation = () => {
-    if (!options.fromDialog) return true;
+  // permitted handoff, continue with target identity. A newer dialog
+  // lifecycle or field revision still invalidates the old intent.
+  const targetDialogCurrent = () => {
+    if (targetIsSource) return dialogCurrent();
+    if (linkImageEditorRevision !== targetDialogRevision) return false;
     const current = linkImageEditor.value;
-    if (current === null) return !targetIsSource;
+    if (current === null) return true;
     return (
       current.id === dialogId &&
       current.session === dialogSession &&
@@ -4456,11 +4467,12 @@ async function openLinkAddress(
     activeTabId.value === targetTabId &&
     findTab(targetTabId)?.text === targetText &&
     editor === targetEditor &&
-    targetEditor.view.state.doc === targetDoc &&
+    targetEditor.view === targetView &&
+    targetView.state.doc === targetDoc &&
     isCurrentWorkspace(sourceRoot, sourceGeneration) &&
-    dialogAfterActivation();
+    targetDialogCurrent();
   if (destination.fragment === null) {
-    if (options.fromDialog && dialogCurrent()) {
+    if (options.fromDialog && targetCurrent()) {
       closeLinkImageEditor({ restoreFocus: false });
     }
     return;
@@ -4470,7 +4482,7 @@ async function openLinkAddress(
     destination.fragment,
     targetCurrent,
   );
-  if (result === "found" && options.fromDialog && dialogCurrent()) {
+  if (result === "found" && options.fromDialog && targetCurrent()) {
     closeLinkImageEditor({ restoreFocus: false });
   }
 }

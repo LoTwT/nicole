@@ -10679,12 +10679,10 @@ describe("link and image editing", () => {
     view.focus();
     pressMod("k", "KeyK", "macos");
     await settle();
-    headingMocks.extract
-      .mockReturnValueOnce({ headings: [], complete: false })
-      .mockReturnValueOnce({
-        headings: [{ level: 1, text: "目标", position: 0, line: 1 }],
-        complete: true,
-      });
+    headingMocks.extract.mockReturnValueOnce({
+      headings: [],
+      complete: false,
+    });
     [...linkImageDialog()!.querySelectorAll("button")].find(
       (button) => button.textContent?.trim() === "打开",
     )!.click();
@@ -10693,6 +10691,61 @@ describe("link and image editing", () => {
     await nextTask();
     expect(view.state.selection.main.head).toBe(caret);
     expect(host.textContent).not.toContain("找不到标题");
+  });
+
+  it("keeps a replacement popup and caret after a non-dialog heading retry", async () => {
+    await remountWithSettings({ editorMode: "source" });
+    const doc = "# 目标\n\n[跳](#目标)\n";
+    await openFile("a.md", doc);
+    const view = editorView();
+    const caret = doc.indexOf("跳");
+    view.dispatch({ selection: { anchor: caret } });
+    view.focus();
+    headingMocks.extract
+      .mockReturnValueOnce({ headings: [], complete: false })
+      .mockReturnValueOnce({
+        headings: [{ level: 1, text: "目标", position: 0, line: 1 }],
+        complete: true,
+      });
+    clickEditorSequenceAt(caret, { metaKey: true });
+    pressMod("k", "KeyK", "macos");
+    await settle();
+    const replacement = linkImageDialog();
+    expect(replacement).not.toBeNull();
+    typeLinkImageField("链接", "https://example.com/new-draft");
+    await nextTask();
+    await settle();
+    expect(view.state.selection.main.head).toBe(caret);
+    expect(linkImageDialog()).toBe(replacement);
+    expect(linkImageInput("链接").value).toBe(
+      "https://example.com/new-draft",
+    );
+  });
+
+  it("drops a non-dialog file read after the source editor view is rebuilt", async () => {
+    await setupWorkspace({
+      "a.md": "[去](b.md)\n",
+      "b.md": "# B\n",
+    });
+    await openPath("/notes/a.md");
+    const view = editorView();
+    const read = deferred<string>();
+    mocks.readFile.mockImplementationOnce(() => read.promise);
+    clickEditorSequenceAt(2, { metaKey: true });
+    expect(mocks.readFile).toHaveBeenLastCalledWith("b.md");
+    await appSetupState().mountActive(false);
+    await settle();
+    expect(editorView()).not.toBe(view);
+    expect(editorView().state.doc.toString()).toBe(view.state.doc.toString());
+    expect(tabNamed("a.md").getAttribute("aria-selected")).toBe("true");
+    read.resolve("# B\n");
+    await settle();
+    expect(tabNamed("a.md").getAttribute("aria-selected")).toBe("true");
+    expect(
+      [...host.querySelectorAll('[role="tab"]')].some((tab) =>
+        tab.textContent?.includes("b.md"),
+      ),
+    ).toBe(false);
   });
 
   it("retries an incomplete heading parse once before declaring it missing", async () => {
