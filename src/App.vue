@@ -30,7 +30,6 @@ import { trashLabel, type AppPlatform } from "./app/platform";
 import { matchCommand } from "./commands/keybinding";
 import {
   commandRegistry,
-  findCommand,
   getCommand,
   isCommandAvailable,
   slashCommands as slashCommandList,
@@ -325,6 +324,7 @@ const slashState = shallowRef<SlashMenuSnapshot>(null);
 // The current root's user templates. Loading starts only when a command menu
 // opens, and a newer request or a root change makes older results stale.
 const workspaceSnippetCommands = shallowRef<readonly CommandDefinition[]>([]);
+const workspaceSnippetCommandsLoading = ref(false);
 let snippetLoadSequence = 0;
 let noticeTimer: ReturnType<typeof setTimeout> | null = null;
 let saveQueue: Promise<boolean> = Promise.resolve(true);
@@ -2544,6 +2544,8 @@ async function openTreeEntry(entry: TreeNode) {
 function clearSnippetCommands() {
   snippetLoadSequence += 1;
   workspaceSnippetCommands.value = [];
+  workspaceSnippetCommandsLoading.value = false;
+  slashMenu?.setCommandLoading(false);
   slashMenu?.refreshCommands();
 }
 
@@ -2565,6 +2567,8 @@ async function refreshSnippetCommands() {
   // list. Reopening after a template change cannot execute the old body while
   // the new read is in flight.
   workspaceSnippetCommands.value = [];
+  workspaceSnippetCommandsLoading.value = true;
+  slashMenu?.setCommandLoading(true);
   slashMenu?.refreshCommands();
   try {
     const snapshot = await listSnippets(generation);
@@ -2575,6 +2579,8 @@ async function refreshSnippetCommands() {
       return;
     }
     workspaceSnippetCommands.value = createSnippetCommands(snapshot.snippets);
+    workspaceSnippetCommandsLoading.value = false;
+    slashMenu?.setCommandLoading(false);
     slashMenu?.refreshCommands();
     const firstWarning = snapshot.warnings[0];
     if (firstWarning !== undefined) {
@@ -2593,6 +2599,8 @@ async function refreshSnippetCommands() {
       return;
     }
     workspaceSnippetCommands.value = [];
+    workspaceSnippetCommandsLoading.value = false;
+    slashMenu?.setCommandLoading(false);
     slashMenu?.refreshCommands();
     showNotice(`无法读取用户模板：${errorText(error)}`, "danger");
   }
@@ -4481,7 +4489,7 @@ async function runPaletteCommand(id: string) {
   if (session === null) return;
   closeCommandPalette();
   await nextTick();
-  const command = findCommand(id, workspaceSnippetCommands.value);
+  const command = getCommand(id, workspaceSnippetCommands.value);
   if (command === undefined || !isCommandAvailable(command)) {
     return;
   }
@@ -5244,6 +5252,7 @@ defineExpose({
       :mode="paletteSession.mode"
       :platform="platform"
       :commands="paletteCommands"
+      :commands-loading="workspaceSnippetCommandsLoading"
       :workspace-open="hasWorkspace"
       :recent-files="paletteSession.recentFiles"
       :recent-command-ids="paletteSession.recentCommandIds"

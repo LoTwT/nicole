@@ -432,22 +432,85 @@ describe("slash search and execution", () => {
       ]),
     ];
     composition(view, "compositionstart");
+    controller?.setCommandLoading(true);
     controller?.refreshCommands();
+    expect(state?.loading).toBe(false);
     expect(state?.items.some((item) => item.id === "snippet:letter.md")).toBe(
       false,
     );
 
     composition(view, "compositionend");
     await settle();
+    expect(state?.loading).toBe(true);
     expect(state?.items.some((item) => item.id === "snippet:letter.md")).toBe(
       true,
     );
+    controller?.setCommandLoading(false);
 
     controller?.close();
     view.dispatch({ selection: { anchor: view.state.doc.length } });
     type(view, " ");
     type(view, "/");
     expect(onOpen).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a template-only query open while commands load", async () => {
+    let commands = [placeholderCommand()];
+    const view = mount("", undefined, { commands: () => commands });
+    type(view, "/");
+    controller?.setCommandLoading(true);
+    type(view, "letter");
+    await settle();
+
+    expect(state).not.toBeNull();
+    expect(state?.loading).toBe(true);
+    expect(state?.items).toHaveLength(0);
+
+    commands = [
+      ...commands,
+      ...createSnippetCommands([
+        { id: "snippet:letter.md", label: "letter", body: "Hi{{cursor}}!" },
+      ]),
+    ];
+    controller?.setCommandLoading(false);
+    const index = state?.items.findIndex(
+      (item) => item.id === "snippet:letter.md",
+    );
+    expect(index).toBeGreaterThanOrEqual(0);
+    controller?.execute(index);
+    expect(view.state.doc.toString()).toBe("Hi!");
+  });
+
+  it("closes after a load with no match and preserves the query", async () => {
+    const view = mount("", undefined, {
+      commands: () => [placeholderCommand()],
+    });
+    type(view, "/");
+    controller?.setCommandLoading(true);
+    type(view, "zzz");
+    await settle();
+    expect(state?.loading).toBe(true);
+
+    controller?.setCommandLoading(false);
+    controller?.refreshCommands();
+    expect(state).toBeNull();
+    expect(view.state.doc.toString()).toBe("/zzz");
+  });
+
+  it("treats Enter as normal input when the loading row has no items", async () => {
+    const view = mount("", undefined, {
+      commands: () => [placeholderCommand()],
+    });
+    type(view, "/");
+    controller?.setCommandLoading(true);
+    type(view, "letter");
+    await settle();
+    expect(state?.items).toHaveLength(0);
+
+    key(view, "Enter", "Enter");
+
+    expect(state).toBeNull();
+    expect(view.state.doc.toString()).toBe("/letter\n");
   });
 
   it("closes without a match and keeps typing in the document", async () => {

@@ -16,16 +16,12 @@ export const commandRegistry: readonly CommandDefinition[] = [
 
 const byId = new Map(commandRegistry.map((command) => [command.id, command]));
 
-export function getCommand(id: string): CommandDefinition | undefined {
-  return byId.get(id);
-}
-
 /**
  * Resolves an id against the static registry and one dynamic snapshot. The
- * page uses this for commands it saw in a menu; the static ids win, so a
+ * page uses this for commands it saw in a menu; a static id wins, so a
  * workspace template can never replace a built-in command.
  */
-export function findCommand(
+export function getCommand(
   id: string,
   extra: readonly CommandDefinition[] = [],
 ): CommandDefinition | undefined {

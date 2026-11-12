@@ -56,6 +56,8 @@ export interface SlashMenuState {
   anchor: SlashAnchor;
   items: readonly SlashMenuItem[];
   selectedIndex: number;
+  /** The workspace snapshot is still loading; no item may be executed yet. */
+  loading: boolean;
 }
 
 export type SlashMenuSnapshot = SlashMenuState | null;
@@ -84,6 +86,12 @@ export interface SlashMenuController {
   highlight(index: number): void;
   /** Re-reads the command source after a dynamic list arrives. */
   refreshCommands(): void;
+  /**
+   * Marks the dynamic command source as loading. While true, an empty query
+   * match shows a status row instead of closing the menu, so a template-only
+   * query can wait for the first snapshot.
+   */
+  setCommandLoading(loading: boolean): void;
   close(): void;
   destroy(): void;
 }
@@ -202,6 +210,7 @@ export function createSlashMenu(options: SlashMenuOptions): SlashMenuController 
   let pinyinLoading = false;
   let recentIds = readRecentCommandIds(storage);
   let destroyed = false;
+  let commandsLoading = false;
   let imeKeyPending = false;
   let imeKeyTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -223,6 +232,7 @@ export function createSlashMenu(options: SlashMenuOptions): SlashMenuController 
       anchor: anchorAtCursor(),
       items,
       selectedIndex,
+      loading: commandsLoading,
     };
   }
 
@@ -262,7 +272,7 @@ export function createSlashMenu(options: SlashMenuOptions): SlashMenuController 
     if (matches.length === 0) {
       const waitingForPinyin =
         query !== "" && pinyinMatcher === null && pinyinLoading;
-      if (!waitingForPinyin && !composing()) {
+      if (!waitingForPinyin && !commandsLoading && !composing()) {
         close();
         return;
       }
@@ -464,8 +474,14 @@ export function createSlashMenu(options: SlashMenuOptions): SlashMenuController 
       }
       return true;
     }
-    if (items.length > 0) execute(selectedIndex);
-    return true;
+    if (items.length > 0) {
+      execute(selectedIndex);
+      return true;
+    }
+    // A loading row is not executable. Close and let Enter behave as normal
+    // input, including the newline, instead of swallowing the key.
+    close();
+    return false;
   }
 
   function markImeKey() {
@@ -568,6 +584,14 @@ export function createSlashMenu(options: SlashMenuOptions): SlashMenuController 
       // An IME owns the query and the selection while composing. The regular
       // composition-end sync reads the new list without moving keys or items
       // in the middle of the composition.
+      if (!open || destroyed || composing()) return;
+      refresh();
+    },
+    setCommandLoading(loading) {
+      if (commandsLoading === loading) return;
+      commandsLoading = loading;
+      // Defer the visual refresh during composition; the composition-end sync
+      // reads both flags without taking the key from the IME.
       if (!open || destroyed || composing()) return;
       refresh();
     },

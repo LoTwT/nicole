@@ -4,7 +4,6 @@ import uiMarkdown from "../../docs/specs/ui.md?raw";
 import {
   commandRegistry,
   commandShortcut,
-  findCommand,
   formatCommandShortcut,
   formatKeyBinding,
   getCommand,
@@ -252,12 +251,12 @@ describe("command registry", () => {
       inSlashMenu: true,
       run: () => true,
     };
-    expect(findCommand("format.bold", [template])?.label).toBe("加粗");
-    expect(findCommand(template.id, [template])).toBe(template);
-    expect(findCommand("missing", [template])).toBeUndefined();
+    expect(getCommand("format.bold", [template])?.label).toBe("加粗");
+    expect(getCommand(template.id, [template])).toBe(template);
+    expect(getCommand("missing", [template])).toBeUndefined();
 
     const impostor = { ...template, id: "format.bold", label: "impostor" };
-    expect(findCommand("format.bold", [impostor])?.label).toBe("加粗");
+    expect(getCommand("format.bold", [impostor])?.label).toBe("加粗");
   });
 
   it("supports platform-specific and multiple key bindings", () => {

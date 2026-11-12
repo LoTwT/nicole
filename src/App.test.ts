@@ -6818,6 +6818,185 @@ describe("workspace user templates", () => {
     expect(editorView().state.doc.toString()).toBe("");
   });
 
+  it("shows loading for a template-only slash query and reveals it in the open menu", async () => {
+    await openFile("a.md", "");
+    const snapshot = deferred<WorkspaceSnippets>();
+    mocks.listSnippets.mockReturnValue(snapshot.promise);
+
+    typeSlashAtEnd();
+    await settle();
+    typeIntoEditor("letter");
+    await settle();
+
+    expect(slashMenuElement()).not.toBeNull();
+    expect(slashMenuElement()?.textContent).toContain("正在读取用户模板");
+    expect(slashOption("letter")).toBeUndefined();
+
+    snapshot.resolve({
+      snippets: [
+        { id: "snippet:letter.md", label: "letter", body: "Hi{{cursor}}!" },
+      ],
+      warnings: [],
+    });
+    await settle();
+
+    expect(slashMenuElement()?.textContent).not.toContain("正在读取用户模板");
+    const option = slashOption("letter");
+    expect(option).not.toBeUndefined();
+    option!.click();
+    await settle();
+
+    expect(editorView().state.doc.toString()).toBe("Hi!");
+    expect(editorView().state.selection.main.head).toBe(2);
+  });
+
+  it("closes a loading slash menu only after an empty snapshot arrives", async () => {
+    await openFile("a.md", "");
+    const snapshot = deferred<WorkspaceSnippets>();
+    mocks.listSnippets.mockReturnValue(snapshot.promise);
+
+    typeSlashAtEnd();
+    await settle();
+    typeIntoEditor("zzz");
+    await settle();
+    expect(slashMenuElement()?.textContent).toContain("正在读取用户模板");
+
+    snapshot.resolve({ snippets: [], warnings: [] });
+    await settle();
+
+    expect(slashMenuElement()).toBeNull();
+    expect(editorView().state.doc.toString()).toBe("/zzz");
+  });
+
+  it("lets Enter behave as normal input while the slash menu is loading", async () => {
+    await openFile("a.md", "");
+    const snapshot = deferred<WorkspaceSnippets>();
+    mocks.listSnippets.mockReturnValue(snapshot.promise);
+
+    typeSlashAtEnd();
+    await settle();
+    typeIntoEditor("letter");
+    await settle();
+    expect(slashOption("letter")).toBeUndefined();
+
+    editorView().contentDOM.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Enter",
+        code: "Enter",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+
+    expect(slashMenuElement()).toBeNull();
+    expect(editorView().state.doc.toString()).toBe("/letter\n");
+
+    snapshot.resolve({
+      snippets: [
+        { id: "snippet:letter.md", label: "letter", body: "Hi" },
+      ],
+      warnings: [],
+    });
+    await settle();
+
+    expect(slashMenuElement()).toBeNull();
+    expect(editorView().state.doc.toString()).toBe("/letter\n");
+  });
+
+  it("does not leak a late same-name template into the next root's menu", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    await openPath("/notes/a.md");
+    const oldSnapshot = deferred<WorkspaceSnippets>();
+    const newSnapshot = deferred<WorkspaceSnippets>();
+    mocks.listSnippets
+      .mockReturnValueOnce(oldSnapshot.promise)
+      .mockReturnValueOnce(newSnapshot.promise);
+
+    typeSlashAtEnd();
+    await settle();
+    typeIntoEditor("same");
+    await settle();
+    expect(slashMenuElement()?.textContent).toContain("正在读取用户模板");
+
+    mocks.pickFolder.mockResolvedValue({ path: "/second", canceled: false });
+    mocks.openFolder.mockResolvedValue(folder("/second", 2));
+    sidebarButton("切换文件夹").click();
+    await settle();
+    dialogButton("切换").click();
+    await settle();
+    expect(mocks.openFolder).toHaveBeenLastCalledWith("/second");
+
+    const row = host.querySelector<HTMLElement>('[data-tree-path="a.md"]');
+    expect(row).not.toBeNull();
+    row!.click();
+    await settle();
+    typeSlashAtEnd();
+    await settle();
+    typeIntoEditor("same");
+    await settle();
+    expect(mocks.listSnippets).toHaveBeenCalledTimes(2);
+    expect(mocks.listSnippets).toHaveBeenLastCalledWith(2);
+    expect(slashMenuElement()?.textContent).toContain("正在读取用户模板");
+
+    oldSnapshot.resolve({
+      snippets: [{ id: "snippet:same.md", label: "same", body: "old-root" }],
+      warnings: [],
+    });
+    await settle();
+    expect(slashOption("same")).toBeUndefined();
+    expect(editorView().state.doc.toString()).toBe("# A\n/same");
+
+    newSnapshot.resolve({
+      snippets: [{ id: "snippet:same.md", label: "same", body: "new-root" }],
+      warnings: [],
+    });
+    await settle();
+    const option = slashOption("same");
+    expect(option).not.toBeUndefined();
+    option!.click();
+    await settle();
+
+    expect(editorView().state.doc.toString()).toBe("# A\nnew-root");
+  });
+
+  it("ignores a late snapshot after the workspace closes", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    await openPath("/notes/a.md");
+    const oldSnapshot = deferred<WorkspaceSnippets>();
+    mocks.listSnippets.mockReturnValueOnce(oldSnapshot.promise);
+
+    typeSlashAtEnd();
+    await settle();
+    typeIntoEditor("same");
+    await settle();
+    expect(slashMenuElement()?.textContent).toContain("正在读取用户模板");
+
+    window.dispatchEvent(
+      new CustomEvent("nicole:run-command", {
+        detail: "app.close-workspace",
+      }),
+    );
+    await settle();
+    expect(mocks.closeWorkspace).toHaveBeenCalledOnce();
+    expect(slashMenuElement()).toBeNull();
+
+    oldSnapshot.resolve({
+      snippets: [{ id: "snippet:same.md", label: "same", body: "old-root" }],
+      warnings: [],
+    });
+    await settle();
+    expect(slashMenuElement()).toBeNull();
+
+    await openFile("a.md", "# A\n");
+    typeSlashAtEnd();
+    await settle();
+    typeIntoEditor("same");
+    await settle();
+    expect(mocks.listSnippets).toHaveBeenCalledTimes(2);
+    expect(slashOption("same")).toBeUndefined();
+  });
+
   it("runs a template from the command palette against the pre-open selection", async () => {
     await openFile("a.md", "start\n");
     mocks.listSnippets.mockResolvedValue({
@@ -6841,7 +7020,7 @@ describe("workspace user templates", () => {
 
     typePalette("frame");
     await settle();
-    expect(paletteOffers("frame")).toBe(true);
+    await vi.waitFor(() => expect(paletteOffers("frame")).toBe(true));
 
     // The palette restores the selection captured when it opened.
     editorView().dispatch({ selection: { anchor: 0 } });
@@ -6965,6 +7144,8 @@ describe("workspace user templates", () => {
     await settle();
     const input = paletteInput();
     typePalette("letter");
+    await settle();
+    expect(dialog()?.textContent).toContain("正在读取用户模板");
     input.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
 
     snapshot.resolve({
