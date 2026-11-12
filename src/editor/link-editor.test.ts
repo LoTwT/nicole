@@ -32,6 +32,18 @@ function parsed(doc: string) {
   });
 }
 
+function titleSources(doc: string): string[] {
+  const titles: string[] = [];
+  markdownLanguage.parser.parse(doc).iterate({
+    enter: (node) => {
+      if (node.name === "LinkTitle") {
+        titles.push(doc.slice(node.from, node.to));
+      }
+    },
+  });
+  return titles;
+}
+
 afterEach(() => {
   for (const element of parents.splice(0)) element.remove();
 });
@@ -411,6 +423,79 @@ describe("link and image editor sessions", () => {
     expect(first.complete([{ text: "文字", url: "a c" }])).toBe(true);
     expect(editor.view.state.doc.toString()).toBe("[文字](<a c>)");
     editor.destroy();
+  });
+
+  it("parses an explicit empty destination with a title", () => {
+    for (const doc of ['[图](<> "标题")', '![图](<> "标题")']) {
+      const target = inlineTargetAt(parsed(doc), doc.indexOf("图"));
+      expect(target?.url).toBe("");
+      expect(target?.hasTitle).toBe(true);
+      expect(titleSources(doc)).toEqual(['"标题"']);
+    }
+  });
+
+  it("keeps titles attached when clearing existing link and image addresses", () => {
+    for (const [doc, expected, kind] of [
+      ['[图](https://example.com/a.png "标题")', '[图](<> "标题")', "link"],
+      ['[图](<https://example.com/a).png> "标题")', '[图](<> "标题")', "link"],
+      ['![图](https://example.com/a.png "标题")', '![图](<> "标题")', "image"],
+      ['![图](<assets/a.png> "标题")', '![图](<> "标题")', "image"],
+    ] as const) {
+      const editor = createEditor({
+        parent: parent(),
+        doc,
+        mode: "source",
+        platform: "macos",
+      });
+      const target = inlineTargetAt(editor.view.state, doc.indexOf("图"))!;
+      const first = createLinkImageEditorSession(
+        editor.view,
+        target,
+        false,
+        () => {},
+      );
+      expect(first.complete([{ text: target.text, url: "" }])).toBe(true);
+      const output = editor.view.state.doc.toString();
+      expect(output).toBe(expected);
+      expect(titleSources(output)).toEqual(['"标题"']);
+      const updated = inlineTargetAt(editor.view.state, output.indexOf("图"));
+      expect(updated?.kind).toBe(kind);
+      expect(updated?.url).toBe("");
+      expect(updated?.to).toBe(output.length);
+      expect(updated?.hasTitle).toBe(true);
+      expect(target.hasTitle).toBe(true);
+      editor.destroy();
+    }
+  });
+
+  it("keeps an omitted empty destination when there is no title", () => {
+    for (const [doc, expected, kind] of [
+      ["[图](https://example.com/a.png)", "[图]()", "link"],
+      ["![图](https://example.com/a.png)", "![图]()", "image"],
+    ] as const) {
+      const editor = createEditor({
+        parent: parent(),
+        doc,
+        mode: "source",
+        platform: "macos",
+      });
+      const target = inlineTargetAt(editor.view.state, doc.indexOf("图"))!;
+      const first = createLinkImageEditorSession(
+        editor.view,
+        target,
+        false,
+        () => {},
+      );
+      expect(first.complete([{ text: target.text, url: "" }])).toBe(true);
+      const output = editor.view.state.doc.toString();
+      expect(output).toBe(expected);
+      expect(titleSources(output)).toEqual([]);
+      const updated = inlineTargetAt(editor.view.state, output.indexOf("图"));
+      expect(updated?.url).toBe("");
+      expect(updated?.kind).toBe(kind);
+      expect(updated?.hasTitle).toBe(false);
+      editor.destroy();
+    }
   });
 
   it("keeps an edited remote image destination and its title parseable", () => {

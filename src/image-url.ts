@@ -118,10 +118,15 @@ function escapeAngleDestination(value: string): string {
  * Serializes an address value as a legal CommonMark inline destination. A
  * value that can be bare stays byte-for-byte; otherwise it is angle-wrapped.
  * Unescaped syntax breakers inside an angle destination are percent-escaped,
- * which only affects characters that could not appear literally there.
+ * which only affects characters that could not appear literally there. An
+ * explicit empty destination uses `<>` when a following title needs the
+ * destination/title boundary to remain unambiguous.
  */
-export function formatMarkdownDestination(value: string): string {
-  if (value === "") return "";
+export function formatMarkdownDestination(
+  value: string,
+  options: { explicitEmpty?: boolean } = {},
+): string {
+  if (value === "") return options.explicitEmpty ? "<>" : "";
   if (isBareMarkdownDestination(value)) return value;
   return `<${escapeAngleDestination(value)}>`;
 }

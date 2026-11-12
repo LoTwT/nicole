@@ -96,6 +96,7 @@ export interface InlineLinkTarget {
   urlTo: number;
   text: string;
   url: string;
+  hasTitle: boolean;
 }
 
 export interface ImageTarget {
@@ -108,6 +109,7 @@ export interface ImageTarget {
   urlTo: number;
   text: string;
   url: string;
+  hasTitle: boolean;
 }
 
 export type InlineTarget = InlineLinkTarget | ImageTarget;
@@ -140,6 +142,7 @@ function inlineTarget(
     urlTo,
     text: state.sliceDoc(open.to, close.from),
     url: parseMarkdownDestination(urlSource),
+    hasTitle: node.node.getChild("LinkTitle") !== null,
   };
 }
 
@@ -261,6 +264,7 @@ interface SessionTarget {
   urlTo: number;
   text: string;
   url: string;
+  hasTitle: boolean;
   leading: string;
   trailing: string;
   preserveEditorFocus: boolean;
@@ -281,6 +285,7 @@ function newSessionTarget(
     urlTo: draft.to,
     text: draft.text,
     url: "",
+    hasTitle: false,
     leading: draft.leading,
     trailing: draft.trailing,
     preserveEditorFocus,
@@ -325,6 +330,7 @@ function destinationForTarget(target: SessionTarget, value: string): string {
   const address = parseMarkdownDestination(value);
   return formatMarkdownDestination(
     target.kind === "image" ? formatImageDestination(address) : address,
+    { explicitEmpty: address === "" && target.hasTitle },
   );
 }
 

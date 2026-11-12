@@ -156,6 +156,8 @@ describe("formatMarkdownDestination", () => {
       formatMarkdownDestination("https://example.com/图 1.png?x=1#top"),
     ).toBe("<https://example.com/图 1.png?x=1#top>");
     expect(formatMarkdownDestination("")).toBe("");
+    expect(formatMarkdownDestination("", { explicitEmpty: true })).toBe("<>");
+    expect(formatMarkdownDestination("a", { explicitEmpty: true })).toBe("a");
   });
 
   it("escapes syntax breakers only when an angle wrapper is required", () => {
