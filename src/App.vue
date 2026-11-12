@@ -74,6 +74,7 @@ import RecoveryDialog from "./components/RecoveryDialog.vue";
 import AppSidebar from "./components/AppSidebar.vue";
 import CommandPalette from "./components/CommandPalette.vue";
 import EmptyState from "./components/EmptyState.vue";
+import FindReplacePanel from "./components/FindReplacePanel.vue";
 import NonMarkdownPlaceholder from "./components/NonMarkdownPlaceholder.vue";
 import Outline from "./components/Outline.vue";
 import SlashMenu from "./components/SlashMenu.vue";
@@ -84,8 +85,11 @@ import {
   type EditorHandle,
   type EditorMode,
   type EditorRestoreState,
+  type FindReplaceController,
+  type FindReplaceOptions,
   type SavedSelection,
 } from "./editor";
+import { EMPTY_FIND_OPTIONS } from "./editor/find";
 import {
   extractHeadingsWithStatus,
   type DocumentHeading,
@@ -277,10 +281,13 @@ const dialog = ref<DialogState | null>(null);
 const recoveryDialog = ref<RecoveryDialogState | null>(null);
 let dialogResolve: ((value: string) => void) | null = null;
 let dialogOpen = false;
+let slashHandledEscape = false;
 let folderOperation: Promise<boolean> | null = null;
 let recoveryChecking = false;
 
 let editor: EditorHandle | null = null;
+const findController = shallowRef<FindReplaceController | null>(null);
+let findOptions: FindReplaceOptions = { ...EMPTY_FIND_OPTIONS };
 let mountSequence = 0;
 let nextTabId = 1;
 let lastWorkspaceActivePath: string | null = null;
@@ -1007,6 +1014,9 @@ function toggleOutline() {
     closeOutlineOverlay(true);
     return;
   }
+  // The floating outline and the find panel are both popovers. Closing find
+  // first restores a connected return target before the outline takes focus.
+  editor?.search.close();
   outlineOverlayReturnFocus = focusedControl();
   outlineOverlayOpen.value = true;
   void nextTick().then(() => {
@@ -2217,6 +2227,18 @@ function clearEditor() {
   slashMenu?.destroy();
   slashMenu = null;
   slashState.value = null;
+  const search = editor?.search.snapshot();
+  if (search !== undefined) {
+    // Find conditions are shared by every tab; the open state, counts and
+    // decorations belong to this view and are dropped with it.
+    findOptions = {
+      query: search.query,
+      replacement: search.replacement,
+      caseSensitive: search.caseSensitive,
+      regexp: search.regexp,
+    };
+  }
+  findController.value = null;
   editor?.destroy();
   editor = null;
   editorRevision.value += 1;
@@ -2251,6 +2273,7 @@ async function mountActive(focus = true) {
     mode: mode.value,
     platform: platform.value,
     restore: restore ?? undefined,
+    find: findOptions,
     resolveImage: (src) =>
       tab.kind === "workspace"
         ? resolveImageUrl(src, tab.path, tab.generation)
@@ -2268,6 +2291,7 @@ async function mountActive(focus = true) {
       slashState.value = state;
     },
   });
+  findController.value = editor.search;
   if (focus) {
     editor.focus();
   }
@@ -3954,8 +3978,22 @@ function closePopoverMenus() {
   closeOutlineOverlay(false);
 }
 
+/** The compact mode menu is a popover; opening it replaces other popovers. */
+function handleModeMenuWillOpen() {
+  editor?.search.close({ restoreFocus: false });
+  focusOutlineToggleIfInside();
+  closeOutlineOverlay(false);
+}
+
+/** Find is a popover, so opening it replaces the temporary outline. */
+function handleFindOpened() {
+  topBar.value?.closeModeMenu();
+  closeOutlineOverlay(false);
+}
+
 function closePalettePopovers() {
   closePopoverMenus();
+  editor?.search.close();
   overlaySidebar.value = false;
 }
 
@@ -4203,6 +4241,19 @@ async function jumpToPaletteHeading(position: number) {
   view.focus();
 }
 
+/**
+ * Slash-menu Escape is handled inside CodeMirror before the window listener
+ * runs and already changes `slashState`. Remember that it owned the key so the
+ * same Escape does not also close the find panel or the overlay sidebar.
+ */
+function noteSlashEscape(event: KeyboardEvent) {
+  if (event.key !== "Escape") return;
+  slashHandledEscape =
+    slashState.value !== null &&
+    !event.isComposing &&
+    event.keyCode !== 229;
+}
+
 function handleGlobalKeydown(event: KeyboardEvent) {
   noteCompositionEndKey(event);
   if (event.isComposing || event.keyCode === 229) {
@@ -4225,6 +4276,21 @@ function handleGlobalKeydown(event: KeyboardEvent) {
     return;
   }
   if (event.key === "Escape") {
+    const handledBySlash = slashHandledEscape;
+    slashHandledEscape = false;
+    if (handledBySlash) {
+      return;
+    }
+    if (editor?.search.snapshot().open) {
+      // Another text field, such as a rename box, owns its own Escape. The
+      // find panel stops propagation itself and does not reach this branch.
+      if (isTextInput(event.target)) {
+        return;
+      }
+      event.preventDefault();
+      editor.search.close();
+      return;
+    }
     if (outlineOverlayOpen.value) {
       event.preventDefault();
       closeOutlineOverlay(true);
@@ -4604,6 +4670,7 @@ onMounted(async () => {
   window.addEventListener("beforeunload", saveBeforeExit);
   window.addEventListener("pagehide", saveBeforeExit);
   window.addEventListener("resize", handleWindowResize);
+  window.addEventListener("keydown", noteSlashEscape, true);
   window.addEventListener("keydown", handleGlobalKeydown);
   window.addEventListener("keydown", handleAppShortcutCapture, true);
   document.addEventListener("pointerdown", handleOutlinePointerDown, true);
@@ -4668,6 +4735,7 @@ onBeforeUnmount(() => {
   window.removeEventListener("beforeunload", saveBeforeExit);
   window.removeEventListener("pagehide", saveBeforeExit);
   window.removeEventListener("resize", handleWindowResize);
+  window.removeEventListener("keydown", noteSlashEscape, true);
   window.removeEventListener("keydown", handleGlobalKeydown);
   window.removeEventListener("keydown", handleAppShortcutCapture, true);
   document.removeEventListener("pointerdown", handleOutlinePointerDown, true);
@@ -4772,6 +4840,7 @@ defineExpose({
         @toggle-sidebar="toggleSidebar"
         @toggle-outline="toggleOutline"
         @open-folder="chooseFolder"
+        @mode-menu-will-open="handleModeMenuWillOpen"
       />
 
       <div class="relative flex min-h-0 flex-1">
@@ -4825,6 +4894,13 @@ defineExpose({
               class="h-full"
               aria-label="Markdown 编辑器"
             ></div>
+            <FindReplacePanel
+              v-if="findController"
+              :controller="findController"
+              :platform="platform"
+              @opened="handleFindOpened"
+              @open-palette="openCommandPalette"
+            />
           </div>
         </main>
         <Outline

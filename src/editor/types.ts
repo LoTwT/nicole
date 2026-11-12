@@ -2,6 +2,7 @@ import type { EditorView } from "@codemirror/view";
 
 import type { AppPlatform } from "../app/platform";
 import type { CommandDefinition } from "../commands/types";
+import type { FindReplaceController, FindReplaceOptions } from "./find";
 
 export type EditorMode = "live" | "immersive" | "source";
 
@@ -54,6 +55,8 @@ export interface CreateEditorOptions {
   commands?: readonly CommandDefinition[];
   /** Restores a background tab's selection, scroll position and undo history. */
   restore?: EditorRestoreState;
+  /** Global find conditions for the new view; the panel itself stays closed. */
+  find?: FindReplaceOptions;
   resolveImage?: ImageResolver;
   onPasteImage?: PasteImageHandler;
   onChange?: (doc: string) => void;
@@ -72,6 +75,8 @@ export interface CreateEditorOptions {
 export interface EditorHandle {
   readonly view: EditorView;
   readonly mode: EditorMode;
+  /** Nicole's find/replace state for this view; destroyed with the editor. */
+  readonly search: FindReplaceController;
   setMode(mode: EditorMode): void;
   /**
    * Applies text loaded from disk as one change. The selection maps through

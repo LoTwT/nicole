@@ -4,13 +4,6 @@ import {
   syntaxTree,
   syntaxTreeAvailable,
 } from "@codemirror/language";
-import {
-  openSearchPanel,
-  search,
-  SearchQuery,
-  setSearchQuery,
-} from "@codemirror/search";
-import { StateEffect } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -526,11 +519,8 @@ it("keeps inline code and search highlights painted inside code blocks", async (
     () => syntaxTreeAvailable(view.state, view.state.doc.length),
     "the syntax tree to cover the inline code",
   );
-  view.dispatch({ effects: StateEffect.appendConfig.of(search()) });
-  view.dispatch({
-    effects: setSearchQuery.of(new SearchQuery({ search: "foo" })),
-  });
-  openSearchPanel(view);
+  editor.search.open(false);
+  editor.search.setQuery("foo");
   await until(
     () => {
       const spans = [
@@ -581,7 +571,34 @@ it("keeps inline code and search highlights painted inside code blocks", async (
   ];
   expect(matches.length).toBeGreaterThan(0);
   for (const match of matches) {
-    expect(winningBackground(match)).not.toBe("transparent");
-    expect(winningBackground(match)).not.toBe("var(--reading-code-bg)");
+    expect(winningBackground(match)).toBe("var(--status-warning-bg)");
+  }
+
+  editor.search.next();
+  await until(
+    () =>
+      view.contentDOM.querySelectorAll(".cm-searchMatch-selected").length === 1,
+    "the selected search match",
+  );
+  const selected = view.contentDOM.querySelector<HTMLElement>(
+    ".cm-searchMatch-selected",
+  )!;
+  expect(winningBackground(selected)).toBe("var(--accent-soft)");
+  expect(winningProperty(selected, "outline-color")).toBe(
+    "var(--focus-ring-color)",
+  );
+  const nonSelected = view.contentDOM.querySelector<HTMLElement>(
+    ".cm-searchMatch:not(.cm-searchMatch-selected)",
+  )!;
+  expect(winningProperty(nonSelected, "outline-color")).toBe(
+    "var(--status-warning-border)",
+  );
+
+  document.documentElement.classList.add("dark");
+  try {
+    expect(winningBackground(selected)).toBe("var(--accent-soft)");
+    expect(winningBackground(nonSelected)).toBe("var(--status-warning-bg)");
+  } finally {
+    document.documentElement.classList.remove("dark");
   }
 }, 15000);

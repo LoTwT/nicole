@@ -60,6 +60,7 @@ src/
     AppBanner.vue         外部修改、删除、保存失败和恢复内容横幅
     AppDialog.vue         模态对话框、焦点陷阱与焦点恢复
     CommandPalette.vue    命令、文件和标题三种模式的命令面板
+    FindReplacePanel.vue  正文宿主右上角的查找替换面板
     RecoveryDialog.vue    崩溃恢复列表与三个选择
     EmptyState.vue        开始写作、无文件和最近文件夹
     NonMarkdownPlaceholder.vue  非 Markdown 文件的占位页
@@ -70,6 +71,7 @@ src/
     KeyHint.vue           浅色纯文字的快捷键提示
   editor/                 纯 TypeScript，不依赖 Vue 和 MyGo
     index.ts              createEditor、三种模式、widgets、核心命令、图片插入
+    find.ts               CodeMirror 查询状态、查找/替换控制器、匹配高亮
     headings.ts           Lezer 语法树的 ATX/Setext 标题提取，供命令面板与大纲复用
     types.ts              对外类型
   services/               MyGo 边界
@@ -173,10 +175,11 @@ Go（main.go）
   }): EditorHandle
   ```
 
-  `EditorHandle` 提供 `view`、`mode`、`setMode`、`replaceDocument`、`undo`、`redo`、`containsPoint`、`createInsertionTicket`、`insertImages`、`getRestoreState`、`focus` 和 `destroy`。`getRestoreState` 序列化选区、`historyField`、顶部行号和行内像素偏移；后台标签页销毁视图时只保留这份状态和文本。`replaceDocument` 把磁盘上的新文本作为一次差异修改应用，映射选区并把可见区域顶部保持在原行。`undo()` / `redo()` 在输入法组合期间返回 `false`，不执行历史；`containsPoint(x, y)` 按视口坐标判断落点是否在编辑器内；`createInsertionTicket(x, y)` 按视口坐标创建插入凭据，坐标不在编辑区内时返回 null；`insertImages(ticket, markdown)` 在一个事务里插入文本，因此是一个撤销步。编辑器持续对凭据做位置映射，中文输入法组合期间先排队，组合结束后再插入；多条排队插入逐条处理，前一条插入会映射后一条的位置。`onCompositionStart` 和 `onCompositionEnd` 只转发 DOM 组合事件：应用层用 `onCompositionStart` 清除“组合已失效”标记，用 `onCompositionEnd` 恢复被组合挡下的自动保存计时。CodeMirror 对 Safari dead-key 组合的内部收尾和视图销毁都不会触发回调，应用层需要自行兜底（见[工作区与文件](specs/workspace.md#输入法组合期间)）。`onPasteImage` 只把粘贴事件交给应用层，保存图片和生成 Markdown 由 `src/image-insertion.ts` 经 `src/services/assets.ts` 完成；编辑区不接触 MyGo。三种模式通过同一个 `Compartment` 重配置，`EditorView` 实例不变。编辑器命令的键位由注册表生成，统一通过 `Prec.highest` 注册，组合输入期间返回 `false` 交给输入法。
+  `EditorHandle` 提供 `view`、`mode`、`search`、`setMode`、`replaceDocument`、`undo`、`redo`、`containsPoint`、`createInsertionTicket`、`insertImages`、`getRestoreState`、`focus` 和 `destroy`。`search` 是当前视图的查找替换控制器，暴露查询、计数、导航和替换操作，并随 `destroy` 一起失效。`getRestoreState` 序列化选区、`historyField`、顶部行号和行内像素偏移；后台标签页销毁视图时只保留这份状态和文本。`replaceDocument` 把磁盘上的新文本作为一次差异修改应用，映射选区并把可见区域顶部保持在原行。`undo()` / `redo()` 在输入法组合期间返回 `false`，不执行历史；`containsPoint(x, y)` 按视口坐标判断落点是否在编辑器内；`createInsertionTicket(x, y)` 按视口坐标创建插入凭据，坐标不在编辑区内时返回 null；`insertImages(ticket, markdown)` 在一个事务里插入文本，因此是一个撤销步。编辑器持续对凭据做位置映射，中文输入法组合期间先排队，组合结束后再插入；多条排队插入逐条处理，前一条插入会映射后一条的位置。`onCompositionStart` 和 `onCompositionEnd` 只转发 DOM 组合事件：应用层用 `onCompositionStart` 清除“组合已失效”标记，用 `onCompositionEnd` 恢复被组合挡下的自动保存计时。CodeMirror 对 Safari dead-key 组合的内部收尾和视图销毁都不会触发回调，应用层需要自行兜底（见[工作区与文件](specs/workspace.md#输入法组合期间)）。`onPasteImage` 只把粘贴事件交给应用层，保存图片和生成 Markdown 由 `src/image-insertion.ts` 经 `src/services/assets.ts` 完成；编辑区不接触 MyGo。三种模式通过同一个 `Compartment` 重配置，`EditorView` 实例不变。编辑器命令的键位由注册表生成，统一通过 `Prec.highest` 注册，组合输入期间返回 `false` 交给输入法。
 
 - 编辑器主题直接读取 CSS 变量；界面切换亮暗时只改 `<html>` 上的 `.dark`，不重建编辑器（见[主题与字体](specs/theming.md#编辑器主题)）。
 - 命令注册表只有一份，各入口共用，见 [Slash 命令](specs/slash-commands.md#命令注册表)。`formatCommandShortcut` 把注册表键位转成平台显示文本，悬停提示、`KeyHint`、命令面板、右键菜单和测试都使用这一条路径；`createCommandKeymap` 统一生成编辑器命令的 `Prec.highest` 键位表。`src/commands/keybinding.ts` 先按字符匹配，再用 `w3c-keyname`、`event.code` 和 `keyCode` 做受限的物理键回退（ASCII 字符不按物理字母回退），`App.vue` 在窗口 `keydown` 捕获阶段分发 `scope: "app"` 的命令，让注册表键位先于 CodeMirror 的编辑器键位；`FileTree.vue` 只在文件树有焦点时分发 `scope: "file-tree"` 的命令；`available: false` 的占位命令不参与分发。`pinyin-pro` 只在第一次打开 slash 菜单或命令面板时动态加载，命令最近使用记录存放在 `localStorage`。格式命令把事务标为 `input.format` 并用 `isolateHistory` 隔离撤销步；slash 执行把删除查询和命令产生的事务合并成一个事务。命令面板执行编辑器命令前恢复打开面板时记录的选区，文件模式的最近文件随 `tabs.json` 保存。
+- 查找替换由 `src/editor/find.ts` 管理查询、计数与 CodeMirror 搜索命令，匹配高亮是编辑器扩展；`src/components/FindReplacePanel.vue` 只渲染状态并转发输入、按钮和键盘事件。`App.vue` 把活动编辑器的 `search` 控制器交给面板，切换标签或销毁视图时随编辑器一起清理；命令注册表里的四个查找命令只在编辑器有焦点时执行。CodeMirror 内置查找面板不显示，查找状态仍由 `@codemirror/search` 提供。
 - 编辑模式的设计和限制见[编辑模式](specs/editor-modes.md)。
 
 ## IPC 用法

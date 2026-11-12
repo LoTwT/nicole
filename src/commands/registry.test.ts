@@ -79,6 +79,10 @@ const COMMAND_BY_ROW: Readonly<Record<string, string | readonly string[]>> = {
   "实时预览": "mode.live",
   "沉浸": "mode.immersive",
   "源码": "mode.source",
+  "查找": "edit.find",
+  "查找并替换": "edit.find-replace",
+  "下一个匹配": "edit.find-next",
+  "上一个匹配": "edit.find-previous",
   "标题 1–3（再按一次同级恢复为正文）": [
     "format.heading-1",
     "format.heading-2",
@@ -97,10 +101,6 @@ const COMMAND_BY_ROW: Readonly<Record<string, string | readonly string[]>> = {
 
 /** Rows whose commands are deliberately outside this registry PR. */
 const EXCLUDED_ROWS: Readonly<Record<string, string>> = {
-  "查找": "PR9 实现 Nicole 查找栏",
-  "查找并替换": "PR9 实现 Nicole 查找栏",
-  "下一个匹配": "PR9 实现 Nicole 查找栏",
-  "上一个匹配": "PR9 实现 Nicole 查找栏",
   "链接": "PR12 登记链接命令",
   "撤销、重做": "CodeMirror 历史命令，不注册为应用命令",
   "打开 slash 菜单": "编辑器输入触发，不是注册表命令",

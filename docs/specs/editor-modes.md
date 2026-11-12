@@ -30,6 +30,7 @@
 以下功能在三种模式下都必须能用：
 
 - Slash 命令（见[Slash 命令](slash-commands.md)）
+- 查找与替换（见[界面与交互](ui.md#查找替换)）
 - 快捷键
 - 粘贴图片（见[工作区与文件](workspace.md#图片)）
 - 拖入图片（见[工作区与文件](workspace.md#图片)）
