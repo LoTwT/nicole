@@ -83,6 +83,7 @@ export function rangeInOrdinaryBody(
   state: EditorState,
   from: number,
   to: number,
+  options: { allowInlineCode?: boolean } = {},
 ): boolean {
   const frontmatter = frontmatterEnd(state);
   if (frontmatter !== null && from < frontmatter) return false;
@@ -97,6 +98,7 @@ export function rangeInOrdinaryBody(
     to,
     enter: (node) => {
       if (!ordinary) return false;
+      if (options.allowInlineCode && node.name === "InlineCode") return;
       if (!RANGE_EXCLUDED_NODES.has(node.name)) return;
       if (node.from < to && node.to > from) {
         ordinary = false;

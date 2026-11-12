@@ -1,4 +1,4 @@
-import { EditorState } from "@codemirror/state";
+import { EditorSelection, EditorState } from "@codemirror/state";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -9,9 +9,11 @@ import {
 import {
   createLinkImageEditorSession,
   inlineTargetAt,
+  newLinkDraft,
   openLinkEditorEffect,
   placeLinkImagePopover,
 } from "./link-editor";
+import { resolveLocalImagePath } from "../image-url";
 
 const parents: HTMLElement[] = [];
 
@@ -87,7 +89,7 @@ describe("link and image editor sessions", () => {
     editor.view.dispatch({ changes: { from: 0, insert: "X " } });
     expect(editor.view.state.doc.toString()).toBe(`X ${doc}`);
     expect(first.valid).toBe(true);
-    expect(first.complete("新", "新地址")).toBe(true);
+    expect(first.complete([{ text: "新", url: "新地址" }])).toBe(true);
     expect(editor.view.state.doc.toString()).toBe(
       "X before [新](新地址) after\n",
     );
@@ -105,7 +107,7 @@ describe("link and image editor sessions", () => {
     editor.view.dispatch({ changes: { from: linkFrom, insert: "X" } });
     editor.view.dispatch({ changes: { from: linkTo + 1, insert: "Y" } });
     expect(first.valid).toBe(true);
-    first.complete("新", "新地址");
+    first.complete([{ text: "新", url: "新地址" }]);
     expect(editor.view.state.doc.toString()).toBe(
       "before X[新](新地址)Y after\n",
     );
@@ -121,7 +123,7 @@ describe("link and image editor sessions", () => {
     });
     expect(session()).toBeNull();
     expect(first.valid).toBe(false);
-    expect(first.complete("新", "新地址")).toBe(false);
+    expect(first.complete([{ text: "新", url: "新地址" }])).toBe(false);
     expect(editor.view.state.doc.toString()).toBe(
       "before [Y文字](url) after\n",
     );
@@ -153,7 +155,7 @@ describe("link and image editor sessions", () => {
     editor.view.dispatch({ effects: openLinkEditorEffect.of(null) });
     const second = session()!;
     expect(second).not.toBe(first);
-    expect(second.complete("文字", "url")).toBe(true);
+    expect(second.complete([{ text: "文字", url: "url" }])).toBe(true);
     expect(editor.view.state.doc.toString()).toBe("before\n[文字](url)");
     editor.undo();
     expect(editor.view.state.doc.toString()).toBe(doc);
@@ -166,7 +168,7 @@ describe("link and image editor sessions", () => {
     const first = session()!;
     editor.view.dispatch({ changes: { from: 0, insert: "X " } });
     expect(first.valid).toBe(true);
-    first.complete("文字", "url");
+    first.complete([{ text: "文字", url: "url" }]);
     expect(editor.view.state.doc.toString()).toBe("X before\n[文字](url)");
 
     editor.view.dispatch({ effects: openLinkEditorEffect.of(null) });
@@ -174,16 +176,16 @@ describe("link and image editor sessions", () => {
     const at = editor.view.state.doc.length;
     editor.view.dispatch({ changes: { from: at, insert: "Y" } });
     expect(second.valid).toBe(false);
-    expect(second.complete("新", "new")).toBe(false);
+    expect(second.complete([{ text: "新", url: "new" }])).toBe(false);
     expect(editor.view.state.doc.toString()).toContain("Y");
     editor.destroy();
   });
 
-  it("edits a new link made from a selection with surrounding spaces", () => {
+  it("edits a new link with Unicode edge whitespace outside the markers", () => {
     let session: LinkImageEditorSession | null = null;
     const editor = createEditor({
       parent: parent(),
-      doc: " 文字 ",
+      doc: "\u3000文字\u3000",
       mode: "immersive",
       platform: "macos",
       onEditLinkImage: (next) => {
@@ -195,8 +197,8 @@ describe("link and image editor sessions", () => {
       effects: openLinkEditorEffect.of(null),
     });
     expect(session).not.toBeNull();
-    session!.complete("链接", "target");
-    expect(editor.view.state.doc.toString()).toBe(" [链接](target) ");
+    session!.complete([{ text: "链接", url: "target" }]);
+    expect(editor.view.state.doc.toString()).toBe("\u3000[链接](target)\u3000");
     editor.destroy();
   });
 
@@ -218,12 +220,38 @@ describe("link and image editor sessions", () => {
     );
     expect(first.initialText).toBe("图");
     expect(first.initialUrl).toBe("a.png");
-    expect(first.complete("新图", "b.png")).toBe(true);
+    expect(
+      first.complete([{ text: "新图", url: "assets/图 1.png" }]),
+    ).toBe(true);
     expect(editor.view.state.doc.toString()).toBe(
-      "before ![新图](b.png) after\n",
+      "before ![新图](assets/%E5%9B%BE%201.png) after\n",
+    );
+    const updated = inlineTargetAt(
+      editor.view.state,
+      editor.view.state.doc.toString().indexOf("新图"),
+    );
+    expect(updated?.kind).toBe("image");
+    expect(resolveLocalImagePath(updated!.url, "a.md")).toBe(
+      "assets/图 1.png",
     );
     editor.destroy();
   });
+});
+
+describe("batch drafts and whitespace", () => {
+  it("keeps Unicode edge whitespace outside a new link draft", () => {
+    const state = EditorState.create({
+      doc: "\u3000文字\u3000",
+      selection: EditorSelection.range(0, 4),
+      extensions: [markdown({ base: markdownLanguage })],
+    });
+    expect(newLinkDraft(state)).toMatchObject({
+      text: "文字",
+      leading: "\u3000",
+      trailing: "\u3000",
+    });
+  });
+
 });
 
 describe("popover placement", () => {

@@ -78,6 +78,7 @@ src/
     headings.ts           Lezer 语法树的 ATX/Setext 标题提取，供命令面板与大纲复用
     link-editor.ts        链接/图片目标、纯 UI 草稿会话、位置映射与弹框定位
     markdown-context.ts   代码、HTML、前置元数据的公共上下文判断
+    whitespace.ts         标记外首尾 Unicode 空白的统一切分
     wrap.ts               直接键入标记字符时的选区包裹规则
     types.ts              对外类型
   services/               MyGo 边界

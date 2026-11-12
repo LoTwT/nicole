@@ -2,7 +2,7 @@ import { EditorSelection } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { EditorState } from "@codemirror/state";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { createEditor, type LinkImageEditorSession } from "./index";
 import { planWrapInput } from "./wrap";
@@ -69,6 +69,18 @@ function typeDirect(view: EditorView, character: string): boolean {
   );
 }
 
+function inputHandlerOnly(view: EditorView, character: string): boolean {
+  const range = view.state.selection.main;
+  return view.state.facet(EditorView.inputHandler).some((handler) =>
+    handler(view, range.from, range.to, character, () =>
+      view.state.update({
+        changes: { from: range.from, to: range.to, insert: character },
+        selection: { anchor: range.from + character.length },
+      }),
+    ),
+  );
+}
+
 afterEach(() => {
   for (const element of parents.splice(0)) element.remove();
 });
@@ -93,6 +105,16 @@ describe("selection wrapping", () => {
   it("keeps surrounding spaces outside the markers", () => {
     const next = applyPlan(stateFor(" 文字 ", { anchor: 0, head: 4 }), "*");
     expect(next.doc.toString()).toBe(" *文字* ");
+    expect(next.selection.main.from).toBe(2);
+    expect(next.selection.main.to).toBe(4);
+  });
+
+  it("keeps Unicode edge whitespace outside the markers", () => {
+    const next = applyPlan(
+      stateFor("\u3000文字\u3000", { anchor: 0, head: 4 }),
+      "*",
+    );
+    expect(next.doc.toString()).toBe("\u3000*文字*\u3000");
     expect(next.selection.main.from).toBe(2);
     expect(next.selection.main.to).toBe(4);
   });
@@ -160,6 +182,38 @@ describe("selection wrapping", () => {
     const state = stateFor("ab", { anchor: 1, head: 1 });
     expect(planWrapInput(state, "[")).toBeNull();
     expect(planWrapInput(state, "*")).toBeNull();
+  });
+
+  it("keeps Unicode edge whitespace outside single and batch link drafts", () => {
+    const single = planWrapInput(
+      stateFor("\u3000文字\u3000", { anchor: 0, head: 4 }),
+      "[",
+    )!;
+    expect(single.linkDrafts).toEqual([
+      { from: 0, to: 4, text: "文字", leading: "\u3000", trailing: "\u3000" },
+    ]);
+
+    const multiState = EditorState.create({
+      doc: "\u3000甲\u3000 \u3000乙\u3000",
+      selection: EditorSelection.create([
+        EditorSelection.range(0, 3),
+        EditorSelection.range(4, 7),
+      ]),
+      extensions: [
+        markdown({ base: markdownLanguage }),
+        EditorState.allowMultipleSelections.of(true),
+      ],
+    });
+    const batch = planWrapInput(multiState, "[")!;
+    expect(batch.linkDrafts.map((draft) => draft.text)).toEqual(["甲", "乙"]);
+    expect(batch.linkDrafts.map((draft) => draft.leading)).toEqual([
+      "\u3000",
+      "\u3000",
+    ]);
+    expect(batch.linkDrafts.map((draft) => draft.trailing)).toEqual([
+      "\u3000",
+      "\u3000",
+    ]);
   });
 
   it("wraps a selection as a link and puts the caret inside the empty URL", () => {
@@ -288,6 +342,152 @@ describe("direct input integration", () => {
     expect(session!.isNew).toBe(true);
     session!.dispose();
     expect(view.state.doc.toString()).toBe("文字");
+    editor.destroy();
+  });
+
+  it("layers consecutive backticks and invalidates the continuation after selection changes", () => {
+    const editor = createEditor({
+      parent: parent(),
+      doc: "文字",
+      mode: "live",
+      platform: "macos",
+    });
+    const view = editor.view;
+    view.dispatch({ selection: { anchor: 0, head: 2 } });
+    view.focus();
+    expect(typeDirect(view, "`")).toBe(true);
+    expect(view.state.doc.toString()).toBe("`文字`");
+    expect(typeDirect(view, "`")).toBe(true);
+    expect(view.state.doc.toString()).toBe("``文字``");
+    expect(view.state.selection.main.from).toBe(2);
+    expect(view.state.selection.main.to).toBe(4);
+
+    view.dispatch({ selection: { anchor: 4 } });
+    view.dispatch({ selection: { anchor: 2, head: 4 } });
+    expect(typeDirect(view, "`")).toBe(true);
+    expect(view.state.doc.toString()).toBe("`````");
+    editor.destroy();
+  });
+
+  it("keeps every immersive multi-selection link draft virtual until one commit", () => {
+    let session: LinkImageEditorSession | null = null;
+    const editor = createEditor({
+      parent: parent(),
+      doc: "甲 乙",
+      mode: "immersive",
+      platform: "macos",
+      onEditLinkImage: (next) => {
+        session = next;
+      },
+    });
+    const view = editor.view;
+    view.dispatch({
+      selection: EditorSelection.create([
+        EditorSelection.range(0, 1),
+        EditorSelection.range(2, 3),
+      ]),
+    });
+    view.focus();
+    expect(typeDirect(view, "[")).toBe(true);
+    expect(view.state.doc.toString()).toBe("甲 乙");
+    expect(session).not.toBeNull();
+    expect(session!.fields).toEqual([
+      { text: "甲", url: "" },
+      { text: "乙", url: "" },
+    ]);
+    expect(
+      session!.complete([
+        { text: "甲", url: "a" },
+        { text: "乙", url: "b" },
+      ]),
+    ).toBe(true);
+    expect(view.state.doc.toString()).toBe("[甲](a) [乙](b)");
+    editor.undo();
+    expect(view.state.doc.toString()).toBe("甲 乙");
+    expect(session!.valid).toBe(false);
+    editor.destroy();
+  });
+
+  it("cancels the whole immersive batch when one target changes", () => {
+    let session: LinkImageEditorSession | null = null;
+    const editor = createEditor({
+      parent: parent(),
+      doc: "甲 乙",
+      mode: "immersive",
+      platform: "macos",
+      onEditLinkImage: (next) => {
+        session = next;
+      },
+    });
+    const view = editor.view;
+    view.dispatch({
+      selection: EditorSelection.create([
+        EditorSelection.range(0, 1),
+        EditorSelection.range(2, 3),
+      ]),
+    });
+    view.focus();
+    expect(typeDirect(view, "[")).toBe(true);
+    const opened = session!;
+    view.dispatch({ changes: { from: 0, to: 1, insert: "X" } });
+    expect(session).toBeNull();
+    expect(opened.valid).toBe(false);
+    expect(
+      opened.complete([
+        { text: "甲", url: "a" },
+        { text: "乙", url: "b" },
+      ]),
+    ).toBe(false);
+    expect(view.state.doc.toString()).toBe("X 乙");
+    editor.destroy();
+  });
+
+  it("replaces a non-direct bracket input literally instead of letting closeBrackets wrap", () => {
+    const editor = createEditor({
+      parent: parent(),
+      doc: "文字",
+      mode: "live",
+      platform: "macos",
+    });
+    const view = editor.view;
+    view.dispatch({ selection: { anchor: 0, head: 2 } });
+    view.focus();
+    expect(inputHandlerOnly(view, "[")).toBe(true);
+    expect(view.state.doc.toString()).toBe("[");
+    editor.destroy();
+  });
+
+  it("leaves a literal bracket from real DOM replacement input", async () => {
+    const editor = createEditor({
+      parent: parent(),
+      doc: "文字",
+      mode: "source",
+      platform: "macos",
+    });
+    const view = editor.view;
+    view.dispatch({ selection: { anchor: 0, head: 2 } });
+    view.focus();
+    const line = view.contentDOM.querySelector(".cm-line")!;
+    const text = line.firstChild!;
+    view.contentDOM.dispatchEvent(
+      new InputEvent("beforeinput", {
+        inputType: "insertReplacementText",
+        data: "[",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    text.nodeValue = "[";
+    document.getSelection()!.collapse(text, 1);
+    view.contentDOM.dispatchEvent(
+      new InputEvent("input", {
+        inputType: "insertReplacementText",
+        data: "[",
+        bubbles: true,
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(view.state.doc.toString()).toBe("[");
     editor.destroy();
   });
 

@@ -95,6 +95,7 @@ import {
   type FindReplaceController,
   type FindReplaceOptions,
   type LinkImageEditorSession,
+  type LinkImageFieldValues,
   type SavedSelection,
 } from "./editor";
 import { EMPTY_FIND_OPTIONS } from "./editor/find";
@@ -236,8 +237,7 @@ interface RecoveryDialogState {
 interface LinkImageEditorState {
   id: number;
   session: LinkImageEditorSession;
-  initialText: string;
-  initialUrl: string;
+  initialFields: readonly LinkImageFieldValues[];
 }
 
 interface RecoveryWriteState {
@@ -4105,15 +4105,14 @@ function handleEditLinkImage(session: LinkImageEditorSession | null) {
   linkImageEditor.value = {
     id: nextLinkImageEditorID++,
     session,
-    initialText: session.initialText,
-    initialUrl: session.initialUrl,
+    initialFields: session.fields,
   };
 }
 
-function completeLinkImage(text: string, url: string) {
+function completeLinkImage(values: readonly LinkImageFieldValues[]) {
   const state = linkImageEditor.value;
   if (state === null) return;
-  state.session.complete(text, url);
+  state.session.complete(values);
   closeLinkImageEditor();
 }
 
@@ -4668,6 +4667,15 @@ function targetInsideLinkImageEditor(target: EventTarget | null): boolean {
   );
 }
 
+function editorOwnsKeyboardFocus(): boolean {
+  if (editor === null) return false;
+  const active = document.activeElement;
+  return (
+    active === editor.view.contentDOM ||
+    editor.view.contentDOM.contains(active)
+  );
+}
+
 /**
  * A plain click in immersive mode leaves focus in the document. Escape closes
  * the dialog from there, and Tab moves into its first field before CodeMirror
@@ -4685,7 +4693,12 @@ function handleLinkImageCapture(event: KeyboardEvent) {
     return;
   }
   if (event.key === "Escape") {
-    if (targetInsideLinkImageEditor(event.target)) return;
+    if (
+      targetInsideLinkImageEditor(event.target) ||
+      !editorOwnsKeyboardFocus()
+    ) {
+      return;
+    }
     event.preventDefault();
     event.stopPropagation();
     closeLinkImageEditor();
@@ -4702,14 +4715,7 @@ function handleLinkImageCapture(event: KeyboardEvent) {
   ) {
     return;
   }
-  const active = document.activeElement;
-  if (
-    editor === null ||
-    (active !== editor.view.contentDOM &&
-      !editor.view.contentDOM.contains(active))
-  ) {
-    return;
-  }
+  if (!editorOwnsKeyboardFocus()) return;
   event.preventDefault();
   event.stopPropagation();
   linkImageEditorPanel.value?.focusFirstField();
@@ -5351,8 +5357,7 @@ defineExpose({
       ref="linkImageEditorPanel"
       :key="linkImageEditor.id"
       :session="linkImageEditor.session"
-      :initial-text="linkImageEditor.initialText"
-      :initial-url="linkImageEditor.initialUrl"
+      :initial-fields="linkImageEditor.initialFields"
       :platform="platform"
       :is-revealable-path="isLinkImageRevealable"
       @cancel="closeLinkImageEditor()"

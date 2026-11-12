@@ -4,11 +4,13 @@ import {
   EditorSelection,
   StateEffect,
   type ChangeSet,
-  type ChangeSpec,
   type EditorState,
   type SelectionRange,
 } from "@codemirror/state";
 import type { EditorView, ViewUpdate } from "@codemirror/view";
+
+import { formatImageDestination } from "../image-url";
+import { splitEdgeWhitespace } from "./whitespace";
 
 /** Asks the editor to show the link dialog for the current selection. */
 export const openLinkEditorEffect = StateEffect.define<null>();
@@ -188,17 +190,26 @@ export function newLinkDraft(
   range = state.selection.main,
 ): NewLinkDraft {
   const raw = state.sliceDoc(range.from, range.to);
-  const leading = /^[ \t]*/.exec(raw)?.[0] ?? "";
-  const trailing = /[ \t]*$/.exec(raw)?.[0] ?? "";
-  const text = raw
-    .slice(leading.length, raw.length - trailing.length)
-    .replace(/\s*\n\s*/g, " ");
-  return { from: range.from, to: range.to, text, leading, trailing };
+  const { leading, trailing, core } = splitEdgeWhitespace(raw);
+  return {
+    from: range.from,
+    to: range.to,
+    text: core.replace(/\s*\n\s*/g, " "),
+    leading,
+    trailing,
+  };
+}
+
+export interface LinkImageFieldValues {
+  text: string;
+  url: string;
 }
 
 export interface LinkImageEditorSession {
   readonly kind: LinkImageKind;
   readonly isNew: boolean;
+  /** One entry per target; batch new links keep their fields separate. */
+  readonly fields: readonly LinkImageFieldValues[];
   readonly initialText: string;
   readonly initialUrl: string;
   /** Plain clicks keep the caret in the document until Tab enters the dialog. */
@@ -207,7 +218,7 @@ export interface LinkImageEditorSession {
   readonly valid: boolean;
   anchor(): PopoverAnchor | null;
   update(update: ViewUpdate): void;
-  complete(text: string, url: string): boolean;
+  complete(values: readonly LinkImageFieldValues[]): boolean;
   remove(): boolean;
   subscribe(listener: () => void): () => void;
   dispose(): void;
@@ -229,72 +240,111 @@ interface SessionTarget {
   preserveEditorFocus: boolean;
 }
 
-function sessionTarget(
-  target: InlineTarget | NewLinkDraft,
+function newSessionTarget(
+  draft: NewLinkDraft,
   preserveEditorFocus: boolean,
 ): SessionTarget {
-  if ("kind" in target) {
-    return {
-      ...target,
-      isNew: false,
-      leading: "",
-      trailing: "",
-      preserveEditorFocus,
-    };
-  }
   return {
     kind: "link",
     isNew: true,
-    from: target.from,
-    to: target.to,
-    textFrom: target.from,
-    textTo: target.to,
-    urlFrom: target.from,
-    urlTo: target.to,
-    text: target.text,
+    from: draft.from,
+    to: draft.to,
+    textFrom: draft.from,
+    textTo: draft.to,
+    urlFrom: draft.from,
+    urlTo: draft.to,
+    text: draft.text,
     url: "",
-    leading: target.leading,
-    trailing: target.trailing,
+    leading: draft.leading,
+    trailing: draft.trailing,
     preserveEditorFocus,
   };
+}
+
+function isDraftArray(
+  target: InlineTarget | NewLinkDraft | readonly NewLinkDraft[],
+): target is readonly NewLinkDraft[] {
+  return Array.isArray(target);
+}
+
+function sessionTargets(
+  target: InlineTarget | NewLinkDraft | readonly NewLinkDraft[],
+  preserveEditorFocus: boolean,
+): SessionTarget[] {
+  if (isDraftArray(target)) {
+    return target.map((draft) =>
+      newSessionTarget(draft, preserveEditorFocus),
+    );
+  }
+  if ("kind" in target) {
+    return [
+      {
+        ...target,
+        isNew: false,
+        leading: "",
+        trailing: "",
+        preserveEditorFocus,
+      },
+    ];
+  }
+  return [newSessionTarget(target, preserveEditorFocus)];
 }
 
 class EditorLinkImageSession implements LinkImageEditorSession {
   private disposed = false;
   private stillValid = true;
   private listeners = new Set<() => void>();
-  private target: SessionTarget;
+  private targets: SessionTarget[];
+  private anchorIndex: number;
 
   constructor(
     private view: EditorView,
-    target: SessionTarget,
+    targets: SessionTarget[],
+    anchorIndex: number,
     private onInvalidate: (session: LinkImageEditorSession) => void,
   ) {
-    this.target = target;
+    this.targets = targets;
+    this.anchorIndex = Math.min(
+      Math.max(0, anchorIndex),
+      Math.max(0, targets.length - 1),
+    );
   }
 
   get kind() {
-    return this.target.kind;
+    return this.targets[0]?.kind ?? "link";
   }
 
   get isNew() {
-    return this.target.isNew;
+    return this.targets.every((target) => target.isNew);
+  }
+
+  get fields(): readonly LinkImageFieldValues[] {
+    return this.targets.map((target) => ({
+      text: target.text,
+      url: target.url,
+    }));
   }
 
   get initialText() {
-    return this.target.text;
+    return this.targets[0]?.text ?? "";
   }
 
   get initialUrl() {
-    return this.target.url;
+    return this.targets[0]?.url ?? "";
   }
 
   get preserveEditorFocus() {
-    return this.target.preserveEditorFocus;
+    return this.targets[0]?.preserveEditorFocus ?? false;
   }
 
   get canRemove() {
-    return !this.target.isNew && this.target.kind === "link";
+    const target = this.targets[0];
+    return (
+      this.targets.length === 1 &&
+      target !== undefined &&
+      !target.isNew &&
+      target.kind === "link"
+    );
   }
 
   get valid() {
@@ -303,9 +353,11 @@ class EditorLinkImageSession implements LinkImageEditorSession {
 
   anchor(): PopoverAnchor | null {
     if (!this.valid || !this.view.dom.isConnected) return null;
-    const from = this.view.coordsAtPos(this.target.from, 1);
+    const target = this.targets[this.anchorIndex];
+    if (target === undefined) return null;
+    const from = this.view.coordsAtPos(target.from, 1);
     const to =
-      this.view.coordsAtPos(Math.max(this.target.from, this.target.to - 1), -1) ??
+      this.view.coordsAtPos(Math.max(target.from, target.to - 1), -1) ??
       from;
     if (from === null && to === null) return null;
     const first = from ?? to!;
@@ -328,11 +380,11 @@ class EditorLinkImageSession implements LinkImageEditorSession {
     for (const listener of [...this.listeners]) listener();
   }
 
-  private overlaps(from: number, to: number): boolean {
-    if (this.target.from === this.target.to) {
-      return from <= this.target.from && this.target.from <= to;
+  private overlaps(target: SessionTarget, from: number, to: number): boolean {
+    if (target.from === target.to) {
+      return from <= target.from && target.from <= to;
     }
-    return from < this.target.to && to > this.target.from;
+    return from < target.to && to > target.from;
   }
 
   update(update: ViewUpdate) {
@@ -340,7 +392,9 @@ class EditorLinkImageSession implements LinkImageEditorSession {
     if (update.docChanged) {
       let touched = false;
       update.changes.iterChangedRanges((from, to) => {
-        if (this.overlaps(from, to)) touched = true;
+        if (this.targets.some((target) => this.overlaps(target, from, to))) {
+          touched = true;
+        }
       });
       if (touched) {
         this.invalidate();
@@ -349,15 +403,15 @@ class EditorLinkImageSession implements LinkImageEditorSession {
       const changes = update.changes;
       // Edits exactly at a boundary are outside the target: an insertion at
       // the start stays before it and an insertion at the end stays after it.
-      this.target = {
-        ...this.target,
-        from: changes.mapPos(this.target.from, 1),
-        to: changes.mapPos(this.target.to, -1),
-        textFrom: changes.mapPos(this.target.textFrom, 1),
-        textTo: changes.mapPos(this.target.textTo, -1),
-        urlFrom: changes.mapPos(this.target.urlFrom, 1),
-        urlTo: changes.mapPos(this.target.urlTo, -1),
-      };
+      this.targets = this.targets.map((target) => ({
+        ...target,
+        from: changes.mapPos(target.from, 1),
+        to: changes.mapPos(target.to, -1),
+        textFrom: changes.mapPos(target.textFrom, 1),
+        textTo: changes.mapPos(target.textTo, -1),
+        urlFrom: changes.mapPos(target.urlFrom, 1),
+        urlTo: changes.mapPos(target.urlTo, -1),
+      }));
     }
     if (
       update.docChanged ||
@@ -382,48 +436,49 @@ class EditorLinkImageSession implements LinkImageEditorSession {
     this.onInvalidate(this);
   }
 
-  complete(text: string, url: string): boolean {
-    if (!this.valid) return false;
+  complete(values: readonly LinkImageFieldValues[]): boolean {
+    if (!this.valid || values.length !== this.targets.length) return false;
     const state = this.view.state;
-    if (this.target.isNew) {
-      const replacement =
-        this.target.leading +
-        `[${text}](${url})` +
-        this.target.trailing;
-      if (
-        state.sliceDoc(this.target.from, this.target.to) === replacement
-      ) {
-        this.finish();
-        return true;
+    const changes: { from: number; to: number; insert: string }[] = [];
+    this.targets.forEach((target, index) => {
+      const value = values[index]!;
+      if (target.isNew) {
+        const replacement =
+          target.leading +
+          `[${value.text}](${value.url})` +
+          target.trailing;
+        if (state.sliceDoc(target.from, target.to) !== replacement) {
+          changes.push({
+            from: target.from,
+            to: target.to,
+            insert: replacement,
+          });
+        }
+        return;
       }
-      this.finish();
-      this.view.dispatch({
-        changes: { from: this.target.from, to: this.target.to, insert: replacement },
-        selection: { anchor: this.target.from + replacement.length },
-        userEvent: "input.format",
-        annotations: isolateHistory.of("full"),
-      });
-      return true;
-    }
-
-    const changes: ChangeSpec[] = [];
-    if (text !== this.target.text) {
-      changes.push({
-        from: this.target.textFrom,
-        to: this.target.textTo,
-        insert: text,
-      });
-    }
-    if (url !== this.target.url) {
-      changes.push({
-        from: this.target.urlFrom,
-        to: this.target.urlTo,
-        insert: url,
-      });
-    }
+      const url =
+        target.kind === "image"
+          ? formatImageDestination(value.url)
+          : value.url;
+      if (value.text !== target.text) {
+        changes.push({
+          from: target.textFrom,
+          to: target.textTo,
+          insert: value.text,
+        });
+      }
+      if (url !== target.url) {
+        changes.push({
+          from: target.urlFrom,
+          to: target.urlTo,
+          insert: url,
+        });
+      }
+    });
     this.finish();
     if (changes.length === 0) return true;
 
+    changes.sort((left, right) => left.from - right.from || left.to - right.to);
     const changeSet = state.changes(changes);
     this.view.dispatch({
       changes: changeSet,
@@ -436,16 +491,17 @@ class EditorLinkImageSession implements LinkImageEditorSession {
 
   remove(): boolean {
     if (!this.valid || !this.canRemove) return false;
+    const target = this.targets[0]!;
     const state = this.view.state;
-    const text = state.sliceDoc(this.target.textFrom, this.target.textTo);
+    const text = state.sliceDoc(target.textFrom, target.textTo);
     this.finish();
     this.view.dispatch({
       changes: {
-        from: this.target.from,
-        to: this.target.to,
+        from: target.from,
+        to: target.to,
         insert: text,
       },
-      selection: { anchor: this.target.from + text.length },
+      selection: { anchor: target.from + text.length },
       userEvent: "input.format",
       annotations: isolateHistory.of("full"),
     });
@@ -460,13 +516,14 @@ class EditorLinkImageSession implements LinkImageEditorSession {
 
 export function createLinkImageEditorSession(
   view: EditorView,
-  target: InlineTarget | NewLinkDraft,
+  target: InlineTarget | NewLinkDraft | readonly NewLinkDraft[],
   preserveEditorFocus: boolean,
   onInvalidate: (session: LinkImageEditorSession) => void,
 ): LinkImageEditorSession {
   return new EditorLinkImageSession(
     view,
-    sessionTarget(target, preserveEditorFocus),
+    sessionTargets(target, preserveEditorFocus),
+    isDraftArray(target) ? view.state.selection.mainIndex : 0,
     onInvalidate,
   );
 }

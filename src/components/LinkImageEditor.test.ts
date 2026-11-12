@@ -2,7 +2,11 @@ import { createApp, h, nextTick } from "vue";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import LinkImageEditor from "./LinkImageEditor.vue";
-import type { LinkImageEditorSession, PopoverAnchor } from "../editor/link-editor";
+import type {
+  LinkImageEditorSession,
+  LinkImageFieldValues,
+  PopoverAnchor,
+} from "../editor/link-editor";
 
 let app: ReturnType<typeof createApp> | null = null;
 
@@ -18,6 +22,7 @@ function session(
   return {
     kind: "link",
     isNew: false,
+    fields: [{ text: "文字", url: "url" }],
     initialText: "文字",
     initialUrl: "url",
     preserveEditorFocus: true,
@@ -36,10 +41,9 @@ function session(
 function mount(
   editSession: LinkImageEditorSession,
   options: {
-    initialText?: string;
-    initialUrl?: string;
+    initialFields?: readonly LinkImageFieldValues[];
     isRevealablePath?: (path: string) => boolean;
-    onComplete?: (text: string, url: string) => void;
+    onComplete?: (values: readonly LinkImageFieldValues[]) => void;
     onCancel?: () => void;
     onRemove?: () => void;
     onReveal?: (path: string) => void;
@@ -51,8 +55,7 @@ function mount(
     render: () =>
       h(LinkImageEditor, {
         session: editSession,
-        initialText: options.initialText ?? editSession.initialText,
-        initialUrl: options.initialUrl ?? editSession.initialUrl,
+        initialFields: options.initialFields ?? editSession.fields,
         platform: "macos",
         isRevealablePath: options.isRevealablePath ?? (() => false),
         onComplete: options.onComplete,
@@ -141,7 +144,9 @@ describe("LinkImageEditor", () => {
         cancelable: true,
       }),
     );
-    expect(complete).toHaveBeenCalledWith("新文字", "new-url");
+    expect(complete).toHaveBeenCalledWith([
+      { text: "新文字", url: "new-url" },
+    ]);
 
     input("文本").dispatchEvent(
       new KeyboardEvent("keydown", {
@@ -151,6 +156,62 @@ describe("LinkImageEditor", () => {
       }),
     );
     expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it("renders every batch target in one scrollable dialog and commits all fields", async () => {
+    const complete = vi.fn();
+    const fields = [
+      { text: "甲", url: "" },
+      { text: "乙", url: "" },
+    ];
+    mount(
+      session({
+        isNew: true,
+        canRemove: false,
+        fields,
+        initialText: "甲",
+        initialUrl: "",
+      }),
+      {
+        initialFields: fields,
+        onComplete: complete,
+        onCancel: vi.fn(),
+      },
+    );
+    await nextTick();
+    expect(dialog().dataset.batch).toBe("");
+    expect(input("文本 1").value).toBe("甲");
+    expect(input("文本 2").value).toBe("乙");
+    expect(input("链接 1")).not.toBeNull();
+    expect(input("链接 2")).not.toBeNull();
+    const fieldArea = dialog().querySelector<HTMLElement>(
+      "[data-link-image-fields]",
+    )!;
+    expect(fieldArea.className).toContain("overflow-y-auto");
+    const done = [...dialog().querySelectorAll("button")].find(
+      (item) => item.textContent?.trim() === "完成",
+    )!;
+    expect(fieldArea.contains(done)).toBe(false);
+
+    input("文本 1").value = "甲一";
+    input("文本 1").dispatchEvent(new Event("input", { bubbles: true }));
+    input("链接 1").value = "a";
+    input("链接 1").dispatchEvent(new Event("input", { bubbles: true }));
+    input("文本 2").value = "乙二";
+    input("文本 2").dispatchEvent(new Event("input", { bubbles: true }));
+    input("链接 2").value = "b";
+    input("链接 2").dispatchEvent(new Event("input", { bubbles: true }));
+    input("文本 2").dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Enter",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    expect(complete).toHaveBeenCalledWith([
+      { text: "甲一", url: "a" },
+      { text: "乙二", url: "b" },
+    ]);
   });
 
   it("does not commit or cancel keys owned by an IME composition", async () => {
@@ -216,12 +277,12 @@ describe("LinkImageEditor", () => {
       session({
         kind: "image",
         canRemove: false,
+        fields: [{ text: "图", url: "assets/a.png" }],
         initialText: "图",
         initialUrl: "assets/a.png",
       }),
       {
-        initialText: "图",
-        initialUrl: "assets/a.png",
+        initialFields: [{ text: "图", url: "assets/a.png" }],
         isRevealablePath: check,
         onReveal: reveal,
       },

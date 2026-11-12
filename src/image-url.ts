@@ -110,3 +110,44 @@ export function resolveLocalImagePath(
   const source = resolveImageSource(src, docPath);
   return source?.kind === "local" ? source.path : null;
 }
+
+/**
+ * Serializes a local image destination with one URL escape per path segment.
+ * Existing escapes are decoded first, so `%20` is not doubled, while query and
+ * fragment suffixes and absolute/remote URLs keep their original meaning.
+ */
+function encodePathSegment(part: string): string {
+  // Match the path-segment escaping used for inserted images: parentheses,
+  // quotes, ! and * would otherwise terminate or alter a Markdown destination.
+  return encodeURIComponent(part).replace(
+    /[!'()*]/g,
+    (character) =>
+      `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+}
+
+export function formatImageDestination(raw: string): string {
+  const trimmed = raw.trim();
+  if (trimmed === "" || trimmed.startsWith("//") || ABSOLUTE_URL.test(trimmed)) {
+    return trimmed;
+  }
+  const suffixAt = trimmed.search(/[?#]/);
+  const pathPart = suffixAt === -1 ? trimmed : trimmed.slice(0, suffixAt);
+  const suffix = suffixAt === -1 ? "" : trimmed.slice(suffixAt);
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(pathPart);
+  } catch {
+    return trimmed;
+  }
+  return (
+    decoded
+      .split("/")
+      .map((part) =>
+        part === "" || part === "." || part === ".."
+          ? part
+          : encodePathSegment(part),
+      )
+      .join("/") + suffix
+  );
+}

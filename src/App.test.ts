@@ -1,3 +1,4 @@
+import { EditorSelection } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { createApp, defineComponent, h, nextTick, ref } from "vue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -9425,6 +9426,82 @@ describe("link and image editing", () => {
     expect(host.querySelector("footer")?.textContent).toContain(
       "显示图片失败",
     );
+  });
+
+  it("edits multiple immersive link drafts in one atomic dialog", async () => {
+    await remountWithSettings({ editorMode: "immersive" });
+    await openFile("a.md", "甲 乙");
+    const view = editorView();
+    view.dispatch({
+      selection: EditorSelection.create([
+        EditorSelection.range(0, 1),
+        EditorSelection.range(2, 3),
+      ]),
+    });
+    view.focus();
+    expect(typeDirect("[")).toBe(true);
+    await settle();
+    expect(view.state.doc.toString()).toBe("甲 乙");
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+    expect(linkImageDialog()?.dataset.batch).toBe("");
+    expect(linkImageInput("文本 1").value).toBe("甲");
+    expect(linkImageInput("文本 2").value).toBe("乙");
+    expect(document.activeElement).toBe(linkImageInput("文本 1"));
+
+    typeLinkImageField("文本 1", "甲一");
+    typeLinkImageField("链接 1", "a");
+    typeLinkImageField("文本 2", "乙二");
+    typeLinkImageField("链接 2", "b");
+    pressEnter(linkImageInput("链接 2"));
+    await settle();
+    expect(linkImageDialog()).toBeNull();
+    expect(view.state.doc.toString()).toBe("[甲一](a) [乙二](b)");
+
+    pressMod("z", "KeyZ", "macos");
+    await settle();
+    expect(view.state.doc.toString()).toBe("甲 乙");
+
+    view.dispatch({
+      selection: EditorSelection.create([
+        EditorSelection.range(0, 1),
+        EditorSelection.range(2, 3),
+      ]),
+    });
+    view.focus();
+    expect(typeDirect("[")).toBe(true);
+    await settle();
+    expect(linkImageInput("文本 1").value).toBe("甲");
+    pressEscape(linkImageInput("文本 1"));
+    await settle();
+    expect(linkImageDialog()).toBeNull();
+    expect(view.state.doc.toString()).toBe("甲 乙");
+  });
+
+  it("lets the focused find input consume Escape while the link draft remains", async () => {
+    await remountWithSettings({ editorMode: "immersive" });
+    await openFile("a.md", "[文字](url)\n");
+    const view = editorView();
+    view.focus();
+    clickEditorAt(view.state.doc.toString().indexOf("文字"));
+    await settle();
+    expect(linkImageDialog()).not.toBeNull();
+
+    pressMod("f", "KeyF", "macos");
+    await settle();
+    expect(findPanel()).not.toBeNull();
+    expect(linkImageDialog()).not.toBeNull();
+    expect(document.activeElement).toBe(findInput());
+
+    pressEscape(findInput());
+    await settle();
+    expect(findPanel()).toBeNull();
+    expect(linkImageDialog()).not.toBeNull();
+    expect(view.state.doc.toString()).toBe("[文字](url)\n");
+
+    expect(document.activeElement).toBe(view.contentDOM);
+    pressEscape(view.contentDOM);
+    await settle();
+    expect(linkImageDialog()).toBeNull();
   });
 
   it("closes the link dialog when the command palette opens", async () => {

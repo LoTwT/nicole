@@ -3,9 +3,11 @@ import {
   type ChangeSet,
   type EditorState,
   type SelectionRange,
+  type Text,
 } from "@codemirror/state";
 
 import { rangeInOrdinaryBody } from "./markdown-context";
+import { splitEdgeWhitespace } from "./whitespace";
 
 export type WrapCharacter = "*" | "`" | "~" | "[";
 
@@ -50,6 +52,12 @@ export function isDirectInputCharacter(
   return DIRECT_CHARACTERS.has(text);
 }
 
+export function isBracketInputCharacter(
+  text: string,
+): text is DirectInputCharacter {
+  return BRACKET_CHARACTERS.has(text);
+}
+
 /** A single selection that can become a new link without touching the document yet. */
 export interface LinkDraftRange {
   from: number;
@@ -62,22 +70,52 @@ export interface LinkDraftRange {
 export interface WrapPlan {
   changes: ChangeSet;
   selection: EditorSelection;
-  /** Present only when the input will open an immersive link draft. */
-  linkDraft: LinkDraftRange | null;
+  /** Present only when the input will open one or more immersive link drafts. */
+  linkDrafts: readonly LinkDraftRange[];
+  /** True when the plan wrapped instead of applying a literal replacement. */
+  wrapped: boolean;
   /** True when `~` would only repeat an existing `~~` pair. */
   noop: boolean;
+}
+
+/**
+ * The immediately preceding backtick wrap. It is accepted only for the exact
+ * document and selection the wrap produced, so an existing InlineCode that
+ * the user navigates back into stays excluded.
+ */
+export interface WrapContinuation {
+  doc: Text;
+  selection: EditorSelection;
+  character: WrapCharacter;
+}
+
+export function wrapContinuationActive(
+  state: EditorState,
+  character: WrapCharacter,
+  continuation: WrapContinuation | null,
+): continuation is WrapContinuation {
+  return (
+    continuation !== null &&
+    continuation.character === character &&
+    state.doc === continuation.doc &&
+    state.selection.eq(continuation.selection, true)
+  );
 }
 
 function singleLine(state: EditorState, range: SelectionRange): boolean {
   return state.doc.lineAt(range.from).number === state.doc.lineAt(range.to).number;
 }
 
-function eligible(state: EditorState, range: SelectionRange): boolean {
+function eligible(
+  state: EditorState,
+  range: SelectionRange,
+  allowInlineCode: boolean,
+): boolean {
   return (
     !range.empty &&
     singleLine(state, range) &&
-    state.sliceDoc(range.from, range.to).trim() !== "" &&
-    rangeInOrdinaryBody(state, range.from, range.to)
+    splitEdgeWhitespace(state.sliceDoc(range.from, range.to)).core !== "" &&
+    rangeInOrdinaryBody(state, range.from, range.to, { allowInlineCode })
   );
 }
 
@@ -92,7 +130,8 @@ function replacementPlan(
   return {
     changes: result.changes,
     selection: result.selection,
-    linkDraft: null,
+    linkDrafts: [],
+    wrapped: false,
     noop: false,
   };
 }
@@ -106,20 +145,23 @@ function replacementPlan(
 export function planWrapInput(
   state: EditorState,
   character: WrapCharacter,
+  continuation: WrapContinuation | null = null,
 ): WrapPlan | null {
   const ranges = state.selection.ranges;
   if (!ranges.some((range) => !range.empty)) return null;
 
-  if (!ranges.every((range) => eligible(state, range))) {
+  const allowInlineCode =
+    character === "`" && wrapContinuationActive(state, character, continuation);
+  if (!ranges.every((range) => eligible(state, range, allowInlineCode))) {
     return replacementPlan(state, character);
   }
 
-  let linkDraft: LinkDraftRange | null = null;
+  const linkDrafts: LinkDraftRange[] = [];
   const result = state.changeByRange((range) => {
-    const leading = /^[ \t]*/.exec(state.sliceDoc(range.from, range.to))?.[0] ?? "";
-    const trailing = /[ \t]*$/.exec(state.sliceDoc(range.from, range.to))?.[0] ?? "";
+    const raw = state.sliceDoc(range.from, range.to);
+    const { leading, trailing, core } = splitEdgeWhitespace(raw);
     const innerFrom = range.from + leading.length;
-    const innerTo = range.to - trailing.length;
+    const innerTo = innerFrom + core.length;
     if (character === "~") {
       const before = state.sliceDoc(Math.max(0, innerFrom - 2), innerFrom);
       const after = state.sliceDoc(innerTo, innerTo + 2);
@@ -131,17 +173,13 @@ export function planWrapInput(
     const marker = character === "~" ? "~~" : character;
     const forward = range.anchor <= range.head;
     if (character === "[") {
-      // The dialog edits one target; several valid selections keep the
-      // literal link syntax instead of stacking dialogs.
-      if (ranges.length === 1) {
-        linkDraft = {
-          from: range.from,
-          to: range.to,
-          text: state.sliceDoc(innerFrom, innerTo),
-          leading,
-          trailing,
-        };
-      }
+      linkDrafts.push({
+        from: range.from,
+        to: range.to,
+        text: core,
+        leading,
+        trailing,
+      });
       return {
         changes: [
           { from: innerFrom, insert: "[" },
@@ -169,7 +207,8 @@ export function planWrapInput(
   return {
     changes: result.changes,
     selection: result.selection,
-    linkDraft,
+    linkDrafts,
+    wrapped: true,
     noop: result.changes.empty,
   };
 }

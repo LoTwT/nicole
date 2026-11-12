@@ -70,12 +70,15 @@ import {
   type ScrollAnchor,
 } from "./scroll";
 import {
+  isBracketInputCharacter,
   isWrapCharacter,
   noteDirectInput,
   planBracketInput,
   planWrapInput,
   takeDirectInput,
+  wrapContinuationActive,
   type DirectInputState,
+  type WrapContinuation,
 } from "./wrap";
 import type {
   CreateEditorOptions,
@@ -106,6 +109,7 @@ export type {
 } from "./find";
 export type {
   LinkImageEditorSession,
+  LinkImageFieldValues,
   LinkImageKind,
   PopoverAnchor,
 } from "./link-editor";
@@ -1492,6 +1496,7 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
   const modeCompartment = new Compartment();
   let mode = initialMode;
   let linkSession: LinkImageEditorSession | null = null;
+  let wrapContinuation: WrapContinuation | null = null;
 
   const enabledCommands = [...commands, ...commandRegistry];
 
@@ -1756,6 +1761,16 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
       EditorView.domEventHandlers({
         keydown(event) {
           noteDirectInput(directInput, event);
+          if (
+            event.key !== "`" ||
+            event.metaKey ||
+            event.ctrlKey ||
+            event.altKey ||
+            event.isComposing ||
+            event.keyCode === 229
+          ) {
+            wrapContinuation = null;
+          }
           return false;
         },
         click(event, editorView) {
@@ -1790,35 +1805,71 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
       }),
     ),
     Prec.highest(
-      EditorView.inputHandler.of((editorView, _from, _to, text) => {
+      EditorView.inputHandler.of((editorView, _from, _to, text, insert) => {
         const character = takeDirectInput(directInput, text);
-        if (
-          character === null ||
-          editorView.compositionStarted ||
-          editorView.composing
-        ) {
+        if (editorView.compositionStarted || editorView.composing) {
           return false;
         }
+        if (character === null) {
+          wrapContinuation = null;
+          // Non-direct DOM input (spell-check replacement, IME commit, paste
+          // or completion) keeps CodeMirror's default semantics, except that
+          // a non-empty selection must never reach closeBrackets pairing.
+          if (
+            !isBracketInputCharacter(text) ||
+            !editorView.state.selection.ranges.some((range) => !range.empty)
+          ) {
+            return false;
+          }
+          editorView.dispatch(insert());
+          return true;
+        }
+        const isBacktickContinuation =
+          character === "`" &&
+          wrapContinuationActive(
+            editorView.state,
+            character,
+            wrapContinuation,
+          );
         const plan = isWrapCharacter(character)
-          ? planWrapInput(editorView.state, character)
+          ? planWrapInput(
+              editorView.state,
+              character,
+              isBacktickContinuation ? wrapContinuation : null,
+            )
           : planBracketInput(editorView.state, character);
-        if (plan === null) return false;
+        if (plan === null) {
+          wrapContinuation = null;
+          return false;
+        }
         if (
           isWrapCharacter(character) &&
           character === "[" &&
           mode === "immersive" &&
-          plan.linkDraft
+          plan.linkDrafts.length > 0
         ) {
-          presentLinkImage(plan.linkDraft, false);
+          wrapContinuation = null;
+          presentLinkImage(plan.linkDrafts, false);
           return true;
         }
-        if (plan.noop) return true;
+        if (plan.noop) {
+          wrapContinuation = null;
+          return true;
+        }
         editorView.dispatch({
           changes: plan.changes,
           selection: plan.selection,
           userEvent: "input.type",
           annotations: isolateHistory.of("full"),
         });
+        wrapContinuation =
+          character === "`" && plan.wrapped
+            ? {
+                doc: editorView.state.doc,
+                selection: editorView.state.selection,
+                character,
+              }
+            : null;
         return true;
       }),
     ),
@@ -1834,6 +1885,13 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     createCommandKeymap(enabledCommands, platform),
     imageHandlers(onPasteImage, createTicketAt),
     EditorView.updateListener.of((update) => {
+      if (
+        wrapContinuation !== null &&
+        (update.state.doc !== wrapContinuation.doc ||
+          !update.state.selection.eq(wrapContinuation.selection, true))
+      ) {
+        wrapContinuation = null;
+      }
       linkSession?.update(update);
       for (const transaction of update.transactions) {
         if (!transaction.effects.some((effect) => effect.is(openLinkEditorEffect))) {
@@ -2175,6 +2233,7 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
       destroyed = true;
       linkSession?.dispose();
       linkSession = null;
+      wrapContinuation = null;
       find.destroy();
       editorDocument.removeEventListener("selectstart", onSelectStart, true);
       window.removeEventListener("focus", recoverRemovedCheckbox);

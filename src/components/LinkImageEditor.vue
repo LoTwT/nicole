@@ -14,28 +14,28 @@ import {
   LINK_IMAGE_POPOVER_WIDTH,
   placeLinkImagePopover,
   type LinkImageEditorSession,
+  type LinkImageFieldValues,
   type PopoverPlacement,
 } from "../editor/link-editor";
 
 const props = defineProps<{
   session: LinkImageEditorSession;
-  initialText: string;
-  initialUrl: string;
+  initialFields: readonly LinkImageFieldValues[];
   platform: AppPlatform;
   isRevealablePath: (path: string) => boolean;
 }>();
 
 const emit = defineEmits<{
   cancel: [];
-  complete: [text: string, url: string];
+  complete: [values: readonly LinkImageFieldValues[]];
   remove: [];
   reveal: [path: string];
 }>();
 
 const popover = ref<HTMLElement | null>(null);
-const textInput = ref<HTMLInputElement | null>(null);
-const text = ref(props.initialText);
-const url = ref(props.initialUrl);
+const fields = ref<LinkImageFieldValues[]>(
+  props.initialFields.map((field) => ({ ...field })),
+);
 const composing = ref(false);
 const position = ref<PopoverPlacement>({
   left: 8,
@@ -52,7 +52,7 @@ const urlLabel = computed(() => (isImage.value ? "路径" : "链接"));
 const revealable = computed(
   () =>
     isImage.value &&
-    props.isRevealablePath(url.value),
+    props.isRevealablePath(fields.value[0]?.url ?? ""),
 );
 const revealText = computed(() => revealLabel(props.platform));
 const revealHint = computed(() =>
@@ -60,6 +60,10 @@ const revealHint = computed(() =>
     ? revealText.value
     : "仅当前工作区中的本地图片可在文件管理器中显示",
 );
+
+function labelFor(base: string, index: number): string {
+  return fields.value.length > 1 ? `${base} ${index + 1}` : base;
+}
 
 function updatePosition() {
   const anchor = props.session.anchor();
@@ -77,14 +81,17 @@ function updatePosition() {
 }
 
 function focusFirstField() {
-  const input = textInput.value;
-  if (input === null) return;
+  const input = popover.value?.querySelector<HTMLInputElement>("input");
+  if (!input) return;
   input.focus();
   input.select();
 }
 
 function complete() {
-  emit("complete", text.value, url.value);
+  emit(
+    "complete",
+    fields.value.map((field) => ({ text: field.text, url: field.url })),
+  );
 }
 
 function cancel() {
@@ -97,7 +104,7 @@ function remove() {
 
 function reveal() {
   if (!revealable.value) return;
-  emit("reveal", url.value);
+  emit("reveal", fields.value[0]?.url ?? "");
 }
 
 function handleKeydown(event: KeyboardEvent) {
@@ -139,10 +146,11 @@ onBeforeUnmount(() => {
 });
 
 watch(
-  () => [text.value, url.value],
+  fields,
   () => {
     void nextTick(updatePosition);
   },
+  { deep: true },
 );
 
 defineExpose({ focusFirstField });
@@ -161,41 +169,64 @@ defineExpose({ focusFirstField });
       role="dialog"
       :aria-label="title"
       :data-placement="position.placement"
+      :data-batch="fields.length > 1 ? '' : undefined"
       data-link-image-editor
       @keydown="handleKeydown"
     >
-      <div class="flex flex-col gap-2">
-        <label class="flex flex-col gap-1">
-          <span class="text-[12px] text-[var(--text-muted)]">{{ textLabel }}</span>
-          <input
-            ref="textInput"
-            v-model="text"
-            type="text"
-            class="focus-ring h-[26px] w-full rounded-[var(--radius-control)] border border-[var(--border-default)] bg-[var(--surface-canvas)] px-2 text-[13px] text-[var(--text-primary)]"
-            :aria-label="textLabel"
-            autocomplete="off"
-            autocapitalize="off"
-            spellcheck="false"
-            @compositionstart="composing = true"
-            @compositionend="composing = false"
-            @blur="composing = false"
-          />
-        </label>
-        <label class="flex flex-col gap-1">
-          <span class="text-[12px] text-[var(--text-muted)]">{{ urlLabel }}</span>
-          <input
-            v-model="url"
-            type="text"
-            class="focus-ring h-[26px] w-full rounded-[var(--radius-control)] border border-[var(--border-default)] bg-[var(--surface-canvas)] px-2 text-[13px] text-[var(--text-primary)]"
-            :aria-label="urlLabel"
-            autocomplete="off"
-            autocapitalize="off"
-            spellcheck="false"
-            @compositionstart="composing = true"
-            @compositionend="composing = false"
-            @blur="composing = false"
-          />
-        </label>
+      <div class="flex max-h-[calc(100vh-32px)] flex-col gap-2">
+        <div
+          class="max-h-[min(50vh,320px)] space-y-3 overflow-y-auto pr-1"
+          data-link-image-fields
+        >
+          <fieldset
+            v-for="(field, index) in fields"
+            :key="index"
+            class="m-0 min-w-0 border-0 p-0"
+          >
+            <legend
+              v-if="fields.length > 1"
+              class="mb-1 text-[12px] font-medium text-[var(--text-secondary)]"
+            >
+              链接 {{ index + 1 }}
+            </legend>
+            <div class="flex flex-col gap-2">
+              <label class="flex flex-col gap-1">
+                <span class="text-[12px] text-[var(--text-muted)]">
+                  {{ labelFor(textLabel, index) }}
+                </span>
+                <input
+                  v-model="field.text"
+                  type="text"
+                  class="focus-ring h-[26px] w-full rounded-[var(--radius-control)] border border-[var(--border-default)] bg-[var(--surface-canvas)] px-2 text-[13px] text-[var(--text-primary)]"
+                  :aria-label="labelFor(textLabel, index)"
+                  autocomplete="off"
+                  autocapitalize="off"
+                  spellcheck="false"
+                  @compositionstart="composing = true"
+                  @compositionend="composing = false"
+                  @blur="composing = false"
+                />
+              </label>
+              <label class="flex flex-col gap-1">
+                <span class="text-[12px] text-[var(--text-muted)]">
+                  {{ labelFor(urlLabel, index) }}
+                </span>
+                <input
+                  v-model="field.url"
+                  type="text"
+                  class="focus-ring h-[26px] w-full rounded-[var(--radius-control)] border border-[var(--border-default)] bg-[var(--surface-canvas)] px-2 text-[13px] text-[var(--text-primary)]"
+                  :aria-label="labelFor(urlLabel, index)"
+                  autocomplete="off"
+                  autocapitalize="off"
+                  spellcheck="false"
+                  @compositionstart="composing = true"
+                  @compositionend="composing = false"
+                  @blur="composing = false"
+                />
+              </label>
+            </div>
+          </fieldset>
+        </div>
         <div class="mt-1 flex flex-wrap justify-end gap-1.5">
           <button
             v-if="session.kind === 'image'"

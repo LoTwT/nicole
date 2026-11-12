@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { resolveImageUrl, resolveLocalImagePath } from "./image-url";
+import {
+  formatImageDestination,
+  resolveImageUrl,
+  resolveLocalImagePath,
+} from "./image-url";
 
 const DOC = "notes/chapter/one.md";
 const GENERATION = 4;
@@ -120,5 +124,47 @@ describe("resolveLocalImagePath", () => {
     }
     expect(resolveLocalImagePath("photo.png", null)).toBeNull();
     expect(resolveLocalImagePath("photo.png", "")).toBeNull();
+  });
+});
+
+describe("formatImageDestination", () => {
+  it("escapes spaces and Unicode one segment at a time", () => {
+    expect(formatImageDestination("assets/图 1.png")).toBe(
+      "assets/%E5%9B%BE%201.png",
+    );
+    expect(formatImageDestination("/图/片 1.png")).toBe(
+      "/%E5%9B%BE/%E7%89%87%201.png",
+    );
+    expect(formatImageDestination("assets/a(1)!*.png")).toBe(
+      "assets/a%281%29%21%2A.png",
+    );
+  });
+
+  it("does not double-encode an already escaped path", () => {
+    expect(formatImageDestination("assets/%E5%9B%BE%201.png")).toBe(
+      "assets/%E5%9B%BE%201.png",
+    );
+    expect(formatImageDestination("assets/my%20photo.png")).toBe(
+      "assets/my%20photo.png",
+    );
+  });
+
+  it("keeps remote, data and query/fragment suffixes intact", () => {
+    expect(formatImageDestination("https://example.com/图 1.png?x=1#top")).toBe(
+      "https://example.com/图 1.png?x=1#top",
+    );
+    expect(formatImageDestination("data:image/svg+xml,%3Csvg%3E")).toBe(
+      "data:image/svg+xml,%3Csvg%3E",
+    );
+    expect(formatImageDestination("assets/图 1.png?raw=1")).toBe(
+      "assets/%E5%9B%BE%201.png?raw=1",
+    );
+  });
+
+  it("round-trips the serialized destination through the local resolver", () => {
+    const encoded = formatImageDestination("assets/图 1.png");
+    expect(resolveLocalImagePath(encoded, "notes/a.md")).toBe(
+      "notes/assets/图 1.png",
+    );
   });
 });
