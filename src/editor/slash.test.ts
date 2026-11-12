@@ -1,7 +1,9 @@
 import type { EditorView } from "@codemirror/view";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { CommandStorage } from "../commands/search";
+import { createSnippetCommands } from "../commands/snippets";
+import type { CommandDefinition } from "../commands/types";
 import { createEditor, type EditorHandle } from "./index";
 import {
   createSlashMenu,
@@ -15,6 +17,17 @@ let editor: EditorHandle | null = null;
 let controller: SlashMenuController | null = null;
 let state: SlashMenuSnapshot = null;
 let storage: CommandStorage;
+
+function placeholderCommand(): CommandDefinition {
+  return {
+    id: "test.placeholder",
+    label: "placeholder",
+    group: "insert",
+    scope: "editor",
+    inSlashMenu: true,
+    run: () => true,
+  };
+}
 
 function fakeStorage(): CommandStorage {
   const values = new Map<string, string>();
@@ -36,6 +49,10 @@ function mount(
     full: (text: string) => text,
     initials: (text: string) => text,
   }),
+  options: {
+    commands?: Parameters<typeof createSlashMenu>[0]["commands"];
+    onOpen?: () => void;
+  } = {},
 ) {
   controller?.destroy();
   editor?.destroy();
@@ -48,6 +65,7 @@ function mount(
       state = next;
     },
     loadPinyin,
+    ...options,
   });
   return editor.view;
 }
@@ -359,6 +377,77 @@ describe("slash search and execution", () => {
     expect(view.state.doc.toString()).toBe("/biao");
     expect(editor?.undo()).toBe(true);
     expect(view.state.doc.toString()).toBe("");
+  });
+
+  it("adds a lazily loaded template and undoes it as one step", async () => {
+    let commands = [placeholderCommand()];
+    const onOpen = vi.fn();
+    const view = mount("", undefined, {
+      commands: () => commands,
+      onOpen,
+    });
+    type(view, "/");
+    expect(onOpen).toHaveBeenCalledOnce();
+
+    commands = [
+      ...commands,
+      ...createSnippetCommands([
+        { id: "snippet:letter.md", label: "letter", body: "Hi{{cursor}}!" },
+      ]),
+    ];
+    controller?.refreshCommands();
+    expect(state?.items.some((item) => item.id === "snippet:letter.md")).toBe(
+      true,
+    );
+
+    type(view, "letter");
+    await settle();
+    const index = state?.items.findIndex(
+      (item) => item.id === "snippet:letter.md",
+    );
+    controller?.execute(index);
+
+    expect(view.state.doc.toString()).toBe("Hi!");
+    expect(view.state.selection.main.head).toBe(2);
+    expect(editor?.undo()).toBe(true);
+    expect(view.state.doc.toString()).toBe("/letter");
+    expect(editor?.undo()).toBe(true);
+    expect(view.state.doc.toString()).toBe("");
+  });
+
+  it("refreshes the command list on every open but not during composition", async () => {
+    let commands = [placeholderCommand()];
+    const onOpen = vi.fn();
+    const view = mount("", undefined, {
+      commands: () => commands,
+      onOpen,
+    });
+    type(view, "/");
+    expect(onOpen).toHaveBeenCalledOnce();
+
+    commands = [
+      ...commands,
+      ...createSnippetCommands([
+        { id: "snippet:letter.md", label: "letter", body: "Hi" },
+      ]),
+    ];
+    composition(view, "compositionstart");
+    controller?.refreshCommands();
+    expect(state?.items.some((item) => item.id === "snippet:letter.md")).toBe(
+      false,
+    );
+
+    composition(view, "compositionend");
+    await settle();
+    expect(state?.items.some((item) => item.id === "snippet:letter.md")).toBe(
+      true,
+    );
+
+    controller?.close();
+    view.dispatch({ selection: { anchor: view.state.doc.length } });
+    type(view, " ");
+    type(view, "/");
+    expect(onOpen).toHaveBeenCalledTimes(2);
   });
 
   it("closes without a match and keeps typing in the document", async () => {

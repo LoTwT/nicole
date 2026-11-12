@@ -20,13 +20,32 @@ export function getCommand(id: string): CommandDefinition | undefined {
   return byId.get(id);
 }
 
+/**
+ * Resolves an id against the static registry and one dynamic snapshot. The
+ * page uses this for commands it saw in a menu; the static ids win, so a
+ * workspace template can never replace a built-in command.
+ */
+export function findCommand(
+  id: string,
+  extra: readonly CommandDefinition[] = [],
+): CommandDefinition | undefined {
+  return byId.get(id) ?? extra.find((command) => command.id === id);
+}
+
 /** Commands that are implemented and dispatchable; placeholders are skipped. */
 export function isCommandAvailable(command: CommandDefinition): boolean {
   return command.available !== false;
 }
 
-export function slashCommands(): readonly CommandDefinition[] {
-  return commandRegistry.filter(
+/**
+ * Slash entries from the static registry plus the current workspace snapshot.
+ * The caller passes the snapshot; the registry remains the only place that
+ * decides which commands may appear in a menu.
+ */
+export function slashCommands(
+  extra: readonly CommandDefinition[] = [],
+): readonly CommandDefinition[] {
+  return [...commandRegistry, ...extra].filter(
     (command) =>
       command.scope === "editor" &&
       command.inSlashMenu &&

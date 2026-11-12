@@ -30,9 +30,12 @@ import { trashLabel, type AppPlatform } from "./app/platform";
 import { matchCommand } from "./commands/keybinding";
 import {
   commandRegistry,
+  findCommand,
   getCommand,
   isCommandAvailable,
+  slashCommands as slashCommandList,
 } from "./commands/registry";
+import { createSnippetCommands } from "./commands/snippets";
 import {
   readRecentCommandIds,
   rememberRecentCommandId,
@@ -158,6 +161,7 @@ import {
   closeWorkspace as closeWorkspaceInGo,
   finishClose,
   listFiles,
+  listSnippets,
   onSaveBeforeClose,
   openDroppedFolder as openDroppedFolderInGo,
   openFolder as openFolderAtPath,
@@ -318,6 +322,10 @@ watch(
 let lastWorkspaceActivePath: string | null = null;
 let slashMenu: SlashMenuController | null = null;
 const slashState = shallowRef<SlashMenuSnapshot>(null);
+// The current root's user templates. Loading starts only when a command menu
+// opens, and a newer request or a root change makes older results stale.
+const workspaceSnippetCommands = shallowRef<readonly CommandDefinition[]>([]);
+let snippetLoadSequence = 0;
 let noticeTimer: ReturnType<typeof setTimeout> | null = null;
 let saveQueue: Promise<boolean> = Promise.resolve(true);
 let applyingExternal = false;
@@ -446,7 +454,7 @@ function commandContextAllows(command: CommandDefinition): boolean {
 }
 
 const paletteCommands = computed(() =>
-  commandRegistry.filter(
+  [...commandRegistry, ...workspaceSnippetCommands.value].filter(
     (command) =>
       isCommandAvailable(command) &&
       commandContextAllows(command) &&
@@ -2319,6 +2327,10 @@ async function mountActive(focus = true) {
   slashMenu = createSlashMenu({
     view: editor.view,
     platform: platform.value,
+    commands: () => slashCommandList(workspaceSnippetCommands.value),
+    onOpen: () => {
+      void refreshSnippetCommands();
+    },
     onChange: (state) => {
       slashState.value = state;
     },
@@ -2525,10 +2537,72 @@ async function openTreeEntry(entry: TreeNode) {
   }
 }
 
+/**
+ * Forgets the previous root's templates immediately. The body text lives in
+ * the command closures, so dropping the list also drops every loaded body.
+ */
+function clearSnippetCommands() {
+  snippetLoadSequence += 1;
+  workspaceSnippetCommands.value = [];
+  slashMenu?.refreshCommands();
+}
+
+/**
+ * Reads one fresh `.nicole/snippets/` snapshot when slash or the command
+ * palette opens. A later request, a root switch, or a close makes an older
+ * response stale before it can reach the current menus. Missing directories
+ * and per-file warnings still leave the built-in commands usable.
+ */
+async function refreshSnippetCommands() {
+  const current = workspace.value;
+  if (current === null) {
+    clearSnippetCommands();
+    return;
+  }
+  const { root, generation } = current;
+  const sequence = ++snippetLoadSequence;
+  // A menu that opens shows the snapshot being read, not the previous open's
+  // list. Reopening after a template change cannot execute the old body while
+  // the new read is in flight.
+  workspaceSnippetCommands.value = [];
+  slashMenu?.refreshCommands();
+  try {
+    const snapshot = await listSnippets(generation);
+    if (
+      sequence !== snippetLoadSequence ||
+      !isCurrentWorkspace(root, generation)
+    ) {
+      return;
+    }
+    workspaceSnippetCommands.value = createSnippetCommands(snapshot.snippets);
+    slashMenu?.refreshCommands();
+    const firstWarning = snapshot.warnings[0];
+    if (firstWarning !== undefined) {
+      showNotice(
+        firstWarning,
+        "danger",
+        undefined,
+        snapshot.warnings.join("\n"),
+      );
+    }
+  } catch (error) {
+    if (
+      sequence !== snippetLoadSequence ||
+      !isCurrentWorkspace(root, generation)
+    ) {
+      return;
+    }
+    workspaceSnippetCommands.value = [];
+    slashMenu?.refreshCommands();
+    showNotice(`无法读取用户模板：${errorText(error)}`, "danger");
+  }
+}
+
 function applyWorkspaceState(folder: {
   root: string;
   generation: number;
 }) {
+  clearSnippetCommands();
   workspace.value = { root: folder.root, generation: folder.generation };
   missingLastFolder.value = null;
   workspaceClosed.value = false;
@@ -2910,6 +2984,7 @@ async function closeWorkspace() {
     activeTabId.value = null;
     lastWorkspaceActivePath = null;
     closedTabs.value = [];
+    clearSnippetCommands();
     workspace.value = null;
     missingLastFolder.value = null;
     overlaySidebar.value = false;
@@ -4112,6 +4187,7 @@ function openCommandPalette(mode: CommandPaletteMode) {
     recentFiles: [...recentFilesForRoot(workspace.value?.root ?? "")],
     recentCommandIds: readRecentCommandIds(),
   };
+  void refreshSnippetCommands();
 }
 
 /**
@@ -4405,7 +4481,7 @@ async function runPaletteCommand(id: string) {
   if (session === null) return;
   closeCommandPalette();
   await nextTick();
-  const command = getCommand(id);
+  const command = findCommand(id, workspaceSnippetCommands.value);
   if (command === undefined || !isCommandAvailable(command)) {
     return;
   }
@@ -4990,6 +5066,7 @@ onBeforeUnmount(() => {
   }
   void saveAllTabs();
   void persistTabsNow();
+  clearSnippetCommands();
   clearEditor();
 });
 

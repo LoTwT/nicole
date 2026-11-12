@@ -91,6 +91,10 @@ var errSearchStopped = errors.New("workspace: search stopped")
 // changed. The entry is skipped like a file removed during the scan.
 var errSearchSkip = errors.New("workspace: search skipped an ineligible path")
 
+// errFileReadLimit means a bounded reader stopped before the whole file was
+// read. The caller decides whether to skip the file or report it.
+var errFileReadLimit = errors.New("workspace: file exceeds the read limit")
+
 // Search scans the Markdown files of the open workspace and streams matching
 // lines on parts. It reads the disk, not unsaved editor text. Hidden folders,
 // node_modules, symlinks and files that are not regular Markdown files are
@@ -263,6 +267,14 @@ func openSearchFile(root *os.Root, name string) (*os.File, error) {
 // being a regular Markdown file in a visible directory is skipped, not read
 // through a link.
 func readSearchFile(root *os.Root, rel string, stop func() bool) ([]byte, error) {
+	return readRegularFile(root, rel, 0, stop)
+}
+
+// readRegularFile is the bounded form used by workspace search (maxBytes 0,
+// unlimited) and user templates (a fixed byte limit). It keeps every identity
+// check of the search reader; maxBytes is enforced before the buffer grows, so
+// a huge or growing file is not read in full.
+func readRegularFile(root *os.Root, rel string, maxBytes int64, stop func() bool) ([]byte, error) {
 	if stop() {
 		return nil, errSearchStopped
 	}
@@ -355,6 +367,9 @@ func readSearchFile(root *os.Root, rel string, stop func() bool) ([]byte, error)
 		}
 		n, readErr := file.Read(chunk)
 		if n > 0 {
+			if maxBytes > 0 && int64(data.Len())+int64(n) > maxBytes {
+				return nil, errFileReadLimit
+			}
 			_, _ = data.Write(chunk[:n])
 		}
 		if errors.Is(readErr, io.EOF) {

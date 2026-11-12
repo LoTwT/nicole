@@ -3,9 +3,11 @@ import {
   events,
   type FolderPick,
   type WorkspaceFolder,
+  type WorkspaceSnippet,
+  type WorkspaceSnippets,
 } from "./mygo";
 
-export type { FolderPick, WorkspaceFolder };
+export type { FolderPick, WorkspaceFolder, WorkspaceSnippet, WorkspaceSnippets };
 
 /** Opens the native folder picker and switches the folder in Go. */
 export function chooseFolder(): Promise<WorkspaceFolder> {
@@ -38,6 +40,14 @@ export function openFolder(path: string): Promise<WorkspaceFolder> {
 /** Lists the Markdown files of the open folder, as slash-separated relative paths. */
 export function listFiles(): Promise<string[]> {
   return Workspace.listFiles();
+}
+
+/**
+ * Reads the fixed `.nicole/snippets/` snapshot for the open root. Only the
+ * generation is sent; Go chooses the folder and returns bounded templates.
+ */
+export function listSnippets(generation: number): Promise<WorkspaceSnippets> {
+  return Workspace.listSnippets(generation);
 }
 
 /** Reads a file of the open folder byte for byte. */

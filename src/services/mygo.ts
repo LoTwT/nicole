@@ -320,6 +320,28 @@ export interface WorkspaceFolder {
   generation: number;
 }
 
+/**
+ * WorkspaceSnippet is one user template. Body keeps the variable markers as
+ * text; the page expands them when the command runs, so {{date}} uses the
+ * execution day rather than the snapshot day.
+ */
+export interface WorkspaceSnippet {
+  id: string;
+  label: string;
+  body: string;
+}
+
+/**
+ * WorkspaceSnippets is one bounded snapshot of .nicole/snippets. Warnings are
+ * ready to show to the user and name every skipped file. A missing directory
+ * returns empty slices and no warnings; other failures still return the
+ * built-in commands to the page and explain themselves here.
+ */
+export interface WorkspaceSnippets {
+  snippets: WorkspaceSnippet[];
+  warnings: string[];
+}
+
 // ---- Services ----
 
 /**
@@ -402,6 +424,17 @@ export const Workspace = {
    */
   listFiles(): Promise<string[]> {
     return call("Workspace.ListFiles");
+  },
+  /**
+   * ListSnippets reads the user templates of the open workspace. generation
+   * must still name the current root; the request names no path, so the page
+   * cannot read any other directory. The fixed folder is read only and is never
+   * created. Files are read through the same non-blocking, identity-checked
+   * primitive as workspace search, limited to 64 KiB per file and 1 MiB in
+   * total.
+   */
+  listSnippets(generation: number): Promise<WorkspaceSnippets> {
+    return call("Workspace.ListSnippets", generation);
   },
   /**
    * OpenDroppedFolder opens the folder of a native drop the page claimed with

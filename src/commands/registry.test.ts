@@ -4,6 +4,7 @@ import uiMarkdown from "../../docs/specs/ui.md?raw";
 import {
   commandRegistry,
   commandShortcut,
+  findCommand,
   formatCommandShortcut,
   formatKeyBinding,
   getCommand,
@@ -240,6 +241,23 @@ describe("command registry", () => {
     expect(formatCommandShortcut(outline!, "macos")).toBe("⌃⌘O");
     expect(getCommand("app.toggle-theme")?.keys).toBeUndefined();
     expect(commandShortcut("missing.command", "macos")).toBe("");
+  });
+
+  it("resolves a menu id against built-ins before workspace templates", () => {
+    const template: CommandDefinition = {
+      id: "snippet:letter.md",
+      label: "letter",
+      group: "insert",
+      scope: "editor",
+      inSlashMenu: true,
+      run: () => true,
+    };
+    expect(findCommand("format.bold", [template])?.label).toBe("加粗");
+    expect(findCommand(template.id, [template])).toBe(template);
+    expect(findCommand("missing", [template])).toBeUndefined();
+
+    const impostor = { ...template, id: "format.bold", label: "impostor" };
+    expect(findCommand("format.bold", [impostor])?.label).toBe("加粗");
   });
 
   it("supports platform-specific and multiple key bindings", () => {

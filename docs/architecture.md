@@ -51,7 +51,8 @@ src/
     word-count.ts         字数口径与恢复副本的字数差
     watch-events.ts       监听事件与已打开文档、文件树刷新范围的对应
     workspace-search.ts   搜索结果分组、高亮片段、内容指纹、错误文案与点击定位校验
-  commands/               唯一命令注册表、格式/应用命令、键位匹配与格式化、拼音搜索
+  commands/               唯一命令注册表、格式/应用/模板命令、键位匹配与格式化、拼音搜索
+    snippets.ts           把当前根的用户模板快照转成普通 CommandDefinition
   components/             界面组件
     AppSidebar.vue        侧栏外壳、宽度拖动、工作区工具行、搜索入口、底部入口
     FileTree.vue          按需读取的文件树、右键菜单、行内新建与重命名
@@ -97,7 +98,7 @@ src/
 Go（main.go）
   Application             版本、平台和 Go 版本（当前）
   updater.Plugin          Sparkle 风格更新窗口与“检查更新…”菜单（当前）
-  Workspace               选择文件夹、列 Markdown、代际绑定写入、关窗保存（当前）
+  Workspace               选择文件夹、列 Markdown、代际绑定写入、用户模板快照、关窗保存（当前）
   File tree / operations  ListDirectory、新建、重命名、废纸篓、默认应用、Finder（当前）
   Workspace.Watch         mygo.WatchFiles 的 Channel 封装，过滤自写（当前）
   SingleFileService       工作区外单个 .md 的按文件授权、读写与显示（当前）
@@ -113,16 +114,16 @@ Go（main.go）
   Export                  导出（后续）
 ```
 
-`main.go` 负责注册插件、绑定服务、注册图片协议、设置菜单和创建窗口；`workspace.go` 实现工作区与路径守卫，`workspace_tree.go` 实现文件树和文件操作，`workspace_watch.go` 封装监听，`workspace_search.go` 实现当前工作区的磁盘全文搜索，`single_file.go` 实现单文件授权，`recovery.go` 实现未保存内容副本和磁盘哈希，`settings.go` 实现设置存储，`tabs.go` 实现标签页布局存储，`menu.go` 实现菜单与原生右键菜单，`assets.go` 实现图片保存，`protocol.go` 实现图片协议，`window_options.go` 定义窗口标题栏，`window_state.go` 实现窗口状态的居中策略。`index.html` 是 Vite 入口，`mygo.config.ts` 描述应用、文件关联、前端构建、生成客户端的位置和输出目录。
+`main.go` 负责注册插件、绑定服务、注册图片协议、设置菜单和创建窗口；`workspace.go` 实现工作区与路径守卫，`workspace_tree.go` 实现文件树和文件操作，`workspace_watch.go` 封装监听，`workspace_search.go` 实现当前工作区的磁盘全文搜索，`workspace_snippets.go` 读取固定的用户模板目录，`single_file.go` 实现单文件授权，`recovery.go` 实现未保存内容副本和磁盘哈希，`settings.go` 实现设置存储，`tabs.go` 实现标签页布局存储，`menu.go` 实现菜单与原生右键菜单，`assets.go` 实现图片保存，`protocol.go` 实现图片协议，`window_options.go` 定义窗口标题栏，`window_state.go` 实现窗口状态的居中策略。`index.html` 是 Vite 入口，`mygo.config.ts` 描述应用、文件关联、前端构建、生成客户端的位置和输出目录。
 
 ## 依赖边界
 
 - `src/editor/` 是纯 TypeScript，不依赖 Vue，也不依赖 MyGo。运行时只导出 `createEditor`；其余导出是调用方需要的类型。
 - MyGo 调用只放在 `src/services/` 和 Go 入口（`main.go` 及同一包内直接使用 MyGo 的服务实现），其他前端模块通过 `src/services/` 间接使用后端能力。生成的客户端直接输出到 `src/services/mygo.ts`。
 - `main.go` 还注册 MyGo 的 `updater.Plugin`，绑定工作区、图片、设置、单文件、打开方式和原生菜单服务，注册图片协议并设置应用菜单；文件监听由 `Workspace.Watch` 在页面调用时开始。更新源、版本注入和发布流程见[发布与自动更新](release.md)。
-- `src/services/` 是生成的 `mygo.ts` 客户端上的薄封装，不承载业务逻辑。`app.ts` 只把 `Application.Info` 包装成 `getAppInfo`；`workspace.ts` 包装 `Workspace` 的 Markdown 方法、`PickFolder`/`OpenFolder` 和关窗保存事件；`files.ts`、`settings.ts`、`single-file.ts`、`menu.ts`、`open-file.ts`、`watch.ts` 和 `search.ts` 分别包装对应服务；`clipboard.ts` 只负责复制界面文字。封装不拼接路径，也不缓存文件内容。
+- `src/services/` 是生成的 `mygo.ts` 客户端上的薄封装，不承载业务逻辑。`app.ts` 只把 `Application.Info` 包装成 `getAppInfo`；`workspace.ts` 包装 `Workspace` 的文件与模板方法、`PickFolder`/`OpenFolder` 和关窗保存事件；`files.ts`、`settings.ts`、`single-file.ts`、`menu.ts`、`open-file.ts`、`watch.ts` 和 `search.ts` 分别包装对应服务；`clipboard.ts` 只负责复制界面文字。封装不拼接路径，也不缓存文件内容。
 - `src/app/` 只放不依赖 Vue 组件实例的界面逻辑，`src/components/` 只负责渲染和交互事件；`App.vue` 负责把这些模块与 `services/` 接起来，不直接调用 MyGo。`src/app/workspace-search.ts` 只处理流式结果的分组、行片段、128 位内容指纹和点击定位校验，`WorkspaceSearch.vue` 只处理输入、开关、渲染和 Channel 会话；`src/app/outline.ts` 过滤大纲标题、定位活动章节并给出 840px 布局阈值。
-- `src/commands/` 保存唯一命令注册表、格式与插入命令、应用与文件树命令、键位匹配和显示、拼音搜索/最近使用逻辑；只依赖 CodeMirror、`src/app/platform.ts`，以及类型层面的 `src/app/file-tree.ts`，不依赖 Vue 或 MyGo。`src/editor/slash.ts` 负责 slash 触发、查询和菜单状态，`src/components/SlashMenu.vue` 只负责渲染和定位；`src/app/context-menu.ts` 组装右键菜单并从注册表读取快捷键。`src/app/command-palette.ts` 处理面板模式标识、文件与标题排序；`src/editor/headings.ts` 从 Lezer 树提取标题；`src/components/CommandPalette.vue` 和 `src/components/Outline.vue` 只负责渲染和交互。
+- `src/commands/` 保存唯一命令注册表、格式与插入命令、应用与文件树命令、键位匹配和显示、拼音搜索/最近使用逻辑；只依赖 CodeMirror、`src/app/platform.ts`，以及类型层面的 `src/app/file-tree.ts`，不依赖 Vue 或 MyGo。`src/commands/snippets.ts` 只接收服务层传来的 `id`/`label`/`body` 快照，把用户模板转成同一种 `CommandDefinition` 并负责变量展开；`App.vue` 负责调用 `Workspace.ListSnippets` 和维护当前快照，命令层不接触 MyGo。`src/editor/slash.ts` 负责 slash 触发、查询和菜单状态，`src/components/SlashMenu.vue` 只负责渲染和定位；`src/app/context-menu.ts` 组装右键菜单并从注册表读取快捷键。`src/app/command-palette.ts` 处理面板模式标识、文件与标题排序；`src/editor/headings.ts` 从 Lezer 树提取标题；`src/components/CommandPalette.vue` 和 `src/components/Outline.vue` 只负责渲染和交互。
 - `createEditor` 的接口为：
 
   ```ts
@@ -191,7 +192,7 @@ Go（main.go）
 - 用 `mygo generate` 生成 TypeScript 客户端，输出路径由 `mygo.config.ts` 的 `bindings` 指定；本项目是 `src/services/mygo.ts`。
 - 前端只通过生成的客户端和 `services/` 调用 Go；Go 用 `mygo.Bind` 暴露服务，用 `*mygo.Channel[T]` 推送流，用 `mygo.NewEvent[T]` 发送事件。
 - 当前的最小服务是 `Application.Info()`，返回应用版本、操作系统、架构、Go 版本和主目录，用来验证前端与 Go 的调用链，并让界面把主目录写成 `~`。
-- `Workspace` 提供 `ChooseFolder`、`PickFolder`、`OpenFolder`、`OpenDroppedFolder`、`CloseWorkspace`、`ListFiles`、`ReadFile`、`WriteFile`、`ConfirmDiscard` 和 `FinishClose`，以及文件树的 `ListDirectory`、`CreateFile`、`CreateFolder`、`RenameEntry`、`TrashEntry`、`OpenWithDefaultApp`、`RevealEntry`、`Watch` 和 `Search`。`PickFolder` 只返回用户在原生对话框中选择的路径；`OpenFolder` 只接受该路径、Go 记录的最近文件夹或系统提供的文件的所在文件夹，页面不能凭任意字符串切换根目录。只有“系统提供文件的父目录”这一来源会拒绝根目录、盘符根目录和主目录；用户主动选择、当前根目录和最近列表不受限制。`OpenDroppedFolder` 只接受 Go 发放的文件夹 token，不接收页面路径；token 和启动状态字段的规则见[拖入文件夹](specs/workspace.md#拖入文件夹)与[设置存储](specs/workspace.md#设置存储)。写操作携带打开时返回的 `generation`，路径和文件类型的规则见[工作区与文件](specs/workspace.md#路径守卫)和[写入保证](specs/workspace.md#写入保证)。
+- `Workspace` 提供 `ChooseFolder`、`PickFolder`、`OpenFolder`、`OpenDroppedFolder`、`CloseWorkspace`、`ListFiles`、`ListSnippets`、`ReadFile`、`WriteFile`、`ConfirmDiscard` 和 `FinishClose`，以及文件树的 `ListDirectory`、`CreateFile`、`CreateFolder`、`RenameEntry`、`TrashEntry`、`OpenWithDefaultApp`、`RevealEntry`、`Watch` 和 `Search`。`ListSnippets` 只接收 `generation`，读取当前根固定的 `.nicole/snippets/`，边界和读取安全见[用户模板目录](specs/workspace.md#用户模板目录)。`PickFolder` 只返回用户在原生对话框中选择的路径；`OpenFolder` 只接受该路径、Go 记录的最近文件夹或系统提供的文件的所在文件夹，页面不能凭任意字符串切换根目录。只有“系统提供文件的父目录”这一来源会拒绝根目录、盘符根目录和主目录；用户主动选择、当前根目录和最近列表不受限制。`OpenDroppedFolder` 只接受 Go 发放的文件夹 token，不接收页面路径；token 和启动状态字段的规则见[拖入文件夹](specs/workspace.md#拖入文件夹)与[设置存储](specs/workspace.md#设置存储)。写操作携带打开时返回的 `generation`，路径和文件类型的规则见[工作区与文件](specs/workspace.md#路径守卫)和[写入保证](specs/workspace.md#写入保证)。
 - 关窗时 Go 发出携带 `token` 的 `workspace:save-before-close` 事件并阻止关闭；前端保存后调用 `FinishClose(token, saved)`。保存失败时由 Go 弹出确认框，只有用户明确选择放弃才关窗；页面无响应时最多等待 5 秒。
 - `Workspace.Watch(generation)` 用 `*mygo.Channel[FileWatchPart]` 流式返回 `ready` 和事件批次；底层是 `mygo.WatchFiles`，在 Go 端过滤 Nicole 自己的写入（见[工作区与文件](specs/workspace.md#忽略-nicole-自己的写入)）。工作区状态本身是可替换的单例，后续协议 handler 在启动时注册、运行时读取同一个状态。
 - `SingleFileService` 提供 `ChooseSingleFile`、`AcceptSingleFile`、`DismissOfferedFile`、`ReadSingleFile`、`WriteSingleFile`、`RevealSingleFile` 和 `ReleaseSingleFile`；授权按解析后的绝对路径保存，只有对话框选择或 `App.OnOpenFile` 提供的文件才能被接受。打开系统文件的父目录是一次性授权：`OpenFolder` 成功后 Go 消耗对应提供项，取消时页面调用 `DismissOfferedFile`。`OpenedFiles` 暂存系统传入的路径；`app:open-file` 只通知“有新文件”，页面收到信号后调用 `TakePendingOpenedFiles` 一次取走队列，既覆盖启动时到达的文件，也不会重复交付同一个文件。

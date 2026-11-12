@@ -62,9 +62,18 @@ export type SlashMenuSnapshot = SlashMenuState | null;
 
 export interface SlashMenuOptions {
   view: EditorView;
-  commands?: readonly CommandDefinition[];
+  /**
+   * The command source for every refresh. A function lets a lazily loaded
+   * workspace snapshot join the menu without rebuilding it; the registry's
+   * static list remains the default.
+   */
+  commands?:
+    | readonly CommandDefinition[]
+    | (() => readonly CommandDefinition[]);
   platform: AppPlatform;
   onChange: (state: SlashMenuSnapshot) => void;
+  /** Called after the menu opens, so the page can refresh its snapshot. */
+  onOpen?: () => void;
   loadPinyin?: () => Promise<PinyinMatcher>;
   storage?: CommandStorage | null;
 }
@@ -73,6 +82,8 @@ export interface SlashMenuController {
   /** Runs the item at the index (defaults to the current selection). */
   execute(index?: number): void;
   highlight(index: number): void;
+  /** Re-reads the command source after a dynamic list arrives. */
+  refreshCommands(): void;
   close(): void;
   destroy(): void;
 }
@@ -171,7 +182,11 @@ function inExcludedContext(state: EditorState, position: number): boolean {
 
 export function createSlashMenu(options: SlashMenuOptions): SlashMenuController {
   const { view, platform, onChange, storage } = options;
-  const commands = options.commands ?? registeredSlashCommands();
+  const commandOption = options.commands;
+  const readCommands: () => readonly CommandDefinition[] =
+    typeof commandOption === "function"
+      ? commandOption
+      : () => commandOption ?? registeredSlashCommands();
   const loadPinyin = options.loadPinyin ?? loadPinyinMatcher;
   const compartment = new Compartment();
 
@@ -232,7 +247,7 @@ export function createSlashMenu(options: SlashMenuOptions): SlashMenuController 
 
   function refresh() {
     if (!open || destroyed) return;
-    const filtered = filterCommands(commands, query, {
+    const filtered = filterCommands(readCommands(), query, {
       matcher: pinyinMatcher,
       recentIds,
     });
@@ -270,6 +285,7 @@ export function createSlashMenu(options: SlashMenuOptions): SlashMenuController 
     matches = [];
     items = [];
     refresh();
+    options.onOpen?.();
     if (!pinyinMatcher && !pinyinLoading) {
       pinyinLoading = true;
       void loadPinyin()
@@ -547,6 +563,13 @@ export function createSlashMenu(options: SlashMenuOptions): SlashMenuController 
       if (!open || items.length === 0) return;
       selectedIndex = Math.min(Math.max(index, 0), items.length - 1);
       emit();
+    },
+    refreshCommands() {
+      // An IME owns the query and the selection while composing. The regular
+      // composition-end sync reads the new list without moving keys or items
+      // in the middle of the composition.
+      if (!open || destroyed || composing()) return;
+      refresh();
     },
     close,
     destroy() {
