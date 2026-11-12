@@ -33,6 +33,8 @@ const props = defineProps<{
   mode: CommandPaletteMode;
   platform: AppPlatform;
   commands: readonly CommandDefinition[];
+  /** The workspace template snapshot is still being read. */
+  commandsLoading?: boolean;
   workspaceOpen: boolean;
   recentFiles: readonly string[];
   recentCommandIds: readonly string[];
@@ -186,6 +188,9 @@ const emptyMessage = computed(() => {
   }
   if (mode.value === "heading" && !props.hasMarkdown) {
     return "当前没有打开的 Markdown 文件";
+  }
+  if (mode.value === "command" && props.commandsLoading === true) {
+    return "正在读取用户模板";
   }
   if (waitingForPinyin.value) return "正在搜索";
   switch (mode.value) {

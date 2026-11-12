@@ -11,6 +11,7 @@ const state: SlashMenuState = {
   query: "bi",
   anchor: { left: 120, top: 200, bottom: 220 },
   selectedIndex: 0,
+  loading: false,
   items: [
     {
       id: "format.heading-1",
@@ -77,5 +78,32 @@ describe("SlashMenu", () => {
 
     options[1]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     expect(onSelect).toHaveBeenCalledWith(1);
+  });
+
+  it("shows a non-executable loading row while templates load", () => {
+    document.body.innerHTML = '<div id="app"></div>';
+    app = createApp(
+      defineComponent({
+        render: () =>
+          h(SlashMenu, {
+            state: {
+              ...state,
+              query: "letter",
+              items: [],
+              loading: true,
+            },
+          }),
+      }),
+    );
+    app.mount("#app");
+
+    expect(document.body.textContent).toContain("/letter");
+    expect(document.body.textContent).toContain("正在读取用户模板");
+    expect(
+      document.querySelectorAll('[role="option"]'),
+    ).toHaveLength(0);
+    expect(document.querySelector('[role="status"]')?.textContent).toContain(
+      "正在读取用户模板",
+    );
   });
 });
