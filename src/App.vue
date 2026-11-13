@@ -355,6 +355,18 @@ const slashModeChosen: Record<SlashMode, boolean> = {
 let settingsWriteQueue: Promise<void> = Promise.resolve();
 let fontWriteTimer: ReturnType<typeof setTimeout> | null = null;
 const preferenceRevisions = new Map<string, number>();
+// A preference has a saved baseline once the initial read or a successful
+// write supplies one. A failed write before that can only restore after the
+// read arrives, because the startup defaults are not the stored values.
+const preferenceBaselines = new Set<string>();
+const pendingPreferenceRestores = new Map<
+  string,
+  { revision: number; restore: () => void }
+>();
+let fontsBaselineReady = false;
+let fontWritePending = false;
+let settingsReadFailed = false;
+let fontBaselineFailureReported = false;
 let lastActiveDocumentId: number | null = null;
 let lastSavedFonts = { ui: "", reading: "", code: "" };
 let fontRevision = 0;
@@ -424,10 +436,16 @@ let applyingExternal = false;
 let restoringTabs = false;
 // Two entry points can request the same file before either read finishes.
 const openingTabs = new Map<string, Promise<boolean>>();
+// A pending ordinary read may satisfy several callers, but a newer Settings
+// activation revokes the activation authority of reads requested before it.
+let ordinaryOpenActivationRevision = 0;
+function invalidateOlderOrdinaryWorkspaceOpens() {
+  ordinaryOpenActivationRevision += 1;
+}
 // A pending workspace read can satisfy several callers, but only the latest
 // caller whose intent is still current may own the activation and its
-// follow-up work (a search jump or heading anchor). Ordinary opens have no
-// guard, so a stale link request cannot cancel them.
+// follow-up work (a search jump or heading anchor). Ordinary opens are kept
+// current unless a Settings activation supersedes them.
 interface WorkspaceOpenRequest {
   isRequestCurrent?: () => boolean;
   onHandoff?: (activation: WorkspaceActivation) => void;
@@ -562,7 +580,7 @@ function captureNavigationSource(
     workspaceRoot: workspace.value?.root ?? null,
     workspaceGeneration: workspace.value?.generation ?? 0,
     tabId: tab?.id ?? null,
-    tabKind: documentTab?.kind ?? null,
+    tabKind: tab?.kind ?? null,
     tabPath: documentTab?.path ?? null,
     tabText: documentTab?.text ?? null,
     editor: sourceEditor,
@@ -609,25 +627,40 @@ function navigationSourceCurrent(source: NavigationSourceSnapshot): boolean {
   } else {
     if (activeTabId.value !== source.tabId) return false;
     const tab = findTab(source.tabId);
-    if (
-      tab === null ||
-      !isDocumentTab(tab) ||
-      tab.kind !== source.tabKind ||
-      tab.path !== source.tabPath ||
-      tab.text !== source.tabText
-    ) {
-      return false;
-    }
-    if (source.editor === null) {
-      if (editor !== null) return false;
-    } else if (
-      editor !== source.editor ||
-      source.view === null ||
-      source.doc === null ||
-      editor.view !== source.view ||
-      source.view.state.doc !== source.doc
-    ) {
-      return false;
+    if (tab === null) return false;
+    if (source.tabKind === "settings") {
+      if (
+        tab.kind !== "settings" ||
+        currentTab.value?.kind !== "settings" ||
+        source.tabPath !== null ||
+        source.tabText !== null ||
+        source.editor !== null ||
+        source.view !== null ||
+        source.doc !== null ||
+        editor !== null
+      ) {
+        return false;
+      }
+    } else {
+      if (
+        !isDocumentTab(tab) ||
+        tab.kind !== source.tabKind ||
+        tab.path !== source.tabPath ||
+        tab.text !== source.tabText
+      ) {
+        return false;
+      }
+      if (source.editor === null) {
+        if (editor !== null) return false;
+      } else if (
+        editor !== source.editor ||
+        source.view === null ||
+        source.doc === null ||
+        editor.view !== source.view ||
+        source.view.state.doc !== source.doc
+      ) {
+        return false;
+      }
     }
   }
   return sourceDialogCurrent(source);
@@ -1244,42 +1277,65 @@ function applySettings(loaded: AppSettings) {
   if (!slashEnabled.value[mode.value]) {
     slashMenu?.close();
   }
-  lastSavedFonts = {
-    ui: fontChosen.ui ? lastSavedFonts.ui : loaded.uiFont ?? "",
-    reading: fontChosen.reading
-      ? lastSavedFonts.reading
-      : loaded.readingFont ?? "",
-    code: fontChosen.code ? lastSavedFonts.code : loaded.codeFont ?? "",
-  };
-  savedPreferences = {
-    theme: themeChosen ? savedPreferences.theme : normalizedTheme,
-    showAllFiles: showAllFilesChosen
-      ? savedPreferences.showAllFiles
-      : loaded.showAllFiles !== false,
-    hideMarkdownExtension: hideMarkdownExtensionChosen
-      ? savedPreferences.hideMarkdownExtension
-      : loaded.hideMarkdownExtension === true,
-    formatToolbarVisible: formatToolbarChosen
-      ? savedPreferences.formatToolbarVisible
-      : loaded.formatToolbarVisible === true,
-    slashEnabled: {
-      live: slashModeChosen.live
-        ? savedPreferences.slashEnabled.live
-        : loaded.slashEnabled?.live !== false,
-      immersive: slashModeChosen.immersive
-        ? savedPreferences.slashEnabled.immersive
-        : loaded.slashEnabled?.immersive !== false,
-      source: slashModeChosen.source
-        ? savedPreferences.slashEnabled.source
-        : loaded.slashEnabled?.source !== false,
-    },
-  };
+  if (!fontsBaselineReady) {
+    lastSavedFonts = {
+      ui: loaded.uiFont ?? "",
+      reading: loaded.readingFont ?? "",
+      code: loaded.codeFont ?? "",
+    };
+    fontsBaselineReady = true;
+  }
+  if (!preferenceBaselines.has("theme")) {
+    savedPreferences.theme = normalizedTheme;
+  }
+  if (!preferenceBaselines.has("showAllFiles")) {
+    savedPreferences.showAllFiles = loaded.showAllFiles !== false;
+  }
+  if (!preferenceBaselines.has("hideMarkdownExtension")) {
+    savedPreferences.hideMarkdownExtension =
+      loaded.hideMarkdownExtension === true;
+  }
+  if (!preferenceBaselines.has("formatToolbarVisible")) {
+    savedPreferences.formatToolbarVisible =
+      loaded.formatToolbarVisible === true;
+  }
+  if (!preferenceBaselines.has("slash:live")) {
+    savedPreferences.slashEnabled.live = slash?.live !== false;
+  }
+  if (!preferenceBaselines.has("slash:immersive")) {
+    savedPreferences.slashEnabled.immersive = slash?.immersive !== false;
+  }
+  if (!preferenceBaselines.has("slash:source")) {
+    savedPreferences.slashEnabled.source = slash?.source !== false;
+  }
+  for (const key of [
+    "theme",
+    "showAllFiles",
+    "hideMarkdownExtension",
+    "formatToolbarVisible",
+    "slash:live",
+    "slash:immersive",
+    "slash:source",
+  ]) {
+    preferenceBaselines.add(key);
+  }
+  for (const [key, pending] of pendingPreferenceRestores) {
+    if (!preferenceRevisionCurrent(key, pending.revision)) {
+      pendingPreferenceRestores.delete(key);
+      continue;
+    }
+    pending.restore();
+    pendingPreferenceRestores.delete(key);
+  }
+  settingsReadFailed = false;
+  fontBaselineFailureReported = false;
   sidebarWidth.value = Math.min(400, Math.max(200, loaded.sidebarWidth || 252));
   recentFolders.value = [...loaded.recentFolders].slice(0, 10);
   expandedByRoot.value = { ...loaded.expandedFolders };
   workspaceClosed.value = loaded.workspaceClosed === true;
   applyTheme();
   applyFontPreferences();
+  if (fontWritePending) flushFontPreferences();
 }
 
 async function loadSettings() {
@@ -1301,7 +1357,11 @@ async function loadSettings() {
   try {
     applySettings(await getSettings());
   } catch {
-    // Defaults: system theme, 252 px, no recent folders.
+    settingsReadFailed = true;
+    if (fontWritePending) {
+      fontBaselineFailureReported = true;
+      showNotice("保存设置失败", "danger", undefined, "设置尚未加载");
+    }
   }
 }
 
@@ -2880,6 +2940,9 @@ async function activateTab(
   if (target === null) {
     return null;
   }
+  if (target.kind === "settings") {
+    invalidateOlderOrdinaryWorkspaceOpens();
+  }
   if (activeTabId.value === id) {
     if (target.kind === "workspace" && workspace.value !== null) {
       rememberRecentWorkspaceFile(workspace.value.root, target.path);
@@ -2946,8 +3009,12 @@ async function openWorkspaceFile(
   if (context === null) {
     return false;
   }
+  const ordinaryActivationRevision = ordinaryOpenActivationRevision;
+  const requestIsCurrent =
+    options.isRequestCurrent ??
+    (() => ordinaryOpenActivationRevision === ordinaryActivationRevision);
   const request: WorkspaceOpenRequest = {
-    isRequestCurrent: options.isRequestCurrent,
+    isRequestCurrent: requestIsCurrent,
     onHandoff: options.onHandoff,
     handedOff: false,
     navigationIntent:
@@ -2955,7 +3022,7 @@ async function openWorkspaceFile(
   };
   const existing = findOpenTabForWorkspacePath(context.root, path);
   if (existing !== undefined) {
-    if (options.isRequestCurrent && !options.isRequestCurrent()) return false;
+    if (!requestIsCurrent()) return false;
     const activation = await activateTab(
       existing.id,
       true,
@@ -4787,6 +4854,7 @@ function reportSettingsFailure(error: unknown) {
 }
 
 function nextPreferenceRevision(key: string): number {
+  pendingPreferenceRestores.delete(key);
   const next = (preferenceRevisions.get(key) ?? 0) + 1;
   preferenceRevisions.set(key, next);
   return next;
@@ -4794,6 +4862,33 @@ function nextPreferenceRevision(key: string): number {
 
 function preferenceRevisionCurrent(key: string, revision: number): boolean {
   return (preferenceRevisions.get(key) ?? 0) === revision;
+}
+
+function markPreferenceBaseline(key: string) {
+  preferenceBaselines.add(key);
+}
+
+/**
+ * A failure can only restore a known saved value. Before the initial read
+ * establishes that value, keep the user's preview and finish the rollback when
+ * applySettings receives the stored baseline.
+ */
+function settlePreferenceFailure(
+  key: string,
+  revision: number,
+  stillShowsFailedValue: () => boolean,
+  restore: () => void,
+) {
+  const run = () => {
+    if (!preferenceRevisionCurrent(key, revision)) return;
+    if (!stillShowsFailedValue()) return;
+    restore();
+  };
+  if (preferenceBaselines.has(key)) {
+    run();
+  } else {
+    pendingPreferenceRestores.set(key, { revision, restore: run });
+  }
 }
 
 function chooseTheme(next: ThemeSetting, reportFailure = true) {
@@ -4806,17 +4901,21 @@ function chooseTheme(next: ThemeSetting, reportFailure = true) {
     {
       onSuccess: () => {
         savedPreferences.theme = next;
+        markPreferenceBaseline("theme");
       },
       onError: (error) => {
-        if (
-          reportFailure &&
-          preferenceRevisionCurrent("theme", revision) &&
-          theme.value === next
-        ) {
-          theme.value = savedPreferences.theme;
-          applyTheme();
+        if (reportFailure) {
+          settlePreferenceFailure(
+            "theme",
+            revision,
+            () => theme.value === next,
+            () => {
+              theme.value = savedPreferences.theme;
+              applyTheme();
+            },
+          );
+          reportSettingsFailure(error);
         }
-        if (reportFailure) reportSettingsFailure(error);
       },
     },
   );
@@ -4832,14 +4931,17 @@ function setShowAllFilesPreference(value: boolean) {
     {
       onSuccess: () => {
         savedPreferences.showAllFiles = value;
+        markPreferenceBaseline("showAllFiles");
       },
       onError: (error) => {
-        if (
-          preferenceRevisionCurrent("showAllFiles", revision) &&
-          showAllFiles.value === value
-        ) {
-          showAllFiles.value = savedPreferences.showAllFiles;
-        }
+        settlePreferenceFailure(
+          "showAllFiles",
+          revision,
+          () => showAllFiles.value === value,
+          () => {
+            showAllFiles.value = savedPreferences.showAllFiles;
+          },
+        );
         reportSettingsFailure(error);
       },
     },
@@ -4856,15 +4958,18 @@ function setHideMarkdownExtensionPreference(value: boolean) {
     {
       onSuccess: () => {
         savedPreferences.hideMarkdownExtension = value;
+        markPreferenceBaseline("hideMarkdownExtension");
       },
       onError: (error) => {
-        if (
-          preferenceRevisionCurrent("hideMarkdownExtension", revision) &&
-          hideMarkdownExtension.value === value
-        ) {
-          hideMarkdownExtension.value =
-            savedPreferences.hideMarkdownExtension;
-        }
+        settlePreferenceFailure(
+          "hideMarkdownExtension",
+          revision,
+          () => hideMarkdownExtension.value === value,
+          () => {
+            hideMarkdownExtension.value =
+              savedPreferences.hideMarkdownExtension;
+          },
+        );
         reportSettingsFailure(error);
       },
     },
@@ -4888,17 +4993,20 @@ function setSlashEnabledPreference(modeToChange: SlashMode, value: boolean) {
           ...savedPreferences.slashEnabled,
           [modeToChange]: value,
         };
+        markPreferenceBaseline(revisionKey);
       },
       onError: (error) => {
-        if (
-          preferenceRevisionCurrent(revisionKey, revision) &&
-          slashEnabled.value[modeToChange] === value
-        ) {
-          slashEnabled.value = {
-            ...slashEnabled.value,
-            [modeToChange]: savedPreferences.slashEnabled[modeToChange],
-          };
-        }
+        settlePreferenceFailure(
+          revisionKey,
+          revision,
+          () => slashEnabled.value[modeToChange] === value,
+          () => {
+            slashEnabled.value = {
+              ...slashEnabled.value,
+              [modeToChange]: savedPreferences.slashEnabled[modeToChange],
+            };
+          },
+        );
         reportSettingsFailure(error);
       },
     },
@@ -4912,6 +5020,7 @@ function setSlashEnabledPreference(modeToChange: SlashMode, value: boolean) {
 function setFontPreference(field: FontField, value: string) {
   fontChosen[field] = true;
   fontRevision += 1;
+  fontWritePending = true;
   if (field === "ui") uiFont.value = value;
   else if (field === "reading") readingFont.value = value;
   else codeFont.value = value;
@@ -4930,6 +5039,15 @@ function flushFontPreferences() {
     clearTimeout(fontWriteTimer);
     fontWriteTimer = null;
   }
+  fontWritePending = true;
+  if (!fontsBaselineReady) {
+    if (settingsReadFailed && !fontBaselineFailureReported) {
+      fontBaselineFailureReported = true;
+      showNotice("保存设置失败", "danger", undefined, "设置尚未加载");
+    }
+    return;
+  }
+  fontWritePending = false;
   const revision = fontRevision;
   const snapshot = {
     ui: uiFont.value,
@@ -4972,15 +5090,18 @@ function setFormatToolbarVisible(visible: boolean) {
     {
       onSuccess: () => {
         savedPreferences.formatToolbarVisible = visible;
+        markPreferenceBaseline("formatToolbarVisible");
       },
       onError: (error) => {
-        if (
-          preferenceRevisionCurrent("formatToolbarVisible", revision) &&
-          formatToolbarVisible.value === visible
-        ) {
-          formatToolbarVisible.value =
-            savedPreferences.formatToolbarVisible;
-        }
+        settlePreferenceFailure(
+          "formatToolbarVisible",
+          revision,
+          () => formatToolbarVisible.value === visible,
+          () => {
+            formatToolbarVisible.value =
+              savedPreferences.formatToolbarVisible;
+          },
+        );
         reportSettingsFailure(error);
       },
     },
@@ -5000,6 +5121,7 @@ function openSettings() {
   const existing = findSettingsTab();
   if (existing !== null) {
     if (activeTabId.value === existing.id) {
+      invalidateOlderOrdinaryWorkspaceOpens();
       void nextTick(() => {
         document.getElementById("settings-theme")?.focus();
       });
@@ -5049,6 +5171,27 @@ function isWorkspaceSearchInput(target: EventTarget | null): boolean {
   return (
     target instanceof HTMLElement &&
     target.matches("[data-search-panel] [data-search-input]")
+  );
+}
+
+// The Settings page uses native controls, so their text-editing ownership must
+// stay intact. Only tab navigation and closing are global even from those
+// controls; every other command still yields to the focused input.
+const SETTINGS_GLOBAL_COMMANDS = new Set([
+  "tab.next",
+  "tab.previous",
+  "tab.close",
+]);
+
+function settingsControlOwnsGlobalShortcut(
+  target: EventTarget | null,
+  commandId: string,
+): boolean {
+  return (
+    currentSettings.value !== null &&
+    target instanceof HTMLElement &&
+    target.closest("[data-settings-view]") !== null &&
+    SETTINGS_GLOBAL_COMMANDS.has(commandId)
   );
 }
 
@@ -5812,11 +5955,17 @@ function runAppShortcutEvent(event: KeyboardEvent): boolean {
   if (handledAppShortcutEvents.has(event)) {
     return true;
   }
-  if (event.defaultPrevented || isTextInput(event.target)) {
+  if (event.defaultPrevented) {
     return false;
   }
   const command = matchCommand(event, platform.value, commandRegistry, "app");
   if (command === null) {
+    return false;
+  }
+  if (
+    isTextInput(event.target) &&
+    !settingsControlOwnsGlobalShortcut(event.target, command.id)
+  ) {
     return false;
   }
   handledAppShortcutEvents.add(event);
@@ -6433,7 +6582,7 @@ defineExpose({
         :sidebar-shown="sidebarShown"
         :show-sidebar-toggle="showSidebarToggle"
         :show-open-folder="!hasWorkspace && tabs.length > 0"
-        :show-mode="currentSettings === null"
+        :show-mode="tabs.length > 0 && currentSettings === null"
         :show-outline="!startState && currentSettings === null"
         :outline-enabled="outlineEnabled"
         :outline-on="outlineDisplayed"
