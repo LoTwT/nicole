@@ -41,6 +41,9 @@ func TestSettingsDefaults(t *testing.T) {
 	if settings.OutlineVisible {
 		t.Error("OutlineVisible = true, want the default false")
 	}
+	if settings.FormatToolbarVisible {
+		t.Error("FormatToolbarVisible = true, want the default false")
+	}
 	if settings.SidebarWidth != defaultSidebarWidth {
 		t.Errorf("SidebarWidth = %d, want %d", settings.SidebarWidth, defaultSidebarWidth)
 	}
@@ -416,6 +419,191 @@ func TestSettingsOutlineVisibleToleratesWrongJSONTypes(t *testing.T) {
 				t.Errorf("wrong outlineVisible type created a corrupt backup: %q", backups)
 			}
 		})
+	}
+}
+
+func TestSettingsSetFormatToolbarVisible(t *testing.T) {
+	store, dir := newTestSettings(t)
+	settings := NewSettings(store)
+	filePath := filepath.Join(dir, settingsFileName)
+	root := filepath.Join(dir, "notes")
+	fixture, err := json.Marshal(map[string]any{
+		"theme":           themeDark,
+		"editorMode":      editorModeSource,
+		"outlineVisible":  true,
+		"sidebarWidth":    300,
+		"recentFolders":   []string{root},
+		"expandedFolders": map[string][]string{root: {"a"}},
+		"workspaceClosed": true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture = append(fixture, '\n')
+	if err := os.WriteFile(filePath, fixture, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, visible := range []bool{true, false, true, false} {
+		if err := settings.SetFormatToolbarVisible(visible); err != nil {
+			t.Fatalf("SetFormatToolbarVisible(%v) = %v", visible, err)
+		}
+		loaded, err := store.get()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if loaded.FormatToolbarVisible != visible {
+			t.Errorf("FormatToolbarVisible = %v, want %v", loaded.FormatToolbarVisible, visible)
+		}
+		if loaded.Theme != themeDark || loaded.EditorMode != editorModeSource ||
+			!loaded.OutlineVisible || loaded.SidebarWidth != 300 ||
+			!loaded.WorkspaceClosed {
+			t.Errorf("other settings changed after SetFormatToolbarVisible(%v): %+v", visible, loaded)
+		}
+		if len(loaded.RecentFolders) != 1 || loaded.RecentFolders[0] != root {
+			t.Errorf("RecentFolders = %q, want [%q]", loaded.RecentFolders, root)
+		}
+		if got := loaded.ExpandedFolders[root]; len(got) != 1 || got[0] != "a" {
+			t.Errorf("ExpandedFolders[%q] = %q, want [a]", root, got)
+		}
+	}
+
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored map[string]any
+	if err := json.Unmarshal(data, &stored); err != nil {
+		t.Fatalf("settings file is not valid JSON: %v", err)
+	}
+	if stored["formatToolbarVisible"] != false {
+		t.Errorf("formatToolbarVisible = %v, want an explicit false", stored["formatToolbarVisible"])
+	}
+}
+
+func TestSettingsFormatToolbarVisibleToleratesWrongJSONTypes(t *testing.T) {
+	store, dir := newTestSettings(t)
+	filePath := filepath.Join(dir, settingsFileName)
+	root := filepath.Join(dir, "notes")
+	cases := []struct {
+		name   string
+		value  string
+		hidden bool
+	}{
+		{name: "missing", value: "", hidden: true},
+		{name: "string", value: `"yes"`, hidden: true},
+		{name: "number", value: "1", hidden: true},
+		{name: "object", value: `{"visible":true}`, hidden: true},
+		{name: "array", value: "[true]", hidden: true},
+		{name: "null", value: "null", hidden: true},
+		{name: "explicit false", value: "false", hidden: true},
+		{name: "explicit true", value: "true", hidden: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var raw json.RawMessage
+			if tc.value != "" {
+				raw = json.RawMessage(tc.value)
+			}
+			fixture := struct {
+				Theme                string              `json:"theme"`
+				EditorMode           string              `json:"editorMode"`
+				OutlineVisible       bool                `json:"outlineVisible"`
+				FormatToolbarVisible json.RawMessage     `json:"formatToolbarVisible,omitempty"`
+				SidebarWidth         int                 `json:"sidebarWidth"`
+				RecentFolders        []string            `json:"recentFolders"`
+				ExpandedFolders      map[string][]string `json:"expandedFolders"`
+				WorkspaceClosed      bool                `json:"workspaceClosed"`
+			}{
+				Theme:                themeDark,
+				EditorMode:           editorModeSource,
+				OutlineVisible:       true,
+				FormatToolbarVisible: raw,
+				SidebarWidth:         300,
+				RecentFolders:        []string{root},
+				ExpandedFolders:      map[string][]string{root: {"a"}},
+				WorkspaceClosed:      true,
+			}
+			content, err := json.Marshal(fixture)
+			if err != nil {
+				t.Fatal(err)
+			}
+			content = append(content, '\n')
+			if err := os.WriteFile(filePath, content, 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			settings, err := store.get()
+			if err != nil {
+				t.Fatalf("get() = %v, want a usable settings value", err)
+			}
+			if settings.FormatToolbarVisible != !tc.hidden {
+				t.Errorf("FormatToolbarVisible = %v, want %v", settings.FormatToolbarVisible, !tc.hidden)
+			}
+			if settings.Theme != themeDark || settings.EditorMode != editorModeSource ||
+				!settings.OutlineVisible || settings.SidebarWidth != 300 ||
+				!settings.WorkspaceClosed {
+				t.Errorf("valid fields were reset: %+v", settings)
+			}
+			if len(settings.RecentFolders) != 1 || settings.RecentFolders[0] != root {
+				t.Errorf("RecentFolders = %q, want [%q]", settings.RecentFolders, root)
+			}
+			if got := settings.ExpandedFolders[root]; len(got) != 1 || got[0] != "a" {
+				t.Errorf("ExpandedFolders[%q] = %#v, want [a]", root, got)
+			}
+
+			after, err := os.ReadFile(filePath)
+			if err != nil {
+				t.Fatalf("settings file was moved or removed: %v", err)
+			}
+			if !bytes.Equal(after, content) {
+				t.Errorf("reading formatToolbarVisible=%q rewrote the file: %q", tc.value, after)
+			}
+			backups, err := filepath.Glob(filePath + ".corrupt-*")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(backups) != 0 {
+				t.Errorf("formatToolbarVisible=%q created a corrupt backup: %q", tc.value, backups)
+			}
+		})
+	}
+}
+
+func TestSettingsFormatToolbarConcurrentWriteKeepsOtherFields(t *testing.T) {
+	store, dir := newTestSettings(t)
+	filePath := filepath.Join(dir, settingsFileName)
+	if err := os.WriteFile(filePath, []byte(`{"theme":"dark","sidebarWidth":300}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var group sync.WaitGroup
+	group.Add(2)
+	go func() {
+		defer group.Done()
+		if err := store.setFormatToolbarVisible(true); err != nil {
+			t.Errorf("setFormatToolbarVisible: %v", err)
+		}
+	}()
+	go func() {
+		defer group.Done()
+		if err := store.update(func(settings *AppSettings) {
+			settings.OutlineVisible = true
+		}); err != nil {
+			t.Errorf("update outlineVisible: %v", err)
+		}
+	}()
+	group.Wait()
+
+	settings, err := store.get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !settings.FormatToolbarVisible || !settings.OutlineVisible {
+		t.Errorf("concurrent updates lost a field: %+v", settings)
+	}
+	if settings.Theme != themeDark || settings.SidebarWidth != 300 {
+		t.Errorf("concurrent updates lost existing settings: %+v", settings)
 	}
 }
 

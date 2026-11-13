@@ -35,6 +35,12 @@ export interface AppSettings {
    */
   outlineVisible: boolean;
   /**
+   * FormatToolbarVisible remembers the global fixed formatting toolbar
+   * switch. The toolbar itself is hidden while no Markdown tab is active;
+   * this value keeps the user's choice for the next Markdown tab.
+   */
+  formatToolbarVisible: boolean;
+  /**
    * SidebarWidth is the sidebar width in CSS pixels, within
    * [200, 400].
    */
@@ -625,6 +631,10 @@ export const Settings = {
    */
   setExpandedFolders(root: string, folders: string[]): Promise<void> {
     return call("Settings.SetExpandedFolders", root, folders);
+  },
+  /** SetFormatToolbarVisible remembers the global formatting toolbar switch. */
+  setFormatToolbarVisible(visible: boolean): Promise<void> {
+    return call("Settings.SetFormatToolbarVisible", visible);
   },
   /**
    * SetOutlineVisible remembers the global outline switch. Narrow windows keep

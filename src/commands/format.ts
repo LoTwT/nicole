@@ -1,5 +1,5 @@
 import { isolateHistory } from "@codemirror/commands";
-import { syntaxTree } from "@codemirror/language";
+import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
 import type {
   ChangeSpec,
   EditorState,
@@ -15,6 +15,31 @@ interface InlineFormat {
   mark: string;
   marker: string;
 }
+
+type SyntaxTree = ReturnType<typeof syntaxTree>;
+
+/** The formats highlighted by the fixed toolbar at the current selection. */
+export interface FormatToolbarState {
+  /** Command ids whose format applies at the selection or caret. */
+  readonly active: ReadonlySet<string>;
+  /** Command id shown by the paragraph-type dropdown. */
+  readonly paragraph: string;
+}
+
+export const EMPTY_FORMAT_TOOLBAR_STATE: FormatToolbarState = {
+  active: new Set<string>(),
+  paragraph: "format.paragraph",
+};
+
+const INLINE_STATE_NODES = [
+  ["format.bold", "StrongEmphasis"],
+  ["format.italic", "Emphasis"],
+  ["format.strikethrough", "Strikethrough"],
+  ["format.inline-code", "InlineCode"],
+  ["format.link", "Link"],
+] as const;
+
+const CODE_BLOCK_NODES = new Set(["FencedCode", "CodeBlock"]);
 
 const INLINE_FORMATS = {
   bold: { node: "StrongEmphasis", mark: "EmphasisMark", marker: "**" },
@@ -47,11 +72,50 @@ function dispatchFormat(target: CommandTarget, spec: TransactionSpec) {
 }
 
 function findAncestor(state: EditorState, pos: number, name: string) {
-  let node = syntaxTree(state).resolveInner(pos, 1);
+  return findAncestorIn(syntaxTree(state), pos, name);
+}
+
+function findAncestorIn(tree: SyntaxTree, pos: number, name: string) {
+  let node = tree.resolveInner(pos, 1);
   while (node.parent && node.name !== name) {
     node = node.parent;
   }
   return node.name === name ? node : null;
+}
+
+/**
+ * Reads every format shown by the fixed toolbar in one syntax-tree pass. The
+ * toolbar calls this only after the selection changes, never while rendering.
+ */
+export function formatToolbarStateFor(state: EditorState): FormatToolbarState {
+  const range = state.selection.main;
+  const probe = range.empty ? range.head : range.from;
+  const tree = ensureSyntaxTree(state, probe, 20) ?? syntaxTree(state);
+  const active = new Set<string>();
+
+  for (const [command, node] of INLINE_STATE_NODES) {
+    if (findAncestorIn(tree, probe, node)) active.add(command);
+  }
+
+  const inCodeBlock = [...CODE_BLOCK_NODES].some((node) =>
+    findAncestorIn(tree, probe, node),
+  );
+  if (inCodeBlock) active.add("format.code-block");
+
+  let paragraph = "format.paragraph";
+  if (!inCodeBlock) {
+    const prefix = parseLinePrefix(state.doc.lineAt(probe).text);
+    if (prefix.kind === "heading" && prefix.headingLevel <= 3) {
+      paragraph = `format.heading-${prefix.headingLevel}`;
+      active.add(paragraph);
+    }
+    if (prefix.kind === "bullet") active.add("format.bullet-list");
+    if (prefix.kind === "ordered") active.add("format.ordered-list");
+    if (prefix.kind === "task") active.add("format.task-list");
+    if (prefix.quote !== "") active.add("format.quote");
+  }
+
+  return { active, paragraph };
 }
 
 function inlineMarkPositions(
@@ -218,6 +282,13 @@ function toggleHeading(view: CommandTarget, level: number) {
     }
     return withPrefix(prefix, `${"#".repeat(level)} `);
   });
+}
+
+/** Turns headings into body text without disturbing lists or quotes. */
+function makeParagraph(view: CommandTarget) {
+  return replaceLines(view, (_line, prefix) =>
+    prefix.kind === "heading" ? withPrefix(prefix, "") : withPrefix(prefix, prefix.marker),
+  );
 }
 
 function toggleList(
@@ -465,6 +536,15 @@ export const formatCommands: readonly CommandDefinition[] = [
     scope: "editor",
     keys: [{ key: "Mod-e" }],
     run: ({ view }) => (view ? toggleInline(view, INLINE_FORMATS.code) : false),
+  },
+  {
+    id: "format.paragraph",
+    label: "正文",
+    pinyin: "zhengwen body paragraph text",
+    icon: "pilcrow",
+    group: "paragraph",
+    scope: "editor",
+    run: ({ view }) => (view ? makeParagraph(view) : false),
   },
   {
     id: "format.heading-1",

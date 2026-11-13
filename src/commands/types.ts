@@ -40,6 +40,7 @@ export interface AppCommandActions {
   saveCurrent(): void | Promise<void>;
   toggleSidebar(): void | Promise<void>;
   toggleOutline(): void | Promise<void>;
+  setFormatToolbarVisible(visible: boolean): void | Promise<void>;
   setMode(mode: CommandEditorMode): void | Promise<void>;
   toggleTheme(): void | Promise<void>;
   closeActiveTab(): void | Promise<void>;
@@ -123,5 +124,11 @@ export interface CommandDefinition {
    * run it in that state.
    */
   requiresClosedTab?: boolean;
+  /**
+   * Shows the command only while the global formatting toolbar preference is
+   * in this state. The preference is independent of the visible toolbar, so
+   * the command stays usable while no Markdown tab is active.
+   */
+  formatToolbarState?: "visible" | "hidden";
   run: (context: CommandContext) => boolean;
 }

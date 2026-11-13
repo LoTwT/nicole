@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AppPlatform } from "../app/platform";
 import { createEditor, type EditorHandle } from "../editor";
+import { formatToolbarStateFor } from "./format";
+import { getCommand, slashCommands } from "./registry";
 
 // jsdom reports an empty navigator.platform, which CodeMirror treats as
 // non-Mac when it resolves `Mod` at module load. Pin it so `Mod` follows the
@@ -201,5 +203,50 @@ describe("format commands", () => {
 
     expect(view.state.doc.toString()).toBe("标题");
     composition(view, "compositionend");
+  });
+
+  it("reads inline, heading, list, quote and code state from the selection", () => {
+    const doc =
+      "**粗体** 普通\n\n## 标题\n\n- [ ] 任务\n\n> 引用\n\n```\n代码\n```\n";
+    const view = mount(doc).view;
+
+    view.dispatch({ selection: { anchor: doc.indexOf("粗体") } });
+    let state = formatToolbarStateFor(view.state);
+    expect(state.active.has("format.bold")).toBe(true);
+    expect(state.paragraph).toBe("format.paragraph");
+    expect(state.active.has("format.paragraph")).toBe(false);
+
+    view.dispatch({ selection: { anchor: doc.indexOf("标题") } });
+    state = formatToolbarStateFor(view.state);
+    expect(state.paragraph).toBe("format.heading-2");
+    expect(state.active.has("format.heading-2")).toBe(true);
+    expect(state.active.has("format.bold")).toBe(false);
+
+    view.dispatch({ selection: { anchor: doc.indexOf("任务") } });
+    state = formatToolbarStateFor(view.state);
+    expect(state.active.has("format.task-list")).toBe(true);
+    expect(state.active.has("format.paragraph")).toBe(false);
+
+    view.dispatch({ selection: { anchor: doc.indexOf("引用") } });
+    state = formatToolbarStateFor(view.state);
+    expect(state.active.has("format.quote")).toBe(true);
+
+    view.dispatch({ selection: { anchor: doc.indexOf("代码") } });
+    state = formatToolbarStateFor(view.state);
+    expect(state.active.has("format.code-block")).toBe(true);
+  });
+
+  it("turns headings into body text through the registered body command", () => {
+    const view = mount("> ## 标题\n\n正文").view;
+    view.dispatch({ selection: { anchor: 4 } });
+    const command = getCommand("format.paragraph")!;
+    expect(command.keys).toBeUndefined();
+    expect(slashCommands().map((item) => item.id)).not.toContain(
+      "format.paragraph",
+    );
+
+    expect(command.run({ view, platform })).toBe(true);
+    expect(view.state.doc.toString()).toBe("> 标题\n\n正文");
+    expect(formatToolbarStateFor(view.state).paragraph).toBe("format.paragraph");
   });
 });

@@ -31,6 +31,11 @@ import {
 import { trashLabel, type AppPlatform } from "./app/platform";
 import { matchCommand } from "./commands/keybinding";
 import {
+  EMPTY_FORMAT_TOOLBAR_STATE,
+  formatToolbarStateFor,
+  type FormatToolbarState,
+} from "./commands/format";
+import {
   commandRegistry,
   getCommand,
   isCommandAvailable,
@@ -83,6 +88,7 @@ import AppSidebar from "./components/AppSidebar.vue";
 import CommandPalette from "./components/CommandPalette.vue";
 import EmptyState from "./components/EmptyState.vue";
 import FindReplacePanel from "./components/FindReplacePanel.vue";
+import FormatToolbar from "./components/FormatToolbar.vue";
 import LinkImageEditor from "./components/LinkImageEditor.vue";
 import NonMarkdownPlaceholder from "./components/NonMarkdownPlaceholder.vue";
 import Outline from "./components/Outline.vue";
@@ -131,6 +137,7 @@ import {
   setEditorMode,
   setExpandedFolders,
   setOutlineVisible,
+  setFormatToolbarVisible as persistFormatToolbarVisible,
   setSidebarWidth,
   setTheme,
   removeRecentFolder,
@@ -291,10 +298,18 @@ const overlaySidebar = ref(false);
 const outlineVisible = ref(false);
 const outlineOverlayOpen = ref(false);
 const outlinePanel = ref<InstanceType<typeof Outline> | null>(null);
+const formatToolbarVisible = ref(false);
+const formatToolbarState = shallowRef<FormatToolbarState>(
+  EMPTY_FORMAT_TOOLBAR_STATE,
+);
+const formatToolbar = ref<InstanceType<typeof FormatToolbar> | null>(null);
+const editorComposing = ref(false);
 // `editor` is intentionally not reactive: only a changed view should rebuild
 // the outline, not every transaction.
 const editorRevision = ref(0);
 let outlineChosen = false;
+let formatToolbarChosen = false;
+let formatToolbarWriteQueue: Promise<void> = Promise.resolve();
 let outlineOverlayReturnFocus: HTMLElement | null = null;
 let outlineFocusSettlement: (() => void) | null = null;
 const handledAppShortcutEvents = new WeakSet<KeyboardEvent>();
@@ -324,6 +339,9 @@ watch(
   (id, previous) => {
     if (id !== previous) {
       tabNavigationRevision += 1;
+      // A toolbar menu belongs to the current tab. Close it without taking
+      // focus; the new tab's editor takes focus through the normal flow.
+      formatToolbar.value?.closeMenus();
     }
   },
   { flush: "sync" },
@@ -693,7 +711,10 @@ function commandContextAllows(command: CommandDefinition): boolean {
     (!command.requiresOpenTab || tabs.value.length > 0) &&
     (!command.requiresActiveMarkdown || currentMarkdown.value !== null) &&
     (!command.requiresMultipleTabs || tabs.value.length > 1) &&
-    (!command.requiresClosedTab || closedTabs.value.length > 0)
+    (!command.requiresClosedTab || closedTabs.value.length > 0) &&
+    (command.formatToolbarState === undefined ||
+      command.formatToolbarState ===
+        (formatToolbarVisible.value ? "visible" : "hidden"))
   );
 }
 
@@ -1095,6 +1116,9 @@ function applySettings(loaded: AppSettings) {
   if (!outlineChosen) {
     outlineVisible.value = loaded.outlineVisible === true;
   }
+  if (!formatToolbarChosen) {
+    formatToolbarVisible.value = loaded.formatToolbarVisible === true;
+  }
   sidebarWidth.value = Math.min(400, Math.max(200, loaded.sidebarWidth || 252));
   recentFolders.value = [...loaded.recentFolders].slice(0, 10);
   expandedByRoot.value = { ...loaded.expandedFolders };
@@ -1301,6 +1325,9 @@ function toggleOutline() {
     return;
   }
   cancelPendingOutlineFocusSettlement();
+  // Opening or closing the outline is a popover takeover: close any toolbar
+  // menu without restoring its old focus or allowing a queued restore.
+  formatToolbar.value?.closeMenus();
   // Opening the floating outline from the top bar or a shortcut must follow
   // the same popover-exclusion path as the command palette.
   topBar.value?.closeModeMenu();
@@ -2134,6 +2161,9 @@ function noteCompositionEndKey(event: KeyboardEvent) {
   if (LONE_MODIFIER_KEYS.has(event.key)) {
     return;
   }
+  // A real key proves the IME handed the editor back even if WKWebView missed
+  // compositionend. Re-enable the toolbar before the autosave-only check.
+  editorComposing.value = false;
   const tab = findTab(activeTabId.value);
   if (tab === null || editor === null) {
     return;
@@ -2147,6 +2177,9 @@ function noteCompositionEndKey(event: KeyboardEvent) {
 
 function handleEditorCompositionStart(tabId: number) {
   invalidatedCompositions.delete(tabId);
+  if (tabId === activeTabId.value) {
+    editorComposing.value = true;
+  }
 }
 
 function scheduleAutosave(tabId: number) {
@@ -2239,6 +2272,10 @@ function handleEditorCompositionEnd(tabId: number) {
     return;
   }
   invalidatedCompositions.delete(tabId);
+  if (tabId === activeTabId.value) {
+    editorComposing.value = false;
+    refreshFormatToolbarState();
+  }
   if (saveTimers.has(tabId) || tab.text === tab.originalText) {
     applyAutosaveState(tab);
   }
@@ -2558,6 +2595,8 @@ function clearEditor() {
   editor?.destroy();
   editor = null;
   editorRevision.value += 1;
+  editorComposing.value = false;
+  formatToolbarState.value = EMPTY_FORMAT_TOOLBAR_STATE;
   editorHost.value?.replaceChildren();
 }
 
@@ -2601,11 +2640,14 @@ async function mountActive(
     onChange: (text) => handleEditorChange(tab.id, text),
     onCompositionStart: () => handleEditorCompositionStart(tab.id),
     onCompositionEnd: () => handleEditorCompositionEnd(tab.id),
+    onSelectionChange: refreshFormatToolbarState,
     onEditLinkImage: handleEditLinkImage,
     onOpenLink: (source) => {
       void openLinkAddress(source);
     },
   });
+  editorComposing.value = false;
+  refreshFormatToolbarState();
   const activation =
     navigationIntent === undefined
       ? null
@@ -4324,6 +4366,30 @@ function runChromeCommand(id: string) {
   runAppCommand(id);
 }
 
+/**
+ * Runs one toolbar command against the live editor state. The toolbar never
+ * stores document positions, so the command always uses the current selection
+ * or caret. Link editing keeps its existing popover focus; every other command
+ * returns focus to the document after the click.
+ */
+function runToolbarCommand(id: string) {
+  if (editorComposing.value) return;
+  const command = getCommand(id);
+  if (
+    command === undefined ||
+    !isCommandAvailable(command) ||
+    command.scope !== "editor" ||
+    !commandContextAllows(command) ||
+    editor === null
+  ) {
+    return;
+  }
+  command.run(commandContext(editor.view));
+  if (command.id !== "format.link") {
+    editor.focus();
+  }
+}
+
 /** Runs a command the native menu asked for, under the page's own guards. */
 function handleRunCommand(event: Event) {
   const id = (event as CustomEvent<unknown>).detail;
@@ -4414,6 +4480,34 @@ function setMode(next: EditorMode) {
   void setEditorMode(next).catch(() => {
     // Keep this session's choice if the write fails.
   });
+}
+
+/**
+ * The toolbar highlights follow the live editor selection. This runs from the
+ * editor's selection-change signal, not from render or pointer movement.
+ */
+function refreshFormatToolbarState() {
+  formatToolbarState.value =
+    editor === null
+      ? EMPTY_FORMAT_TOOLBAR_STATE
+      : formatToolbarStateFor(editor.view.state);
+}
+
+/**
+ * Applies the global toolbar preference immediately and writes the latest
+ * intent in order. An older failed or slow write cannot make a newer toggle
+ * lose the persisted value.
+ */
+function setFormatToolbarVisible(visible: boolean) {
+  formatToolbarChosen = true;
+  formatToolbarVisible.value = visible;
+  if (visible) refreshFormatToolbarState();
+  formatToolbarWriteQueue = formatToolbarWriteQueue
+    .catch(() => {})
+    .then(() => persistFormatToolbarVisible(visible))
+    .catch(() => {
+      // Keep this session's choice if the write fails.
+    });
 }
 
 function activateCurrentTab() {
@@ -4699,6 +4793,7 @@ function closePopoverMenus() {
   closeLinkImageEditor({ restoreFocus: false });
   slashMenu?.close();
   topBar.value?.closeModeMenu();
+  formatToolbar.value?.closeMenus();
   focusOutlineToggleIfInside();
   closeOutlineOverlay(false);
 }
@@ -4707,6 +4802,17 @@ function closePopoverMenus() {
 function handleModeMenuWillOpen() {
   closeLinkImageEditor({ restoreFocus: false });
   editor?.search.close({ restoreFocus: false });
+  formatToolbar.value?.closeMenus();
+  focusOutlineToggleIfInside();
+  closeOutlineOverlay(false);
+}
+
+/** Toolbar menus replace the other temporary popovers in the editor area. */
+function handleFormatToolbarMenuWillOpen() {
+  closeLinkImageEditor({ restoreFocus: false });
+  slashMenu?.close();
+  topBar.value?.closeModeMenu();
+  editor?.search.close({ restoreFocus: false });
   focusOutlineToggleIfInside();
   closeOutlineOverlay(false);
 }
@@ -4714,6 +4820,7 @@ function handleModeMenuWillOpen() {
 /** Find is a popover, so opening it replaces the temporary outline. */
 function handleFindOpened() {
   topBar.value?.closeModeMenu();
+  formatToolbar.value?.closeMenus();
   closeOutlineOverlay(false);
 }
 
@@ -4839,6 +4946,7 @@ function openWorkspaceSearch() {
     searchReturnFocus = focusedControl();
     searchOpen.value = true;
   }
+  formatToolbar.value?.closeMenus();
   showSidebarForSearch();
   void nextTick(() => sidebar.value?.focusSearchInput());
 }
@@ -5012,6 +5120,7 @@ function commandContext(view: CommandContext["view"]): CommandContext {
       },
       toggleSidebar,
       toggleOutline,
+      setFormatToolbarVisible,
       setMode,
       toggleTheme: () => {
         void toggleTheme();
@@ -5800,6 +5909,16 @@ defineExpose({
 
       <div class="relative flex min-h-0 flex-1">
         <main class="flex min-w-0 flex-1 flex-col">
+          <FormatToolbar
+            v-if="formatToolbarVisible && isMarkdownOpen"
+            ref="formatToolbar"
+            :platform="platform"
+            :active="formatToolbarState"
+            :disabled="editorComposing"
+            @run="runToolbarCommand"
+            @menus-will-open="handleFormatToolbarMenuWillOpen"
+            @focus-editor="editor?.focus()"
+          />
           <AppBanner
             v-if="banner"
             :banner="banner"
