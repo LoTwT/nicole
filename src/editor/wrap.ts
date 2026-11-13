@@ -257,6 +257,8 @@ export interface CompositionOperation {
    */
   startDoc: Text;
   startRange: { from: number; to: number; text: string };
+  /** A composition input has been consumed by CodeMirror's input handler. */
+  hasHandledInput: boolean;
   hasInput: boolean;
   lastInput: CompositionInput | null;
 }
@@ -301,6 +303,7 @@ export function noteCompositionStart(
       to: range.to,
       text: editorState.sliceDoc(range.from, range.to),
     },
+    hasHandledInput: false,
     hasInput: false,
     lastInput: null,
   };
@@ -328,6 +331,7 @@ export function noteCompositionInput(
   const composition = state.composition;
   if (composition === null) return;
   composition.hasInput = true;
+  composition.hasHandledInput = true;
   if (text !== null) {
     if (composition.lastInput?.data === text) {
       composition.lastInput.handled = true;
@@ -349,12 +353,15 @@ export function noteCompositionEnd(
   const finalResultObserved =
     last !== null && last.data === data && last.handled;
   // A composition can finish without an input for CodeMirror to consume: if
-  // its final text equals the range it replaced, the document already holds
-  // the result. Only that unchanged range may skip the pending tail; a
-  // different final text or any document change still needs the tail.
+  // its final text equals the range it replaces, the document already holds
+  // the result. The range is kept mapped through document updates, so an
+  // external edit elsewhere must not invalidate that evidence. A composition
+  // input that itself changed the document still needs the last-input or
+  // pending-tail path.
   const rangeAlreadyFinal =
     composition !== null &&
     data.length > 0 &&
+    !composition.hasHandledInput &&
     editorState.doc === composition.startDoc &&
     composition.startRange.text === data;
   state.pendingCompositionEnd =

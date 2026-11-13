@@ -1993,6 +1993,21 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     createCommandKeymap(enabledCommands, platform),
     imageHandlers(onPasteImage, createTicketAt),
     EditorView.updateListener.of((update) => {
+      // Keep the composition range evidence valid across document updates.
+      // An external edit elsewhere must not make an already-complete no-op
+      // composition look pending, and a late end must not use stale positions.
+      if (directInput.composition !== null && update.docChanged) {
+        const mapped = EditorSelection.single(
+          directInput.composition.startRange.from,
+          directInput.composition.startRange.to,
+        ).map(update.changes).main;
+        directInput.composition.startDoc = update.state.doc;
+        directInput.composition.startRange = {
+          from: mapped.from,
+          to: mapped.to,
+          text: update.state.sliceDoc(mapped.from, mapped.to),
+        };
+      }
       if (
         directInput.pendingCompositionEnd !== null &&
         update.state !== directInput.pendingCompositionEnd.state

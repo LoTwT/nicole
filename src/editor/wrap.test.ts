@@ -998,6 +998,170 @@ describe("direct input integration", () => {
     editor.destroy();
   });
 
+  for (const updateDuringComposition of [false, true]) {
+    it(`keeps the next direct after a same-text composition with an external replacement ${updateDuringComposition ? "during" : "before"} it`, async () => {
+      const editor = createEditor({
+        parent: parent(),
+        doc: "*\n原文",
+        mode: "source",
+        platform: "macos",
+      });
+      const view = editor.view;
+      view.dispatch({ selection: { anchor: 0, head: 1 } });
+      view.focus();
+      if (!updateDuringComposition) editor.replaceDocument("*\n外部");
+
+      compositionEvent(view, "compositionstart");
+      compositionEvent(view, "compositionupdate", "*");
+      view.contentDOM.dispatchEvent(
+        new InputEvent("beforeinput", {
+          inputType: "insertCompositionText",
+          data: "*",
+          isComposing: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      // The result equals the selected composition range, so no DOM text or
+      // selection mutation is needed.
+      view.contentDOM.dispatchEvent(
+        new InputEvent("input", {
+          inputType: "insertCompositionText",
+          data: "*",
+          isComposing: true,
+          bubbles: true,
+        }),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      if (updateDuringComposition) editor.replaceDocument("*\n外部");
+
+      expect(view.compositionStarted).toBe(true);
+      expect(view.state.doc.toString()).toBe("*\n外部");
+      expect(view.state.selection.main.from).toBe(0);
+      expect(view.state.selection.main.to).toBe(1);
+      expect(view.contentDOM.querySelector(".cm-line")!.textContent).toBe("*");
+
+      compositionEvent(view, "compositionend", "*");
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(view.compositionStarted).toBe(false);
+      expect(view.state.doc.toString()).toBe("*\n外部");
+      expect(view.state.selection.main.to).toBe(1);
+
+      // The distinct direct key after the composition must still wrap.
+      view.contentDOM.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "*",
+          code: "Digit8",
+          keyCode: 56,
+          shiftKey: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      view.contentDOM.dispatchEvent(
+        new InputEvent("beforeinput", {
+          inputType: "insertText",
+          data: "*",
+          isComposing: false,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      const text = document
+        .createTreeWalker(
+          view.contentDOM.querySelector(".cm-line")!,
+          NodeFilter.SHOW_TEXT,
+        )
+        .nextNode()!;
+      (text as Text).nodeValue = "*";
+      document.getSelection()!.collapse(text, 1);
+      view.contentDOM.dispatchEvent(
+        new InputEvent("input", {
+          inputType: "insertText",
+          data: "*",
+          bubbles: true,
+        }),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 30));
+
+      expect(view.state.doc.toString()).toBe("***\n外部");
+      expect(view.state.selection.main.from).toBe(1);
+      expect(view.state.selection.main.to).toBe(2);
+      editor.destroy();
+    });
+  }
+
+  it("keeps a late composition tail literal after an external replacement during it", async () => {
+    const editor = createEditor({
+      parent: parent(),
+      doc: "*\n原文",
+      mode: "source",
+      platform: "macos",
+    });
+    const view = editor.view;
+    view.dispatch({ selection: { anchor: 0, head: 1 } });
+    view.focus();
+
+    compositionEvent(view, "compositionstart");
+    compositionEvent(view, "compositionupdate", "*");
+    view.contentDOM.dispatchEvent(
+      new InputEvent("beforeinput", {
+        inputType: "insertCompositionText",
+        data: "*",
+        isComposing: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    view.contentDOM.dispatchEvent(
+      new InputEvent("input", {
+        inputType: "insertCompositionText",
+        data: "*",
+        isComposing: true,
+        bubbles: true,
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    editor.replaceDocument("*\n外部");
+
+    // The final data differs from the mapped, unchanged selected text and is
+    // delivered after compositionend; it must remain a literal tail.
+    compositionEvent(view, "compositionend", "[");
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(view.state.doc.toString()).toBe("*\n外部");
+
+    view.contentDOM.dispatchEvent(
+      new InputEvent("beforeinput", {
+        inputType: "insertText",
+        data: "[",
+        isComposing: false,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    const text = document
+      .createTreeWalker(
+        view.contentDOM.querySelector(".cm-line")!,
+        NodeFilter.SHOW_TEXT,
+      )
+      .nextNode()!;
+    (text as Text).nodeValue = "[";
+    document.getSelection()!.collapse(text, 1);
+    view.contentDOM.dispatchEvent(
+      new InputEvent("input", {
+        inputType: "insertText",
+        data: "[",
+        bubbles: true,
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(view.state.doc.toString()).toBe("[\n外部");
+    expect(view.state.selection.main.from).toBe(1);
+    expect(view.state.selection.main.to).toBe(1);
+    editor.destroy();
+  });
+
   for (const inputType of [
     "insertFromPaste",
     "insertFromDrop",
