@@ -72,6 +72,11 @@ export interface CreateEditorOptions {
   /** Called on the DOM compositionstart event of this view. */
   onCompositionStart?: () => void;
   /**
+   * Called after a transaction that explicitly changed the selection. The
+   * fixed toolbar uses it to read the syntax tree once per selection change.
+   */
+  onSelectionChange?: () => void;
+  /**
    * Receives the link or image editing session requested by Mod-K, a direct
    * `[`, an immersive click or the slash link command. Null means the target
    * became invalid and the dialog must close without writing.

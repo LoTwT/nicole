@@ -75,6 +75,30 @@ export const appCommands: readonly CommandDefinition[] = [
     },
   },
   {
+    id: "app.show-format-toolbar",
+    label: "显示格式工具栏",
+    pinyin: "xianshi geshi gongjulan format toolbar show",
+    group: "app",
+    scope: "app",
+    formatToolbarState: "hidden",
+    run: ({ app }) => {
+      void app?.setFormatToolbarVisible(true);
+      return app !== undefined;
+    },
+  },
+  {
+    id: "app.hide-format-toolbar",
+    label: "隐藏格式工具栏",
+    pinyin: "yincang geshi gongjulan format toolbar hide",
+    group: "app",
+    scope: "app",
+    formatToolbarState: "visible",
+    run: ({ app }) => {
+      void app?.setFormatToolbarVisible(false);
+      return app !== undefined;
+    },
+  },
+  {
     id: "app.settings",
     label: "设置",
     group: "app",

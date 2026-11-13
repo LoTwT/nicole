@@ -50,6 +50,7 @@ const mocks = vi.hoisted(() => ({
   setTheme: vi.fn(),
   setEditorMode: vi.fn(),
   setOutlineVisible: vi.fn(),
+  setFormatToolbarVisible: vi.fn(),
   setSidebarWidth: vi.fn(),
   setExpandedFolders: vi.fn(),
   addRecentFolder: vi.fn(),
@@ -111,6 +112,7 @@ vi.mock("./services/settings", () => ({
   setTheme: mocks.setTheme,
   setEditorMode: mocks.setEditorMode,
   setOutlineVisible: mocks.setOutlineVisible,
+  setFormatToolbarVisible: mocks.setFormatToolbarVisible,
   setSidebarWidth: mocks.setSidebarWidth,
   setExpandedFolders: mocks.setExpandedFolders,
   addRecentFolder: mocks.addRecentFolder,
@@ -833,6 +835,7 @@ beforeEach(async () => {
   mocks.setTheme.mockResolvedValue(undefined);
   mocks.setEditorMode.mockResolvedValue(undefined);
   mocks.setOutlineVisible.mockResolvedValue(undefined);
+  mocks.setFormatToolbarVisible.mockResolvedValue(undefined);
   mocks.setSidebarWidth.mockResolvedValue(undefined);
   mocks.setExpandedFolders.mockResolvedValue(undefined);
   mocks.addRecentFolder.mockResolvedValue(undefined);
@@ -1682,6 +1685,262 @@ describe("editor mode settings", () => {
 
     expect(mocks.setEditorMode).toHaveBeenCalledOnce();
     expect(mocks.setEditorMode).toHaveBeenCalledWith("source");
+  });
+});
+
+describe("fixed format toolbar", () => {
+  function toolbar(): HTMLElement | null {
+    return host.querySelector<HTMLElement>("[data-format-toolbar]");
+  }
+
+  function toolbarButton(id: string): HTMLButtonElement {
+    const buttonElement = toolbar()?.querySelector<HTMLButtonElement>(
+      `[data-format-command="${id}"]`,
+    );
+    if (!buttonElement) throw new Error(`toolbar command ${id} not found`);
+    return buttonElement;
+  }
+
+  async function runPaletteCommand(label: string) {
+    pressPaletteShortcut("P");
+    await settle();
+    typePalette(label);
+    await vi.waitFor(() => expect(paletteOffers(label)).toBe(true));
+    paletteOptions()
+      .find((option) => option.textContent?.includes(label))!
+      .click();
+    await settle();
+  }
+
+  it("keeps the global choice while non-Markdown panes hide the toolbar", async () => {
+    await remountWithSettings();
+    expect(toolbar()).toBeNull();
+
+    // The app command works without an editor instance and only remembers the
+    // preference; the start page still has no Markdown editor to decorate.
+    await runPaletteCommand("显示格式工具栏");
+    expect(mocks.setFormatToolbarVisible).toHaveBeenCalledWith(true);
+    expect(toolbar()).toBeNull();
+
+    await openFile("a.md", "hello\n");
+    expect(toolbar()).not.toBeNull();
+    expect(toolbar()!.className).toContain("h-9");
+    expect(toolbar()!.className).toContain("border-b");
+
+    pressPaletteShortcut("P");
+    await settle();
+    expect(paletteOffers("隐藏格式工具栏")).toBe(true);
+    expect(paletteOffers("显示格式工具栏")).toBe(false);
+    await closePalette();
+
+    await runPaletteCommand("隐藏格式工具栏");
+    expect(mocks.setFormatToolbarVisible).toHaveBeenLastCalledWith(false);
+    expect(toolbar()).toBeNull();
+  });
+
+  it("keeps a toolbar choice made while settings are still loading", async () => {
+    const settings = deferred<Record<string, unknown>>();
+    mocks.getSettings.mockImplementation(() => settings.promise);
+    await mountAppWithApi();
+
+    await runPaletteCommand("显示格式工具栏");
+    await openFile("a.md", "hello\n");
+    expect(toolbar()).not.toBeNull();
+    expect(mocks.setFormatToolbarVisible).toHaveBeenCalledOnce();
+
+    settings.resolve({
+      theme: "dark",
+      editorMode: "source",
+      outlineVisible: false,
+      formatToolbarVisible: false,
+      sidebarWidth: 300,
+      recentFolders: [],
+      expandedFolders: {},
+    });
+    await settle();
+
+    expect(toolbar()).not.toBeNull();
+    expect(document.documentElement.classList.contains("dark")).toBe(true);
+    expect(mocks.setFormatToolbarVisible).toHaveBeenCalledOnce();
+  });
+
+  it("writes repeated toggles in order and keeps the last intent", async () => {
+    await openFile("a.md", "hello\n");
+    const first = deferred<void>();
+    mocks.setFormatToolbarVisible
+      .mockImplementationOnce(() => first.promise)
+      .mockResolvedValue(undefined);
+
+    await runPaletteCommand("显示格式工具栏");
+    expect(toolbar()).not.toBeNull();
+    expect(mocks.setFormatToolbarVisible).toHaveBeenCalledOnce();
+
+    await runPaletteCommand("隐藏格式工具栏");
+    expect(toolbar()).toBeNull();
+    // The second write waits for the first instead of racing it.
+    expect(mocks.setFormatToolbarVisible).toHaveBeenCalledOnce();
+
+    first.resolve();
+    await vi.waitFor(() =>
+      expect(mocks.setFormatToolbarVisible).toHaveBeenCalledTimes(2),
+    );
+    expect(mocks.setFormatToolbarVisible).toHaveBeenNthCalledWith(1, true);
+    expect(mocks.setFormatToolbarVisible).toHaveBeenNthCalledWith(2, false);
+    expect(toolbar()).toBeNull();
+  });
+
+  it("runs the live selection, keeps focus and refreshes highlights and undo", async () => {
+    await remountWithSettings({ formatToolbarVisible: true });
+    await openFile("a.md", "hello\n");
+    const view = editorView();
+    view.dispatch({ selection: { anchor: 0, head: 5 } });
+    await settle();
+
+    toolbarButton("format.bold").click();
+    await settle();
+
+    expect(editorView()).toBe(view);
+    expect(view.state.doc.toString()).toBe("**hello**\n");
+    expect(view.state.selection.main.from).toBe(2);
+    expect(view.state.selection.main.to).toBe(7);
+    expect(document.activeElement).toBe(view.contentDOM);
+    expect(toolbarButton("format.bold").dataset.active).toBe("");
+
+    view.dispatch({ selection: { anchor: 9 } });
+    await settle();
+    expect(toolbarButton("format.bold").dataset.active).toBeUndefined();
+
+    view.dispatch({ selection: { anchor: 2, head: 7 } });
+    pressMod("z", "KeyZ", "macos");
+    await settle();
+    expect(view.state.doc.toString()).toBe("hello\n");
+
+    await runPaletteCommand("隐藏格式工具栏");
+    expect(toolbar()).toBeNull();
+    await runPaletteCommand("显示格式工具栏");
+    expect(toolbar()).not.toBeNull();
+    expect(editorView()).toBe(view);
+  });
+
+  it("disables every toolbar action during an IME composition", async () => {
+    await remountWithSettings({ formatToolbarVisible: true });
+    await openFile("a.md", "hello\n");
+    const view = editorView();
+    view.dispatch({ selection: { anchor: 0, head: 5 } });
+
+    view.contentDOM.dispatchEvent(
+      new CompositionEvent("compositionstart", { bubbles: true }),
+    );
+    await settle();
+    expect(toolbarButton("format.bold").disabled).toBe(true);
+    expect(
+      toolbar()!.querySelector<HTMLButtonElement>(
+        "[data-format-paragraph-trigger]",
+      )!.disabled,
+    ).toBe(true);
+    toolbarButton("format.bold").click();
+    await settle();
+    expect(view.state.doc.toString()).toBe("hello\n");
+
+    view.contentDOM.dispatchEvent(
+      new CompositionEvent("compositionend", { bubbles: true, data: "h" }),
+    );
+    await settle();
+    expect(toolbarButton("format.bold").disabled).toBe(false);
+    toolbarButton("format.bold").click();
+    await settle();
+    expect(view.state.doc.toString()).toBe("**hello**\n");
+  });
+
+  it("closes toolbar menus on tab switches and when another popover opens", async () => {
+    await remountWithSettings({ formatToolbarVisible: true });
+    await setupWorkspace({ "a.md": "# A\n", "b.md": "# B\n" });
+    await openPath("/notes/a.md");
+    await settle();
+    await openPath("/notes/b.md");
+    await settle();
+    tabNamed("a.md").click();
+    await settle();
+
+    const trigger = toolbar()!.querySelector<HTMLButtonElement>(
+      "[data-format-paragraph-trigger]",
+    )!;
+    trigger.click();
+    await settle();
+    expect(host.querySelector('[data-format-menu="paragraph"]')).not.toBeNull();
+
+    tabNamed("b.md").click();
+    await settle();
+    expect(host.querySelector('[data-format-menu="paragraph"]')).toBeNull();
+    expect(editorView().state.doc.toString()).toBe("# B\n");
+    expect(toolbar()).not.toBeNull();
+
+    tabNamed("a.md").click();
+    await settle();
+    toolbar()!
+      .querySelector<HTMLButtonElement>("[data-format-paragraph-trigger]")!
+      .click();
+    await settle();
+    pressPaletteShortcut("P");
+    await settle();
+    expect(host.querySelector('[data-format-menu="paragraph"]')).toBeNull();
+    expect(document.activeElement).toBe(paletteInput());
+    await closePalette();
+  });
+
+  it("executes a command moved into More in the narrow real DOM", async () => {
+    await remountWithSettings({ formatToolbarVisible: true });
+    await openFile("a.md", "hello\n");
+    await settle();
+
+    const rect = (width: number) =>
+      ({
+        x: 0,
+        y: 0,
+        width,
+        height: 28,
+        top: 0,
+        right: width,
+        bottom: 28,
+        left: 0,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    const spy = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function getBoundingClientRect(this: HTMLElement) {
+        if (this.hasAttribute("data-format-toolbar")) return rect(200);
+        const key = this.getAttribute("data-measure-key");
+        if (key === "__more") return rect(28);
+        if (key === "paragraph") return rect(88);
+        if (key !== null) return rect(28);
+        return rect(0);
+      });
+    try {
+      window.dispatchEvent(new Event("resize"));
+      await settle();
+
+      const more = toolbar()!.querySelector<HTMLButtonElement>(
+        "[data-format-more]",
+      )!;
+      expect(more).not.toBeNull();
+      expect(
+        toolbar()!.querySelector('[data-format-command="insert.table"]'),
+      ).toBeNull();
+      more.click();
+      await settle();
+      const moved = host.querySelector<HTMLButtonElement>(
+        '[data-format-menu="more"] [data-format-command="insert.table"]',
+      );
+      expect(moved).not.toBeNull();
+      moved!.click();
+      await settle();
+      expect(editorView().state.doc.toString()).toContain(
+        "| 列 1 | 列 2 |",
+      );
+      expect(document.activeElement).toBe(editorView().contentDOM);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 

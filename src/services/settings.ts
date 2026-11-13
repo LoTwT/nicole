@@ -33,6 +33,11 @@ export function setOutlineVisible(visible: boolean): Promise<void> {
   return Settings.setOutlineVisible(visible);
 }
 
+/** Remembers the global fixed formatting toolbar switch. */
+export function setFormatToolbarVisible(visible: boolean): Promise<void> {
+  return Settings.setFormatToolbarVisible(visible);
+}
+
 /** Saves the sidebar width; Go clamps it to 200–400 px. */
 export function setSidebarWidth(width: number): Promise<void> {
   return Settings.setSidebarWidth(width);

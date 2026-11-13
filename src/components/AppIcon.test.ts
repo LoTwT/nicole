@@ -14,6 +14,22 @@ afterEach(() => {
 describe("AppIcon", () => {
   it("renders every icon on the shared Lucide grid", () => {
     const names = [
+      "bold",
+      "italic",
+      "strikethrough",
+      "code",
+      "link",
+      "pilcrow",
+      "heading-1",
+      "heading-2",
+      "heading-3",
+      "list",
+      "list-ordered",
+      "list-todo",
+      "quote",
+      "square-code",
+      "table",
+      "image",
       "sidebar",
       "search",
       "plus",

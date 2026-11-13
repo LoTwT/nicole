@@ -66,12 +66,12 @@
 | 图标与分组 | 供以后的格式工具栏使用；分组为行内、段落、内容块、插入类或应用类 |
 | 作用域与菜单 | `scope` 为 `editor`、`app` 或 `file-tree`：编辑器命令从上下文读取 `EditorView`，应用命令由 `App.vue` 分发，文件树命令只在文件树有焦点时执行并从上下文取焦点节点；`inSlashMenu` 决定是否出现在 slash 菜单 |
 | 是否可用 | `available` 默认为真；未实现功能的命令以 `available: false` 登记占位，快捷键仍可显示，但按键不执行命令，也不阻止默认行为（与未匹配的按键相同），slash 菜单和命令面板也不列出 |
-| 状态要求 | `requiresWorkspace` 需要打开的根目录；`requiresOpenTab` 需要至少一个打开的标签页；`requiresActiveMarkdown` 需要活动标签页是 Markdown 文件；`requiresMultipleTabs` 需要至少两个打开的标签页；`requiresClosedTab` 需要关闭历史非空。未满足时命令不执行，也不显示在命令面板。有快捷键时，只有在应用快捷键生效的状态下（未处于输入法组合、焦点不在文本输入框、没有页面对话框或恢复对话框、命令面板未打开）且状态满足要求，按键才会被应用吞掉并阻止默认行为；状态不满足时也不执行命令，但仍阻止默认行为以免触发 WebView 或系统默认动作。其他状态与未匹配的按键相同。原生命令分发和命令面板的执行请求也由同一检查拦截；命令本身的 `run` 仍要检查上下文 |
+| 状态要求 | `requiresWorkspace` 需要打开的根目录；`requiresOpenTab` 需要至少一个打开的标签页；`requiresActiveMarkdown` 需要活动标签页是 Markdown 文件；`requiresMultipleTabs` 需要至少两个打开的标签页；`requiresClosedTab` 需要关闭历史非空；`formatToolbarState` 只在全局格式工具栏开关为该状态时可见。未满足时命令不执行，也不显示在命令面板。有快捷键时，只有在应用快捷键生效的状态下（未处于输入法组合、焦点不在文本输入框、没有页面对话框或恢复对话框、命令面板未打开）且状态满足要求，按键才会被应用吞掉并阻止默认行为；状态不满足时也不执行命令，但仍阻止默认行为以免触发 WebView 或系统默认动作。其他状态与未匹配的按键相同。原生命令分发和命令面板的执行请求也由同一检查拦截；命令本身的 `run` 仍要检查上下文 |
 | 执行函数 | 实际插入文本或执行操作；接收命令上下文，编辑器命令从中读取当前 `EditorView`，应用和文件树命令从中读取动作与焦点节点 |
 
 Slash 菜单、快捷键、命令面板、格式工具栏和右键菜单都从这一份注册表读取，命令只注册一次。它们在界面上的位置和行为见[界面与交互](ui.md)。
 
-应用命令当前的状态要求：`app.new-file`、`nav.search`、`nav.toggle-sidebar`、`app.close-workspace`、`app.collapse-folders`、`app.reveal-workspace` 和 `tab.reopen` 需要工作区；`tab.close` 需要打开的标签页；`app.save` 和 `nav.toggle-outline` 需要活动标签页是 Markdown 文件；`tab.next`、`tab.previous` 需要至少两个打开的标签页；`tab.reopen` 还需要关闭历史非空。关闭历史只记录工作区标签页，单文件标签页关闭后不进入历史。
+应用命令当前的状态要求：`app.new-file`、`nav.search`、`nav.toggle-sidebar`、`app.close-workspace`、`app.collapse-folders`、`app.reveal-workspace` 和 `tab.reopen` 需要工作区；`tab.close` 需要打开的标签页；`app.save` 和 `nav.toggle-outline` 需要活动标签页是 Markdown 文件；`tab.next`、`tab.previous` 需要至少两个打开的标签页；`tab.reopen` 还需要关闭历史非空。`app.show-format-toolbar` 和 `app.hide-format-toolbar` 按全局格式工具栏开关只显示当前可用的一项，不要求活动 Markdown 编辑器。关闭历史只记录工作区标签页，单文件标签页关闭后不进入历史。
 
 ## 与编辑模式的关系
 
@@ -88,3 +88,4 @@ Slash 命令的作用只是插入 Markdown 文本，所以和编辑模式无关�
 - 格式命令的事务使用 `input.format` 并通过 `isolateHistory` 与之前的输入分开。
 - 命令面板的三入口和三种模式在 `src/components/CommandPalette.vue`，模式解析、文件排序和最近文件记录在 `src/app/command-palette.ts`。命令模式过滤可用且当前可执行的注册表命令，编辑器命令在没有活动 Markdown 编辑器时不出现；执行后写入 `nicole:commands:recent`。面板和 slash 菜单共用 `loadPinyinMatcher()` 与 `filterCommands()`，`pinyin-pro` 仍只在第一次打开任一面板时加载。
 - 用户模板由 `src/commands/snippets.ts` 转成普通命令，`App.vue` 在 slash 或命令面板打开时调用 `Workspace.ListSnippets(generation)` 并替换当前快照；Go 实现在 `workspace_snippets.go`。按编辑模式开关尚未实现，在后续设置的 PR 中完成。
+- 固定格式工具栏（E3）由 `src/components/FormatToolbar.vue` 消费同一注册表：`format.bold` 等行内命令、`format.paragraph` / `format.heading-*` 段落类型、列表与引用命令和 `insert.table` / `insert.image` 按固定顺序显示；正文命令没有默认键位，也不进入 slash 菜单。`formatToolbarStateFor` 在选区变化时查询一次语法树，组件不保存文档位置或 Markdown 改写逻辑。显示/隐藏工具栏的两个应用命令通过 `formatToolbarState` 在命令面板中互斥出现。窄窗口用隐藏镜像测量命令宽度，把不再放下的命令移入“更多”，不靠 `overflow: hidden` 丢弃功能。

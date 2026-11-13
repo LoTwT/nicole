@@ -50,6 +50,10 @@ type AppSettings struct {
 	// OutlineVisible remembers whether the outline is open. The narrow
 	// floating outline is temporary and does not change this value.
 	OutlineVisible bool `json:"outlineVisible"`
+	// FormatToolbarVisible remembers the global fixed formatting toolbar
+	// switch. The toolbar itself is hidden while no Markdown tab is active;
+	// this value keeps the user's choice for the next Markdown tab.
+	FormatToolbarVisible bool `json:"formatToolbarVisible"`
 	// SidebarWidth is the sidebar width in CSS pixels, within
 	// [200, 400].
 	SidebarWidth int `json:"sidebarWidth"`
@@ -116,6 +120,11 @@ func (s *Settings) SetOutlineVisible(visible bool) error {
 	return s.store.update(func(settings *AppSettings) {
 		settings.OutlineVisible = visible
 	})
+}
+
+// SetFormatToolbarVisible remembers the global formatting toolbar switch.
+func (s *Settings) SetFormatToolbarVisible(visible bool) error {
+	return s.store.setFormatToolbarVisible(visible)
 }
 
 // SetSidebarWidth saves the sidebar width, clamped to the range the interface
@@ -210,13 +219,14 @@ func newSettingsStoreIn(filePath string) *settingsStore {
 // settingsFile mirrors AppSettings but distinguishes a missing theme from an
 // explicit one, which legacy migration needs.
 type settingsFile struct {
-	Theme           *string             `json:"theme"`
-	EditorMode      json.RawMessage     `json:"editorMode"`
-	OutlineVisible  json.RawMessage     `json:"outlineVisible"`
-	SidebarWidth    int                 `json:"sidebarWidth"`
-	RecentFolders   []string            `json:"recentFolders"`
-	ExpandedFolders map[string][]string `json:"expandedFolders"`
-	WorkspaceClosed bool                `json:"workspaceClosed"`
+	Theme                *string             `json:"theme"`
+	EditorMode           json.RawMessage     `json:"editorMode"`
+	OutlineVisible       json.RawMessage     `json:"outlineVisible"`
+	FormatToolbarVisible json.RawMessage     `json:"formatToolbarVisible"`
+	SidebarWidth         int                 `json:"sidebarWidth"`
+	RecentFolders        []string            `json:"recentFolders"`
+	ExpandedFolders      map[string][]string `json:"expandedFolders"`
+	WorkspaceClosed      bool                `json:"workspaceClosed"`
 }
 
 func defaultSettings() AppSettings {
@@ -264,6 +274,12 @@ func (s *settingsStore) setEditorMode(mode string) error {
 	}
 	return s.update(func(settings *AppSettings) {
 		settings.EditorMode = mode
+	})
+}
+
+func (s *settingsStore) setFormatToolbarVisible(visible bool) error {
+	return s.update(func(settings *AppSettings) {
+		settings.FormatToolbarVisible = visible
 	})
 }
 
@@ -343,13 +359,14 @@ func (s *settingsStore) readLocked() (AppSettings, bool, error) {
 	}
 	themePresent := file.Theme != nil
 	settings := AppSettings{
-		Theme:           themeSystem,
-		EditorMode:      decodeEditorMode(file.EditorMode),
-		OutlineVisible:  decodeOutlineVisible(file.OutlineVisible),
-		SidebarWidth:    file.SidebarWidth,
-		RecentFolders:   file.RecentFolders,
-		ExpandedFolders: file.ExpandedFolders,
-		WorkspaceClosed: file.WorkspaceClosed,
+		Theme:                themeSystem,
+		EditorMode:           decodeEditorMode(file.EditorMode),
+		OutlineVisible:       decodeOutlineVisible(file.OutlineVisible),
+		FormatToolbarVisible: decodeFormatToolbarVisible(file.FormatToolbarVisible),
+		SidebarWidth:         file.SidebarWidth,
+		RecentFolders:        file.RecentFolders,
+		ExpandedFolders:      file.ExpandedFolders,
+		WorkspaceClosed:      file.WorkspaceClosed,
 	}
 	if file.Theme != nil {
 		settings.Theme = *file.Theme
@@ -376,6 +393,19 @@ func decodeEditorMode(raw json.RawMessage) string {
 // a hand-edited wrong type falls back to the default (hidden) without
 // replacing every other valid setting with defaults.
 func decodeOutlineVisible(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var visible bool
+	if err := json.Unmarshal(raw, &visible); err != nil {
+		return false
+	}
+	return visible
+}
+
+// decodeFormatToolbarVisible keeps a missing or mistyped toolbar preference
+// from resetting the other saved settings. An explicit false round-trips.
+func decodeFormatToolbarVisible(raw json.RawMessage) bool {
 	if len(raw) == 0 {
 		return false
 	}

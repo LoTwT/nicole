@@ -1,6 +1,22 @@
 <!-- Icon geometry from Lucide v1.66.0, ISC. See THIRD-PARTY-NOTICES.md. -->
 <script setup lang="ts">
 type IconName =
+  | "bold"
+  | "italic"
+  | "strikethrough"
+  | "code"
+  | "link"
+  | "pilcrow"
+  | "heading-1"
+  | "heading-2"
+  | "heading-3"
+  | "list"
+  | "list-ordered"
+  | "list-todo"
+  | "quote"
+  | "square-code"
+  | "table"
+  | "image"
   | "sidebar"
   | "search"
   | "plus"
@@ -42,7 +58,95 @@ withDefaults(
     aria-hidden="true"
     focusable="false"
   >
-    <template v-if="name === 'sidebar'">
+    <template v-if="name === 'bold'">
+      <path d="M6 12h9a4 4 0 010 8H7a1 1 0 01-1-1V5a1 1 0 011-1h7a4 4 0 010 8" />
+    </template>
+    <template v-else-if="name === 'italic'">
+      <line x1="19" x2="10" y1="4" y2="4" />
+      <line x1="14" x2="5" y1="20" y2="20" />
+      <line x1="15" x2="9" y1="4" y2="20" />
+    </template>
+    <template v-else-if="name === 'strikethrough'">
+      <path d="M16 4H9a3 3 0 0 0-2.83 4" />
+      <path d="M14 12a4 4 0 0 1 0 8H6" />
+      <line x1="4" x2="20" y1="12" y2="12" />
+    </template>
+    <template v-else-if="name === 'code'">
+      <path d="m16 18 6-6-6-6" />
+      <path d="m8 6-6 6 6 6" />
+    </template>
+    <template v-else-if="name === 'link'">
+      <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+      <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+    </template>
+    <template v-else-if="name === 'pilcrow'">
+      <path d="M13 4v16" />
+      <path d="M17 4v16" />
+      <path d="M19 4H9.5a4.5 4.5 0 0 0 0 9H13" />
+    </template>
+    <template v-else-if="name === 'heading-1'">
+      <path d="M4 12h8" />
+      <path d="M4 18V6" />
+      <path d="M12 18V6" />
+      <path d="m17 12 3-2v8" />
+    </template>
+    <template v-else-if="name === 'heading-2'">
+      <path d="M4 12h8" />
+      <path d="M4 18V6" />
+      <path d="M12 18V6" />
+      <path d="M21 18h-4c0-4 4-3 4-6 0-1.5-2-2.5-4-1" />
+    </template>
+    <template v-else-if="name === 'heading-3'">
+      <path d="M4 12h8" />
+      <path d="M4 18V6" />
+      <path d="M12 18V6" />
+      <path d="M17.5 10.5c1.7-1 3.5 0 3.5 1.5a2 2 0 0 1-2 2" />
+      <path d="M17 17.5c2 1.5 4 .3 4-1.5a2 2 0 0 0-2-2" />
+    </template>
+    <template v-else-if="name === 'list'">
+      <path d="M3 5h.01" />
+      <path d="M3 12h.01" />
+      <path d="M3 19h.01" />
+      <path d="M8 5h13" />
+      <path d="M8 12h13" />
+      <path d="M8 19h13" />
+    </template>
+    <template v-else-if="name === 'list-ordered'">
+      <path d="M11 5h10" />
+      <path d="M11 12h10" />
+      <path d="M11 19h10" />
+      <path d="M4 4h1v5" />
+      <path d="M4 9h2" />
+      <path d="M6.5 20H3.4c0-1 2.6-1.925 2.6-3.5a1.5 1.5 0 0 0-2.6-1.02" />
+    </template>
+    <template v-else-if="name === 'list-todo'">
+      <path d="M13 5h8" />
+      <path d="M13 12h8" />
+      <path d="M13 19h8" />
+      <path d="m3 17 2 2 4-4" />
+      <rect x="3" y="4" width="6" height="6" rx="1" />
+    </template>
+    <template v-else-if="name === 'quote'">
+      <path d="M16 3a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2 1 1 0 0 1 1 1v1a2 2 0 0 1-2 2 1 1 0 0 0-1 1v2a1 1 0 0 0 1 1 6 6 0 0 0 6-6V5a2 2 0 0 0-2-2z" />
+      <path d="M5 3a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2 1 1 0 0 1 1 1v1a2 2 0 0 1-2 2 1 1 0 0 0-1 1v2a1 1 0 0 0 1 1 6 6 0 0 0 6-6V5a2 2 0 0 0-2-2z" />
+    </template>
+    <template v-else-if="name === 'square-code'">
+      <path d="m10 9-3 3 3 3" />
+      <path d="m14 15 3-3-3-3" />
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+    </template>
+    <template v-else-if="name === 'table'">
+      <path d="M12 3v18" />
+      <rect width="18" height="18" x="3" y="3" rx="2" />
+      <path d="M3 9h18" />
+      <path d="M3 15h18" />
+    </template>
+    <template v-else-if="name === 'image'">
+      <rect width="18" height="18" x="3" y="3" rx="2" ry="2" />
+      <circle cx="9" cy="9" r="2" />
+      <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" />
+    </template>
+    <template v-else-if="name === 'sidebar'">
       <rect width="18" height="18" x="3" y="3" rx="2" />
       <path d="M9 3v18" />
     </template>

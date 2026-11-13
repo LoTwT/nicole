@@ -1499,6 +1499,7 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     onChange,
     onCompositionEnd,
     onCompositionStart,
+    onSelectionChange,
     onEditLinkImage,
     onOpenLink,
   } = options;
@@ -2029,6 +2030,13 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
         wrapContinuation = null;
       }
       linkSession?.update(update);
+      if (
+        update.selectionSet &&
+        !update.view.compositionStarted &&
+        !update.view.composing
+      ) {
+        onSelectionChange?.();
+      }
       for (const transaction of update.transactions) {
         if (!transaction.effects.some((effect) => effect.is(openLinkEditorEffect))) {
           continue;
