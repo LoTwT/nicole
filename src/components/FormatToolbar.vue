@@ -51,6 +51,8 @@ interface ParagraphItem {
 
 type ToolbarItem = CommandItem | ParagraphItem;
 
+type MenuKind = "paragraph" | "more";
+
 interface MenuEntry {
   key: string;
   group: number;
@@ -298,36 +300,101 @@ function focusFirstItem(menu: HTMLElement | null) {
     ?.focus();
 }
 
-function closeMenus(restoreFocus = false) {
-  const paragraphWasOpen = paragraphOpen.value;
-  const moreWasOpen = moreOpen.value;
-  if (!paragraphWasOpen && !moreWasOpen) return;
-  paragraphOpen.value = false;
-  moreOpen.value = false;
-  if (!restoreFocus) return;
-  void nextTick(() => {
-    if (paragraphOpen.value || moreOpen.value) return;
-    const trigger = paragraphWasOpen ? paragraphTrigger.value : moreTrigger.value;
-    if (trigger?.isConnected) trigger.focus();
-  });
+let menuFocusRequest = 0;
+
+function isMenuOpen(kind: MenuKind): boolean {
+  return kind === "paragraph" ? paragraphOpen.value : moreOpen.value;
+}
+
+function focusedMenuKind(): MenuKind | null {
+  const active = document.activeElement;
+  if (
+    paragraphOpen.value &&
+    active instanceof Node &&
+    (paragraphMenu.value?.contains(active) ?? false)
+  ) {
+    return "paragraph";
+  }
+  if (
+    moreOpen.value &&
+    active instanceof Node &&
+    (moreMenu.value?.contains(active) ?? false)
+  ) {
+    return "more";
+  }
+  return null;
 }
 
 function menuOwnsFocus(): boolean {
+  return focusedMenuKind() !== null;
+}
+
+function visibleMenuTrigger(kind: MenuKind): HTMLElement | null {
+  if (kind === "paragraph") {
+    return paragraphVisible.value ? paragraphTrigger.value : null;
+  }
+  return hasMore.value ? moreTrigger.value : null;
+}
+
+/**
+ * Prefer the trigger for the closed menu, then another toolbar trigger that
+ * remains reachable after a responsive reflow. The document is the final
+ * fallback so focus never remains on a removed menu item.
+ */
+function fallbackMenuTrigger(kind: MenuKind): HTMLElement | null {
+  const direct = visibleMenuTrigger(kind);
+  if (direct?.isConnected) return direct;
+  const fallback = visibleMenuTrigger(
+    kind === "paragraph" ? "more" : "paragraph",
+  );
+  return fallback?.isConnected ? fallback : null;
+}
+
+function closeMenus(restoreFocus = false) {
+  // Any close, including a new popover taking over while this menu is already
+  // closed, invalidates a focus restore queued by an earlier Escape.
+  const request = ++menuFocusRequest;
+  const paragraphWasOpen = paragraphOpen.value;
+  const moreWasOpen = moreOpen.value;
+  paragraphOpen.value = false;
+  moreOpen.value = false;
+  if (!restoreFocus) return;
+  const kind: MenuKind | null = paragraphWasOpen
+    ? "paragraph"
+    : moreWasOpen
+      ? "more"
+      : null;
+  if (kind === null) return;
+  void nextTick(() => {
+    if (request !== menuFocusRequest || paragraphOpen.value || moreOpen.value) {
+      return;
+    }
+    const trigger = fallbackMenuTrigger(kind);
+    if (trigger !== null) trigger.focus();
+    else emit("focus-editor");
+  });
+}
+
+function focusIsLostToPage(): boolean {
   const active = document.activeElement;
   return (
-    (paragraphOpen.value &&
-      active instanceof Node &&
-      (paragraphMenu.value?.contains(active) ?? false)) ||
-    (moreOpen.value &&
-      active instanceof Node &&
-      (moreMenu.value?.contains(active) ?? false))
+    !(active instanceof HTMLElement) ||
+    !active.isConnected ||
+    active === document.body ||
+    active === document.documentElement
   );
 }
 
 function closeForLayout() {
-  const focused = menuOwnsFocus();
-  closeMenus();
-  if (focused) emit("focus-editor");
+  // Layout watches run before the DOM patch. Only restore when the old menu
+  // owns focus; a new owner keeps its own focus.
+  closeMenus(menuOwnsFocus());
+}
+
+function menuFocusLostAfterLayout(kind: MenuKind) {
+  if (!isMenuOpen(kind) || menuOwnsFocus()) return;
+  if (focusIsLostToPage()) closeMenus(true);
+  else closeMenus();
 }
 
 function toggleParagraphMenu() {
@@ -389,6 +456,15 @@ watch(hasMore, (more) => {
 watch(paragraphVisible, (visible) => {
   if (!visible && paragraphOpen.value) closeForLayout();
 });
+watch(
+  visibleKeys,
+  () => {
+    const focusedKind = focusedMenuKind();
+    if (focusedKind === null) return;
+    void nextTick(() => menuFocusLostAfterLayout(focusedKind));
+  },
+  { flush: "sync" },
+);
 watch(
   () => props.active.paragraph,
   () => {

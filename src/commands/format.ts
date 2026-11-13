@@ -36,6 +36,7 @@ const INLINE_STATE_NODES = [
   ["format.italic", "Emphasis"],
   ["format.strikethrough", "Strikethrough"],
   ["format.inline-code", "InlineCode"],
+  ["format.link", "Link"],
 ] as const;
 
 const CODE_BLOCK_NODES = new Set(["FencedCode", "CodeBlock"]);

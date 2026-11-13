@@ -1325,6 +1325,9 @@ function toggleOutline() {
     return;
   }
   cancelPendingOutlineFocusSettlement();
+  // Opening or closing the outline is a popover takeover: close any toolbar
+  // menu without restoring its old focus or allowing a queued restore.
+  formatToolbar.value?.closeMenus();
   // Opening the floating outline from the top bar or a shortcut must follow
   // the same popover-exclusion path as the command palette.
   topBar.value?.closeModeMenu();

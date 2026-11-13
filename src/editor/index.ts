@@ -2030,8 +2030,12 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
         wrapContinuation = null;
       }
       linkSession?.update(update);
+      const selectionChanged = !update.state.selection.eq(
+        update.startState.selection,
+        true,
+      );
       if (
-        update.selectionSet &&
+        selectionChanged &&
         !update.view.compositionStarted &&
         !update.view.composing
       ) {

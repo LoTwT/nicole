@@ -72,8 +72,9 @@ export interface CreateEditorOptions {
   /** Called on the DOM compositionstart event of this view. */
   onCompositionStart?: () => void;
   /**
-   * Called after a transaction that explicitly changed the selection. The
-   * fixed toolbar uses it to read the syntax tree once per selection change.
+   * Called after the selection actually changed, including a change produced
+   * by mapping the old selection through a document change. The fixed toolbar
+   * uses it to read the syntax tree once per material selection change.
    */
   onSelectionChange?: () => void;
   /**

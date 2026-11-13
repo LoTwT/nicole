@@ -485,6 +485,48 @@ function clickEditorSequenceAt(
   }
 }
 
+/** Dispatches the browser's complete pointer-to-click sequence for a button. */
+async function pointerClick(element: HTMLElement) {
+  element.dispatchEvent(
+    new MouseEvent("pointerdown", {
+      bubbles: true,
+      cancelable: true,
+      button: 0,
+    }),
+  );
+  const down = new MouseEvent("mousedown", {
+    bubbles: true,
+    cancelable: true,
+    button: 0,
+  });
+  element.dispatchEvent(down);
+  // jsdom does not perform the browser's default mousedown focus action.
+  if (!down.defaultPrevented) element.focus();
+  element.dispatchEvent(
+    new MouseEvent("pointerup", {
+      bubbles: true,
+      cancelable: true,
+      button: 0,
+    }),
+  );
+  element.dispatchEvent(
+    new MouseEvent("mouseup", {
+      bubbles: true,
+      cancelable: true,
+      button: 0,
+    }),
+  );
+  element.dispatchEvent(
+    new MouseEvent("click", {
+      bubbles: true,
+      cancelable: true,
+      button: 0,
+    }),
+  );
+  await settle();
+  return down.defaultPrevented;
+}
+
 /** Reads the mounted App's setup state for lifecycle snapshot assertions. */
 function appSetupState(): Record<string, any> {
   const instance = (
@@ -1850,6 +1892,74 @@ describe("fixed format toolbar", () => {
     toolbarButton("format.bold").click();
     await settle();
     expect(view.state.doc.toString()).toBe("**hello**\n");
+  });
+
+  it("E3 R1: clears the bold highlight after a full pointer toggle-off", async () => {
+    await remountWithSettings({ formatToolbarVisible: true });
+    await openFile("a.md", "hello\n");
+    const view = editorView();
+    view.focus();
+    view.dispatch({ selection: { anchor: 0, head: 5 } });
+    await settle();
+
+    expect(await pointerClick(toolbarButton("format.bold"))).toBe(true);
+    expect(view.state.doc.toString()).toBe("**hello**\n");
+    expect(toolbarButton("format.bold").getAttribute("aria-pressed")).toBe(
+      "true",
+    );
+    expect(document.activeElement).toBe(view.contentDOM);
+
+    expect(await pointerClick(toolbarButton("format.bold"))).toBe(true);
+    expect(view.state.doc.toString()).toBe("hello\n");
+    expect(view.state.selection.main.from).toBe(0);
+    expect(view.state.selection.main.to).toBe(5);
+    expect(document.activeElement).toBe(view.contentDOM);
+    expect(toolbarButton("format.bold").getAttribute("aria-pressed")).toBe(
+      "false",
+    );
+  });
+
+  it("E3 R1: highlights an existing link from the live caret", async () => {
+    await remountWithSettings({ formatToolbarVisible: true });
+    await openFile("a.md", "[hello](https://example.com)\n");
+    editorView().dispatch({ selection: { anchor: 3 } });
+    await settle();
+
+    expect(toolbarButton("format.link").getAttribute("aria-pressed")).toBe(
+      "true",
+    );
+  });
+
+  it("E3 R1: lets the keyboard-opened floating outline replace the toolbar menu", async () => {
+    await remountWithSettings({ formatToolbarVisible: true });
+    await openFile("a.md", "# A\n\n## B\n");
+    await withViewportWidth(800, async () => {
+      const trigger = toolbar()!.querySelector<HTMLButtonElement>(
+        "[data-format-paragraph-trigger]",
+      )!;
+      expect(await pointerClick(trigger)).toBe(true);
+      const item = host.querySelector<HTMLElement>(
+        '[data-format-menu="paragraph"] [role="menuitemradio"]',
+      )!;
+      expect(document.activeElement).toBe(item);
+
+      item.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "o",
+          code: "KeyO",
+          ctrlKey: true,
+          metaKey: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await settle();
+
+      expect(outlinePanel()).not.toBeNull();
+      expect(outlinePanel()?.dataset.placement).toBe("floating");
+      expect(host.querySelector('[data-format-menu="paragraph"]')).toBeNull();
+      expect(outlinePanel()?.contains(document.activeElement)).toBe(true);
+    });
   });
 
   it("closes toolbar menus on tab switches and when another popover opens", async () => {

@@ -223,6 +223,44 @@ describe("FormatToolbar", () => {
     expect(root.querySelector('[data-format-menu="more"]')).toBeNull();
   });
 
+  it("E3 R1: closes More and restores a reachable trigger when resize moves the focused item", async () => {
+    let toolbarWidth = 200;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function getBoundingClientRect(this: HTMLElement) {
+        if (this.hasAttribute("data-format-toolbar")) return rect(toolbarWidth);
+        const key = this.getAttribute("data-measure-key");
+        if (key === "__more") return rect(28);
+        if (key === "paragraph") return rect(88);
+        if (key !== null) return rect(28);
+        return rect(0);
+      },
+    );
+    const { root } = await mountToolbar();
+    const more = root.querySelector<HTMLButtonElement>("[data-format-more]")!;
+    more.focus();
+    more.click();
+    await nextTick();
+    const link = menuButtons(root, "more").find(
+      (button) => button.dataset.formatCommand === "format.link",
+    )!;
+    expect(document.activeElement).toBe(link);
+
+    toolbarWidth = 500;
+    window.dispatchEvent(new Event("resize"));
+    await nextTick();
+    await nextTick();
+
+    expect(
+      root.querySelector(
+        '[data-format-row] [data-format-command="format.link"]',
+      ),
+    ).not.toBeNull();
+    expect(root.querySelector('[data-format-menu="more"]')).toBeNull();
+    expect(document.activeElement).toBe(
+      root.querySelector("[data-format-more]"),
+    );
+  });
+
   it("keeps every control unavailable while composing", async () => {
     const { root, runs, disabled } = await mountToolbar({
       disabled: true,
