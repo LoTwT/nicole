@@ -146,7 +146,7 @@ import {
   trashEntry,
 } from "./services/files";
 import { popupNativeMenu, setSettingsAccelerator } from "./services/menu";
-import { onOpenFile, takePendingOpenedFiles } from "./services/open-file";
+import { onOpenFile, takePendingOpenedEntries } from "./services/open-file";
 import {
   getSettings,
   migrateLegacyTheme,
@@ -4450,6 +4450,7 @@ async function reopenClosedTab() {
 async function openSingleFile(
   path: string,
   name: string,
+  offerId = "",
 ): Promise<boolean> {
   const activationRevision = ordinaryOpenActivationRevision;
   const requestIsCurrent = () =>
@@ -4477,7 +4478,7 @@ async function openSingleFile(
   const task = (async (): Promise<boolean> => {
     let file;
     try {
-      file = await acceptSingleFile(path);
+      file = await acceptSingleFile(path, offerId);
     } catch (error) {
       if (
         requests.some(
@@ -4620,7 +4621,7 @@ function canOpenParentFolder(parent: string): boolean {
   return true;
 }
 
-async function askOpenSingleFile(path: string) {
+async function askOpenSingleFile(path: string, offerId: string) {
   const parent = absoluteParent(path);
   const name = absoluteBaseName(path);
   const canOpenFolder = canOpenParentFolder(parent);
@@ -4643,7 +4644,7 @@ async function askOpenSingleFile(path: string) {
     ],
   });
   if (choice === "single") {
-    await openSingleFile(path, name);
+    await openSingleFile(path, name, offerId);
     return;
   }
   if (choice === "folder" && canOpenFolder) {
@@ -4655,10 +4656,10 @@ async function askOpenSingleFile(path: string) {
   }
 }
 
-async function openPathInWorkspace(path: string) {
+async function openPathInWorkspace(path: string, offerId = "") {
   const context = currentWorkspaceContext();
   if (context === null || !isInFolder(context.root, path)) {
-    await askOpenSingleFile(path);
+    await askOpenSingleFile(path, offerId);
     return;
   }
   const rel = relativePath(context.root, path);
@@ -4685,21 +4686,21 @@ async function openPathInWorkspace(path: string) {
   );
 }
 
-async function handleOpenedPath(path: string) {
+async function handleOpenedPath(path: string, offerId: string) {
   const root = workspace.value?.root;
   if (root && isInFolder(root, path)) {
-    await openPathInWorkspace(path);
+    await openPathInWorkspace(path, offerId);
     return;
   }
   const parent = absoluteParent(path);
   if (recentFolders.value.includes(parent) && parent !== root) {
     const opened = await startFolderOperation(() => switchToFolder(parent));
     if (opened) {
-      await openPathInWorkspace(path);
+      await openPathInWorkspace(path, offerId);
     }
     return;
   }
-  await askOpenSingleFile(path);
+  await askOpenSingleFile(path, offerId);
 }
 
 async function receiveOpenedFiles() {
@@ -4714,16 +4715,16 @@ async function receiveOpenedFiles() {
         }
         await wait;
       }
-      const paths = await takePendingOpenedFiles();
-      const last = paths.at(-1);
+      const entries = await takePendingOpenedEntries();
+      const last = entries.at(-1);
       if (last) {
         try {
-          await handleOpenedPath(last);
+          await handleOpenedPath(last.path, last.offerId);
         } finally {
           // The offer is one-time: opening the parent consumes it in Go,
           // AcceptSingleFile consumes it for a single file, and cancelling
           // or failing to open must not leave the directory grant behind.
-          await dismissOfferedFile(last).catch(() => {});
+          await dismissOfferedFile(last.path, last.offerId).catch(() => {});
         }
       }
     })

@@ -34,6 +34,7 @@ const mocks = vi.hoisted(() => ({
   popupNativeMenu: vi.fn(),
   setSettingsAccelerator: vi.fn(),
   takePendingOpenedFiles: vi.fn(),
+  takePendingOpenedFilesWithOffers: vi.fn(),
   appOpenFileOn: vi.fn(),
   saveRecovery: vi.fn(),
   deleteRecovery: vi.fn(),
@@ -85,6 +86,7 @@ vi.mock("./mygo", () => ({
   },
   OpenedFiles: {
     takePendingOpenedFiles: mocks.takePendingOpenedFiles,
+    takePendingOpenedFilesWithOffers: mocks.takePendingOpenedFilesWithOffers,
   },
   Recovery: {
     save: mocks.saveRecovery,
@@ -111,7 +113,11 @@ import {
 } from "./files";
 import { listSnippets, openFolder, pickFolder } from "./workspace";
 import { popupNativeMenu, setSettingsAccelerator } from "./menu";
-import { onOpenFile, takePendingOpenedFiles } from "./open-file";
+import {
+  onOpenFile,
+  takePendingOpenedEntries,
+  takePendingOpenedFiles,
+} from "./open-file";
 import {
   acceptSingleFile,
   chooseSingleFile,
@@ -198,6 +204,9 @@ beforeEach(() => {
   mocks.releaseSingleFile.mockResolvedValue(undefined);
   mocks.popupNativeMenu.mockResolvedValue("new-file");
   mocks.takePendingOpenedFiles.mockResolvedValue(["/tmp/note.md"]);
+  mocks.takePendingOpenedFilesWithOffers.mockResolvedValue([
+    { path: "/tmp/note.md", offerId: "offer-1" },
+  ]);
   mocks.appOpenFileOn.mockReturnValue(() => {});
   mocks.saveRecovery.mockResolvedValue("0123456789abcdef");
   mocks.deleteRecovery.mockResolvedValue(undefined);
@@ -294,15 +303,21 @@ describe("service wrappers", () => {
 
   it("forwards single-file calls", async () => {
     await chooseSingleFile();
-    await acceptSingleFile("/tmp/note.md");
-    await dismissOfferedFile("/tmp/note.md");
+    await acceptSingleFile("/tmp/note.md", "offer-1");
+    await dismissOfferedFile("/tmp/note.md", "offer-1");
     await expect(readSingleFile("/tmp/note.md")).resolves.toBe("text");
     await writeSingleFile("/tmp/note.md", "new");
     await releaseSingleFile("/tmp/note.md");
 
     expect(mocks.chooseSingleFile).toHaveBeenCalledOnce();
-    expect(mocks.acceptSingleFile).toHaveBeenCalledWith("/tmp/note.md");
-    expect(mocks.dismissOfferedFile).toHaveBeenCalledWith("/tmp/note.md");
+    expect(mocks.acceptSingleFile).toHaveBeenCalledWith(
+      "/tmp/note.md",
+      "offer-1",
+    );
+    expect(mocks.dismissOfferedFile).toHaveBeenCalledWith(
+      "/tmp/note.md",
+      "offer-1",
+    );
     expect(mocks.readSingleFile).toHaveBeenCalledWith("/tmp/note.md");
     expect(mocks.writeSingleFile).toHaveBeenCalledWith("/tmp/note.md", "new");
     expect(mocks.releaseSingleFile).toHaveBeenCalledWith("/tmp/note.md");
@@ -332,6 +347,10 @@ describe("service wrappers", () => {
 
     await expect(takePendingOpenedFiles()).resolves.toEqual(["/tmp/note.md"]);
     expect(mocks.takePendingOpenedFiles).toHaveBeenCalledOnce();
+    await expect(takePendingOpenedEntries()).resolves.toEqual([
+      { path: "/tmp/note.md", offerId: "offer-1" },
+    ]);
+    expect(mocks.takePendingOpenedFilesWithOffers).toHaveBeenCalledOnce();
   });
 });
 

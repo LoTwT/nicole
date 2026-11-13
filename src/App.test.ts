@@ -76,6 +76,7 @@ const mocks = vi.hoisted(() => ({
   restoreRecoverySingleFile: vi.fn(),
   onOpenFile: vi.fn(),
   takePendingOpenedFiles: vi.fn(),
+  takePendingOpenedEntries: vi.fn(),
   onWindowFileDrop: vi.fn(),
   pasteImage: vi.fn(),
   importImages: vi.fn(),
@@ -153,6 +154,7 @@ vi.mock("./services/recovery", () => ({
 vi.mock("./services/open-file", () => ({
   onOpenFile: mocks.onOpenFile,
   takePendingOpenedFiles: mocks.takePendingOpenedFiles,
+  takePendingOpenedEntries: mocks.takePendingOpenedEntries,
 }));
 vi.mock("./services/assets", () => ({
   onWindowFileDrop: mocks.onWindowFileDrop,
@@ -224,7 +226,34 @@ let dropHandler: ((drop: import("./services/mygo").AssetDrop) => void) | null =
   null;
 let closeHandler: ((token: number) => Promise<void>) | null = null;
 let openHandler: (() => void) | null = null;
-let pendingFiles: string[] = [];
+interface TestOpenedEntry {
+  path: string;
+  offerId: string;
+}
+let pendingFiles: Array<string | TestOpenedEntry> = [];
+let openedOfferSequence = 0;
+
+function nextTestOfferId(): string {
+  openedOfferSequence += 1;
+  return `test-offer-${openedOfferSequence}`;
+}
+
+function takePendingOpenEntries(): TestOpenedEntry[] {
+  const items = pendingFiles;
+  pendingFiles = [];
+  return items.map((item) =>
+    typeof item === "string"
+      ? { path: item, offerId: nextTestOfferId() }
+      : item,
+  );
+}
+
+function pendingOpenDrainCalls(): number {
+  return (
+    mocks.takePendingOpenedFiles.mock.calls.length +
+    mocks.takePendingOpenedEntries.mock.calls.length
+  );
+}
 
 interface FakeSearchSession {
   request: SearchRequest;
@@ -834,6 +863,7 @@ beforeEach(async () => {
   localStorage.clear();
   tree = [];
   pendingFiles = [];
+  openedOfferSequence = 0;
   openFileText = "";
   watchEvents = null;
   dropHandler = null;
@@ -918,11 +948,12 @@ beforeEach(async () => {
     path: `/tmp/${id}.md`,
     name: `${id}.md`,
   }));
-  mocks.takePendingOpenedFiles.mockImplementation(async () => {
-    const files = pendingFiles;
-    pendingFiles = [];
-    return files;
-  });
+  mocks.takePendingOpenedFiles.mockImplementation(async () =>
+    takePendingOpenEntries().map((entry) => entry.path),
+  );
+  mocks.takePendingOpenedEntries.mockImplementation(async () =>
+    takePendingOpenEntries(),
+  );
   mocks.onOpenFile.mockImplementation((handler: () => void) => {
     openHandler = handler;
     return () => {
@@ -985,11 +1016,15 @@ beforeEach(async () => {
   host = document.querySelector<HTMLElement>("#app")!;
   app = createApp(App);
   app.mount(host);
-  // Startup ends with TakePendingOpenedFiles. Waiting for it here keeps the
-  // real-clock startup out of tests that then install fake timers or swap the
-  // mocks; otherwise the old instance keeps reading the new values.
+  // Startup ends with a pending-opened-files drain. Waiting for it here keeps
+  // the real-clock startup out of tests that then install fake timers or swap
+  // the mocks; otherwise the old instance keeps reading the new values.
   await vi.waitFor(
-    () => expect(mocks.takePendingOpenedFiles).toHaveBeenCalled(),
+    () =>
+      expect(
+        mocks.takePendingOpenedFiles.mock.calls.length +
+          mocks.takePendingOpenedEntries.mock.calls.length,
+      ).toBeGreaterThan(0),
     { interval: 1, timeout: 4000 },
   );
 });
@@ -3321,7 +3356,7 @@ describe("single files and dialogs", () => {
     dialogButton("取消").click();
     await settle();
 
-    expect(mocks.dismissOfferedFile).toHaveBeenCalledWith("/tmp/single.md");
+    expect(mocks.dismissOfferedFile.mock.calls.at(-1)?.[0]).toBe("/tmp/single.md");
     expect(mocks.acceptSingleFile).not.toHaveBeenCalled();
   });
 
@@ -3335,7 +3370,7 @@ describe("single files and dialogs", () => {
     dialogButton("只打开这个文件").click();
     await settle();
 
-    expect(mocks.acceptSingleFile).toHaveBeenCalledWith("/tmp/single.md");
+    expect(mocks.acceptSingleFile.mock.calls.at(-1)?.[0]).toBe("/tmp/single.md");
     expect(mocks.readSingleFile).toHaveBeenCalledWith("/tmp/single.md");
     expect(host.textContent).toContain("这个文件不在已打开的文件夹中");
     expect(host.querySelector('[role="tab"]')?.textContent).toContain("single.md");
@@ -3440,7 +3475,7 @@ describe("single files and dialogs", () => {
     await settle();
 
     expect(dialog()).toBeNull();
-    expect(mocks.acceptSingleFile).toHaveBeenCalledWith("/tmp/single.md");
+    expect(mocks.acceptSingleFile.mock.calls.at(-1)?.[0]).toBe("/tmp/single.md");
     expect(editorView().state.doc.toString()).toBe("# Single\n");
     expect(host.querySelectorAll('[role="tab"]').length).toBe(2);
   });
@@ -4376,8 +4411,8 @@ async function setupWorkspace(
   await openFolder();
 }
 
-async function openPath(path: string): Promise<void> {
-  pendingFiles = [path];
+async function openPath(path: string, offerId?: string): Promise<void> {
+  pendingFiles = [offerId === undefined ? path : { path, offerId }];
   openHandler?.();
   await settle();
 }
@@ -8793,14 +8828,15 @@ describe("crash recovery", () => {
   it("waits for the recovery decision before handling an opened file", async () => {
     await mountWithRecovery([recoveryItem()]);
     mocks.takePendingOpenedFiles.mockClear();
+    mocks.takePendingOpenedEntries.mockClear();
     pendingFiles = ["/notes/b.md"];
     openHandler?.();
     await settle();
-    expect(mocks.takePendingOpenedFiles).not.toHaveBeenCalled();
+    expect(pendingOpenDrainCalls()).toBe(0);
 
     dialogButton("逐个查看").click();
     await settle();
-    expect(mocks.takePendingOpenedFiles).toHaveBeenCalled();
+    expect(pendingOpenDrainCalls()).toBeGreaterThan(0);
   });
 
   it("does not delete a copy when new input follows a successful save", async () => {
@@ -12325,7 +12361,7 @@ describe("settings tab", () => {
     expect(dialog()?.textContent).toContain("这个文件不在已打开的文件夹中");
     dialogButton("只打开这个文件").click();
     await settle();
-    expect(mocks.acceptSingleFile).toHaveBeenCalledWith("/elsewhere/b.md");
+    expect(mocks.acceptSingleFile.mock.calls.at(-1)?.[0]).toBe("/elsewhere/b.md");
     expect(mocks.readSingleFile).toHaveBeenCalledWith("/elsewhere/b.md");
 
     await openSettingsFromShortcut();
@@ -12352,7 +12388,7 @@ describe("settings tab", () => {
     await openPath("/elsewhere/b.md");
     dialogButton("只打开这个文件").click();
     await settle();
-    expect(mocks.acceptSingleFile).toHaveBeenCalledWith("/elsewhere/b.md");
+    expect(mocks.acceptSingleFile.mock.calls.at(-1)?.[0]).toBe("/elsewhere/b.md");
     expect(mocks.readSingleFile).not.toHaveBeenCalled();
 
     await openSettingsFromShortcut();
@@ -12403,6 +12439,100 @@ describe("settings tab", () => {
     expect(editorView().state.doc.toString()).toBe("# B\n");
     expect(mocks.releaseSingleFile).not.toHaveBeenCalled();
   });
+
+  it.each([true, false])(
+    "E4 R3 fix: preserves a newer same-path system offer after stale cleanup (during release: %s)",
+    async (duringRelease) => {
+      await setupWorkspace({ "a.md": "# A\n" });
+      await openPath("/notes/a.md");
+      const path = "/elsewhere/b.md";
+      const offered = new Map<string, string>();
+      const effects: string[] = [];
+      let granted = false;
+      const read = deferred<string>();
+      const release = deferred<void>();
+
+      mocks.acceptSingleFile.mockImplementation(
+        async (requested: string, offerId?: string) => {
+          const current = offered.get(requested);
+          effects.push(
+            `accept:${current ?? "none"}:${offerId ?? "legacy"}`,
+          );
+          if (current === undefined) throw new Error("offer missing");
+          if (offerId !== undefined && current !== offerId) {
+            throw new Error("offer superseded");
+          }
+          offered.delete(requested);
+          granted = true;
+          return { path: requested, name: "b.md" };
+        },
+      );
+      mocks.readSingleFile
+        .mockImplementationOnce(() => read.promise)
+        .mockImplementation(async () => {
+          if (!granted) throw new Error("not granted");
+          return "# B\n";
+        });
+      mocks.releaseSingleFile.mockImplementation(async () => {
+        effects.push("release");
+        granted = false;
+        await release.promise;
+      });
+      mocks.dismissOfferedFile.mockImplementation(
+        async (requested: string, offerId?: string) => {
+          const current = offered.get(requested);
+          effects.push(
+            `dismiss:${current ?? "none"}:${offerId ?? "legacy"}`,
+          );
+          if (offerId === undefined) {
+            offered.delete(requested);
+          } else if (current === offerId) {
+            offered.delete(requested);
+          }
+        },
+      );
+
+      offered.set(path, "offer-1");
+      await openPath(path, "offer-1");
+      expect(dialog()?.textContent).toContain("这个文件不在已打开的文件夹中");
+      dialogButton("只打开这个文件").click();
+      await settle();
+      expect(mocks.readSingleFile).toHaveBeenCalledTimes(1);
+
+      await openSettingsFromShortcut();
+      read.resolve("# B\n");
+      await settle();
+      expect(mocks.releaseSingleFile).toHaveBeenCalledWith(path);
+
+      if (duringRelease) {
+        offered.set(path, "offer-2");
+        await openPath(path, "offer-2");
+        expect(dialog()).toBeNull();
+        release.resolve();
+        await settle();
+      } else {
+        release.resolve();
+        await settle();
+        expect(dialog()).toBeNull();
+        offered.set(path, "offer-2");
+        await openPath(path, "offer-2");
+      }
+
+      await vi.waitFor(() => expect(dialog()).not.toBeNull());
+      dialogButton("只打开这个文件").click();
+      await settle();
+      expect(host.textContent).not.toContain("无法打开文件");
+      expect(
+        tabElements().some(
+          (tab) =>
+            tab.textContent?.includes("b.md") &&
+            tab.getAttribute("aria-selected") === "true",
+        ),
+      ).toBe(true);
+      expect(editorView().state.doc.toString()).toBe("# B\n");
+      expect(effects).toContain("release");
+    },
+  );
 
   it("filters the tree and hides labels without changing paths or open previews", async () => {
     await setupWorkspace({ "a.md": "# A\n", "cover.png": "png" });

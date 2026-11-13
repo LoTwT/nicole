@@ -159,6 +159,16 @@ export interface NativeMenuRequest {
 }
 
 /**
+ * PendingOpenedFile is one system-provided path and the specific offer that
+ * delivered it. A later offer for the same path gets a new OfferID, so the
+ * page can dismiss the occurrence it handled without consuming the new one.
+ */
+export interface PendingOpenedFile {
+  path: string;
+  offerId: string;
+}
+
+/**
  * RecoveryCopy is what the page asks Go to write for one dirty document. The
  * page owns the text; Go fills savedAt and diskHash so the record reflects what
  * Nicole last knew about the file.
@@ -747,8 +757,8 @@ export const SingleFileService = {
    * through the file association is accepted; a page cannot grant a path of its
    * own choosing.
    */
-  acceptSingleFile(path: string): Promise<SingleFile> {
-    return call("SingleFileService.AcceptSingleFile", path);
+  acceptSingleFile(path: string, offerID: string): Promise<SingleFile> {
+    return call("SingleFileService.AcceptSingleFile", path, offerID);
   },
   /**
    * ChooseSingleFile shows a Markdown file picker and grants the choice. The
@@ -758,17 +768,21 @@ export const SingleFileService = {
     return call("SingleFileService.ChooseSingleFile");
   },
   /**
-   * DismissOfferedFile forgets a file the system offered but the user chose not
-   * to open. It only removes an offer; it never grants access.
+   * DismissOfferedFile forgets the exact offer the page handled. A newer offer
+   * for the same path keeps its own identity and remains available. It only
+   * removes an offer; it never grants access.
    */
-  dismissOfferedFile(path: string): Promise<void> {
-    return call("SingleFileService.DismissOfferedFile", path);
+  dismissOfferedFile(path: string, offerID: string): Promise<void> {
+    return call("SingleFileService.DismissOfferedFile", path, offerID);
   },
   /** ReadSingleFile returns the exact bytes of a granted file. */
   readSingleFile(path: string): Promise<string> {
     return call("SingleFileService.ReadSingleFile", path);
   },
-  /** ReleaseSingleFile forgets a grant, such as when its tab closes. */
+  /**
+   * ReleaseSingleFile forgets a grant, such as when its tab closes. A pending
+   * system offer is a separate occurrence and is not consumed here.
+   */
   releaseSingleFile(path: string): Promise<void> {
     return call("SingleFileService.ReleaseSingleFile", path);
   },
@@ -851,6 +865,13 @@ export const OpenedFiles = {
    */
   takePendingOpenedFiles(): Promise<string[]> {
     return call("OpenedFiles.TakePendingOpenedFiles");
+  },
+  /**
+   * TakePendingOpenedFilesWithOffers returns each path with the offer that
+   * delivered it and clears the queue.
+   */
+  takePendingOpenedFilesWithOffers(): Promise<PendingOpenedFile[]> {
+    return call("OpenedFiles.TakePendingOpenedFilesWithOffers");
   },
 } as const;
 

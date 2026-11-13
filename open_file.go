@@ -13,12 +13,20 @@ import (
 // even when the event and the pending queue overlap.
 var appOpenFile = mygo.NewEvent[bool]("app:open-file")
 
+// PendingOpenedFile is one system-provided path and the specific offer that
+// delivered it. A later offer for the same path gets a new OfferID, so the
+// page can dismiss the occurrence it handled without consuming the new one.
+type PendingOpenedFile struct {
+	Path    string `json:"path"`
+	OfferID string `json:"offerId"`
+}
+
 // OpenedFiles remembers files passed by the system until the page has taken
 // them. A file opened while the app is starting may arrive before the page
 // subscribes to the event, so the page also asks for what is pending.
 type OpenedFiles struct {
 	mu      sync.Mutex
-	pending []string
+	pending []PendingOpenedFile
 	window  func() *mygo.Window
 	emit    func(*mygo.Window, bool) error
 }
@@ -46,22 +54,31 @@ func firstAppWindow() *mygo.Window {
 	return windows[0]
 }
 
-// add records a file the system opened and notifies the main window. It is
-// called by the app, not by the page.
+// add records a file without an offer identity. It remains for callers that
+// only need the legacy path queue; the system file-association path uses
+// addWithOffer so cleanup can identify the exact occurrence.
 func (s *OpenedFiles) add(path string) {
+	s.addWithOffer(path, "")
+}
+
+// addWithOffer records a file the system opened and notifies the main window.
+// A repeated path updates the pending entry to the newest offer instead of
+// queueing the same path twice.
+func (s *OpenedFiles) addWithOffer(path, offerID string) {
 	if absolute, err := filepath.Abs(path); err == nil {
 		path = absolute
 	}
 	path = filepath.Clean(path)
 
 	s.mu.Lock()
-	for _, pending := range s.pending {
-		if pending == path {
+	for index, pending := range s.pending {
+		if pending.Path == path {
+			s.pending[index].OfferID = offerID
 			s.mu.Unlock()
 			return
 		}
 	}
-	s.pending = append(s.pending, path)
+	s.pending = append(s.pending, PendingOpenedFile{Path: path, OfferID: offerID})
 	s.mu.Unlock()
 
 	if win := s.window(); win != nil {
@@ -72,12 +89,23 @@ func (s *OpenedFiles) add(path string) {
 // TakePendingOpenedFiles returns the files that arrived since the last call
 // and forgets them. The returned paths are absolute.
 func (s *OpenedFiles) TakePendingOpenedFiles() []string {
+	entries := s.TakePendingOpenedFilesWithOffers()
+	paths := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		paths = append(paths, entry.Path)
+	}
+	return paths
+}
+
+// TakePendingOpenedFilesWithOffers returns each path with the offer that
+// delivered it and clears the queue.
+func (s *OpenedFiles) TakePendingOpenedFilesWithOffers() []PendingOpenedFile {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	pending := s.pending
 	s.pending = nil
 	if pending == nil {
-		return []string{}
+		return []PendingOpenedFile{}
 	}
-	return append([]string(nil), pending...)
+	return append([]PendingOpenedFile(nil), pending...)
 }
