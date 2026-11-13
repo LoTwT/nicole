@@ -41,6 +41,29 @@ export interface AppSettings {
    */
   formatToolbarVisible: boolean;
   /**
+   * ShowAllFiles shows non-Markdown files in the tree. Directories are
+   * always shown; the preference only filters files.
+   */
+  showAllFiles: boolean;
+  /**
+   * HideMarkdownExtension removes the .md suffix from tree rows and tab
+   * labels. Paths, rename inputs and file access keep the full name.
+   */
+  hideMarkdownExtension: boolean;
+  /**
+   * UIFont, ReadingFont and CodeFont are installed font names. Empty keeps
+   * the interface's default stack. They never name bundled or downloaded
+   * fonts.
+   */
+  uiFont: string;
+  readingFont: string;
+  codeFont: string;
+  /**
+   * SlashEnabled switches the slash menu per editor mode. Every mode
+   * defaults to enabled when its field is missing.
+   */
+  slashEnabled: SlashEnabledSettings;
+  /**
    * SidebarWidth is the sidebar width in CSS pixels, within
    * [200, 400].
    */
@@ -271,6 +294,16 @@ export interface SingleFileSelection {
   path: string;
   name: string;
   canceled: boolean;
+}
+
+/**
+ * SlashEnabledSettings is the per-mode slash menu switch. The page maps the
+ * saved editor mode names to these fields.
+ */
+export interface SlashEnabledSettings {
+  live: boolean;
+  immersive: boolean;
+  source: boolean;
 }
 
 /**
@@ -632,9 +665,23 @@ export const Settings = {
   setExpandedFolders(root: string, folders: string[]): Promise<void> {
     return call("Settings.SetExpandedFolders", root, folders);
   },
+  /**
+   * SetFonts saves the interface, reading and code font names. Empty strings
+   * mean the built-in stack; the page decides how a missing font falls back.
+   */
+  setFonts(uiFont: string, readingFont: string, codeFont: string): Promise<void> {
+    return call("Settings.SetFonts", uiFont, readingFont, codeFont);
+  },
   /** SetFormatToolbarVisible remembers the global formatting toolbar switch. */
   setFormatToolbarVisible(visible: boolean): Promise<void> {
     return call("Settings.SetFormatToolbarVisible", visible);
+  },
+  /**
+   * SetHideMarkdownExtension remembers the tree and tab label preference. It
+   * does not change stored paths, rename inputs or file operations.
+   */
+  setHideMarkdownExtension(hidden: boolean): Promise<void> {
+    return call("Settings.SetHideMarkdownExtension", hidden);
   },
   /**
    * SetOutlineVisible remembers the global outline switch. Narrow windows keep
@@ -643,12 +690,23 @@ export const Settings = {
   setOutlineVisible(visible: boolean): Promise<void> {
     return call("Settings.SetOutlineVisible", visible);
   },
+  /** SetShowAllFiles remembers whether the file tree includes non-Markdown files. */
+  setShowAllFiles(visible: boolean): Promise<void> {
+    return call("Settings.SetShowAllFiles", visible);
+  },
   /**
    * SetSidebarWidth saves the sidebar width, clamped to the range the interface
    * supports.
    */
   setSidebarWidth(width: number): Promise<void> {
     return call("Settings.SetSidebarWidth", width);
+  },
+  /**
+   * SetSlashEnabled switches the slash menu for one editor mode. The page can
+   * update one mode without replacing the other two values.
+   */
+  setSlashEnabled(mode: string, enabled: boolean): Promise<void> {
+    return call("Settings.SetSlashEnabled", mode, enabled);
   },
   /** SetTheme saves the theme and makes the native appearance follow it. */
   setTheme(theme: string): Promise<void> {
@@ -799,7 +857,8 @@ export const OpenedFiles = {
 /**
  * NativeMenu shows the native context menus the file tree and tabs assemble.
  * The page chooses the labels and shortcut text; the menu itself, keyboard
- * navigation and platform look come from the system.
+ * navigation and platform look come from the system. It also forwards the
+ * registry's shortcut text to the application menu's Settings item.
  */
 export const NativeMenu = {
   /**
@@ -809,6 +868,14 @@ export const NativeMenu = {
    */
   popupNativeMenu(request: NativeMenuRequest): Promise<string> {
     return call("NativeMenu.PopupNativeMenu", request);
+  },
+  /**
+   * SetSettingsAccelerator copies the page's registry-formatted shortcut onto
+   * the native Settings item. The page owns the registry; Go stores no second
+   * key table.
+   */
+  setSettingsAccelerator(accelerator: string): Promise<void> {
+    return call("NativeMenu.SetSettingsAccelerator", accelerator);
   },
 } as const;
 

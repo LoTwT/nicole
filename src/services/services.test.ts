@@ -16,6 +16,11 @@ const mocks = vi.hoisted(() => ({
   setTheme: vi.fn(),
   setEditorMode: vi.fn(),
   setOutlineVisible: vi.fn(),
+  setFormatToolbarVisible: vi.fn(),
+  setFonts: vi.fn(),
+  setShowAllFiles: vi.fn(),
+  setHideMarkdownExtension: vi.fn(),
+  setSlashEnabled: vi.fn(),
   setSidebarWidth: vi.fn(),
   setExpandedFolders: vi.fn(),
   addRecentFolder: vi.fn(),
@@ -27,6 +32,7 @@ const mocks = vi.hoisted(() => ({
   writeSingleFile: vi.fn(),
   releaseSingleFile: vi.fn(),
   popupNativeMenu: vi.fn(),
+  setSettingsAccelerator: vi.fn(),
   takePendingOpenedFiles: vi.fn(),
   appOpenFileOn: vi.fn(),
   saveRecovery: vi.fn(),
@@ -55,6 +61,11 @@ vi.mock("./mygo", () => ({
     setTheme: mocks.setTheme,
     setEditorMode: mocks.setEditorMode,
     setOutlineVisible: mocks.setOutlineVisible,
+    setFormatToolbarVisible: mocks.setFormatToolbarVisible,
+    setFonts: mocks.setFonts,
+    setShowAllFiles: mocks.setShowAllFiles,
+    setHideMarkdownExtension: mocks.setHideMarkdownExtension,
+    setSlashEnabled: mocks.setSlashEnabled,
     setSidebarWidth: mocks.setSidebarWidth,
     setExpandedFolders: mocks.setExpandedFolders,
     addRecentFolder: mocks.addRecentFolder,
@@ -70,6 +81,7 @@ vi.mock("./mygo", () => ({
   },
   NativeMenu: {
     popupNativeMenu: mocks.popupNativeMenu,
+    setSettingsAccelerator: mocks.setSettingsAccelerator,
   },
   OpenedFiles: {
     takePendingOpenedFiles: mocks.takePendingOpenedFiles,
@@ -98,7 +110,7 @@ import {
   trashEntry,
 } from "./files";
 import { listSnippets, openFolder, pickFolder } from "./workspace";
-import { popupNativeMenu } from "./menu";
+import { popupNativeMenu, setSettingsAccelerator } from "./menu";
 import { onOpenFile, takePendingOpenedFiles } from "./open-file";
 import {
   acceptSingleFile,
@@ -122,8 +134,13 @@ import {
   removeRecentFolder,
   setEditorMode,
   setExpandedFolders,
+  setFonts,
+  setFormatToolbarVisible,
+  setHideMarkdownExtension,
   setOutlineVisible,
+  setShowAllFiles,
   setSidebarWidth,
+  setSlashEnabled,
   setTheme,
 } from "./settings";
 
@@ -249,6 +266,11 @@ describe("service wrappers", () => {
     await setTheme("light");
     await setEditorMode("source");
     await setOutlineVisible(true);
+    await setFormatToolbarVisible(true);
+    await setFonts("Interface", "Reading", "Code");
+    await setShowAllFiles(false);
+    await setHideMarkdownExtension(true);
+    await setSlashEnabled("immersive", false);
     await setSidebarWidth(300);
     await setExpandedFolders("/notes", ["a"]);
     await addRecentFolder("/notes");
@@ -259,6 +281,11 @@ describe("service wrappers", () => {
     expect(mocks.setTheme).toHaveBeenCalledWith("light");
     expect(mocks.setEditorMode).toHaveBeenCalledWith("source");
     expect(mocks.setOutlineVisible).toHaveBeenCalledWith(true);
+    expect(mocks.setFormatToolbarVisible).toHaveBeenCalledWith(true);
+    expect(mocks.setFonts).toHaveBeenCalledWith("Interface", "Reading", "Code");
+    expect(mocks.setShowAllFiles).toHaveBeenCalledWith(false);
+    expect(mocks.setHideMarkdownExtension).toHaveBeenCalledWith(true);
+    expect(mocks.setSlashEnabled).toHaveBeenCalledWith("immersive", false);
     expect(mocks.setSidebarWidth).toHaveBeenCalledWith(300);
     expect(mocks.setExpandedFolders).toHaveBeenCalledWith("/notes", ["a"]);
     expect(mocks.addRecentFolder).toHaveBeenCalledWith("/notes");
@@ -289,6 +316,8 @@ describe("service wrappers", () => {
     };
     await expect(popupNativeMenu(request)).resolves.toBe("new-file");
     expect(mocks.popupNativeMenu).toHaveBeenCalledWith(request);
+    await setSettingsAccelerator("Cmd+,");
+    expect(mocks.setSettingsAccelerator).toHaveBeenCalledWith("Cmd+,");
 
     const handler = vi.fn();
     const off = onOpenFile(handler);

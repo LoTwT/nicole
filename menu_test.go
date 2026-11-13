@@ -93,6 +93,39 @@ func TestFileMenuRunsThePageCommandWithoutAnAccelerator(t *testing.T) {
 	}
 }
 
+func TestSettingsMenuItemUsesThePageRegistry(t *testing.T) {
+	menu := appMenu(false)
+	item := menu.ItemByID("app.settings")
+	if runtime.GOOS != "darwin" {
+		if item != nil {
+			t.Fatal("non-macOS app menu contains a Settings item")
+		}
+		return
+	}
+	if item == nil {
+		t.Fatal("macOS app menu is missing the Settings item")
+	}
+	if item.Label != "设置" || item.Click == nil {
+		t.Errorf("Settings item = %+v, want label 设置 and a page command", item)
+	}
+	if item.Accelerator != "" {
+		t.Errorf("Settings item starts with accelerator %q, want the page to send it", item.Accelerator)
+	}
+	service := NewNativeMenu(menu)
+	if err := service.SetSettingsAccelerator(" CmdOrCtrl+, "); err != nil {
+		t.Fatal(err)
+	}
+	if item.Accelerator != "CmdOrCtrl+," {
+		t.Errorf("Settings accelerator = %q, want CmdOrCtrl+,", item.Accelerator)
+	}
+	if err := service.SetSettingsAccelerator("  "); err == nil {
+		t.Error("SetSettingsAccelerator accepted an empty accelerator")
+	}
+	if err := (NativeMenu{}).SetSettingsAccelerator("CmdOrCtrl+,"); err == nil {
+		t.Error("a menu without the Settings item accepted an accelerator")
+	}
+}
+
 func menuLabels(items []*mygo.MenuItem) []string {
 	labels := make([]string, 0, len(items))
 	for _, item := range items {
@@ -124,7 +157,7 @@ func TestMenusUseSimplifiedChinese(t *testing.T) {
 	tops := menu.Items()
 	name := mygo.App.Name()
 	if runtime.GOOS == "darwin" {
-		wantMenuLabels(t, "app menu", tops[0].Submenu, "关于"+name, "检查更新…", "退出"+name)
+		wantMenuLabels(t, "app menu", tops[0].Submenu, "关于"+name, "检查更新…", "设置", "退出"+name)
 		wantMenuLabels(t, "app menu", tops[0].Submenu, "隐藏"+name, "隐藏其他", "全部显示")
 	} else {
 		// MyGo hides RoleAbout outside macOS, and labels RoleQuit with menuExit

@@ -35,7 +35,9 @@
 ```
 
 - 默认全部使用系统字体，不打包任何字体文件。
-- 设置里可以分别选择“界面 / 阅读 / 代码”字体，通过更新 `--app-font-*` 变量即时生效。
+- 设置里可以分别选择“界面 / 阅读 / 代码”字体，通过更新 `--app-font-sans`、`--app-font-reading` 和 `--app-font-mono` 变量即时生效；空字符串移除覆盖并回到既有字体栈。输入的是本机已装字体名称，应用不枚举、下载或验证字体，找不到时由浏览器继续使用同一字体栈中的回退字体。
+- 界面字体影响 `--font-sans`；阅读字体影响 `--font-reading` 和正文的 `--reading-font-body`；代码字体只覆盖 `--reading-font-mono`，用于行内代码和围栏/缩进代码，不改变命令面板、slash 菜单等界面里的等宽标识。
+- 字体变量只由页面根元素上的内联变量更新，CodeMirror 主题继续读取同一批 CSS 变量，因此修改字体不会重建 `EditorView`，也不会清空选区或撤销历史。
 - 以后如果要内置字体，在用户启用时通过自定义协议和 `FontFace` 动态加载。
 - 源码模式使用阅读字体，不用 Space Mono：它太宽，风格也太强。
 
@@ -48,6 +50,7 @@ CodeMirror 6 的主题直接使用 `var(--text-primary)` 这类 CSS 变量。切
 - 主题保存在用户数据目录的 `settings.json` 中，取值为 `system`、`light` 或 `dark`，默认 `system`。旧版存在 `localStorage` 的 `nicole-theme` 在启动时迁移到设置，成功后删除旧值，见[设置存储](workspace.md#设置存储)。
 - `src/App.vue` 切换 `<html>` 上的 `.dark`。`system` 时监听 `prefers-color-scheme` 的变化并实时切换；明确的 `light`/`dark` 不随系统变化。切换时同时调用 `Settings.SetTheme`，由 Go 调用 `mygo.Theme.SetSource`，让原生菜单、右键菜单和对话框跟随；`system` 用 `ThemeSystem`。
 - `src/style.css` 在 `@theme` 中覆盖字体变量，并定义 `--nicole-syntax-mark`、`--nicole-caret`、`--nicole-selection`、`--nicole-quote-border`、`--nicole-selected-row`、`--nicole-file-tree-hover` 和 `--nicole-primary-*`，缺失的阅读层变量回退到主题包现有变量。后两组是界面级覆盖，取值和原因见[界面与交互](ui.md#视觉与动效)，这里只保留变量名。`--nicole-selection` 在 Paper 回退到 `--color-lavender-200`（`#ded4ff`），在 `.dark` 下回退到 `--color-lavender-900`（`#3d345d`）；两者都保留 `--reading-selection` 覆盖钩子。Ink 的 `--accent-soft`（`#2c2644`）对代码块背景只有 1.01:1，因此不再作为选区回退。0.4.0 把 `--accent-primary` 定义为只承载 `--accent-contrast` 的填充面，因此编辑器光标和任务框这类独立指示色回退到 `--text-accent`，不随填充色变浅。亮色选区上的 `--text-muted` 为 4.28:1、`--reading-link` 为 4.42:1，低于 4.5:1；用户已确认接受，因为它们分别用于符号和带下划线的链接，且选区是临时状态。
+- 字体偏好在 `App.vue` 中应用到 `document.documentElement` 的 `--app-font-sans`、`--app-font-reading` 和 `--app-font-mono` 内联变量；`src/app/settings-display.ts` 生成带既有回退栈的字体族。`--font-mono` 和命令面板等界面的等宽标识不随代码字体变化，`--reading-font-mono` 单独读取 `--app-font-mono`。字体输入在停顿约 350ms 后通过设置写队列合并保存。
 - 任务框变量同样在 `src/style.css` 定义：`--nicole-checkbox-border`、`--nicole-checkbox-bg`、`--nicole-checkbox-checked-border`、`--nicole-checkbox-checked-bg`、`--nicole-checkbox-mark` 和 `--nicole-checkbox-focus`。每个变量写成 `var(--reading-checkbox-*, …)`，主题包 0.4.0 仍未提供 `reading-checkbox-*` 时分别回退到 `--text-muted`、`transparent`、`--text-accent`、`--text-accent`、`--surface-canvas` 和 `--reading-focus`，满足[任务框](ui.md#任务框)的对比度要求。
 - `src/editor/index.ts` 的 `EditorView.theme` 和 `HighlightStyle` 只引用这些变量，不读主题状态，因此切换主题不会触发 `EditorView` 重建。
 - 选区背景由 CodeMirror 的选择层绘制。基础主题的聚焦规则写成 `&light.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground`，编译后是生成的亮色作用域类加 `.cm-focused` 和三层后代，共五类；`editorTheme` 写出的 `&.cm-editor > .cm-scroller > .cm-selectionLayer .cm-selectionBackground` 本身是四类，编译时再前置生成的作用域类，同为五类。应用主题晚于基础主题挂载，同优先级时后者胜，因此覆盖聚焦和失焦两种状态都不需要 `!important`。`selection.test.ts` 解析实际样式表的层叠，验证亮暗模式下胜出的规则、`--reading-selection` 钩子、`!important` 的缺席，以及 `:root`/`.dark` 的源码顺序和 `@media print` 不会改变结果。

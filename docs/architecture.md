@@ -47,13 +47,16 @@ src/
     paths.ts              工作区相对路径、主目录缩写
     platform.ts           平台判断、平台文字与本地化标签
     recovery.ts           副本计时器与恢复时间格式
+    settings-display.ts   字体栈、文件显示名与文件树过滤
+    shortcut-help.ts      Esc 事件键与设置页只读帮助文案的唯一来源
     status.ts             保存状态、横幅优先级和标签页圆点
-    tabs.ts               标签页模型、同名区分、关闭问题与后台快照映射
+    tabs.ts               标签页模型（含无路径的 settings 类型）、同名区分、关闭问题与后台快照映射
     word-count.ts         字数口径与恢复副本的字数差
     watch-events.ts       监听事件与已打开文档、文件树刷新范围的对应
     workspace-search.ts   搜索结果分组、高亮片段、内容指纹、错误文案与点击定位校验
   commands/               唯一命令注册表、格式/应用/模板命令、键位匹配与格式化、拼音搜索
     snippets.ts           把当前根的用户模板快照转成普通 CommandDefinition
+    shortcuts.ts          从注册表和编辑器历史键位生成设置页的只读快捷键分组
   components/             界面组件
     AppSidebar.vue        侧栏外壳、宽度拖动、工作区工具行、搜索入口、底部入口
     FileTree.vue          按需读取的文件树、右键菜单、行内新建与重命名
@@ -69,6 +72,7 @@ src/
     RecoveryDialog.vue    崩溃恢复列表与三个选择
     EmptyState.vue        开始写作、无文件和最近文件夹
     NonMarkdownPlaceholder.vue  非 Markdown 文件的占位页
+    SettingsView.vue      全局设置页的四组控件与只读快捷键列表
     Outline.vue           大纲列表、定点跳转与当前章节
     InlineNameInput.vue   行内文件名输入框
     AppIcon.vue           内联 Lucide 1.66.0 图标
@@ -109,8 +113,8 @@ Go（main.go）
   Workspace.Watch         mygo.WatchFiles 的 Channel 封装，过滤自写（当前）
   SingleFileService       工作区外单个 .md 的按文件授权、读写与显示（当前）
   OpenedFiles             系统“打开方式”的路径队列与 app:open-file 信号（当前）
-  NativeMenu              页面请求的原生右键菜单（当前）
-  Settings                settings.json、最近文件夹、展开状态、侧栏宽度、主题、编辑模式、大纲开关（当前）
+  NativeMenu              页面请求的原生右键菜单，以及页面提供的 macOS 设置菜单快捷键文本（当前）
+  Settings                settings.json、最近文件夹、展开状态、侧栏宽度、主题、编辑模式、大纲/工具栏、字体、文件树显示和 slash 模式开关（当前）
   WorkspaceTabs           tabs.json、当前根目录的标签页布局与活动标签（当前）
   Recovery                recovery/ 未保存内容副本、磁盘哈希与单文件恢复授权（当前）
   Assets                  图片存到 assets/，读剪贴板和原生拖入路径（当前）
@@ -205,9 +209,9 @@ Go（main.go）
 - `Workspace.Watch(generation)` 用 `*mygo.Channel[FileWatchPart]` 流式返回 `ready` 和事件批次；底层是 `mygo.WatchFiles`，在 Go 端过滤 Nicole 自己的写入（见[工作区与文件](specs/workspace.md#忽略-nicole-自己的写入)）。工作区状态本身是可替换的单例，后续协议 handler 在启动时注册、运行时读取同一个状态。
 - `SingleFileService` 提供 `ChooseSingleFile`、`AcceptSingleFile`、`DismissOfferedFile`、`ReadSingleFile`、`WriteSingleFile`、`RevealSingleFile` 和 `ReleaseSingleFile`；授权按解析后的绝对路径保存，只有对话框选择或 `App.OnOpenFile` 提供的文件才能被接受。打开系统文件的父目录是一次性授权：`OpenFolder` 成功后 Go 消耗对应提供项，取消时页面调用 `DismissOfferedFile`。`OpenedFiles` 暂存系统传入的路径；`app:open-file` 只通知“有新文件”，页面收到信号后调用 `TakePendingOpenedFiles` 一次取走队列，既覆盖启动时到达的文件，也不会重复交付同一个文件。
 - `Recovery` 提供 `Save(copy, generation)`、`List(generation)`、`Delete(id, generation)`、`Discard(ids, generation)` 和 `RestoreSingleFile(id)`。工作区副本只接受当前根和 generation；单文件副本写入时核对 `SingleFileService` 的授权。副本请求可带 `baselineUnconfirmed`，此时 Go 不记录也不沿用磁盘哈希。`List` 由 Go 读磁盘并返回 `diskState`、`text` 和 `diskText`，页面不自行读盘；`changed`/`missing` 的结果是列表时的快照，用户在对话框里做出选择前页面会重新 `List`。格式、上限和恢复规则见[工作区与文件](specs/workspace.md#崩溃恢复)。
-- `Settings` 提供 `Get`、`MigrateLegacyTheme`、`SetTheme`、`SetEditorMode`、`SetOutlineVisible`、`SetSidebarWidth`、`SetExpandedFolders`、`AddRecentFolder` 和 `RemoveRecentFolder`；`AddRecentFolder` 只接受当前已打开的根目录，最近列表由 `Workspace.open` 写入；`SetTheme` 同时调用 `mygo.Theme.SetSource` 同步原生外观；`SetEditorMode` 只接受 `live`、`immersive` 或 `source`，非法值在写盘前拒绝；`SetOutlineVisible` 保存宽布局的大纲开关，窄布局的临时浮层不写盘。`workspaceClosed` 由 Go 维护，页面只通过 `Get` 读取；语义见[设置存储](specs/workspace.md#设置存储)。
+- `Settings` 提供 `Get`、`MigrateLegacyTheme`、`SetTheme`、`SetEditorMode`、`SetOutlineVisible`、`SetFormatToolbarVisible`、`SetFonts`、`SetShowAllFiles`、`SetHideMarkdownExtension`、`SetSlashEnabled`、`SetSidebarWidth`、`SetExpandedFolders`、`AddRecentFolder` 和 `RemoveRecentFolder`；`AddRecentFolder` 只接受当前已打开的根目录，最近列表由 `Workspace.open` 写入；`SetTheme` 同时调用 `mygo.Theme.SetSource` 同步原生外观；`SetEditorMode` 和 `SetSlashEnabled` 只接受既定模式名，非法值在写盘前拒绝；`SetOutlineVisible` 保存宽布局的大纲开关，窄布局的临时浮层不写盘。`workspaceClosed` 由 Go 维护，页面只通过 `Get` 读取；语义见[设置存储](specs/workspace.md#设置存储)。
 - `WorkspaceTabs` 提供 `Get(root)` 和 `Save(root, tabs, active, recentFiles)`，只接受当前打开的根目录；标签和最近文件路径都是相对路径，只用于显示和恢复，不构成文件授权。格式和限制见[工作区与文件](specs/workspace.md#标签页存储)。
-- `NativeMenu.PopupNativeMenu` 在调用窗口的页面坐标显示原生菜单，返回选中项 ID 或空字符串；页面最多传 64 项，ID 唯一。正文的 WebView 右键菜单由 `Page.OnContextMenu` 裁剪，见[安全](#安全)。
+- `NativeMenu.PopupNativeMenu` 在调用窗口的页面坐标显示原生菜单，返回选中项 ID 或空字符串；页面最多传 64 项，ID 唯一。`NativeMenu.SetSettingsAccelerator` 只把页面从命令注册表格式化的快捷键文本写到 macOS 应用菜单的“设置”项；该菜单项仍通过页面事件执行 `app.settings`，Go 不保存键位表。正文的 WebView 右键菜单由 `Page.OnContextMenu` 裁剪，见[安全](#安全)。
 - 搜索通过 `Workspace.Search(request)` 和 `*mygo.Channel[SearchPart]` 流式返回匹配行与最终汇总；请求只带 generation、查询和两个选项，不带路径。扫描范围、上限、取消和 UTF-16 位置协议见[工作区与文件](specs/workspace.md#搜索)。
 - `Assets` 提供 `PasteImage(docPath, generation)` 和 `ImportImages(docPath, generation, dropToken)`，返回保存后的工作区相对路径和 Markdown。粘贴时 Go 先读剪贴板里的本地文件列表；列表非空时只导入其中的图片，没有图片就返回“剪贴板没有图片”，只有列表为空时才读 PNG 位图；拖入时 Go 从 `Window.OnFileDrop` 保存的路径中按一次性 token 取文件。同一个原生 drop 还可能带文件夹 token，页面用它调用 `Workspace.OpenDroppedFolder`。页面不接触路径，图片字节也不经过 IPC；token 规则见[拖入文件夹](specs/workspace.md#拖入文件夹)。
 - `src/services/assets.ts` 封装 `Assets.PasteImage`、`Assets.ImportImages` 和 `assets:file-drop`。DOM 拖放事件本身没有路径，只用于阻止浏览器默认行为；页面通过 `assets:file-drop` 从 Go 拿到一次性 token 和落点坐标，用 `EditorHandle.containsPoint` 确认在编辑区内后才创建插入凭据。绝对路径只保存在 Go，页面不记录拖放计数。

@@ -2,13 +2,16 @@
 @import "@ayingott/theme";
 
 @theme {
-  --font-sans: system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-sans: var(--app-font-sans, system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif);
   --font-display: var(--font-sans);
   --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
   --font-reading: var(--app-font-reading, Georgia, "Songti SC", serif);
 }
 
 :root {
+  /* The code-font preference belongs to inline and fenced code, not to the
+     interface's monospace glyph labels. */
+  --reading-font-mono: var(--app-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   /* The editor only reads these variables, so switching `.dark` never rebuilds it. */
   --nicole-syntax-mark: var(--reading-syntax-mark, var(--text-muted));
   /* 0.4.0 makes --accent-primary a fill surface (1.73:1 on Paper). A caret is

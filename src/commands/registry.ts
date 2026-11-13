@@ -115,14 +115,12 @@ function displayKeyName(part: string, platform: AppPlatform): string {
   return part;
 }
 
-/** Converts one CodeMirror key binding to platform shortcut text. */
-export function formatKeyBinding(
+function parseBinding(
   binding: CommandKeyBinding,
   platform: AppPlatform,
-): string | null {
+): { modifiers: Set<Modifier>; base: string; key: string } | null {
   const key = resolveKeyBinding(binding, platform);
   if (!key) return null;
-
   const modifiers = new Set<Modifier>();
   let base = "";
   for (const part of key.split("-")) {
@@ -133,6 +131,17 @@ export function formatKeyBinding(
       base = part;
     }
   }
+  return { modifiers, base, key };
+}
+
+/** Converts one CodeMirror key binding to platform shortcut text. */
+export function formatKeyBinding(
+  binding: CommandKeyBinding,
+  platform: AppPlatform,
+): string | null {
+  const parsed = parseBinding(binding, platform);
+  if (parsed === null) return null;
+  const { modifiers, base, key } = parsed;
 
   const mac = isMac(platform);
   const parts: string[] = [];
@@ -158,6 +167,50 @@ export function formatCommandShortcut(
   for (const binding of command.keys ?? []) {
     const text = formatKeyBinding(binding, platform);
     if (text) return text;
+  }
+  return null;
+}
+
+const NATIVE_KEY_LABELS: Record<string, string> = {
+  arrowup: "Up",
+  arrowdown: "Down",
+  arrowleft: "Left",
+  arrowright: "Right",
+  enter: "Enter",
+  escape: "Escape",
+  backspace: "Backspace",
+  delete: "Delete",
+  tab: "Tab",
+  pageup: "PageUp",
+  pagedown: "PageDown",
+  home: "Home",
+  end: "End",
+  space: "Space",
+};
+
+/**
+ * Converts a registry binding to MyGo's native accelerator syntax. The native
+ * application menu reads this value from the page, so it has no second key
+ * table of its own.
+ */
+export function nativeAccelerator(
+  command: CommandDefinition,
+  platform: AppPlatform,
+): string | null {
+  for (const binding of command.keys ?? []) {
+    const parsed = parseBinding(binding, platform);
+    if (parsed === null) continue;
+    const { modifiers, base, key } = parsed;
+    const parts: string[] = [];
+    if (modifiers.has("ctrl")) parts.push("Ctrl");
+    if (modifiers.has("alt")) parts.push("Alt");
+    if (modifiers.has("shift")) parts.push("Shift");
+    if (modifiers.has("mod")) {
+      parts.push(isMac(platform) ? "Cmd" : "CmdOrCtrl");
+    }
+    const label = NATIVE_KEY_LABELS[(base || key).toLowerCase()] ?? base;
+    parts.push(label || key);
+    return parts.join("+");
   }
   return null;
 }

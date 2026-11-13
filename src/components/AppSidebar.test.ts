@@ -63,6 +63,8 @@ function mount(
           selectedPath: null,
           initialExpanded,
           isDark: false,
+          showAllFiles: true,
+          hideMarkdownExtension: false,
           onWidthChange: (value: number) => changes.push(value),
           onWidthCommit: (value: number) => commits.push(value),
           onResetWidth: () => {
@@ -164,8 +166,11 @@ describe("AppSidebar", () => {
     const settings = host.querySelector<HTMLButtonElement>(
       'button[aria-label^="设置"]',
     )!;
-    expect(settings.disabled).toBe(true);
-    expect(settings.className).toContain("disabled:opacity-50");
+    expect(settings.disabled).toBe(false);
+    expect(settings.className).not.toContain("disabled:opacity-50");
+    expect(settings.getAttribute("title")).toContain("⌘,");
+    settings.click();
+    expect(log.runCommands.at(-1)).toBe("app.settings");
     expect(
       host.querySelector('button[aria-label="切换到暗色主题"]'),
     ).not.toBeNull();

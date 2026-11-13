@@ -110,6 +110,34 @@ describe("context menus", () => {
     expect(items.find((item) => item.id === "reveal-in-tree")?.disabled).toBe(false);
   });
 
+  it("disables file actions on the settings tab but keeps close actions", () => {
+    const items = buildContextMenu({
+      target: "tab",
+      platform: "macos",
+      isMarkdown: false,
+      isSettings: true,
+      inWorkspace: false,
+      hasOtherTabs: true,
+      hasTabsRight: true,
+    });
+    for (const id of [
+      "reveal-in-tree",
+      "reveal",
+      "copy-path",
+      "copy-relative-path",
+    ]) {
+      expect(items.find((item) => item.id === id)?.disabled).toBe(true);
+    }
+    for (const id of [
+      "close-tab",
+      "close-other-tabs",
+      "close-tabs-right",
+      "close-all-tabs",
+    ]) {
+      expect(items.find((item) => item.id === id)?.disabled).not.toBe(true);
+    }
+  });
+
   it("enables the multi-tab actions when they apply", () => {
     const items = buildContextMenu({
       target: "tab",

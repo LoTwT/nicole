@@ -82,10 +82,10 @@ Slash 命令的作用只是插入 Markdown 文本，所以和编辑模式无关�
 - 注册表在 `src/commands/registry.ts`，命令定义和格式、插入、应用与文件树命令都在 `src/commands/`；键位显示函数也在这里，slash 菜单、`KeyHint`、悬停提示和右键菜单共用同一份转换结果。
 - 编辑器命令由 `createEditor` 统一注册为 CodeMirror keymap，并使用 `Prec.highest` 覆盖 `basicSetup` 的同名键位（例如 ⌘I）。应用命令由 `App.vue` 在窗口 `keydown` 捕获阶段分发，因此注册表键位先于 CodeMirror 的编辑器键位，例如 Windows 的 Ctrl+Shift+L 切大纲而不是选中相同文字；文件树命令只在文件树有焦点时由 `FileTree.vue` 分发；两者都使用 `src/commands/keybinding.ts` 的匹配器，不在组件里另写键位。
 - 匹配器先按字符精确匹配全部命令；只有字符没有命中、事件带命令修饰键时，才进入物理键回退。回退使用 `event.code` 和 `keyCode` 表，支持 ⇧⌘[ / ⇧⌘] 在 US 布局报告 `{`/`}`、非 US 布局和 AZERTY 数字行；但事件已产生单个 ASCII 字符时不会按物理位置推出字母，避免 AZERTY ⌘Z、Dvorak ⌘, / ⌘B 误触其他命令。非 ASCII 输入（例如西里尔字母）仍可按物理位置匹配。Windows 和 Linux 的 Ctrl+Alt 不会被当成 Ctrl 快捷键。
-- `available: false` 的占位命令（设置）保留键位以便界面显示，但匹配器跳过它们；slash 菜单和命令面板也只列出可用命令。大纲和全文搜索已启用，分别需要活动 Markdown 文件和工作区。
+- `available: false` 的占位命令仍保留键位以便界面显示，但匹配器跳过它们；slash 菜单和命令面板也只列出可用命令。当前注册表没有未实现的占位命令。大纲、全文搜索和设置已启用，分别需要活动 Markdown 文件、工作区和无额外条件。
 - slash 菜单的触发、查询、最近使用和按键归属在 `src/editor/slash.ts`，渲染和定位在 `src/components/SlashMenu.vue`。菜单宽 260px、最多 8 项，锚定光标下方并在空间不足时翻到上方，窗口内保留 8px。
 - 执行命令时删除触发字符和查询后运行命令，删除查询和执行命令合并为一个撤销步；Esc、光标离开、出现空白和没有匹配项都只关闭菜单，不删除正文。组合输入期间 Enter、↑、↓、Esc 交给输入法，空白或无匹配也要等组合结束后再关闭。代码块、frontmatter 和 HTML 块内不触发。
 - 格式命令的事务使用 `input.format` 并通过 `isolateHistory` 与之前的输入分开。
 - 命令面板的三入口和三种模式在 `src/components/CommandPalette.vue`，模式解析、文件排序和最近文件记录在 `src/app/command-palette.ts`。命令模式过滤可用且当前可执行的注册表命令，编辑器命令在没有活动 Markdown 编辑器时不出现；执行后写入 `nicole:commands:recent`。面板和 slash 菜单共用 `loadPinyinMatcher()` 与 `filterCommands()`，`pinyin-pro` 仍只在第一次打开任一面板时加载。
-- 用户模板由 `src/commands/snippets.ts` 转成普通命令，`App.vue` 在 slash 或命令面板打开时调用 `Workspace.ListSnippets(generation)` 并替换当前快照；Go 实现在 `workspace_snippets.go`。按编辑模式开关尚未实现，在后续设置的 PR 中完成。
+- 用户模板由 `src/commands/snippets.ts` 转成普通命令，`App.vue` 在 slash 或命令面板打开时调用 `Workspace.ListSnippets(generation)` 并替换当前快照；Go 实现在 `workspace_snippets.go`。按编辑模式的开关由设置页写入 `slashEnabled`，`createSlashMenu` 在触发前读取当前模式；关闭当前模式会关闭已打开的菜单，其他模式、格式快捷键、命令面板和模板不受影响。
 - 固定格式工具栏（E3）由 `src/components/FormatToolbar.vue` 消费同一注册表：`format.bold` 等行内命令、`format.paragraph` / `format.heading-*` 段落类型、列表与引用命令和 `insert.table` / `insert.image` 按固定顺序显示；正文命令没有默认键位，也不进入 slash 菜单。`formatToolbarStateFor` 在选区变化时查询一次语法树，组件不保存文档位置或 Markdown 改写逻辑。显示/隐藏工具栏的两个应用命令通过 `formatToolbarState` 在命令面板中互斥出现。窄窗口用隐藏镜像测量命令宽度，把不再放下的命令移入“更多”，不靠 `overflow: hidden` 丢弃功能。

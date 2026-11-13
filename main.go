@@ -161,6 +161,10 @@ func main() {
 	}
 	mygo.App.SetWindowStateStore(stateStore)
 
+	menu := appMenu(mygo.IsDev())
+	customizeEditMenu(menu)
+	mygo.App.SetMenu(menu)
+
 	mygo.Bind(
 		NewApplication(mygo.App.Version()),
 		workspace,
@@ -170,11 +174,8 @@ func main() {
 		singleFiles,
 		recovery,
 		openedFiles,
-		NativeMenu{},
+		NewNativeMenu(menu),
 	)
-	menu := appMenu(mygo.IsDev())
-	customizeEditMenu(menu)
-	mygo.App.SetMenu(menu)
 
 	mygo.App.WhenReady(func() {
 		window := mygo.NewWindow(mainWindowOptions())

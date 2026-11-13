@@ -8,6 +8,7 @@ import {
   formatKeyBinding,
   getCommand,
   isCommandAvailable,
+  nativeAccelerator,
   resolveKeyBinding,
   slashCommands,
 } from "./registry";
@@ -225,13 +226,15 @@ describe("command registry", () => {
     }
   });
 
-  it("registers unavailable placeholders without dispatching them", () => {
-    for (const id of ["app.settings"]) {
-      const command = getCommand(id);
-      expect(command, id).toBeDefined();
-      expect(isCommandAvailable(command!), id).toBe(false);
-      expect(formatCommandShortcut(command!, "macos"), id).not.toBeNull();
-    }
+  it("registers settings as a dispatchable app command", () => {
+    const settings = getCommand("app.settings");
+    expect(settings).toBeDefined();
+    expect(isCommandAvailable(settings!)).toBe(true);
+    expect(settings!.scope).toBe("app");
+    expect(formatCommandShortcut(settings!, "macos")).toBe("⌘,");
+    expect(formatCommandShortcut(settings!, "windows")).toBe("Ctrl+,");
+    expect(nativeAccelerator(settings!, "macos")).toBe("Cmd+,");
+    expect(nativeAccelerator(settings!, "windows")).toBe("CmdOrCtrl+,");
     expect(isCommandAvailable(getCommand("nav.search")!)).toBe(true);
     const outline = getCommand("nav.toggle-outline");
     expect(outline).toBeDefined();

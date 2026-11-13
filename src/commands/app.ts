@@ -104,8 +104,10 @@ export const appCommands: readonly CommandDefinition[] = [
     group: "app",
     scope: "app",
     keys: [{ key: "Mod-," }],
-    available: false,
-    run: () => false,
+    run: ({ app }) => {
+      void app?.openSettings();
+      return app !== undefined;
+    },
   },
   {
     id: "app.toggle-theme",

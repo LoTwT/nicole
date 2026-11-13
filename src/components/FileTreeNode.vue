@@ -7,6 +7,7 @@ import {
   type TreeNode,
 } from "../app/file-tree";
 import type { AppPlatform } from "../app/platform";
+import { fileDisplayName } from "../app/settings-display";
 import AppIcon from "./AppIcon.vue";
 import InlineNameInput from "./InlineNameInput.vue";
 
@@ -17,6 +18,7 @@ const props = defineProps<{
   tabStopPath: string;
   editing: TreeEditState | null;
   platform: AppPlatform;
+  hideMarkdownExtension: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -116,7 +118,9 @@ function activate() {
         :size="14"
         class="shrink-0 text-[var(--text-muted)]"
       />
-      <span class="min-w-0 flex-1 truncate">{{ node.name }}</span>
+      <span class="min-w-0 flex-1 truncate">{{
+        fileDisplayName(node, hideMarkdownExtension)
+      }}</span>
       <span v-if="node.loading" class="text-[11px] text-[var(--text-muted)]">读取中</span>
     </div>
 
@@ -152,6 +156,7 @@ function activate() {
           :tab-stop-path="tabStopPath"
           :editing="editing"
           :platform="platform"
+          :hide-markdown-extension="hideMarkdownExtension"
           @toggle="emit('toggle', $event)"
           @open="emit('open', $event)"
           @menu="(childNode, event) => emit('menu', childNode, event)"

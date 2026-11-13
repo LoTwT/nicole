@@ -855,3 +855,173 @@ func TestSettingsCorruptFileIsBackedUpAndRecovered(t *testing.T) {
 		t.Errorf("settings after recovery = %+v, %v; want dark", settings, err)
 	}
 }
+
+func TestSettingsPresentationDefaults(t *testing.T) {
+	store, dir := newTestSettings(t)
+	settings, err := store.get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !settings.ShowAllFiles {
+		t.Error("ShowAllFiles = false, want the default true")
+	}
+	if settings.HideMarkdownExtension {
+		t.Error("HideMarkdownExtension = true, want the default false")
+	}
+	if settings.UIFont != "" || settings.ReadingFont != "" || settings.CodeFont != "" {
+		t.Errorf("font defaults = %+v, want empty strings", settings)
+	}
+	if !settings.SlashEnabled.Live || !settings.SlashEnabled.Immersive || !settings.SlashEnabled.Source {
+		t.Errorf("SlashEnabled = %+v, want all three enabled", settings.SlashEnabled)
+	}
+	if _, err := os.Stat(filepath.Join(dir, settingsFileName)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("Get() created a settings file: %v", err)
+	}
+}
+
+func TestSettingsSetPresentationFields(t *testing.T) {
+	store, dir := newTestSettings(t)
+	filePath := filepath.Join(dir, settingsFileName)
+	if err := os.WriteFile(filePath, []byte(`{"theme":"dark","outlineVisible":true,"sidebarWidth":300,"recentFolders":["/notes"]}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	settings := NewSettings(store)
+	if err := settings.SetFonts("  Hannotate SC  ", "Songti SC", " SF Mono "); err != nil {
+		t.Fatal(err)
+	}
+	if err := settings.SetShowAllFiles(false); err != nil {
+		t.Fatal(err)
+	}
+	if err := settings.SetHideMarkdownExtension(true); err != nil {
+		t.Fatal(err)
+	}
+	if err := settings.SetSlashEnabled(editorModeImmersive, false); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.UIFont != "Hannotate SC" || loaded.ReadingFont != "Songti SC" || loaded.CodeFont != "SF Mono" {
+		t.Errorf("fonts = %q, %q, %q", loaded.UIFont, loaded.ReadingFont, loaded.CodeFont)
+	}
+	if loaded.ShowAllFiles || !loaded.HideMarkdownExtension {
+		t.Errorf("file tree preferences = show %v, hide %v", loaded.ShowAllFiles, loaded.HideMarkdownExtension)
+	}
+	if loaded.SlashEnabled.Live != true || loaded.SlashEnabled.Immersive != false || loaded.SlashEnabled.Source != true {
+		t.Errorf("SlashEnabled = %+v, want true/false/true", loaded.SlashEnabled)
+	}
+	if loaded.Theme != themeDark || !loaded.OutlineVisible || loaded.SidebarWidth != 300 {
+		t.Errorf("existing settings changed: %+v", loaded)
+	}
+	if err := settings.SetSlashEnabled("sepia", false); !errors.Is(err, errInvalidEditorMode) {
+		t.Errorf("SetSlashEnabled(sepia) = %v, want %v", err, errInvalidEditorMode)
+	}
+}
+
+func TestSettingsPresentationFieldsTolerateMissingAndBadTypes(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+	}{
+		{"missing", `"theme":"dark","outlineVisible":true,"sidebarWidth":300,"recentFolders":["/notes"],"editorMode":"source","formatToolbarVisible":true`},
+		{"wrong types", `"theme":"dark","outlineVisible":true,"sidebarWidth":300,"recentFolders":["/notes"],"editorMode":"source","formatToolbarVisible":true,"showAllFiles":"yes","hideMarkdownExtension":1,"uiFont":true,"readingFont":{"name":"Songti"},"codeFont":["SF Mono"],"slashEnabled":"all"`},
+		{"null", `"theme":"dark","outlineVisible":true,"sidebarWidth":300,"recentFolders":["/notes"],"editorMode":"source","formatToolbarVisible":true,"showAllFiles":null,"hideMarkdownExtension":null,"uiFont":null,"readingFont":null,"codeFont":null,"slashEnabled":null`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store, dir := newTestSettings(t)
+			filePath := filepath.Join(dir, settingsFileName)
+			fixture := `{` + tc.value + `}`
+			if err := os.WriteFile(filePath, []byte(fixture+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			settings, err := store.get()
+			if err != nil {
+				t.Fatalf("get() = %v", err)
+			}
+			if !settings.ShowAllFiles || settings.HideMarkdownExtension {
+				t.Errorf("file tree defaults = show %v, hide %v", settings.ShowAllFiles, settings.HideMarkdownExtension)
+			}
+			if settings.UIFont != "" || settings.ReadingFont != "" || settings.CodeFont != "" {
+				t.Errorf("font fields = %q, %q, %q", settings.UIFont, settings.ReadingFont, settings.CodeFont)
+			}
+			if !settings.SlashEnabled.Live || !settings.SlashEnabled.Immersive || !settings.SlashEnabled.Source {
+				t.Errorf("SlashEnabled = %+v, want all enabled", settings.SlashEnabled)
+			}
+			if settings.Theme != themeDark || !settings.OutlineVisible || settings.SidebarWidth != 300 || settings.EditorMode != editorModeSource || !settings.FormatToolbarVisible {
+				t.Errorf("existing fields were reset: %+v", settings)
+			}
+			after, err := os.ReadFile(filePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(after) != fixture+"\n" {
+				t.Errorf("reading settings rewrote the file: %q", after)
+			}
+		})
+	}
+}
+
+func TestSettingsSlashEnabledKeepsValidFalseBesideBadSibling(t *testing.T) {
+	store, dir := newTestSettings(t)
+	filePath := filepath.Join(dir, settingsFileName)
+	if err := os.WriteFile(filePath, []byte(`{"slashEnabled":{"live":false,"immersive":"sometimes","source":false},"showAllFiles":false}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := store.get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.SlashEnabled.Live || !settings.SlashEnabled.Immersive || settings.SlashEnabled.Source {
+		t.Errorf("SlashEnabled = %+v, want false/true/false", settings.SlashEnabled)
+	}
+	if settings.ShowAllFiles {
+		t.Error("a bad slash subfield reset showAllFiles")
+	}
+}
+
+func TestSettingsPresentationUpdatesDoNotClobberOtherFields(t *testing.T) {
+	store, dir := newTestSettings(t)
+	var wg sync.WaitGroup
+	updates := []func(*settingsStore) error{
+		func(s *settingsStore) error { return s.update(func(v *AppSettings) { v.UIFont = "Interface" }) },
+		func(s *settingsStore) error { return s.update(func(v *AppSettings) { v.ReadingFont = "Reading" }) },
+		func(s *settingsStore) error { return s.update(func(v *AppSettings) { v.CodeFont = "Code" }) },
+		func(s *settingsStore) error { return s.update(func(v *AppSettings) { v.ShowAllFiles = false }) },
+		func(s *settingsStore) error { return s.update(func(v *AppSettings) { v.HideMarkdownExtension = true }) },
+		func(s *settingsStore) error {
+			return s.update(func(v *AppSettings) { v.SlashEnabled.Source = false })
+		},
+	}
+	for _, update := range updates {
+		wg.Add(1)
+		go func(update func(*settingsStore) error) {
+			defer wg.Done()
+			if err := update(store); err != nil {
+				t.Errorf("update() = %v", err)
+			}
+		}(update)
+	}
+	wg.Wait()
+	settings, err := store.get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.UIFont != "Interface" || settings.ReadingFont != "Reading" || settings.CodeFont != "Code" {
+		t.Errorf("fonts lost across concurrent writes: %+v", settings)
+	}
+	if settings.ShowAllFiles || !settings.HideMarkdownExtension || settings.SlashEnabled.Source {
+		t.Errorf("presentation fields lost across concurrent writes: %+v", settings)
+	}
+	if !settings.SlashEnabled.Live || !settings.SlashEnabled.Immersive {
+		t.Errorf("slash siblings changed: %+v", settings.SlashEnabled)
+	}
+	tempFiles, err := filepath.Glob(filepath.Join(dir, tempFilePrefix+"*"+tempFileSuffix))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tempFiles) != 0 {
+		t.Errorf("temporary files left behind: %q", tempFiles)
+	}
+}

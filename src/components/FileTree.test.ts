@@ -60,6 +60,10 @@ const noteEntries = [
 let host: HTMLElement;
 let app: ReturnType<typeof createApp> | null = null;
 let treeApi: InstanceType<typeof FileTree> | null = null;
+let mountedProps: {
+  showAllFiles: boolean;
+  hideMarkdownExtension: boolean;
+} | null = null;
 let events: {
   open: ReturnType<typeof vi.fn>;
   created: ReturnType<typeof vi.fn>;
@@ -89,7 +93,10 @@ function mountTree(
     selectedPath,
     platform,
     initialExpanded,
+    showAllFiles: true,
+    hideMarkdownExtension: false,
   });
+  mountedProps = props;
   events = {
     open: vi.fn(),
     created: vi.fn(),
@@ -820,6 +827,57 @@ describe("FileTree", () => {
     await settle();
     expect(document.activeElement?.textContent).toContain("notes");
     expect(event.defaultPrevented).toBe(false);
+  });
+});
+
+describe("file display preferences", () => {
+  it("filters only files and hides .md labels without changing paths", async () => {
+    const withImage = [
+      ...rootEntries,
+      {
+        name: "cover.png",
+        path: "cover.png",
+        isDir: false,
+        isMarkdown: false,
+        size: 4,
+      },
+    ];
+    mocks.listDirectory.mockImplementation(async (path: string) => {
+      if (path === ".") return { path: ".", entries: withImage };
+      if (path === "notes") return { path: "notes", entries: noteEntries };
+      return { path, entries: [] };
+    });
+    mountTree();
+    await settle();
+    expect(() => row("cover.png")).not.toThrow();
+    expect(() => row("a.md")).not.toThrow();
+
+    mountedProps!.showAllFiles = false;
+    await settle();
+    expect(host.querySelector('[data-tree-path="cover.png"]')).toBeNull();
+    expect(host.querySelector('[data-tree-path="a.md"]')).not.toBeNull();
+    expect(host.querySelector('[data-tree-path="notes"]')).not.toBeNull();
+
+    mountedProps!.hideMarkdownExtension = true;
+    await settle();
+    const markdown = host.querySelector('[data-tree-path="a.md"]')!;
+    expect(markdown.textContent?.trim()).toBe("a");
+    expect(markdown.getAttribute("data-tree-path")).toBe("a.md");
+
+    mocks.popupNativeMenu.mockResolvedValue("rename");
+    markdown.dispatchEvent(
+      new MouseEvent("contextmenu", {
+        bubbles: true,
+        cancelable: true,
+        clientX: 4,
+        clientY: 4,
+      }),
+    );
+    await settle();
+    const rename = host.querySelector<HTMLInputElement>(
+      'input[aria-label="重命名"]',
+    )!;
+    expect(rename.value).toBe("a.md");
   });
 });
 

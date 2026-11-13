@@ -13,6 +13,7 @@ import {
 } from "../app/file-tree";
 import { buildContextMenu } from "../app/context-menu";
 import type { AppPlatform } from "../app/platform";
+import { visibleTreeEntry } from "../app/settings-display";
 import { matchCommand } from "../commands/keybinding";
 import { commandRegistry } from "../commands/registry";
 import { copyText } from "../services/clipboard";
@@ -25,7 +26,7 @@ import {
   revealEntry,
 } from "../services/files";
 import { popupNativeMenu } from "../services/menu";
-import type { WorkspaceFileEvent } from "../services/mygo";
+import type { WorkspaceFileEvent, FileEntry } from "../services/mygo";
 import AppIcon from "./AppIcon.vue";
 import FileTreeNode from "./FileTreeNode.vue";
 import InlineNameInput from "./InlineNameInput.vue";
@@ -36,6 +37,8 @@ const props = defineProps<{
   selectedPath: string | null;
   platform: AppPlatform;
   initialExpanded: readonly string[];
+  showAllFiles: boolean;
+  hideMarkdownExtension: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -80,6 +83,12 @@ function applyExpanded() {
   );
 }
 
+function visibleEntries(entries: readonly FileEntry[]): FileEntry[] {
+  return entries.filter((entry) =>
+    visibleTreeEntry(entry, props.showAllFiles),
+  );
+}
+
 async function loadRoot() {
   const sequence = ++loadSequence;
   rootLoading.value = true;
@@ -90,7 +99,7 @@ async function loadRoot() {
     if (sequence !== loadSequence) {
       return;
     }
-    nodes.value = toTreeNodes(listing.entries, expandedSet.value);
+    nodes.value = toTreeNodes(visibleEntries(listing.entries), expandedSet.value);
     focusedPath.value =
       props.selectedPath ?? nodes.value[0]?.path ?? "";
     await loadStoredFolders(nodes.value, sequence);
@@ -133,7 +142,7 @@ async function fetchChildren(node: TreeNode): Promise<TreeNode[] | null> {
   node.loading = true;
   try {
     const listing = await listDirectory(node.path);
-    return toTreeNodes(listing.entries, expandedSet.value);
+    return toTreeNodes(visibleEntries(listing.entries), expandedSet.value);
   } catch (error) {
     emit("status", `读取“${node.name}”失败：${errorText(error)}`);
     return null;
@@ -428,7 +437,7 @@ async function reloadFolder(path: string): Promise<void> {
     const listing = await listDirectory(".");
     nodes.value = mergeChildren(
       nodes.value,
-      listing.entries,
+      visibleEntries(listing.entries),
       expandedSet.value,
     );
     return;
@@ -440,7 +449,7 @@ async function reloadFolder(path: string): Promise<void> {
   const listing = await listDirectory(path);
   node.children = mergeChildren(
     node.children,
-    listing.entries,
+    visibleEntries(listing.entries),
     expandedSet.value,
   );
 }
@@ -768,6 +777,13 @@ watch(
 );
 
 watch(
+  () => props.showAllFiles,
+  () => {
+    void loadRoot();
+  },
+);
+
+watch(
   () => props.selectedPath,
   (path) => {
     if (path) {
@@ -844,6 +860,7 @@ defineExpose({
           :tab-stop-path="tabStopPath"
           :editing="editing"
           :platform="platform"
+          :hide-markdown-extension="hideMarkdownExtension"
           @toggle="toggleNode"
           @open="openNode"
           @menu="
