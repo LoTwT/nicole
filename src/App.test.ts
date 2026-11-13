@@ -12534,6 +12534,177 @@ describe("settings tab", () => {
     },
   );
 
+  it.each([false, true])(
+    "E4 R4 fix: settles restored tabs when Settings is retained or closed during restore (closed: %s)",
+    async (closeSettings) => {
+      await setupWorkspace({ "a.md": "# A\n", "b.md": "# Restored\n" });
+      await openSettingsFromShortcut();
+      const stored = deferred<{
+        tabs: import("./services/tabs").StoredTab[];
+        active: string;
+        recentFiles: string[];
+      }>();
+      mocks.getWorkspaceTabs.mockImplementationOnce(() => stored.promise);
+      mocks.pickFolder.mockResolvedValue({ path: "/other", canceled: false });
+      mocks.openFolder.mockResolvedValue(folder("/other", 2));
+      pressAppShortcut("o");
+      await settle();
+      expect(mocks.getWorkspaceTabs).toHaveBeenLastCalledWith("/other");
+      expect(settingsView()).not.toBeNull();
+
+      if (closeSettings) {
+        settingsTabs()[0]!
+          .querySelector<HTMLButtonElement>('button[aria-label^="关闭"]')!
+          .click();
+        await settle();
+        expect(settingsTabs()).toHaveLength(0);
+      }
+
+      stored.resolve({
+        tabs: [{ kind: "markdown", path: "b.md" }],
+        active: "b.md",
+        recentFiles: [],
+      });
+      await settle();
+
+      if (closeSettings) {
+        expect(settingsView()).toBeNull();
+        expect(tabNamed("b.md").getAttribute("aria-selected")).toBe("true");
+        expect(editorView().state.doc.toString()).toBe("# Restored\n");
+      } else {
+        expect(settingsView()).not.toBeNull();
+        expect(settingsTabs()[0]!.getAttribute("aria-selected")).toBe("true");
+        settingsTabs()[0]!
+          .querySelector<HTMLButtonElement>('button[aria-label^="关闭"]')!
+          .click();
+        await settle();
+        expect(tabNamed("b.md").getAttribute("aria-selected")).toBe("true");
+        expect(editorView().state.doc.toString()).toBe("# Restored\n");
+      }
+    },
+  );
+
+  it("E4 R4 fix: keeps a tab selected during restore in front", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    await openPath("/tmp/single.md");
+    dialogButton("只打开这个文件").click();
+    await settle();
+    await openSettingsFromShortcut();
+    const stored = deferred<{
+      tabs: import("./services/tabs").StoredTab[];
+      active: string;
+      recentFiles: string[];
+    }>();
+    mocks.getWorkspaceTabs.mockImplementationOnce(() => stored.promise);
+    mocks.pickFolder.mockResolvedValue({ path: "/other", canceled: false });
+    mocks.openFolder.mockResolvedValue(folder("/other", 2));
+    pressAppShortcut("o");
+    await settle();
+    expect(settingsView()).not.toBeNull();
+
+    tabNamed("single.md").click();
+    await settle();
+    expect(tabNamed("single.md").getAttribute("aria-selected")).toBe("true");
+
+    stored.resolve({
+      tabs: [{ kind: "markdown", path: "b.md" }],
+      active: "b.md",
+      recentFiles: [],
+    });
+    await settle();
+
+    expect(tabNamed("single.md").getAttribute("aria-selected")).toBe("true");
+    expect(editorView().state.doc.toString()).toBe("# Single\n");
+    expect(tabNamed("b.md").getAttribute("aria-selected")).not.toBe("true");
+  });
+
+  it("E4 R4 fix: restores the remembered document when Settings was in the background", async () => {
+    await setupWorkspace({ "a.md": "# A\n", "b.md": "# Restored\n" });
+    await openPath("/notes/a.md");
+    await openSettingsFromShortcut();
+    tabNamed("a.md").click();
+    await settle();
+    const stored = deferred<{
+      tabs: import("./services/tabs").StoredTab[];
+      active: string;
+      recentFiles: string[];
+    }>();
+    mocks.getWorkspaceTabs.mockImplementationOnce(() => stored.promise);
+    mocks.pickFolder.mockResolvedValue({ path: "/other", canceled: false });
+    mocks.openFolder.mockResolvedValue(folder("/other", 2));
+    pressAppShortcut("o");
+    await settle();
+    dialogButton("切换").click();
+    await settle();
+    expect(mocks.getWorkspaceTabs).toHaveBeenLastCalledWith("/other");
+
+    stored.resolve({
+      tabs: [{ kind: "markdown", path: "b.md" }],
+      active: "b.md",
+      recentFiles: [],
+    });
+    await settle();
+
+    expect(settingsTabs()).toHaveLength(1);
+    expect(settingsView()).toBeNull();
+    expect(tabNamed("b.md").getAttribute("aria-selected")).toBe("true");
+    expect(editorView().state.doc.toString()).toBe("# Restored\n");
+  });
+
+  it("E4 R4 fix: shows the empty workspace after an empty restore", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    await openSettingsFromShortcut();
+    const stored = deferred<{
+      tabs: import("./services/tabs").StoredTab[];
+      active: string;
+      recentFiles: string[];
+    }>();
+    mocks.getWorkspaceTabs.mockImplementationOnce(() => stored.promise);
+    mocks.pickFolder.mockResolvedValue({ path: "/other", canceled: false });
+    mocks.openFolder.mockResolvedValue(folder("/other", 2));
+    pressAppShortcut("o");
+    await settle();
+    settingsTabs()[0]!
+      .querySelector<HTMLButtonElement>('button[aria-label^="关闭"]')!
+      .click();
+    await settle();
+
+    stored.resolve({ tabs: [], active: "", recentFiles: [] });
+    await settle();
+
+    expect(settingsTabs()).toHaveLength(0);
+    expect(tabElements()).toHaveLength(0);
+    expect(host.querySelector(".cm-editor")).toBeNull();
+    expect(host.textContent).toContain("选择一个文件开始写作");
+  });
+
+  it("E4 R4 fix: does not revive Settings closed while closing the workspace", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    await openSettingsFromShortcut();
+    const closing = deferred<void>();
+    mocks.closeWorkspace.mockImplementationOnce(() => closing.promise);
+    window.dispatchEvent(
+      new CustomEvent("nicole:run-command", {
+        detail: "app.close-workspace",
+      }),
+    );
+    await vi.waitFor(() => expect(mocks.closeWorkspace).toHaveBeenCalled());
+
+    settingsTabs()[0]!
+      .querySelector<HTMLButtonElement>('button[aria-label^="关闭"]')!
+      .click();
+    await settle();
+    expect(settingsTabs()).toHaveLength(0);
+
+    closing.resolve();
+    await settle();
+
+    expect(settingsTabs()).toHaveLength(0);
+    expect(settingsView()).toBeNull();
+    expect(tabElements()).toHaveLength(0);
+    expect(host.textContent).toContain("打开文件夹");
+  });
+
   it("filters the tree and hides labels without changing paths or open previews", async () => {
     await setupWorkspace({ "a.md": "# A\n", "cover.png": "png" });
     await openPath("/notes/a.md");

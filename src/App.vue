@@ -3425,6 +3425,7 @@ async function applyWorkspace(folder: {
       ? previous.id
       : settingsTab?.id ?? null;
     activeTabId.value = restoreStartActiveId;
+    const restoreStartNavigationRevision = tabNavigationRevision;
     lastWorkspaceActivePath = null;
     const restored = await restoreTabsForRoot(
       context.root,
@@ -3458,12 +3459,23 @@ async function applyWorkspace(folder: {
       merged.push(tab);
     }
     tabs.value = merged;
+    const currentActive = findTab(activeTabId.value);
+    const currentSettingsTab = findSettingsTab();
+    const selectionChangedDuringRestore =
+      tabNavigationRevision !== restoreStartNavigationRevision;
+    // A background Settings page is only the restore placeholder. Keep it when
+    // it was active before the switch or the user selected it during restore.
+    const keepSettings =
+      currentActive?.kind === "settings" &&
+      (settingsActive ||
+        selectionChangedDuringRestore ||
+        currentActive.id !== restoreStartActiveId);
     // Leave a tab the user opened or activated during restore in front.
-    if (settingsActive) {
+    if (keepSettings) {
       // The global page survives a root switch and stays in front. Remember a
       // document as the layout's active tab for the next open.
       lastWorkspaceActivePath = restored.activePath;
-    } else if (!keepSingle && activeTabId.value === restoreStartActiveId) {
+    } else if (currentActive === null || currentActive.kind === "settings") {
       const currentSingles = merged.filter(
         (tab): tab is DocumentTabModel =>
           isDocumentTab(tab) && tab.kind === "single",
@@ -3481,14 +3493,14 @@ async function applyWorkspace(folder: {
               restored.activePath,
             ) ??
             null);
-      activeTabId.value = active?.id ?? settingsTab?.id ?? null;
+      activeTabId.value = active?.id ?? currentSettingsTab?.id ?? null;
       if (active !== null) {
         lastActiveDocumentId = active.id;
       }
       if (active !== null && active.kind !== "single") {
         lastWorkspaceActivePath = active.path;
       }
-      if (active === null && settingsTab !== null) {
+      if (active === null && currentSettingsTab !== null) {
         // No document survives the switch; show the retained global page
         // instead of an empty content area.
         lastWorkspaceActivePath = restored.activePath;
@@ -3630,7 +3642,6 @@ async function closeWorkspace() {
     return false;
   }
   return startFolderOperation(async () => {
-    const settingsTab = findSettingsTab();
     const closing = tabs.value.filter(isDocumentTab);
     await saveAllTabs();
     const problems = closing.flatMap(tabCloseProblems);
@@ -3703,8 +3714,9 @@ async function closeWorkspace() {
     closePopoverMenus();
     cancelPersistTimer();
     clearEditor();
-    tabs.value = settingsTab === null ? [] : [settingsTab];
-    activeTabId.value = settingsTab?.id ?? null;
+    const currentSettingsTab = findSettingsTab();
+    tabs.value = currentSettingsTab === null ? [] : [currentSettingsTab];
+    activeTabId.value = currentSettingsTab?.id ?? null;
     lastActiveDocumentId = null;
     lastWorkspaceActivePath = null;
     closedTabs.value = [];
@@ -3719,7 +3731,7 @@ async function closeWorkspace() {
       ...recentFolders.value.filter((folder) => folder !== current.root),
     ].slice(0, 10);
     await nextTick();
-    if (settingsTab === null) {
+    if (currentSettingsTab === null) {
       emptyState.value?.focusOpenFolder();
     }
     return true;
