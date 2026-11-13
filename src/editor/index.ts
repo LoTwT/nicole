@@ -73,6 +73,7 @@ import {
   clearDirectInput,
   isBracketInputCharacter,
   isWrapCharacter,
+  noteCompositionBeforeInput,
   noteCompositionEnd,
   noteCompositionInput,
   noteCompositionStart,
@@ -81,6 +82,7 @@ import {
   planBracketInput,
   planWrapInput,
   takeDirectInput,
+  takePendingCompositionTail,
   wrapContinuationActive,
   type DirectInputState,
   type WrapContinuation,
@@ -1625,6 +1627,7 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     intent: null,
     composition: null,
     pendingCompositionEnd: null,
+    nextCompositionId: 0,
   };
 
   const insertTextAt = (at: number, text: string) => {
@@ -1797,7 +1800,7 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
             editorView.composing ||
             inputEvent.isComposing
           ) {
-            noteCompositionInput(directInput);
+            noteCompositionBeforeInput(directInput, inputEvent);
             clearDirectInput(directInput);
             return false;
           }
@@ -1894,8 +1897,12 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     Prec.highest(
       EditorView.inputHandler.of((editorView, _from, _to, text, insert) => {
         if (editorView.compositionStarted || editorView.composing) {
-          noteCompositionInput(directInput);
+          noteCompositionInput(directInput, text);
           clearDirectInput(directInput);
+          return false;
+        }
+        if (takePendingCompositionTail(directInput, text, editorView.state)) {
+          wrapContinuation = null;
           return false;
         }
         const character = takeDirectInput(directInput, text, editorView.state);

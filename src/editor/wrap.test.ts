@@ -596,6 +596,110 @@ describe("direct input integration", () => {
     editor.destroy();
   });
 
+  it("keeps a preedit input literal when the composition final data differs", async () => {
+    const editor = createEditor({
+      parent: parent(),
+      doc: "文字",
+      mode: "source",
+      platform: "macos",
+    });
+    const view = editor.view;
+    view.dispatch({ selection: { anchor: 0, head: 2 } });
+    view.focus();
+
+    compositionEvent(view, "compositionstart");
+    compositionEvent(view, "compositionupdate", "ab");
+    const text = view.contentDOM.querySelector(".cm-line")!.firstChild!;
+    view.contentDOM.dispatchEvent(
+      new InputEvent("beforeinput", {
+        inputType: "insertCompositionText",
+        data: "ab",
+        isComposing: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    text.nodeValue = "ab";
+    document.getSelection()!.collapse(text, 2);
+    view.contentDOM.dispatchEvent(
+      new InputEvent("input", {
+        inputType: "insertCompositionText",
+        data: "ab",
+        isComposing: true,
+        bubbles: true,
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    view.dispatch({ selection: { anchor: 0, head: 2 } });
+    compositionEvent(view, "compositionupdate", "*");
+    compositionEvent(view, "compositionend", "*");
+    await inputThroughDom(view, "*", { lateKeydown: "229" });
+    expect(view.state.doc.toString()).toBe("*");
+    editor.destroy();
+  });
+
+  it("keeps an unreconciled composition cleanup input literal", async () => {
+    const editor = createEditor({
+      parent: parent(),
+      doc: "文字",
+      mode: "source",
+      platform: "macos",
+    });
+    const view = editor.view;
+    view.dispatch({ selection: { anchor: 0, head: 2 } });
+    view.focus();
+
+    compositionEvent(view, "compositionstart");
+    compositionEvent(view, "compositionupdate", "a");
+    const text = view.contentDOM.querySelector(".cm-line")!.firstChild!;
+    view.contentDOM.dispatchEvent(
+      new InputEvent("beforeinput", {
+        inputType: "insertCompositionText",
+        data: "a",
+        isComposing: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    text.nodeValue = "a";
+    document.getSelection()!.collapse(text, 1);
+    view.contentDOM.dispatchEvent(
+      new InputEvent("input", {
+        inputType: "insertCompositionText",
+        data: "a",
+        isComposing: true,
+        bubbles: true,
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    compositionEvent(view, "compositionupdate", "");
+    const cleanup = view.contentDOM.querySelector(".cm-line")!.firstChild!;
+    view.contentDOM.dispatchEvent(
+      new InputEvent("beforeinput", {
+        inputType: "insertCompositionText",
+        data: "*",
+        isComposing: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    cleanup.nodeValue = "*";
+    document.getSelection()!.collapse(cleanup, 1);
+    view.contentDOM.dispatchEvent(
+      new InputEvent("input", {
+        inputType: "insertCompositionText",
+        data: "*",
+        isComposing: true,
+        bubbles: true,
+      }),
+    );
+    compositionEvent(view, "compositionend");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(view.state.doc.toString()).toBe("*");
+    editor.destroy();
+  });
+
   it("accepts direct input after an empty composition end", async () => {
     const editor = createEditor({
       parent: parent(),

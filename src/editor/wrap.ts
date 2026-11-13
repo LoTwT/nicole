@@ -241,18 +241,28 @@ export interface DirectInputIntent {
   source: "keydown" | "beforeinput";
 }
 
+export interface CompositionInput {
+  data: string;
+  /** The inputHandler has consumed this DOM input. */
+  handled: boolean;
+}
+
 export interface CompositionOperation {
-  /** A composition beforeinput/input was observed before compositionend. */
+  /** Identifies one composition lifecycle, including its pending tail. */
+  id: number;
   hasInput: boolean;
+  lastInput: CompositionInput | null;
 }
 
 /**
- * A composition whose end carried text but had no beforeinput/input before it
- * can still deliver that text afterwards. Keep the exact editor state so the
- * next matching `insertText` is consumed once as the composition tail, not as
- * a new direct key; any intervening transaction invalidates it.
+ * A composition whose end carried text that was not yet reconciled by
+ * CodeMirror can still deliver that text afterwards. Keep the exact editor
+ * state and epoch so the next matching input is consumed once as the
+ * composition tail, not as a new direct key; any intervening transaction
+ * invalidates it.
  */
 export interface PendingCompositionEnd {
+  id: number;
   data: string;
   state: EditorState;
 }
@@ -261,6 +271,7 @@ export interface DirectInputState {
   intent: DirectInputIntent | null;
   composition: CompositionOperation | null;
   pendingCompositionEnd: PendingCompositionEnd | null;
+  nextCompositionId: number;
 }
 
 export function clearDirectInput(state: DirectInputState): void {
@@ -271,12 +282,42 @@ export function clearDirectInput(state: DirectInputState): void {
 export function noteCompositionStart(state: DirectInputState): void {
   state.intent = null;
   state.pendingCompositionEnd = null;
-  state.composition = { hasInput: false };
+  state.composition = {
+    id: state.nextCompositionId++,
+    hasInput: false,
+    lastInput: null,
+  };
 }
 
-export function noteCompositionInput(state: DirectInputState): void {
+export function noteCompositionBeforeInput(
+  state: DirectInputState,
+  event: InputEvent,
+): void {
   state.intent = null;
-  if (state.composition !== null) state.composition.hasInput = true;
+  const composition = state.composition;
+  if (composition === null) return;
+  composition.hasInput = true;
+  composition.lastInput = {
+    data: event.data ?? "",
+    handled: false,
+  };
+}
+
+export function noteCompositionInput(
+  state: DirectInputState,
+  text: string | null = null,
+): void {
+  state.intent = null;
+  const composition = state.composition;
+  if (composition === null) return;
+  composition.hasInput = true;
+  if (text !== null) {
+    if (composition.lastInput?.data === text) {
+      composition.lastInput.handled = true;
+    } else {
+      composition.lastInput = { data: text, handled: true };
+    }
+  }
 }
 
 export function noteCompositionEnd(
@@ -287,10 +328,24 @@ export function noteCompositionEnd(
   const composition = state.composition;
   state.composition = null;
   state.intent = null;
+  const last = composition?.lastInput ?? null;
+  const finalResultObserved =
+    last !== null && last.data === data && last.handled;
   state.pendingCompositionEnd =
-    composition !== null && !composition.hasInput && data.length > 0
-      ? { data, state: editorState }
+    composition !== null && data.length > 0 && !finalResultObserved
+      ? { id: composition.id, data, state: editorState }
       : null;
+}
+
+export function takePendingCompositionTail(
+  state: DirectInputState,
+  text: string,
+  editorState: EditorState,
+): boolean {
+  const pending = state.pendingCompositionEnd;
+  if (pending === null) return false;
+  state.pendingCompositionEnd = null;
+  return pending.data === text && pending.state === editorState;
 }
 
 function rememberDirectInput(
@@ -353,8 +408,8 @@ export function noteDirectBeforeInput(
       event.inputType === "insertText" &&
       !event.isComposing &&
       event.data === pendingCompositionEnd.data;
-    state.pendingCompositionEnd = null;
     if (isCompositionTail) return false;
+    state.pendingCompositionEnd = null;
   }
   if (
     event.defaultPrevented ||
