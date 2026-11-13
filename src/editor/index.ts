@@ -25,6 +25,7 @@ import {
   RangeSetBuilder,
   type Extension,
   type SelectionRange,
+  type Transaction,
 } from "@codemirror/state";
 import {
   historyField,
@@ -1713,8 +1714,29 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     tickets.delete(ticket.id);
   };
 
+  // A composition tail, or another non-direct input that reaches
+  // `inputHandler` (such as a spell-check replacement), keeps CodeMirror's
+  // default semantics, except that a non-empty selection must never reach
+  // closeBrackets pairing. `insert` is CodeMirror's own literal replacement
+  // transaction for the observed input, so dispatching it preserves its
+  // change mapping while bypassing the later input handlers.
+  const applyNonDirectInput = (
+    editorView: EditorView,
+    text: string,
+    insert: () => Transaction,
+  ): boolean => {
+    if (
+      !isBracketInputCharacter(text) ||
+      !editorView.state.selection.ranges.some((range) => !range.empty)
+    ) {
+      return false;
+    }
+    editorView.dispatch(insert());
+    return true;
+  };
+
   const handleCompositionStart = () => {
-    noteCompositionStart(directInput);
+    noteCompositionStart(directInput, view.state);
     wrapContinuation = null;
     onCompositionStart?.();
   };
@@ -1903,22 +1925,12 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
         }
         if (takePendingCompositionTail(directInput, text, editorView.state)) {
           wrapContinuation = null;
-          return false;
+          return applyNonDirectInput(editorView, text, insert);
         }
         const character = takeDirectInput(directInput, text, editorView.state);
         if (character === null) {
           wrapContinuation = null;
-          // Non-direct DOM input (spell-check replacement, IME commit, paste
-          // or completion) keeps CodeMirror's default semantics, except that
-          // a non-empty selection must never reach closeBrackets pairing.
-          if (
-            !isBracketInputCharacter(text) ||
-            !editorView.state.selection.ranges.some((range) => !range.empty)
-          ) {
-            return false;
-          }
-          editorView.dispatch(insert());
-          return true;
+          return applyNonDirectInput(editorView, text, insert);
         }
         const isBacktickContinuation =
           character === "`" &&

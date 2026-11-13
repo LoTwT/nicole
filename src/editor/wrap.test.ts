@@ -876,6 +876,128 @@ describe("direct input integration", () => {
     editor.destroy();
   });
 
+  it("keeps a composition tail literal when the DOM changes before compositionend", async () => {
+    const editor = createEditor({
+      parent: parent(),
+      doc: "文字",
+      mode: "source",
+      platform: "macos",
+    });
+    const view = editor.view;
+    view.dispatch({ selection: { anchor: 0, head: 2 } });
+    view.focus();
+
+    compositionEvent(view, "compositionstart");
+    compositionEvent(view, "compositionupdate", "[");
+    view.contentDOM.dispatchEvent(
+      new InputEvent("beforeinput", {
+        inputType: "insertCompositionText",
+        data: "[",
+        isComposing: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    const text = view.contentDOM.querySelector(".cm-line")!.firstChild!;
+    text.nodeValue = "[";
+    document.getSelection()!.collapse(text, 1);
+    view.contentDOM.dispatchEvent(
+      new InputEvent("input", {
+        inputType: "insertCompositionText",
+        data: "[",
+        isComposing: true,
+        bubbles: true,
+      }),
+    );
+    // The DOM already shows the committed text, while CodeMirror has not
+    // consumed it yet; the end arrives before its asynchronous flush.
+    expect(view.state.doc.toString()).toBe("文字");
+
+    compositionEvent(view, "compositionend", "[");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(view.state.doc.toString()).toBe("[");
+    expect(view.state.selection.main.from).toBe(1);
+    expect(view.state.selection.main.to).toBe(1);
+    editor.destroy();
+  });
+
+  it("finishes a composition whose result already equals the selected text", async () => {
+    const editor = createEditor({
+      parent: parent(),
+      doc: "*",
+      mode: "source",
+      platform: "macos",
+    });
+    const view = editor.view;
+    view.dispatch({ selection: { anchor: 0, head: 1 } });
+    view.focus();
+
+    compositionEvent(view, "compositionstart");
+    compositionEvent(view, "compositionupdate", "*");
+    view.contentDOM.dispatchEvent(
+      new InputEvent("beforeinput", {
+        inputType: "insertCompositionText",
+        data: "*",
+        isComposing: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    view.contentDOM.dispatchEvent(
+      new InputEvent("input", {
+        inputType: "insertCompositionText",
+        data: "*",
+        isComposing: true,
+        bubbles: true,
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    compositionEvent(view, "compositionend", "*");
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(view.compositionStarted).toBe(false);
+    expect(view.state.doc.toString()).toBe("*");
+
+    view.contentDOM.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "*",
+        code: "Digit8",
+        keyCode: 56,
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    view.contentDOM.dispatchEvent(
+      new InputEvent("beforeinput", {
+        inputType: "insertText",
+        data: "*",
+        isComposing: false,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    const text = document
+      .createTreeWalker(
+        view.contentDOM.querySelector(".cm-line")!,
+        NodeFilter.SHOW_TEXT,
+      )
+      .nextNode()!;
+    (text as Text).nodeValue = "*";
+    document.getSelection()!.collapse(text, 1);
+    view.contentDOM.dispatchEvent(
+      new InputEvent("input", {
+        inputType: "insertText",
+        data: "*",
+        bubbles: true,
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(view.state.doc.toString()).toBe("***");
+    expect(view.state.selection.main.from).toBe(1);
+    expect(view.state.selection.main.to).toBe(2);
+    editor.destroy();
+  });
+
   for (const inputType of [
     "insertFromPaste",
     "insertFromDrop",

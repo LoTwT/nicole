@@ -250,6 +250,13 @@ export interface CompositionInput {
 export interface CompositionOperation {
   /** Identifies one composition lifecycle, including its pending tail. */
   id: number;
+  /**
+   * The document and selected range the composition replaces. A composition
+   * whose final text already equals this range changes nothing, even when
+   * CodeMirror never sees an input to consume.
+   */
+  startDoc: Text;
+  startRange: { from: number; to: number; text: string };
   hasInput: boolean;
   lastInput: CompositionInput | null;
 }
@@ -279,11 +286,21 @@ export function clearDirectInput(state: DirectInputState): void {
   state.pendingCompositionEnd = null;
 }
 
-export function noteCompositionStart(state: DirectInputState): void {
+export function noteCompositionStart(
+  state: DirectInputState,
+  editorState: EditorState,
+): void {
   state.intent = null;
   state.pendingCompositionEnd = null;
+  const range = editorState.selection.main;
   state.composition = {
     id: state.nextCompositionId++,
+    startDoc: editorState.doc,
+    startRange: {
+      from: range.from,
+      to: range.to,
+      text: editorState.sliceDoc(range.from, range.to),
+    },
     hasInput: false,
     lastInput: null,
   };
@@ -331,8 +348,20 @@ export function noteCompositionEnd(
   const last = composition?.lastInput ?? null;
   const finalResultObserved =
     last !== null && last.data === data && last.handled;
+  // A composition can finish without an input for CodeMirror to consume: if
+  // its final text equals the range it replaced, the document already holds
+  // the result. Only that unchanged range may skip the pending tail; a
+  // different final text or any document change still needs the tail.
+  const rangeAlreadyFinal =
+    composition !== null &&
+    data.length > 0 &&
+    editorState.doc === composition.startDoc &&
+    composition.startRange.text === data;
   state.pendingCompositionEnd =
-    composition !== null && data.length > 0 && !finalResultObserved
+    composition !== null &&
+    data.length > 0 &&
+    !finalResultObserved &&
+    !rangeAlreadyFinal
       ? { id: composition.id, data, state: editorState }
       : null;
 }
