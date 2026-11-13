@@ -54,3 +54,8 @@ export function openWithDefaultApp(
 export function revealEntry(path: string, generation: number): Promise<void> {
   return Workspace.revealEntry(path, generation);
 }
+
+/** Reveals an image after Go rechecks its workspace, type and image rules. */
+export function revealImage(path: string, generation: number): Promise<void> {
+  return Workspace.revealImage(path, generation);
+}

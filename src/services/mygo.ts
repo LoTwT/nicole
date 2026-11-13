@@ -353,6 +353,13 @@ export const Application = {
   info(): Promise<AppInfo> {
     return call("Application.Info");
   },
+  /**
+   * OpenExternalURL opens a complete HTTP(S) URL in the system browser. No
+   * local path or other scheme reaches the operating system from the page.
+   */
+  openExternalURL(target: string): Promise<void> {
+    return call("Application.OpenExternalURL", target);
+  },
 } as const;
 
 /**
@@ -490,6 +497,14 @@ export const Workspace = {
    */
   revealEntry(rel: string, generation: number): Promise<void> {
     return call("Workspace.RevealEntry", rel, generation);
+  },
+  /**
+   * RevealImage shows an image of the current workspace in the file manager.
+   * Unlike RevealEntry, the path must still resolve to a regular file with an
+   * allowed image extension, so the link dialog cannot reveal arbitrary files.
+   */
+  revealImage(rel: string, generation: number): Promise<void> {
+    return call("Workspace.RevealImage", rel, generation);
   },
   /**
    * Search scans the Markdown files of the open workspace and streams matching

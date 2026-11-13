@@ -25,6 +25,7 @@ import {
   RangeSetBuilder,
   type Extension,
   type SelectionRange,
+  type Transaction,
 } from "@codemirror/state";
 import {
   historyField,
@@ -57,11 +58,36 @@ import {
 } from "./find";
 import { createCommandKeymap } from "./keymap";
 import {
+  createLinkImageEditorSession,
+  inlineTargetAt,
+  linkEditorTarget,
+  openLinkEditorEffect,
+  type LinkImageEditorSession,
+} from "./link-editor";
+import {
   scrollAnchor,
   scrollTopForAnchor,
   visibleTopHeight,
   type ScrollAnchor,
 } from "./scroll";
+import {
+  clearDirectInput,
+  isBracketInputCharacter,
+  isWrapCharacter,
+  noteCompositionBeforeInput,
+  noteCompositionEnd,
+  noteCompositionInput,
+  noteCompositionStart,
+  noteDirectBeforeInput,
+  noteDirectKeydown,
+  planBracketInput,
+  planWrapInput,
+  takeDirectInput,
+  takePendingCompositionTail,
+  wrapContinuationActive,
+  type DirectInputState,
+  type WrapContinuation,
+} from "./wrap";
 import type {
   CreateEditorOptions,
   EditorHandle,
@@ -89,6 +115,13 @@ export type {
   FindReplaceOptions,
   FindReplaceState,
 } from "./find";
+export type {
+  LinkImageEditorSession,
+  LinkImageFieldValues,
+  LinkImageKind,
+  PopoverAnchor,
+  PopoverBounds,
+} from "./link-editor";
 
 class BulletWidget extends WidgetType {
   override eq(other: WidgetType) {
@@ -184,6 +217,12 @@ class ImageWidget extends WidgetType {
 
   override eq(other: ImageWidget) {
     return other.src === this.src && other.alt === this.alt;
+  }
+
+  // A click must reach the editor's link/image handler. Keyboard events still
+  // belong to the document rather than to the non-focusable image.
+  override ignoreEvent(event: Event) {
+    return event.type.startsWith("key");
   }
 
   toDOM() {
@@ -1460,10 +1499,14 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     onChange,
     onCompositionEnd,
     onCompositionStart,
+    onEditLinkImage,
+    onOpenLink,
   } = options;
 
   const modeCompartment = new Compartment();
   let mode = initialMode;
+  let linkSession: LinkImageEditorSession | null = null;
+  let wrapContinuation: WrapContinuation | null = null;
 
   const enabledCommands = [...commands, ...commandRegistry];
 
@@ -1561,6 +1604,33 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     return ticket;
   };
 
+  const presentLinkImage = (
+    target: Parameters<typeof createLinkImageEditorSession>[1],
+    preserveEditorFocus: boolean,
+  ) => {
+    linkSession?.dispose();
+    const session = createLinkImageEditorSession(
+      view,
+      target,
+      preserveEditorFocus,
+      (invalidated) => {
+        if (linkSession === invalidated) {
+          linkSession = null;
+          onEditLinkImage?.(null);
+        }
+      },
+    );
+    linkSession = session;
+    onEditLinkImage?.(session);
+  };
+
+  const directInput: DirectInputState = {
+    intent: null,
+    composition: null,
+    pendingCompositionEnd: null,
+    nextCompositionId: 0,
+  };
+
   const insertTextAt = (at: number, text: string) => {
     const position = Math.max(0, Math.min(at, view.state.doc.length));
     const line = view.state.doc.lineAt(position);
@@ -1644,11 +1714,39 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     tickets.delete(ticket.id);
   };
 
+  // A composition tail, or another non-direct input that reaches
+  // `inputHandler` (such as a spell-check replacement), keeps CodeMirror's
+  // default semantics, except that a non-empty selection must never reach
+  // closeBrackets pairing. `insert` is CodeMirror's own literal replacement
+  // transaction for the observed input, so dispatching it preserves its
+  // change mapping while bypassing the later input handlers.
+  const applyNonDirectInput = (
+    editorView: EditorView,
+    text: string,
+    insert: () => Transaction,
+  ): boolean => {
+    if (
+      !isBracketInputCharacter(text) ||
+      !editorView.state.selection.ranges.some((range) => !range.empty)
+    ) {
+      return false;
+    }
+    editorView.dispatch(insert());
+    return true;
+  };
+
   const handleCompositionStart = () => {
+    noteCompositionStart(directInput, view.state);
+    wrapContinuation = null;
     onCompositionStart?.();
   };
 
-  const handleCompositionEnd = () => {
+  const handleCompositionEnd = (event: Event) => {
+    noteCompositionEnd(
+      directInput,
+      event instanceof CompositionEvent ? event.data : "",
+      view.state,
+    );
     onCompositionEnd?.();
     if (pendingInsertions.length > 0) scheduleInsertion();
   };
@@ -1702,6 +1800,187 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
   let focusedCheckbox: HTMLInputElement | null = null;
   let recoverRemovedCheckbox: () => void = () => {};
   const extensions: Extension[] = [
+    Prec.highest(
+      EditorView.domEventHandlers({
+        keydown(event, editorView) {
+          noteDirectKeydown(directInput, event, editorView.state);
+          if (
+            event.key !== "`" ||
+            event.metaKey ||
+            event.ctrlKey ||
+            event.altKey ||
+            event.isComposing
+          ) {
+            wrapContinuation = null;
+          }
+          return false;
+        },
+        beforeinput(event, editorView) {
+          const inputEvent = event as InputEvent;
+          if (
+            editorView.compositionStarted ||
+            editorView.composing ||
+            inputEvent.isComposing
+          ) {
+            noteCompositionBeforeInput(directInput, inputEvent);
+            clearDirectInput(directInput);
+            return false;
+          }
+          noteDirectBeforeInput(
+            directInput,
+            inputEvent,
+            editorView.state,
+            false,
+          );
+          return false;
+        },
+        focusout() {
+          clearDirectInput(directInput);
+          directInput.composition = null;
+          wrapContinuation = null;
+          return false;
+        },
+        mousedown(event, editorView) {
+          if (
+            event.defaultPrevented ||
+            editorView.compositionStarted ||
+            editorView.composing ||
+            event.button !== 0 ||
+            onOpenLink === undefined ||
+            !(event.metaKey || event.ctrlKey) ||
+            event.altKey ||
+            event.shiftKey ||
+            (event.target instanceof Element &&
+              event.target.closest(".cm-nicole-checkbox"))
+          ) {
+            return false;
+          }
+          const at = editorView.posAtCoords({
+            x: event.clientX,
+            y: event.clientY,
+          });
+          if (at === null) return false;
+          const target = inlineTargetAt(editorView.state, at);
+          if (target?.kind !== "link") return false;
+          // CodeMirror adds a selection range during mousedown. Consume the
+          // modified link gesture here so the later click can open it without
+          // changing the selection or starting a drag.
+          event.preventDefault();
+          return true;
+        },
+        click(event, editorView) {
+          if (
+            event.defaultPrevented ||
+            editorView.compositionStarted ||
+            editorView.composing
+          ) {
+            return false;
+          }
+          if (event.target instanceof Element && event.target.closest(".cm-nicole-checkbox")) {
+            return false;
+          }
+          const modifierClick =
+            (event.metaKey || event.ctrlKey) &&
+            !event.altKey &&
+            !event.shiftKey;
+          if (modifierClick && onOpenLink !== undefined) {
+            const at = editorView.posAtCoords({
+              x: event.clientX,
+              y: event.clientY,
+            });
+            if (at === null) return false;
+            const target = inlineTargetAt(editorView.state, at);
+            if (target?.kind !== "link") return false;
+            event.preventDefault();
+            onOpenLink(target.urlSource);
+            return true;
+          }
+          if (
+            mode !== "immersive" ||
+            event.metaKey ||
+            event.ctrlKey ||
+            event.altKey ||
+            event.shiftKey
+          ) {
+            return false;
+          }
+          const at = editorView.posAtCoords({
+            x: event.clientX,
+            y: event.clientY,
+          });
+          if (at === null) return false;
+          const target = inlineTargetAt(editorView.state, at);
+          if (!target) return false;
+          presentLinkImage(target, true);
+          return false;
+        },
+      }),
+    ),
+    Prec.highest(
+      EditorView.inputHandler.of((editorView, _from, _to, text, insert) => {
+        if (editorView.compositionStarted || editorView.composing) {
+          noteCompositionInput(directInput, text);
+          clearDirectInput(directInput);
+          return false;
+        }
+        if (takePendingCompositionTail(directInput, text, editorView.state)) {
+          wrapContinuation = null;
+          return applyNonDirectInput(editorView, text, insert);
+        }
+        const character = takeDirectInput(directInput, text, editorView.state);
+        if (character === null) {
+          wrapContinuation = null;
+          return applyNonDirectInput(editorView, text, insert);
+        }
+        const isBacktickContinuation =
+          character === "`" &&
+          wrapContinuationActive(
+            editorView.state,
+            character,
+            wrapContinuation,
+          );
+        const plan = isWrapCharacter(character)
+          ? planWrapInput(
+              editorView.state,
+              character,
+              isBacktickContinuation ? wrapContinuation : null,
+            )
+          : planBracketInput(editorView.state, character);
+        if (plan === null) {
+          wrapContinuation = null;
+          return false;
+        }
+        if (
+          isWrapCharacter(character) &&
+          character === "[" &&
+          mode === "immersive" &&
+          plan.linkDrafts.length > 0
+        ) {
+          wrapContinuation = null;
+          presentLinkImage(plan.linkDrafts, false);
+          return true;
+        }
+        if (plan.noop) {
+          wrapContinuation = null;
+          return true;
+        }
+        editorView.dispatch({
+          changes: plan.changes,
+          selection: plan.selection,
+          userEvent: "input.type",
+          annotations: isolateHistory.of("full"),
+        });
+        wrapContinuation =
+          character === "`" && plan.wrapped
+            ? {
+                doc: editorView.state.doc,
+                selection: editorView.state.selection,
+                character,
+              }
+            : null;
+        return true;
+      }),
+    ),
     basicSetup,
     EditorView.lineWrapping,
     markdown({ base: markdownLanguage }),
@@ -1714,6 +1993,49 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     createCommandKeymap(enabledCommands, platform),
     imageHandlers(onPasteImage, createTicketAt),
     EditorView.updateListener.of((update) => {
+      // Keep the composition range evidence valid across document updates.
+      // An external edit elsewhere must not make an already-complete no-op
+      // composition look pending, and a late end must not use stale positions.
+      if (directInput.composition !== null && update.docChanged) {
+        const mapped = EditorSelection.single(
+          directInput.composition.startRange.from,
+          directInput.composition.startRange.to,
+        ).map(update.changes).main;
+        directInput.composition.startDoc = update.state.doc;
+        directInput.composition.startRange = {
+          from: mapped.from,
+          to: mapped.to,
+          text: update.state.sliceDoc(mapped.from, mapped.to),
+        };
+      }
+      if (
+        directInput.pendingCompositionEnd !== null &&
+        update.state !== directInput.pendingCompositionEnd.state
+      ) {
+        directInput.pendingCompositionEnd = null;
+      }
+      if (
+        directInput.intent !== null &&
+        (update.state.doc !== directInput.intent.doc ||
+          !update.state.selection.eq(directInput.intent.selection, true))
+      ) {
+        clearDirectInput(directInput);
+      }
+      if (
+        wrapContinuation !== null &&
+        (update.state.doc !== wrapContinuation.doc ||
+          !update.state.selection.eq(wrapContinuation.selection, true))
+      ) {
+        wrapContinuation = null;
+      }
+      linkSession?.update(update);
+      for (const transaction of update.transactions) {
+        if (!transaction.effects.some((effect) => effect.is(openLinkEditorEffect))) {
+          continue;
+        }
+        presentLinkImage(linkEditorTarget(update.state), false);
+        break;
+      }
       notifyFindController(update);
       if (focusedCheckbox !== null && !focusedCheckbox.isConnected) {
         window.setTimeout(recoverRemovedCheckbox, 0);
@@ -2045,6 +2367,11 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     },
     destroy() {
       destroyed = true;
+      linkSession?.dispose();
+      linkSession = null;
+      clearDirectInput(directInput);
+      directInput.composition = null;
+      wrapContinuation = null;
       find.destroy();
       editorDocument.removeEventListener("selectstart", onSelectStart, true);
       window.removeEventListener("focus", recoverRemovedCheckbox);

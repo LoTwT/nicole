@@ -402,6 +402,42 @@ func isExecutableFile(info fs.FileInfo) bool {
 	return runtime.GOOS != "windows" && info.Mode().Perm()&0o111 != 0
 }
 
+// RevealImage shows an image of the current workspace in the file manager.
+// Unlike RevealEntry, the path must still resolve to a regular file with an
+// allowed image extension, so the link dialog cannot reveal arbitrary files.
+func (w *Workspace) RevealImage(rel string, generation int) error {
+	root, err := w.currentRoot(generation)
+	if err != nil {
+		return err
+	}
+	target, err := resolveExistingImage(root, rel)
+	if err != nil {
+		return err
+	}
+	rootFS, err := os.OpenRoot(root)
+	if err != nil {
+		return err
+	}
+	defer rootFS.Close()
+	file, err := rootFS.Open(filepath.FromSlash(target))
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%w: %q", errNotRegular, rel)
+	}
+	if _, ok := imageContentType(target); !ok {
+		return fmt.Errorf("%w: %q", errUnsupportedImage, rel)
+	}
+	revealWorkspaceItem(filepath.Join(root, filepath.FromSlash(target)))
+	return nil
+}
+
 // RevealEntry shows a file or folder in the desktop's file manager. The
 // workspace root itself may be revealed.
 func (w *Workspace) RevealEntry(rel string, generation int) error {

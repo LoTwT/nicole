@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { resolveImageUrl } from "./image-url";
+import {
+  formatImageDestination,
+  formatMarkdownDestination,
+  parseMarkdownDestination,
+  resolveImageUrl,
+  resolveLocalImagePath,
+} from "./image-url";
 
 const DOC = "notes/chapter/one.md";
 const GENERATION = 4;
@@ -36,6 +42,18 @@ describe("resolveImageUrl", () => {
     );
     expect(resolveImageUrl("my%20photo.png", DOC, GENERATION)).toBe(
       "nicole-image://localhost/4/notes/chapter/my%20photo.png",
+    );
+  });
+
+  it("reads angle-wrapped destinations as URL/path values", () => {
+    expect(resolveImageUrl("<photo.png>", DOC, GENERATION)).toBe(
+      "nicole-image://localhost/4/notes/chapter/photo.png",
+    );
+    expect(
+      resolveImageUrl("<https://example.com/a%20b.png>", DOC, GENERATION),
+    ).toBe("https://example.com/a%20b.png");
+    expect(resolveLocalImagePath("<assets/photo.png>", DOC)).toBe(
+      "notes/chapter/assets/photo.png",
     );
   });
 
@@ -89,5 +107,135 @@ describe("resolveImageUrl", () => {
   it("rejects relative paths without a document or generation", () => {
     expect(resolveImageUrl("photo.png", null, GENERATION)).toBeNull();
     expect(resolveImageUrl("photo.png", DOC, 0)).toBeNull();
+  });
+});
+
+describe("resolveLocalImagePath", () => {
+  it("returns the workspace path for local images", () => {
+    expect(resolveLocalImagePath("photo.png", DOC)).toBe(
+      "notes/chapter/photo.png",
+    );
+    expect(resolveLocalImagePath("../assets/图片 1.png", DOC)).toBe(
+      "notes/assets/图片 1.png",
+    );
+    expect(resolveLocalImagePath("/assets/photo.JPG", DOC)).toBe(
+      "assets/photo.JPG",
+    );
+  });
+
+  it("does not enable reveal for remote, data or unresolved paths", () => {
+    for (const src of [
+      "https://example.com/a.png",
+      "data:image/png;base64,AAAA",
+      "photo.txt",
+      "../../../photo.png",
+      ".hidden/photo.png",
+      "node_modules/pkg/photo.png",
+      "photo.png?raw=1",
+      "",
+    ]) {
+      expect(resolveLocalImagePath(src, DOC)).toBeNull();
+    }
+    expect(resolveLocalImagePath("photo.png", null)).toBeNull();
+    expect(resolveLocalImagePath("photo.png", "")).toBeNull();
+  });
+});
+
+describe("formatMarkdownDestination", () => {
+  it("keeps a legal bare destination and wraps values that cannot be bare", () => {
+    expect(formatMarkdownDestination("https://example.com/a(b).png")).toBe(
+      "https://example.com/a(b).png",
+    );
+    expect(formatMarkdownDestination("assets/%E5%9B%BE%201.png")).toBe(
+      "assets/%E5%9B%BE%201.png",
+    );
+    expect(formatMarkdownDestination("https://example.com/b).png")).toBe(
+      "<https://example.com/b).png>",
+    );
+    expect(
+      formatMarkdownDestination("https://example.com/图 1.png?x=1#top"),
+    ).toBe("<https://example.com/图 1.png?x=1#top>");
+    expect(formatMarkdownDestination("")).toBe("");
+    expect(formatMarkdownDestination("", { explicitEmpty: true })).toBe("<>");
+    expect(formatMarkdownDestination("a", { explicitEmpty: true })).toBe("a");
+  });
+
+  it("escapes syntax breakers only when an angle wrapper is required", () => {
+    expect(formatMarkdownDestination("a b<c>d")).toBe("<a b%3Cc%3Ed>");
+    expect(formatMarkdownDestination("a(b")).toBe("<a(b>");
+    expect(formatMarkdownDestination("a\\")).toBe("<a%5C>");
+    expect(formatMarkdownDestination("assets/%253Cnew%253E.png")).toBe(
+      "assets/%253Cnew%253E.png",
+    );
+  });
+});
+
+describe("formatImageDestination", () => {
+  it("parses Markdown angle wrappers without treating encoded brackets as syntax", () => {
+    expect(parseMarkdownDestination(" <assets/a.png> ")).toBe("assets/a.png");
+    expect(parseMarkdownDestination("<https://example.com/a.png>")).toBe(
+      "https://example.com/a.png",
+    );
+    expect(parseMarkdownDestination("assets/%3Cpic%3E.png")).toBe(
+      "assets/%3Cpic%3E.png",
+    );
+    expect(parseMarkdownDestination("<assets/%3Cpic%3E.png>")).toBe(
+      "assets/%3Cpic%3E.png",
+    );
+    expect(parseMarkdownDestination("assets/<pic>.png")).toBe(
+      "assets/<pic>.png",
+    );
+  });
+
+  it("serializes the address inside an angle wrapper, not the wrapper", () => {
+    expect(formatImageDestination("<assets/图 1.png>")).toBe(
+      "assets/%E5%9B%BE%201.png",
+    );
+    expect(formatImageDestination("<https://example.com/a.png>")).toBe(
+      "https://example.com/a.png",
+    );
+    expect(formatImageDestination("assets/%3Cpic%3E.png")).toBe(
+      "assets/%3Cpic%3E.png",
+    );
+  });
+
+  it("escapes spaces and Unicode one segment at a time", () => {
+    expect(formatImageDestination("assets/图 1.png")).toBe(
+      "assets/%E5%9B%BE%201.png",
+    );
+    expect(formatImageDestination("/图/片 1.png")).toBe(
+      "/%E5%9B%BE/%E7%89%87%201.png",
+    );
+    expect(formatImageDestination("assets/a(1)!*.png")).toBe(
+      "assets/a%281%29%21%2A.png",
+    );
+  });
+
+  it("does not double-encode an already escaped path", () => {
+    expect(formatImageDestination("assets/%E5%9B%BE%201.png")).toBe(
+      "assets/%E5%9B%BE%201.png",
+    );
+    expect(formatImageDestination("assets/my%20photo.png")).toBe(
+      "assets/my%20photo.png",
+    );
+  });
+
+  it("keeps remote, data and query/fragment suffixes intact", () => {
+    expect(formatImageDestination("https://example.com/图 1.png?x=1#top")).toBe(
+      "https://example.com/图 1.png?x=1#top",
+    );
+    expect(formatImageDestination("data:image/svg+xml,%3Csvg%3E")).toBe(
+      "data:image/svg+xml,%3Csvg%3E",
+    );
+    expect(formatImageDestination("assets/图 1.png?raw=1")).toBe(
+      "assets/%E5%9B%BE%201.png?raw=1",
+    );
+  });
+
+  it("round-trips the serialized destination through the local resolver", () => {
+    const encoded = formatImageDestination("assets/图 1.png");
+    expect(resolveLocalImagePath(encoded, "notes/a.md")).toBe(
+      "notes/assets/图 1.png",
+    );
   });
 });

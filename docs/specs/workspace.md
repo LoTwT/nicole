@@ -36,6 +36,7 @@ Go 的 `Workspace` 服务通过 `mygo.Bind` 暴露，前端经 `src/services/wor
 | `TrashEntry(path, generation)` | 移到废纸篓或回收站。 |
 | `OpenWithDefaultApp(path, generation)` | 用系统默认应用打开文件。 |
 | `RevealEntry(path, generation)` | 在 Finder、资源管理器或文件管理器中显示。 |
+| `RevealImage(path, generation)` | 在文件管理器中显示当前工作区的一张本地图片；重新校验 generation、路径、隐藏目录、`node_modules`、图片扩展名和普通文件，不接受任意文件。 |
 | `Watch(generation)` | 通过 Channel 流式返回工作区变化，见[文件监听](#文件监听)。 |
 | `Search(request)` | 在**当前根目录**的磁盘 Markdown 文件中搜索，通过 Channel 流式返回匹配行和汇总，见[搜索](#搜索)。请求不包含路径，页面不能指定搜索范围。 |
 | 单文件的 `SingleFileService` | 只访问用户通过对话框或系统“打开方式”明确选择的 `.md` 文件，见[单文件标签页](#单文件标签页)。 |
@@ -331,6 +332,20 @@ Go 在 `PathUserData/recovery/` 保存未保存内容的副本；界面流程见
 - 编辑器把图片 URL 交给 `resolveImage`。相对路径按当前文件所在目录解析，开头的 `/` 表示工作区根；结果转换成 `nicole-image://localhost/<generation>/<工作区相对路径>`。
 - `http`、`https` 和 `data:image/*` 原样保留。其他绝对 URL、协议相对 URL（`//`）、越出工作区、隐藏目录、`node_modules`、不支持的扩展名，以及含 `?` 或 `#` 的本地路径都返回 null，编辑器保留 Markdown 原文。
 - 协议只提供当前工作区里的图片，扩展名清单为 `.png`、`.jpg`、`.jpeg`、`.gif`、`.webp`、`.svg`，比较不区分大小写。路径经与[路径守卫](#路径守卫)相同的检查和 `os.Root` 打开；越界、隐藏目录、`node_modules`、符号链接逃逸、非图片扩展名和旧 generation 都返回 404。响应带正确的 `Content-Type`；安全约束见[架构](../architecture.md#安全)。
+- 图片弹框的“在 Finder 中显示”只在当前文档属于工作区且路径能解析成本地图片时启用；remote、data、无根和工作区外单文件不启用。页面把相对当前文档目录或工作区根得到的未转义相对路径交给 `RevealImage`，Go 在显示前重新执行图片路径守卫并确认目标是普通图片文件，不把任意 `RevealEntry` 当作图片授权。
+
+## 链接导航
+
+- Mod/Ctrl 点击链接和链接弹框“打开”共用同一个只读分类入口。修饰键链接在 `mousedown` 阶段消费，避免 CodeMirror 先增加选区，点击再只触发一次打开；普通正文、图片、复选框和其他按键组合保持原行为。弹框使用当前未确认字段，不先完成或保存草稿；图片不参与链接导航。
+- 地址先按 Markdown destination 源语法处理：去掉外层尖括号，单遍解释合法反斜杠转义与已知字符引用；只接受完整的命名引用，未知完整引用或无分号引用保留，不能按 HTML 旧式前缀兼容解码（例如 `&notit;` 不变成 `¬it;`），也不能先全局去反斜杠再解释实体。HTTP(S) 保留合法 URI 转义；本地路径和 fragment 各自恰好 URI 解码一次。
+- 完整 HTTP(S) URL 交给 `Application.OpenExternalURL`；Go 用标准 URL 解析复核 scheme、host 和控制字符，再调用 `mygo.Shell.OpenExternal`。其他 scheme、裸文件路径和控制字符不交给系统，失败走现有提示，不发起网络请求。
+- 无 scheme 的文件目标只接受当前工作区中的 `.md`。相对路径以来源工作区文档目录为基准，单个 `/` 开头按根目录；`./`、`../` 归一后不得越根。拒绝非法编码、NUL、反斜杠、盘符/冒号、encoded separator、UNC 和 local query，归一结果进入原有 `ReadFile` 的根、隐藏目录、`node_modules`、普通文件和符号链接守卫。单文件标签页不获得相对文件读取授权。
+- `#fragment` 只定位当前文档；`other.md#fragment` 在目标文件打开后定位；`other.md#` 到目标文档开头。目标文件复用已有标签和内存文本，不重读覆盖脏标签；已授权且与目标同物理路径的单文件标签也按正常 `findOpenTabForWorkspacePathIn` 身份复用，不重复建标签或重新读取。找不到锚点不 clamp 到任意位置，跨文件时保留正常打开后的选区并提示。
+- 标题锚点使用现有 ATX/Setext 提取和位置，不解释 HTML id。自动 id 按 GitHub 规则从可见文本生成：去除 inline 格式标记、保留 inline code/链接 label、不计 URL；小写，只有普通空格变成 `-`，其他空白和其他标点直接移除，保留 Unicode 字母和数字以及 `-`、`_`，重复按文档顺序追加 `-1`、`-2` 并避开现有碰撞。fragment 先匹配自动 id，再以完全等于可见标题文本作为友好别名。
+- 标题提取 `complete=false` 不等于缺失：第一次沿用 250ms 预算，未完成时只做一次异步让出后的 250ms 补齐；前后核对导航所有权、根/generation、目标标签、视图和文档身份。仍不完整时提示“标题仍在解析，请稍后重试”；只在完整解析后命中或报告缺失。新导航、编辑、切换标签/根或发起新打开会丢弃旧补齐结果和提示。
+- 打开意图在 await 前捕获来源标签、当前 editor/view 实例、文档、根、generation、链接地址、导航序号、tab 导航修订，以及弹框生命周期 revision、session/id 和字段修订；初始没有弹框也记录该状态。来源编辑、view 重建、字段变动、新 owner、开后又关的弹框、较新导航、tab 或根变化都会使旧成功、失败和 yield 出口失效；即使 tab、文本和 doc 未变，只要来源 editor/view 已不是当前实例也丢弃。失效后不插入标签、不定位、不抢焦点、不显示旧提示，也不关闭新弹框。正常 open 的自身激活会销毁来源 view/弹框，此时只在准确激活边界把所有权交给目标标签/view/文档继续核验，并以目标生命周期阻止新 owner 或重建；仍只关闭该请求拥有的弹框。跨文件复用现有打开/去重/pending 逻辑，输入法组合期间不导航，也不抢占组合按键；失败提示不提交未确认草稿。link 与 workspace search 共用同一来源 capture/validator；search 允许无 Markdown/editor 的开始写作或 preview 来源，以 nullable snapshot 固定并校验“不存在”，但不继承 link 的相对路径授权。来源资格只在自身激活前生效，获准后由 `WorkspaceActivation` 接管；source 失效只停止该 caller，不取消仍有效 ordinary join。
+- `openWorkspaceFile` 在实际 target 已创建/恢复的同步段（或已有 active target 的分支）生成 `WorkspaceActivation` 凭据，记录 target tab/editor/view/doc、根/generation、tab 导航修订、导航 intent 和弹框生命周期，并只把它交给真实获准 owner 的 `onHandoff`；调用者不再在 await 后采集当前 target 作为旧凭据。凭据持续校验单调导航 intent、target tab/editor/view/doc、target 文本、root/generation、tab 和弹框状态；较新的普通打开即使同文件或 activeTabId 不变也会撤销旧凭据，target 编辑/view 重建/popup 开关或字段变化不得被 fresh snapshot 掩盖。link 和 search 的定位、notice、focus、close 均消费该凭据；合法自身激活后不再要求 source 存活。
+- 多个调用可以共享同一次 pending 磁盘读取；共享读取成功不等于所有 caller 都获得激活或后续定位资格。每个调用独立保留自己的来源 guard、导航 intent 和 handoff 状态；真正激活前按调用顺序选择最新仍有效（普通打开始终有效）的请求作为 owner，只有该请求在 target 同步挂载边界收到带固定 target 身份的 `WorkspaceActivation`，旧 link 不能因共享 task 返回 `true` 或后来采集到当前 target 而复活。普通有效打开不会被失效 link 取消；较新的普通打开、link 或搜索结果也不会重新授权旧 link。已有目标复用和 pending 新读取使用同一 owner/activation 检查，成功后由 owner 使用同一凭据继续标题/搜索定位。
 
 ## 拖入文件夹
 

@@ -35,13 +35,14 @@ src/
   main.ts                 挂载 Vue
   sample.ts               示例文本
   style.css               Tailwind、主题和字体变量
-  image-url.ts            把 Markdown 图片 URL 解析成自定义协议地址
+  image-url.ts            解析/序列化 Markdown destination 与图片协议地址
   image-insertion.ts      粘贴、拖入图片与编辑器插入凭据的接线
   app/                    界面状态与纯逻辑辅助
     command-palette.ts    命令面板模式、文件/标题筛选与最近文件列表
     context-menu.ts       文件树、根目录和标签页右键菜单，快捷键取自注册表
     file-tree.ts          文件树节点、排序、展开与增量合并
     line-endings.ts       换行风格检测与写回
+    link-navigation.ts    链接地址语义、工作区路径分类与标题锚点
     outline.ts            大纲标题过滤、活动章节与布局阈值
     paths.ts              工作区相对路径、主目录缩写
     platform.ts           平台判断、平台文字与本地化标签
@@ -64,6 +65,7 @@ src/
     AppDialog.vue         模态对话框、焦点陷阱与焦点恢复
     CommandPalette.vue    命令、文件和标题三种模式的命令面板
     FindReplacePanel.vue  正文宿主右上角的查找替换面板
+    LinkImageEditor.vue   链接与图片编辑弹框、定位与焦点
     RecoveryDialog.vue    崩溃恢复列表与三个选择
     EmptyState.vue        开始写作、无文件和最近文件夹
     NonMarkdownPlaceholder.vue  非 Markdown 文件的占位页
@@ -76,6 +78,10 @@ src/
     index.ts              createEditor、三种模式、widgets、核心命令、图片插入
     find.ts               CodeMirror 查询状态、查找/替换控制器、匹配高亮
     headings.ts           Lezer 语法树的 ATX/Setext 标题提取，供命令面板与大纲复用
+    link-editor.ts        链接/图片目标、纯 UI 草稿会话、宿主边界与弹框定位
+    markdown-context.ts   代码、HTML、前置元数据的公共上下文判断
+    whitespace.ts         标记外首尾 Unicode 空白的统一切分
+    wrap.ts               直接键入标记字符时的选区包裹规则
     types.ts              对外类型
   services/               MyGo 边界
     mygo.ts               生成的类型化客户端
@@ -99,7 +105,7 @@ Go（main.go）
   Application             版本、平台和 Go 版本（当前）
   updater.Plugin          Sparkle 风格更新窗口与“检查更新…”菜单（当前）
   Workspace               选择文件夹、列 Markdown、代际绑定写入、用户模板快照、关窗保存（当前）
-  File tree / operations  ListDirectory、新建、重命名、废纸篓、默认应用、Finder（当前）
+  File tree / operations  ListDirectory、新建、重命名、废纸篓、默认应用、Finder、图片显示（当前）
   Workspace.Watch         mygo.WatchFiles 的 Channel 封装，过滤自写（当前）
   SingleFileService       工作区外单个 .md 的按文件授权、读写与显示（当前）
   OpenedFiles             系统“打开方式”的路径队列与 app:open-file 信号（当前）
@@ -121,7 +127,7 @@ Go（main.go）
 - `src/editor/` 是纯 TypeScript，不依赖 Vue，也不依赖 MyGo。运行时只导出 `createEditor`；其余导出是调用方需要的类型。
 - MyGo 调用只放在 `src/services/` 和 Go 入口（`main.go` 及同一包内直接使用 MyGo 的服务实现），其他前端模块通过 `src/services/` 间接使用后端能力。生成的客户端直接输出到 `src/services/mygo.ts`。
 - `main.go` 还注册 MyGo 的 `updater.Plugin`，绑定工作区、图片、设置、单文件、打开方式和原生菜单服务，注册图片协议并设置应用菜单；文件监听由 `Workspace.Watch` 在页面调用时开始。更新源、版本注入和发布流程见[发布与自动更新](release.md)。
-- `src/services/` 是生成的 `mygo.ts` 客户端上的薄封装，不承载业务逻辑。`app.ts` 只把 `Application.Info` 包装成 `getAppInfo`；`workspace.ts` 包装 `Workspace` 的文件与模板方法、`PickFolder`/`OpenFolder` 和关窗保存事件；`files.ts`、`settings.ts`、`single-file.ts`、`menu.ts`、`open-file.ts`、`watch.ts` 和 `search.ts` 分别包装对应服务；`clipboard.ts` 只负责复制界面文字。封装不拼接路径，也不缓存文件内容。
+- `src/services/` 是生成的 `mygo.ts` 客户端上的薄封装，不承载业务逻辑。`app.ts` 把 `Application.Info` 和 `Application.OpenExternalURL` 包装成 `getAppInfo` / `openExternalURL`；`workspace.ts` 包装 `Workspace` 的文件与模板方法、`PickFolder`/`OpenFolder` 和关窗保存事件；`files.ts`、`settings.ts`、`single-file.ts`、`menu.ts`、`open-file.ts`、`watch.ts` 和 `search.ts` 分别包装对应服务；`clipboard.ts` 只负责复制界面文字。封装不拼接路径，也不缓存文件内容。
 - `src/app/` 只放不依赖 Vue 组件实例的界面逻辑，`src/components/` 只负责渲染和交互事件；`App.vue` 负责把这些模块与 `services/` 接起来，不直接调用 MyGo。`src/app/workspace-search.ts` 只处理流式结果的分组、行片段、128 位内容指纹和点击定位校验，`WorkspaceSearch.vue` 只处理输入、开关、渲染和 Channel 会话；`src/app/outline.ts` 过滤大纲标题、定位活动章节并给出 840px 布局阈值。
 - `src/commands/` 保存唯一命令注册表、格式与插入命令、应用与文件树命令、键位匹配和显示、拼音搜索/最近使用逻辑；只依赖 CodeMirror、`src/app/platform.ts`，以及类型层面的 `src/app/file-tree.ts`，不依赖 Vue 或 MyGo。`src/commands/snippets.ts` 只接收服务层传来的 `id`/`label`/`body` 快照，把用户模板转成同一种 `CommandDefinition` 并负责变量展开；`App.vue` 负责调用 `Workspace.ListSnippets` 和维护当前快照，命令层不接触 MyGo。`src/editor/slash.ts` 负责 slash 触发、查询和菜单状态，`src/components/SlashMenu.vue` 只负责渲染和定位；`src/app/context-menu.ts` 组装右键菜单并从注册表读取快捷键。`src/app/command-palette.ts` 处理面板模式标识、文件与标题排序；`src/editor/headings.ts` 从 Lezer 树提取标题；`src/components/CommandPalette.vue` 和 `src/components/Outline.vue` 只负责渲染和交互。
 - `createEditor` 的接口为：
@@ -176,6 +182,8 @@ Go（main.go）
     onChange,      // 文档变化时回调全文
     onCompositionEnd, // DOM 组合结束时回调；CodeMirror 内部结束或视图销毁时不会回调
     onCompositionStart, // DOM 组合开始时回调
+    onEditLinkImage, // 链接/图片编辑会话；null 表示目标已失效
+    onOpenLink,   // Mod/Ctrl 点击链接的源码 destination
   }): EditorHandle
   ```
 
@@ -191,8 +199,8 @@ Go（main.go）
 - MyGo 提供类型化 IPC：绑定方法、`Channel` 和 `Event`。
 - 用 `mygo generate` 生成 TypeScript 客户端，输出路径由 `mygo.config.ts` 的 `bindings` 指定；本项目是 `src/services/mygo.ts`。
 - 前端只通过生成的客户端和 `services/` 调用 Go；Go 用 `mygo.Bind` 暴露服务，用 `*mygo.Channel[T]` 推送流，用 `mygo.NewEvent[T]` 发送事件。
-- 当前的最小服务是 `Application.Info()`，返回应用版本、操作系统、架构、Go 版本和主目录，用来验证前端与 Go 的调用链，并让界面把主目录写成 `~`。
-- `Workspace` 提供 `ChooseFolder`、`PickFolder`、`OpenFolder`、`OpenDroppedFolder`、`CloseWorkspace`、`ListFiles`、`ListSnippets`、`ReadFile`、`WriteFile`、`ConfirmDiscard` 和 `FinishClose`，以及文件树的 `ListDirectory`、`CreateFile`、`CreateFolder`、`RenameEntry`、`TrashEntry`、`OpenWithDefaultApp`、`RevealEntry`、`Watch` 和 `Search`。`ListSnippets` 只接收 `generation`，读取当前根固定的 `.nicole/snippets/`，边界和读取安全见[用户模板目录](specs/workspace.md#用户模板目录)。`PickFolder` 只返回用户在原生对话框中选择的路径；`OpenFolder` 只接受该路径、Go 记录的最近文件夹或系统提供的文件的所在文件夹，页面不能凭任意字符串切换根目录。只有“系统提供文件的父目录”这一来源会拒绝根目录、盘符根目录和主目录；用户主动选择、当前根目录和最近列表不受限制。`OpenDroppedFolder` 只接受 Go 发放的文件夹 token，不接收页面路径；token 和启动状态字段的规则见[拖入文件夹](specs/workspace.md#拖入文件夹)与[设置存储](specs/workspace.md#设置存储)。写操作携带打开时返回的 `generation`，路径和文件类型的规则见[工作区与文件](specs/workspace.md#路径守卫)和[写入保证](specs/workspace.md#写入保证)。
+- 当前的最小服务是 `Application.Info()`，返回应用版本、操作系统、架构、Go 版本和主目录，用来验证前端与 Go 的调用链，并让界面把主目录写成 `~`。`Application.OpenExternalURL(target)` 只接受 Go 端复核为完整 HTTP(S)、有 host 且无控制字符的地址，再调用 MyGo 的系统外部打开；其他 scheme 和本地路径不经过这个入口。
+- `Workspace` 提供 `ChooseFolder`、`PickFolder`、`OpenFolder`、`OpenDroppedFolder`、`CloseWorkspace`、`ListFiles`、`ListSnippets`、`ReadFile`、`WriteFile`、`ConfirmDiscard` 和 `FinishClose`，以及文件树的 `ListDirectory`、`CreateFile`、`CreateFolder`、`RenameEntry`、`TrashEntry`、`OpenWithDefaultApp`、`RevealEntry`、`RevealImage`、`Watch` 和 `Search`。`ListSnippets` 只接收 `generation`，读取当前根固定的 `.nicole/snippets/`，边界和读取安全见[用户模板目录](specs/workspace.md#用户模板目录)。`PickFolder` 只返回用户在原生对话框中选择的路径；`OpenFolder` 只接受该路径、Go 记录的最近文件夹或系统提供的文件的所在文件夹，页面不能凭任意字符串切换根目录。只有“系统提供文件的父目录”这一来源会拒绝根目录、盘符根目录和主目录；用户主动选择、当前根目录和最近列表不受限制。`OpenDroppedFolder` 只接受 Go 发放的文件夹 token，不接收页面路径；token 和启动状态字段的规则见[拖入文件夹](specs/workspace.md#拖入文件夹)与[设置存储](specs/workspace.md#设置存储)。写操作携带打开时返回的 `generation`，路径和文件类型的规则见[工作区与文件](specs/workspace.md#路径守卫)和[写入保证](specs/workspace.md#写入保证)。
 - 关窗时 Go 发出携带 `token` 的 `workspace:save-before-close` 事件并阻止关闭；前端保存后调用 `FinishClose(token, saved)`。保存失败时由 Go 弹出确认框，只有用户明确选择放弃才关窗；页面无响应时最多等待 5 秒。
 - `Workspace.Watch(generation)` 用 `*mygo.Channel[FileWatchPart]` 流式返回 `ready` 和事件批次；底层是 `mygo.WatchFiles`，在 Go 端过滤 Nicole 自己的写入（见[工作区与文件](specs/workspace.md#忽略-nicole-自己的写入)）。工作区状态本身是可替换的单例，后续协议 handler 在启动时注册、运行时读取同一个状态。
 - `SingleFileService` 提供 `ChooseSingleFile`、`AcceptSingleFile`、`DismissOfferedFile`、`ReadSingleFile`、`WriteSingleFile`、`RevealSingleFile` 和 `ReleaseSingleFile`；授权按解析后的绝对路径保存，只有对话框选择或 `App.OnOpenFile` 提供的文件才能被接受。打开系统文件的父目录是一次性授权：`OpenFolder` 成功后 Go 消耗对应提供项，取消时页面调用 `DismissOfferedFile`。`OpenedFiles` 暂存系统传入的路径；`app:open-file` 只通知“有新文件”，页面收到信号后调用 `TakePendingOpenedFiles` 一次取走队列，既覆盖启动时到达的文件，也不会重复交付同一个文件。
@@ -219,6 +227,7 @@ Go（main.go）
 - 工作区外的文件采用按文件授权：`SingleFileService` 只保存用户通过原生对话框选择、或通过 `App.OnOpenFile` 提供并在页面确认后的解析绝对路径。读写只接受完全相同的路径，列出目录、访问同目录其他文件、相对路径和目录本身都拒绝；授权不跨重启保存，关闭标签页时释放。见[单文件标签页](specs/workspace.md#单文件标签页)。
 - **单文件授权经崩溃恢复延续的代价**：`Recovery` 目录里可能出现用户上次已授权的单文件路径。恢复时 Go 先核对路径：必须仍是普通 `.md` 文件、没有变成符号链接、父路径未改变，文件不存在时仍允许授权以便原路径重建；通过后才授权一次。对话框选择由页面保证；Go 只保证副本 id 存在于 `recovery` 目录、路径曾被授权、每条只能恢复一次。`List` 会把曾授权路径的 `diskText` 返回给页面。因此副本最多让一条曾授权路径跨重启延续一次；如果攻击者已经能写 `recovery/` 目录或界面数据目录，本地文件的机密性和完整性已不受这层边界保护。见[崩溃恢复](specs/workspace.md#崩溃恢复)。
 - 文件树的“用默认应用打开”在 Go 端按白名单分类：图片、PDF、纯文本和常见办公文档可直接打开；已知启动器类型（PATHEXT、macOS 脚本/快捷方式、Linux `.desktop` 等）直接拒绝；其他类型和 Unix 可执行文件必须先经过 Go 弹出的原生确认框，页面无法绕过。详见[文件操作](specs/workspace.md#打开方式的安全规则)。
+- 链接打开先经过 `src/app/link-navigation.ts` 的只读分类，不把任意地址直接交给系统或文件接口。HTTP(S) 只走 `Application.OpenExternalURL` 的 Go URL 校验和 `Shell.OpenExternal`；工作区 Markdown 相对/根相对路径归一后进入原有 `ReadFile` 根、隐藏目录、`node_modules`、普通文件和符号链接守卫，已授权且同物理路径的单文件标签只复用内存、不重新授权；单文件标签页不获得相对文件读取授权。路径/fragment 各只做一次 URI 解码，Markdown 转义和字符引用在分类前单遍解释，且只有完整命名引用会解码；标题锚点未完整解析时不当作缺失。见[链接导航](specs/workspace.md#链接导航)。
 - 系统“打开方式”传入的路径先记为“已提供”，不会自动授权；`AcceptSingleFile` 只接受已经提供的路径，页面不能凭任意字符串自行授权。打开父目录是一次性授权，成功打开后由 Go 消耗，取消或失败后由页面调用 `DismissOfferedFile` 消耗；当授权来源只是系统文件时，根目录、盘符根目录和主目录在前后端都拒绝。`app:open-file` 只是“有新文件”的信号，页面收到后调用 `TakePendingOpenedFiles` 清空队列，避免事件与启动时读取重复交付。
 - 原生右键菜单只接收菜单项 ID、文字、快捷键、禁用状态和页面坐标，不接收命令或文件内容；菜单项由 Go 组装，选择结果只把 ID 返回页面。正文的 WebView 右键菜单删除“重新载入”“后退”“前进”，非开发构建还删除“检查元素”。
 - 文件关联只让系统把 `.md` 路径交给 `App.OnOpenFile`；在用户于页面确认“只打开这个文件”之前，Go 不读写该文件。

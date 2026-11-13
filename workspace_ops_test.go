@@ -305,6 +305,75 @@ func TestOpenAndRevealUseTheGuard(t *testing.T) {
 	}
 }
 
+func TestRevealImageUsesTheImageGuard(t *testing.T) {
+	log := stubSystemActions(t)
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "image.png"), []byte("png"))
+	mustWriteFile(t, filepath.Join(root, "assets", "photo.JPG"), []byte("jpg"))
+	mustWriteFile(t, filepath.Join(root, "note.txt"), []byte("text"))
+	mustWriteFile(t, filepath.Join(root, ".hidden", "photo.png"), []byte("png"))
+	mustWriteFile(t, filepath.Join(root, "node_modules", "photo.png"), []byte("png"))
+	if err := os.MkdirAll(filepath.Join(root, "fake.png"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	workspace := openTestWorkspace(t, root)
+	generation := currentGeneration(workspace)
+	resolvedRoot, _ := workspace.state.snapshot()
+
+	if err := workspace.RevealImage("image.png", generation); err != nil {
+		t.Fatal(err)
+	}
+	if err := workspace.RevealImage("assets/photo.JPG", generation); err != nil {
+		t.Fatal(err)
+	}
+	if len(log.revealed) != 2 ||
+		log.revealed[0] != filepath.Join(resolvedRoot, "image.png") ||
+		log.revealed[1] != filepath.Join(resolvedRoot, "assets", "photo.JPG") {
+		t.Fatalf("revealed = %q", log.revealed)
+	}
+
+	for name, want := range map[string]error{
+		"note.txt":               errUnsupportedImage,
+		"missing.png":            os.ErrNotExist,
+		"fake.png":               errNotRegular,
+		".hidden/photo.png":      errIgnoredFolder,
+		"node_modules/photo.png": errIgnoredFolder,
+	} {
+		if err := workspace.RevealImage(name, generation); !errors.Is(err, want) {
+			t.Errorf("RevealImage(%q) = %v, want %v", name, err, want)
+		}
+	}
+	if err := workspace.RevealImage("../escape.png", generation); err == nil {
+		t.Error("RevealImage(escape) succeeded")
+	}
+	if err := workspace.RevealImage("image.png", generation-1); !errors.Is(err, errWorkspaceChange) {
+		t.Errorf("RevealImage(stale) = %v, want %v", err, errWorkspaceChange)
+	}
+	if len(log.revealed) != 2 {
+		t.Errorf("refused images reached the file manager: %q", log.revealed)
+	}
+}
+
+func TestRevealImageRejectsSymlinkEscapes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks needs a developer mode or administrator rights")
+	}
+	log := stubSystemActions(t)
+	root := t.TempDir()
+	outside := t.TempDir()
+	mustWriteFile(t, filepath.Join(outside, "secret.png"), []byte("png"))
+	if err := os.Symlink(filepath.Join(outside, "secret.png"), filepath.Join(root, "secret.png")); err != nil {
+		t.Fatal(err)
+	}
+	workspace := openTestWorkspace(t, root)
+	if err := workspace.RevealImage("secret.png", currentGeneration(workspace)); !errors.Is(err, errPathOutside) {
+		t.Errorf("RevealImage(symlink) = %v, want %v", err, errPathOutside)
+	}
+	if len(log.revealed) != 0 {
+		t.Errorf("revealed outside the workspace: %q", log.revealed)
+	}
+}
+
 func TestOpenWithDefaultAppAllowsKnownDocumentAndImageTypes(t *testing.T) {
 	log := stubSystemActions(t)
 	confirmation := &openConfirmationLog{}
