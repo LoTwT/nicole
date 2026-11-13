@@ -12705,6 +12705,130 @@ describe("settings tab", () => {
     expect(host.textContent).toContain("打开文件夹");
   });
 
+  describe("E4 R5 fix: explicit Settings entry during restore", () => {
+    type RestoredLayout = {
+      tabs: import("./services/tabs").StoredTab[];
+      active: string;
+      recentFiles: string[];
+    };
+
+    function beginRestore() {
+      const stored = deferred<RestoredLayout>();
+      mocks.getWorkspaceTabs.mockImplementationOnce(() => stored.promise);
+      mocks.pickFolder.mockResolvedValue({ path: "/other", canceled: false });
+      mocks.openFolder.mockResolvedValue(folder("/other", 2));
+      pressAppShortcut("o");
+      return stored;
+    }
+
+    function finishRestore(stored: ReturnType<typeof deferred<RestoredLayout>>) {
+      stored.resolve({
+        tabs: [{ kind: "markdown", path: "b.md" }],
+        active: "b.md",
+        recentFiles: [],
+      });
+    }
+
+    async function switchFromOpenDocument(): Promise<
+      ReturnType<typeof deferred<RestoredLayout>>
+    > {
+      await setupWorkspace({ "a.md": "# A\n", "b.md": "# Restored\n" });
+      await openPath("/notes/a.md");
+      await openSettingsFromShortcut();
+      tabNamed("a.md").click();
+      await settle();
+      const stored = beginRestore();
+      await settle();
+      dialogButton("切换").click();
+      await settle();
+      expect(mocks.getWorkspaceTabs).toHaveBeenLastCalledWith("/other");
+      expect(settingsView()).not.toBeNull();
+      return stored;
+    }
+
+    it.each(["none", "shortcut", "tab-click"] as const)(
+      "keeps only an explicit Settings intent in front (entry: %s)",
+      async (entry) => {
+        const stored = await switchFromOpenDocument();
+        if (entry === "shortcut") {
+          await openSettingsFromShortcut();
+        } else if (entry === "tab-click") {
+          settingsTabs()[0]!.click();
+          await settle();
+        }
+
+        finishRestore(stored);
+        await settle();
+
+        if (entry === "none") {
+          expect(settingsView()).toBeNull();
+          expect(tabNamed("b.md").getAttribute("aria-selected")).toBe("true");
+          expect(editorView().state.doc.toString()).toBe("# Restored\n");
+        } else {
+          expect(settingsView()).not.toBeNull();
+          expect(settingsTabs()[0]!.getAttribute("aria-selected")).toBe("true");
+          expect(host.querySelector(".cm-editor")).toBeNull();
+          expect(tabNamed("b.md").getAttribute("aria-selected")).not.toBe(
+            "true",
+          );
+          if (entry === "shortcut") {
+            expect(document.activeElement).toBe(
+              host.querySelector("#settings-theme"),
+            );
+          }
+        }
+      },
+    );
+
+    it("keeps a document selected after the explicit Settings entry", async () => {
+      await setupWorkspace({ "a.md": "# A\n", "b.md": "# Restored\n" });
+      await openPath("/tmp/single.md");
+      dialogButton("只打开这个文件").click();
+      await settle();
+      await openPath("/notes/a.md");
+      await openSettingsFromShortcut();
+      tabNamed("a.md").click();
+      await settle();
+      const stored = beginRestore();
+      await settle();
+      dialogButton("切换").click();
+      await settle();
+      expect(settingsView()).not.toBeNull();
+
+      await openSettingsFromShortcut();
+      tabNamed("single.md").click();
+      await settle();
+      expect(tabNamed("single.md").getAttribute("aria-selected")).toBe("true");
+
+      finishRestore(stored);
+      await settle();
+
+      expect(tabNamed("single.md").getAttribute("aria-selected")).toBe("true");
+      expect(editorView().state.doc.toString()).toBe("# Single\n");
+      expect(editorView().hasFocus).toBe(true);
+      expect(tabNamed("b.md").getAttribute("aria-selected")).not.toBe("true");
+      expect(settingsView()).toBeNull();
+    });
+
+    it("does not revive Settings closed after the explicit entry", async () => {
+      const stored = await switchFromOpenDocument();
+      await openSettingsFromShortcut();
+      settingsTabs()[0]!
+        .querySelector<HTMLButtonElement>('button[aria-label^="关闭"]')!
+        .click();
+      await settle();
+      expect(settingsTabs()).toHaveLength(0);
+
+      finishRestore(stored);
+      await settle();
+
+      expect(settingsTabs()).toHaveLength(0);
+      expect(settingsView()).toBeNull();
+      expect(tabNamed("b.md").getAttribute("aria-selected")).toBe("true");
+      expect(editorView().state.doc.toString()).toBe("# Restored\n");
+    });
+  });
+
   it("filters the tree and hides labels without changing paths or open previews", async () => {
     await setupWorkspace({ "a.md": "# A\n", "cover.png": "png" });
     await openPath("/notes/a.md");

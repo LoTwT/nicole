@@ -398,6 +398,12 @@ let nextTabId = 1;
 // Search result navigation captures this revision. Any later active-tab
 // change makes the pending search intent stale before it can take focus.
 let tabNavigationRevision = 0;
+// Explicit Settings entry is separate from active ID changes: reopening the
+// same tab during restore still represents a newer user intent.
+let settingsEntryRevision = 0;
+function noteExplicitSettingsEntry() {
+  settingsEntryRevision += 1;
+}
 // A newer result click supersedes an older one even when both are still
 // waiting for their files.
 let searchNavigationSequence = 0;
@@ -2996,6 +3002,9 @@ async function activateTab(
     invalidateOlderOrdinaryOpens();
   }
   if (activeTabId.value === id) {
+    if (target.kind === "settings") {
+      noteExplicitSettingsEntry();
+    }
     if (target.kind === "workspace" && workspace.value !== null) {
       rememberRecentWorkspaceFile(workspace.value.root, target.path);
     }
@@ -3426,6 +3435,7 @@ async function applyWorkspace(folder: {
       : settingsTab?.id ?? null;
     activeTabId.value = restoreStartActiveId;
     const restoreStartNavigationRevision = tabNavigationRevision;
+    const restoreStartSettingsEntryRevision = settingsEntryRevision;
     lastWorkspaceActivePath = null;
     const restored = await restoreTabsForRoot(
       context.root,
@@ -3463,12 +3473,15 @@ async function applyWorkspace(folder: {
     const currentSettingsTab = findSettingsTab();
     const selectionChangedDuringRestore =
       tabNavigationRevision !== restoreStartNavigationRevision;
+    const settingsEnteredDuringRestore =
+      settingsEntryRevision !== restoreStartSettingsEntryRevision;
     // A background Settings page is only the restore placeholder. Keep it when
-    // it was active before the switch or the user selected it during restore.
+    // it was active before, explicitly entered, or selected during restore.
     const keepSettings =
       currentActive?.kind === "settings" &&
       (settingsActive ||
         selectionChangedDuringRestore ||
+        settingsEnteredDuringRestore ||
         currentActive.id !== restoreStartActiveId);
     // Leave a tab the user opened or activated during restore in front.
     if (keepSettings) {
@@ -5209,6 +5222,7 @@ function findSettingsTab(): SettingsTabModel | null {
 
 /** The four entries all run the registry's app.settings command. */
 function openSettings() {
+  noteExplicitSettingsEntry();
   closeOverlaySidebar();
   void retrySettingsBaseline();
   const existing = findSettingsTab();
