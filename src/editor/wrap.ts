@@ -227,19 +227,93 @@ export function planBracketInput(
 }
 
 /**
- * A direct key listener records the key before the browser turns it into an
- * input change. CodeMirror's inputHandler runs for typing, paste, drop and
- * completion alike; only this pending direct key allows wrapping.
+ * A direct input can be recognized from either a keyboard event or the
+ * browser's `beforeinput` event. The latter is the authoritative early
+ * boundary: WebKit sometimes delivers the keydown after the DOM input (and
+ * after CodeMirror's inputHandler), while still identifying ordinary typing
+ * as `insertText`. A token is tied to the document and selection where it was
+ * observed so a delayed event cannot consume it after unrelated state changes.
  */
-export interface DirectInputState {
-  character: DirectInputCharacter | null;
+export interface DirectInputIntent {
+  character: DirectInputCharacter;
+  doc: Text;
+  selection: EditorSelection;
+  source: "keydown" | "beforeinput";
 }
 
-export function noteDirectInput(
+export interface CompositionOperation {
+  /** A composition beforeinput/input was observed before compositionend. */
+  hasInput: boolean;
+}
+
+/**
+ * A composition whose end carried text but had no beforeinput/input before it
+ * can still deliver that text afterwards. Keep the exact editor state so the
+ * next matching `insertText` is consumed once as the composition tail, not as
+ * a new direct key; any intervening transaction invalidates it.
+ */
+export interface PendingCompositionEnd {
+  data: string;
+  state: EditorState;
+}
+
+export interface DirectInputState {
+  intent: DirectInputIntent | null;
+  composition: CompositionOperation | null;
+  pendingCompositionEnd: PendingCompositionEnd | null;
+}
+
+export function clearDirectInput(state: DirectInputState): void {
+  state.intent = null;
+  state.pendingCompositionEnd = null;
+}
+
+export function noteCompositionStart(state: DirectInputState): void {
+  state.intent = null;
+  state.pendingCompositionEnd = null;
+  state.composition = { hasInput: false };
+}
+
+export function noteCompositionInput(state: DirectInputState): void {
+  state.intent = null;
+  if (state.composition !== null) state.composition.hasInput = true;
+}
+
+export function noteCompositionEnd(
+  state: DirectInputState,
+  data: string,
+  editorState: EditorState,
+): void {
+  const composition = state.composition;
+  state.composition = null;
+  state.intent = null;
+  state.pendingCompositionEnd =
+    composition !== null && !composition.hasInput && data.length > 0
+      ? { data, state: editorState }
+      : null;
+}
+
+function rememberDirectInput(
+  state: DirectInputState,
+  character: DirectInputCharacter,
+  editorState: EditorState,
+  source: DirectInputIntent["source"],
+): void {
+  state.intent = {
+    character,
+    doc: editorState.doc,
+    selection: editorState.selection,
+    source,
+  };
+}
+
+export function noteDirectKeydown(
   state: DirectInputState,
   event: KeyboardEvent,
-): void {
-  state.character = null;
+  editorState: EditorState,
+): boolean {
+  const pending = state.intent;
+  state.intent = null;
   if (
     event.defaultPrevented ||
     event.isComposing ||
@@ -249,19 +323,68 @@ export function noteDirectInput(
     event.altKey ||
     !isDirectInputCharacter(event.key)
   ) {
-    return;
+    // A late keydown is part of the same input that was already recognized by
+    // `beforeinput`; it must not invalidate that earlier direct-input intent.
+    if (
+      pending?.source === "beforeinput" &&
+      pending.character === event.key &&
+      pending.doc === editorState.doc &&
+      pending.selection.eq(editorState.selection, true)
+    ) {
+      state.intent = pending;
+    }
+    return false;
   }
-  state.character = event.key;
-  setTimeout(() => {
-    if (state.character === event.key) state.character = null;
-  }, 0);
+  rememberDirectInput(state, event.key, editorState, "keydown");
+  return true;
+}
+
+export function noteDirectBeforeInput(
+  state: DirectInputState,
+  event: InputEvent,
+  editorState: EditorState,
+  composing: boolean,
+): boolean {
+  const pendingCompositionEnd = state.pendingCompositionEnd;
+  state.intent = null;
+  if (pendingCompositionEnd !== null) {
+    const isCompositionTail =
+      pendingCompositionEnd.state === editorState &&
+      event.inputType === "insertText" &&
+      !event.isComposing &&
+      event.data === pendingCompositionEnd.data;
+    state.pendingCompositionEnd = null;
+    if (isCompositionTail) return false;
+  }
+  if (
+    event.defaultPrevented ||
+    event.isComposing ||
+    composing ||
+    event.inputType !== "insertText" ||
+    typeof event.data !== "string" ||
+    event.data.length !== 1 ||
+    !isDirectInputCharacter(event.data)
+  ) {
+    return false;
+  }
+  rememberDirectInput(state, event.data, editorState, "beforeinput");
+  return true;
 }
 
 export function takeDirectInput(
   state: DirectInputState,
   text: string,
+  editorState: EditorState,
 ): DirectInputCharacter | null {
-  const character = state.character;
-  state.character = null;
-  return character !== null && character === text ? character : null;
+  const intent = state.intent;
+  state.intent = null;
+  if (
+    intent === null ||
+    intent.character !== text ||
+    intent.doc !== editorState.doc ||
+    !intent.selection.eq(editorState.selection, true)
+  ) {
+    return null;
+  }
+  return intent.character;
 }

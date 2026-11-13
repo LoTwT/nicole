@@ -70,9 +70,14 @@ import {
   type ScrollAnchor,
 } from "./scroll";
 import {
+  clearDirectInput,
   isBracketInputCharacter,
   isWrapCharacter,
-  noteDirectInput,
+  noteCompositionEnd,
+  noteCompositionInput,
+  noteCompositionStart,
+  noteDirectBeforeInput,
+  noteDirectKeydown,
   planBracketInput,
   planWrapInput,
   takeDirectInput,
@@ -1616,7 +1621,11 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     onEditLinkImage?.(session);
   };
 
-  const directInput: DirectInputState = { character: null };
+  const directInput: DirectInputState = {
+    intent: null,
+    composition: null,
+    pendingCompositionEnd: null,
+  };
 
   const insertTextAt = (at: number, text: string) => {
     const position = Math.max(0, Math.min(at, view.state.doc.length));
@@ -1702,10 +1711,17 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
   };
 
   const handleCompositionStart = () => {
+    noteCompositionStart(directInput);
+    wrapContinuation = null;
     onCompositionStart?.();
   };
 
-  const handleCompositionEnd = () => {
+  const handleCompositionEnd = (event: Event) => {
+    noteCompositionEnd(
+      directInput,
+      event instanceof CompositionEvent ? event.data : "",
+      view.state,
+    );
     onCompositionEnd?.();
     if (pendingInsertions.length > 0) scheduleInsertion();
   };
@@ -1761,18 +1777,42 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
   const extensions: Extension[] = [
     Prec.highest(
       EditorView.domEventHandlers({
-        keydown(event) {
-          noteDirectInput(directInput, event);
+        keydown(event, editorView) {
+          noteDirectKeydown(directInput, event, editorView.state);
           if (
             event.key !== "`" ||
             event.metaKey ||
             event.ctrlKey ||
             event.altKey ||
-            event.isComposing ||
-            event.keyCode === 229
+            event.isComposing
           ) {
             wrapContinuation = null;
           }
+          return false;
+        },
+        beforeinput(event, editorView) {
+          const inputEvent = event as InputEvent;
+          if (
+            editorView.compositionStarted ||
+            editorView.composing ||
+            inputEvent.isComposing
+          ) {
+            noteCompositionInput(directInput);
+            clearDirectInput(directInput);
+            return false;
+          }
+          noteDirectBeforeInput(
+            directInput,
+            inputEvent,
+            editorView.state,
+            false,
+          );
+          return false;
+        },
+        focusout() {
+          clearDirectInput(directInput);
+          directInput.composition = null;
+          wrapContinuation = null;
           return false;
         },
         mousedown(event, editorView) {
@@ -1853,10 +1893,12 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     ),
     Prec.highest(
       EditorView.inputHandler.of((editorView, _from, _to, text, insert) => {
-        const character = takeDirectInput(directInput, text);
         if (editorView.compositionStarted || editorView.composing) {
+          noteCompositionInput(directInput);
+          clearDirectInput(directInput);
           return false;
         }
+        const character = takeDirectInput(directInput, text, editorView.state);
         if (character === null) {
           wrapContinuation = null;
           // Non-direct DOM input (spell-check replacement, IME commit, paste
@@ -1932,6 +1974,19 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
     createCommandKeymap(enabledCommands, platform),
     imageHandlers(onPasteImage, createTicketAt),
     EditorView.updateListener.of((update) => {
+      if (
+        directInput.pendingCompositionEnd !== null &&
+        update.state !== directInput.pendingCompositionEnd.state
+      ) {
+        directInput.pendingCompositionEnd = null;
+      }
+      if (
+        directInput.intent !== null &&
+        (update.state.doc !== directInput.intent.doc ||
+          !update.state.selection.eq(directInput.intent.selection, true))
+      ) {
+        clearDirectInput(directInput);
+      }
       if (
         wrapContinuation !== null &&
         (update.state.doc !== wrapContinuation.doc ||
@@ -2280,6 +2335,8 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
       destroyed = true;
       linkSession?.dispose();
       linkSession = null;
+      clearDirectInput(directInput);
+      directInput.composition = null;
       wrapContinuation = null;
       find.destroy();
       editorDocument.removeEventListener("selectstart", onSelectStart, true);

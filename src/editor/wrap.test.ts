@@ -81,6 +81,88 @@ function inputHandlerOnly(view: EditorView, character: string): boolean {
   );
 }
 
+async function inputThroughDom(
+  view: EditorView,
+  character: string,
+  options: {
+    inputType?: string;
+    isComposing?: boolean;
+    lateKeydown?: "none" | "229";
+    betweenKeydown?: "none" | "229";
+    beforeKeydown?: boolean;
+  } = {},
+): Promise<void> {
+  const inputType = options.inputType ?? "insertText";
+  const isComposing = options.isComposing ?? false;
+  const line = view.contentDOM.querySelector(".cm-line")!;
+  const text = line.firstChild!;
+  if (options.beforeKeydown) {
+    view.contentDOM.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: character,
+        code: "Digit8",
+        shiftKey: character === "*",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  }
+  view.contentDOM.dispatchEvent(
+    new InputEvent("beforeinput", {
+      inputType,
+      data: character,
+      isComposing,
+      bubbles: true,
+      cancelable: true,
+    }),
+  );
+  if (options.betweenKeydown === "229") {
+    const keydown = new KeyboardEvent("keydown", {
+      key: character,
+      code: "Digit8",
+      shiftKey: character === "*",
+      isComposing,
+      bubbles: true,
+      cancelable: true,
+    });
+    Object.defineProperty(keydown, "keyCode", { value: 229 });
+    view.contentDOM.dispatchEvent(keydown);
+  }
+  text.nodeValue = character;
+  document.getSelection()!.collapse(text, 1);
+  view.contentDOM.dispatchEvent(
+    new InputEvent("input", {
+      inputType,
+      data: character,
+      isComposing,
+      bubbles: true,
+    }),
+  );
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  if (options.lateKeydown === "229") {
+    const keydown = new KeyboardEvent("keydown", {
+      key: character,
+      code: "Digit8",
+      shiftKey: character === "*",
+      isComposing,
+      bubbles: true,
+      cancelable: true,
+    });
+    Object.defineProperty(keydown, "keyCode", { value: 229 });
+    view.contentDOM.dispatchEvent(keydown);
+  }
+}
+
+function compositionEvent(
+  view: EditorView,
+  type: "compositionstart" | "compositionend" | "compositionupdate",
+  data = "",
+): void {
+  view.contentDOM.dispatchEvent(
+    new CompositionEvent(type, { data, bubbles: true }),
+  );
+}
+
 afterEach(() => {
   for (const element of parents.splice(0)) element.remove();
 });
@@ -248,6 +330,473 @@ describe("direct input integration", () => {
     expect(view.state.doc.toString()).toBe("*文字*");
     editor.destroy();
   });
+
+  it("wraps when the direct input arrives before its late keydown", async () => {
+    const editor = createEditor({
+      parent: parent(),
+      doc: "文字",
+      mode: "source",
+      platform: "macos",
+    });
+    const view = editor.view;
+    view.dispatch({ selection: { anchor: 0, head: 2 } });
+    view.focus();
+
+    await inputThroughDom(view, "*", { lateKeydown: "229" });
+    expect(view.state.doc.toString()).toBe("*文字*");
+    expect(view.state.selection.main.from).toBe(1);
+    expect(view.state.selection.main.to).toBe(3);
+
+    editor.undo();
+    expect(view.state.doc.toString()).toBe("文字");
+    editor.destroy();
+  });
+
+  it("keeps the beforeinput intent when a 229 keydown arrives before inputHandler", async () => {
+    const editor = createEditor({
+      parent: parent(),
+      doc: "文字",
+      mode: "source",
+      platform: "macos",
+    });
+    const view = editor.view;
+    view.dispatch({ selection: { anchor: 0, head: 2 } });
+    view.focus();
+
+    await inputThroughDom(view, "*", { betweenKeydown: "229" });
+    expect(view.state.doc.toString()).toBe("*文字*");
+    editor.destroy();
+  });
+
+  it("does not reuse a beforeinput intent after the selection changes", async () => {
+    const editor = createEditor({
+      parent: parent(),
+      doc: "文字",
+      mode: "source",
+      platform: "macos",
+    });
+    const view = editor.view;
+    view.dispatch({ selection: { anchor: 0, head: 2 } });
+    view.focus();
+
+    view.contentDOM.dispatchEvent(
+      new InputEvent("beforeinput", {
+        inputType: "insertText",
+        data: "*",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    view.dispatch({ selection: { anchor: 1, head: 2 } });
+    expect(inputHandlerOnly(view, "*")).toBe(false);
+    expect(view.state.doc.toString()).toBe("文字");
+    editor.destroy();
+  });
+
+  it("clears a beforeinput intent when the editor loses focus", async () => {
+    const editor = createEditor({
+      parent: parent(),
+      doc: "文字",
+      mode: "source",
+      platform: "macos",
+    });
+    const view = editor.view;
+    view.dispatch({ selection: { anchor: 0, head: 2 } });
+    view.focus();
+
+    view.contentDOM.dispatchEvent(
+      new InputEvent("beforeinput", {
+        inputType: "insertText",
+        data: "*",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    view.contentDOM.blur();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const text = view.contentDOM.querySelector(".cm-line")!.firstChild!;
+    text.nodeValue = "*";
+    document.getSelection()!.collapse(text, 1);
+    view.contentDOM.dispatchEvent(
+      new InputEvent("input", {
+        inputType: "insertText",
+        data: "*",
+        bubbles: true,
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(view.state.doc.toString()).toBe("*");
+    editor.destroy();
+  });
+
+  for (const [character, expected] of [
+    ["`", "`文字`"],
+    ["~", "~~文字~~"],
+    ["[", "[文字]()"],
+  ] as const) {
+    it(`uses the same late-key boundary for ${character}`, async () => {
+      const editor = createEditor({
+        parent: parent(),
+        doc: "文字",
+        mode: "source",
+        platform: "macos",
+      });
+      const view = editor.view;
+      view.dispatch({ selection: { anchor: 0, head: 2 } });
+      view.focus();
+
+      await inputThroughDom(view, character, { lateKeydown: "229" });
+      expect(view.state.doc.toString()).toBe(expected);
+      editor.destroy();
+    });
+  }
+
+  it("keeps backtick continuation when the first keydown arrives late", () => {
+    const editor = createEditor({
+      parent: parent(),
+      doc: "文字",
+      mode: "source",
+      platform: "macos",
+    });
+    const view = editor.view;
+    view.dispatch({ selection: { anchor: 0, head: 2 } });
+    view.focus();
+    expect(typeDirect(view, "`")).toBe(true);
+    expect(view.state.doc.toString()).toBe("`文字`");
+
+    const late = new KeyboardEvent("keydown", {
+      key: "`",
+      code: "Backquote",
+      bubbles: true,
+      cancelable: true,
+    });
+    Object.defineProperty(late, "keyCode", { value: 229 });
+    view.contentDOM.dispatchEvent(late);
+
+    expect(typeDirect(view, "`")).toBe(true);
+    expect(view.state.doc.toString()).toBe("``文字``");
+    editor.destroy();
+  });
+
+  it("opens the immersive link draft through the late DOM input path", async () => {
+    let session: LinkImageEditorSession | null = null;
+    const editor = createEditor({
+      parent: parent(),
+      doc: "文字",
+      mode: "immersive",
+      platform: "macos",
+      onEditLinkImage: (next) => {
+        session = next;
+      },
+    });
+    const view = editor.view;
+    view.dispatch({ selection: { anchor: 0, head: 2 } });
+    view.focus();
+
+    await inputThroughDom(view, "[", { lateKeydown: "229" });
+    expect(view.state.doc.toString()).toBe("文字");
+    expect(session).not.toBeNull();
+    expect(session!.fields).toEqual([{ text: "文字", url: "" }]);
+    session!.dispose();
+    editor.destroy();
+  });
+
+  it("keeps an early direct key through the asynchronous DOM input path", async () => {
+    const editor = createEditor({
+      parent: parent(),
+      doc: "文字",
+      mode: "source",
+      platform: "macos",
+    });
+    const view = editor.view;
+    view.dispatch({ selection: { anchor: 0, head: 2 } });
+    view.focus();
+
+    await inputThroughDom(view, "*", {
+      lateKeydown: "none",
+      beforeKeydown: true,
+    });
+    expect(view.state.doc.toString()).toBe("*文字*");
+    editor.destroy();
+  });
+
+  it("does not wrap insertText from a composition", async () => {
+    const editor = createEditor({
+      parent: parent(),
+      doc: "文字",
+      mode: "source",
+      platform: "macos",
+    });
+    const view = editor.view;
+    view.dispatch({ selection: { anchor: 0, head: 2 } });
+    view.focus();
+
+    compositionEvent(view, "compositionstart");
+    await inputThroughDom(view, "*", {
+      inputType: "insertText",
+      isComposing: false,
+      lateKeydown: "229",
+    });
+    compositionEvent(view, "compositionend");
+    expect(view.state.doc.toString()).toBe("*");
+    editor.destroy();
+  });
+
+  it("keeps a composition tail literal, then accepts the next direct input", async () => {
+    const editor = createEditor({
+      parent: parent(),
+      doc: "文字",
+      mode: "source",
+      platform: "macos",
+    });
+    const view = editor.view;
+    view.dispatch({ selection: { anchor: 0, head: 2 } });
+    view.focus();
+
+    compositionEvent(view, "compositionstart");
+    compositionEvent(view, "compositionupdate", "*");
+    compositionEvent(view, "compositionend", "*");
+    await inputThroughDom(view, "*", { lateKeydown: "229" });
+    expect(view.state.doc.toString()).toBe("*");
+
+    view.dispatch({
+      changes: { from: 0, to: 1, insert: "文字" },
+      selection: { anchor: 0, head: 2 },
+    });
+    await inputThroughDom(view, "*", { lateKeydown: "229" });
+    expect(view.state.doc.toString()).toBe("*文字*");
+    editor.destroy();
+  });
+
+  it("accepts direct input after a composition result before compositionend", async () => {
+    const editor = createEditor({
+      parent: parent(),
+      doc: "文字",
+      mode: "source",
+      platform: "macos",
+    });
+    const view = editor.view;
+    view.dispatch({ selection: { anchor: 0, head: 2 } });
+    view.focus();
+
+    compositionEvent(view, "compositionstart");
+    compositionEvent(view, "compositionupdate", "*");
+    await inputThroughDom(view, "*", {
+      inputType: "insertText",
+      isComposing: true,
+    });
+    compositionEvent(view, "compositionend", "");
+    view.dispatch({
+      changes: { from: 0, to: view.state.doc.length, insert: "文字" },
+      selection: { anchor: 0, head: 2 },
+    });
+    await inputThroughDom(view, "*", { lateKeydown: "229" });
+    expect(view.state.doc.toString()).toBe("*文字*");
+    editor.destroy();
+  });
+
+  it("accepts direct input after an empty composition end", async () => {
+    const editor = createEditor({
+      parent: parent(),
+      doc: "文字",
+      mode: "source",
+      platform: "macos",
+    });
+    const view = editor.view;
+    view.dispatch({ selection: { anchor: 0, head: 2 } });
+    view.focus();
+
+    compositionEvent(view, "compositionstart");
+    compositionEvent(view, "compositionupdate", "*");
+    compositionEvent(view, "compositionend");
+    await inputThroughDom(view, "*", { lateKeydown: "229" });
+    expect(view.state.doc.toString()).toBe("*文字*");
+    editor.destroy();
+  });
+
+  it("invalidates a pending composition tail when the selection changes", async () => {
+    const editor = createEditor({
+      parent: parent(),
+      doc: "文字",
+      mode: "source",
+      platform: "macos",
+    });
+    const view = editor.view;
+    view.dispatch({ selection: { anchor: 0, head: 2 } });
+    view.focus();
+
+    compositionEvent(view, "compositionstart");
+    compositionEvent(view, "compositionupdate", "*");
+    compositionEvent(view, "compositionend", "*");
+    view.dispatch({ selection: { anchor: 0, head: 1 } });
+    view.dispatch({ selection: { anchor: 0, head: 2 } });
+    await inputThroughDom(view, "*", { lateKeydown: "229" });
+    expect(view.state.doc.toString()).toBe("*文字*");
+    editor.destroy();
+  });
+
+  it("keeps a delayed composition source literal after compositionend", async () => {
+    const editor = createEditor({
+      parent: parent(),
+      doc: "文字",
+      mode: "source",
+      platform: "macos",
+    });
+    const view = editor.view;
+    view.dispatch({ selection: { anchor: 0, head: 2 } });
+    view.focus();
+
+    compositionEvent(view, "compositionstart");
+    compositionEvent(view, "compositionupdate", "*");
+    view.contentDOM.dispatchEvent(
+      new InputEvent("beforeinput", {
+        inputType: "insertCompositionText",
+        data: "*",
+        isComposing: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    compositionEvent(view, "compositionend", "*");
+    const text = view.contentDOM.querySelector(".cm-line")!.firstChild!;
+    text.nodeValue = "*";
+    document.getSelection()!.collapse(text, 1);
+    view.contentDOM.dispatchEvent(
+      new InputEvent("input", {
+        inputType: "insertCompositionText",
+        data: "*",
+        isComposing: true,
+        bubbles: true,
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(view.state.doc.toString()).toBe("*");
+    editor.destroy();
+  });
+
+  it("accepts a fresh direct input after an old key and selection return", async () => {
+    const editor = createEditor({
+      parent: parent(),
+      doc: "文字",
+      mode: "source",
+      platform: "macos",
+    });
+    const view = editor.view;
+    view.dispatch({ selection: { anchor: 0, head: 2 } });
+    view.focus();
+
+    view.contentDOM.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "*",
+        code: "Digit8",
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    view.dispatch({ selection: { anchor: 0, head: 1 } });
+    view.dispatch({ selection: { anchor: 0, head: 2 } });
+    await inputThroughDom(view, "*", { lateKeydown: "229" });
+    expect(view.state.doc.toString()).toBe("*文字*");
+    editor.destroy();
+  });
+
+  it("does not wrap when compositionend arrives before the late keydown", async () => {
+    const editor = createEditor({
+      parent: parent(),
+      doc: "文字",
+      mode: "source",
+      platform: "macos",
+    });
+    const view = editor.view;
+    view.dispatch({ selection: { anchor: 0, head: 2 } });
+    view.focus();
+
+    compositionEvent(view, "compositionstart");
+    await inputThroughDom(view, "*", {
+      inputType: "insertText",
+      isComposing: true,
+      lateKeydown: "none",
+    });
+    compositionEvent(view, "compositionend");
+    const keydown = new KeyboardEvent("keydown", {
+      key: "*",
+      code: "Digit8",
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    Object.defineProperty(keydown, "keyCode", { value: 229 });
+    view.contentDOM.dispatchEvent(keydown);
+    expect(view.state.doc.toString()).toBe("*");
+    editor.destroy();
+  });
+
+  it("does not wrap a composition that ends before the DOM input flushes", async () => {
+    const editor = createEditor({
+      parent: parent(),
+      doc: "文字",
+      mode: "source",
+      platform: "macos",
+    });
+    const view = editor.view;
+    view.dispatch({ selection: { anchor: 0, head: 2 } });
+    view.focus();
+
+    compositionEvent(view, "compositionstart");
+    view.contentDOM.dispatchEvent(
+      new InputEvent("beforeinput", {
+        inputType: "insertCompositionText",
+        data: "*",
+        isComposing: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    compositionEvent(view, "compositionend");
+    const line = view.contentDOM.querySelector(".cm-line")!;
+    const text = line.firstChild!;
+    text.nodeValue = "*";
+    document.getSelection()!.collapse(text, 1);
+    view.contentDOM.dispatchEvent(
+      new InputEvent("input", {
+        inputType: "insertCompositionText",
+        data: "*",
+        isComposing: true,
+        bubbles: true,
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(view.state.doc.toString()).toBe("*");
+    editor.destroy();
+  });
+
+  for (const inputType of [
+    "insertFromPaste",
+    "insertFromDrop",
+    "insertReplacementText",
+    "insertCompositionText",
+  ]) {
+    it(`does not wrap ${inputType} with an insertText payload`, async () => {
+      const editor = createEditor({
+        parent: parent(),
+        doc: "文字",
+        mode: "source",
+        platform: "macos",
+      });
+      const view = editor.view;
+      view.dispatch({ selection: { anchor: 0, head: 2 } });
+      view.focus();
+
+      await inputThroughDom(view, "*", {
+        inputType,
+        lateKeydown: "none",
+      });
+      expect(view.state.doc.toString()).toBe("*");
+      editor.destroy();
+    });
+  }
 
   it("replaces a non-empty selection with a literal bracket, not a pair", () => {
     const editor = createEditor({
