@@ -365,8 +365,9 @@ const pendingPreferenceRestores = new Map<
 >();
 let fontsBaselineReady = false;
 let fontWritePending = false;
-let settingsReadFailed = false;
 let fontBaselineFailureReported = false;
+let initialSettingsLoadFinished = false;
+let settingsBaselineRetry: Promise<boolean> | null = null;
 let lastActiveDocumentId: number | null = null;
 let lastSavedFonts = { ui: "", reading: "", code: "" };
 let fontRevision = 0;
@@ -436,11 +437,21 @@ let applyingExternal = false;
 let restoringTabs = false;
 // Two entry points can request the same file before either read finishes.
 const openingTabs = new Map<string, Promise<boolean>>();
+const openingSingleRequests = new Map<string, number[]>();
 // A pending ordinary read may satisfy several callers, but a newer Settings
 // activation revokes the activation authority of reads requested before it.
 let ordinaryOpenActivationRevision = 0;
-function invalidateOlderOrdinaryWorkspaceOpens() {
+function invalidateOlderOrdinaryOpens() {
   ordinaryOpenActivationRevision += 1;
+}
+function latestCurrentSingleOpenRequest(
+  requests: readonly number[],
+): number | undefined {
+  for (let index = requests.length - 1; index >= 0; index -= 1) {
+    const revision = requests[index]!;
+    if (revision === ordinaryOpenActivationRevision) return revision;
+  }
+  return undefined;
 }
 // A pending workspace read can satisfy several callers, but only the latest
 // caller whose intent is still current may own the activation and its
@@ -1240,7 +1251,10 @@ function isEditorMode(value: unknown): value is EditorMode {
   return value === "live" || value === "immersive" || value === "source";
 }
 
-function applySettings(loaded: AppSettings) {
+function applySettings(
+  loaded: AppSettings,
+  options: { startup?: boolean } = {},
+) {
   const normalizedTheme: ThemeSetting =
     loaded.theme === "light" || loaded.theme === "dark"
       ? loaded.theme
@@ -1327,42 +1341,80 @@ function applySettings(loaded: AppSettings) {
     pending.restore();
     pendingPreferenceRestores.delete(key);
   }
-  settingsReadFailed = false;
   fontBaselineFailureReported = false;
-  sidebarWidth.value = Math.min(400, Math.max(200, loaded.sidebarWidth || 252));
-  recentFolders.value = [...loaded.recentFolders].slice(0, 10);
-  expandedByRoot.value = { ...loaded.expandedFolders };
-  workspaceClosed.value = loaded.workspaceClosed === true;
+  if (options.startup !== false) {
+    sidebarWidth.value = Math.min(
+      400,
+      Math.max(200, loaded.sidebarWidth || 252),
+    );
+    recentFolders.value = [...loaded.recentFolders].slice(0, 10);
+    expandedByRoot.value = { ...loaded.expandedFolders };
+    workspaceClosed.value = loaded.workspaceClosed === true;
+  }
   applyTheme();
   applyFontPreferences();
   if (fontWritePending) flushFontPreferences();
 }
 
 async function loadSettings() {
-  const legacy = localStorage.getItem("nicole-theme");
-  if (legacy !== null) {
-    try {
-      applySettings(await migrateLegacyTheme(legacy));
-      if (themeChosen) {
-        // Migration may have applied the legacy native appearance after the
-        // user already chose another theme in this session.
-        chooseTheme(theme.value, false);
-      }
-      localStorage.removeItem("nicole-theme");
-      return;
-    } catch {
-      // Keep the legacy value for the next launch.
-    }
-  }
   try {
-    applySettings(await getSettings());
-  } catch {
-    settingsReadFailed = true;
-    if (fontWritePending) {
-      fontBaselineFailureReported = true;
-      showNotice("保存设置失败", "danger", undefined, "设置尚未加载");
+    const legacy = localStorage.getItem("nicole-theme");
+    if (legacy !== null) {
+      try {
+        applySettings(await migrateLegacyTheme(legacy));
+        if (themeChosen) {
+          // Migration may have applied the legacy native appearance after the
+          // user already chose another theme in this session.
+          chooseTheme(theme.value, false);
+        }
+        localStorage.removeItem("nicole-theme");
+        return;
+      } catch {
+        // Keep the legacy value for the next launch.
+      }
     }
+    try {
+      applySettings(await getSettings());
+    } catch {
+      reportUnavailableFontBaseline();
+    }
+  } finally {
+    initialSettingsLoadFinished = true;
   }
+}
+
+/**
+ * A failed startup read leaves the font baseline unknown. A later explicit
+ * Settings open or font edit gets one bounded retry; repeated user intent while
+ * it is in flight shares that promise, and no workspace startup runs again.
+ */
+function retrySettingsBaseline(): Promise<boolean> | null {
+  if (fontsBaselineReady || !initialSettingsLoadFinished) return null;
+  if (settingsBaselineRetry !== null) return settingsBaselineRetry;
+  if (fontWritePending) fontBaselineFailureReported = false;
+  let task: Promise<boolean> | null = null;
+  const started = (async () => {
+    try {
+      applySettings(await getSettings(), { startup: false });
+      return true;
+    } catch {
+      reportUnavailableFontBaseline();
+      return false;
+    } finally {
+      if (settingsBaselineRetry === task) {
+        settingsBaselineRetry = null;
+      }
+    }
+  })();
+  task = started;
+  settingsBaselineRetry = started;
+  return started;
+}
+
+function reportUnavailableFontBaseline() {
+  if (!fontWritePending || fontBaselineFailureReported) return;
+  fontBaselineFailureReported = true;
+  showNotice("保存设置失败", "danger", undefined, "设置尚未加载");
 }
 
 function handleSystemThemeChange(event: MediaQueryListEvent) {
@@ -2941,7 +2993,7 @@ async function activateTab(
     return null;
   }
   if (target.kind === "settings") {
-    invalidateOlderOrdinaryWorkspaceOpens();
+    invalidateOlderOrdinaryOpens();
   }
   if (activeTabId.value === id) {
     if (target.kind === "workspace" && workspace.value !== null) {
@@ -4399,6 +4451,9 @@ async function openSingleFile(
   path: string,
   name: string,
 ): Promise<boolean> {
+  const activationRevision = ordinaryOpenActivationRevision;
+  const requestIsCurrent = () =>
+    activationRevision === ordinaryOpenActivationRevision;
   const context = currentWorkspaceContext();
   if (context !== null && isInFolder(context.root, path)) {
     return openWorkspaceFile(relativePath(context.root, path), name);
@@ -4407,26 +4462,41 @@ async function openSingleFile(
     (tab) => tab.kind === "single" && tab.path === path,
   );
   if (existing) {
+    if (!requestIsCurrent()) return false;
     await activateTab(existing.id);
     return true;
   }
   const key = openingKey("single", path);
   const pending = openingTabs.get(key);
   if (pending !== undefined) {
+    openingSingleRequests.get(key)?.push(activationRevision);
     return pending;
   }
 
+  const requests = [activationRevision];
   const task = (async (): Promise<boolean> => {
     let file;
     try {
       file = await acceptSingleFile(path);
     } catch (error) {
-      showNotice(`无法打开文件：${errorText(error)}`, "danger");
+      if (
+        requests.some(
+          (revision) => revision === ordinaryOpenActivationRevision,
+        )
+      ) {
+        showNotice(`无法打开文件：${errorText(error)}`, "danger");
+      }
       return false;
     }
     const alreadyOpen = tabs.value.find(
       (tab) => tab.kind === "single" && tab.path === file.path,
     );
+    if (latestCurrentSingleOpenRequest(requests) === undefined) {
+      if (alreadyOpen === undefined) {
+        await releaseSingleFile(file.path).catch(() => {});
+      }
+      return false;
+    }
     if (alreadyOpen) {
       await activateTab(alreadyOpen.id);
       return true;
@@ -4439,14 +4509,24 @@ async function openSingleFile(
         (tab) => tab.kind === "single" && tab.path === file.path,
       );
       if (current === undefined) {
-        void releaseSingleFile(file.path).catch(() => {});
-        showNotice(`读取失败：${errorText(error)}`, "danger");
+        await releaseSingleFile(file.path).catch(() => {});
+        if (
+          latestCurrentSingleOpenRequest(requests) !== undefined
+        ) {
+          showNotice(`读取失败：${errorText(error)}`, "danger");
+        }
       }
       return false;
     }
     const current = tabs.value.find(
       (tab) => tab.kind === "single" && tab.path === file.path,
     );
+    if (latestCurrentSingleOpenRequest(requests) === undefined) {
+      if (current === undefined) {
+        await releaseSingleFile(file.path).catch(() => {});
+      }
+      return false;
+    }
     if (current) {
       await activateTab(current.id);
       return true;
@@ -4463,11 +4543,13 @@ async function openSingleFile(
   })();
 
   openingTabs.set(key, task);
+  openingSingleRequests.set(key, requests);
   try {
     return await task;
   } finally {
     if (openingTabs.get(key) === task) {
       openingTabs.delete(key);
+      openingSingleRequests.delete(key);
     }
   }
 }
@@ -5025,6 +5107,7 @@ function setFontPreference(field: FontField, value: string) {
   else if (field === "reading") readingFont.value = value;
   else codeFont.value = value;
   applyFontPreferences();
+  void retrySettingsBaseline();
   if (fontWriteTimer !== null) {
     clearTimeout(fontWriteTimer);
   }
@@ -5041,10 +5124,6 @@ function flushFontPreferences() {
   }
   fontWritePending = true;
   if (!fontsBaselineReady) {
-    if (settingsReadFailed && !fontBaselineFailureReported) {
-      fontBaselineFailureReported = true;
-      showNotice("保存设置失败", "danger", undefined, "设置尚未加载");
-    }
     return;
   }
   fontWritePending = false;
@@ -5118,10 +5197,11 @@ function findSettingsTab(): SettingsTabModel | null {
 /** The four entries all run the registry's app.settings command. */
 function openSettings() {
   closeOverlaySidebar();
+  void retrySettingsBaseline();
   const existing = findSettingsTab();
   if (existing !== null) {
     if (activeTabId.value === existing.id) {
-      invalidateOlderOrdinaryWorkspaceOpens();
+      invalidateOlderOrdinaryOpens();
       void nextTick(() => {
         document.getElementById("settings-theme")?.focus();
       });

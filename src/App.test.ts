@@ -12228,6 +12228,182 @@ describe("settings tab", () => {
     expect(modeGroup()).toBeNull();
   });
 
+  it("E4 R2 fix: retries a failed settings baseline once and preserves newer font intent", async () => {
+    mocks.getSettings.mockClear();
+    const retry = deferred<Record<string, unknown>>();
+    mocks.getSettings
+      .mockRejectedValueOnce(new Error("initial read failure"))
+      .mockImplementationOnce(() => retry.promise);
+    await mountAppWithApi();
+    await openSettingsFromShortcut();
+    try {
+      await vi.waitFor(() =>
+        expect(mocks.getSettings).toHaveBeenCalledTimes(2),
+      );
+    } catch (error) {
+      retry.resolve({});
+      throw error;
+    }
+
+    vi.useFakeTimers();
+    typeSettingsFont("ui", "First UI");
+    typeSettingsFont("reading", "New Reading");
+    await vi.advanceTimersByTimeAsync(400);
+    await settle();
+    expect(mocks.getSettings).toHaveBeenCalledTimes(2);
+    expect(mocks.setFonts).not.toHaveBeenCalled();
+
+    retry.resolve({
+      theme: "system",
+      sidebarWidth: 252,
+      recentFolders: ["/should-not-open"],
+      expandedFolders: {},
+      uiFont: "Saved UI",
+      readingFont: "Saved Reading",
+      codeFont: "Saved Code",
+    });
+    await settle();
+    expect(mocks.setFonts).toHaveBeenLastCalledWith(
+      "First UI",
+      "New Reading",
+      "Saved Code",
+    );
+    expect(mocks.openFolder).not.toHaveBeenCalled();
+  });
+
+  it("E4 R2 fix: reports a failed retry, writes nothing unknown, then recovers", async () => {
+    mocks.getSettings.mockClear();
+    const retry = deferred<Record<string, unknown>>();
+    mocks.getSettings
+      .mockRejectedValueOnce(new Error("initial read failure"))
+      .mockImplementationOnce(() => retry.promise);
+    await mountAppWithApi();
+    await openSettingsFromShortcut();
+    try {
+      await vi.waitFor(() =>
+        expect(mocks.getSettings).toHaveBeenCalledTimes(2),
+      );
+    } catch (error) {
+      retry.resolve({});
+      throw error;
+    }
+
+    vi.useFakeTimers();
+    typeSettingsFont("ui", "First UI");
+    await vi.advanceTimersByTimeAsync(400);
+    await settle();
+    expect(mocks.setFonts).not.toHaveBeenCalled();
+    retry.reject(new Error("retry read failure"));
+    await settle();
+    expect(host.textContent).toContain("保存设置失败");
+
+    mocks.getSettings.mockResolvedValueOnce({
+      theme: "system",
+      sidebarWidth: 252,
+      recentFolders: [],
+      expandedFolders: {},
+      uiFont: "Saved UI",
+      readingFont: "Saved Reading",
+      codeFont: "Saved Code",
+    });
+    typeSettingsFont("ui", "Retry UI");
+    await settle();
+    expect(mocks.getSettings).toHaveBeenCalledTimes(3);
+    expect(mocks.setFonts).toHaveBeenLastCalledWith(
+      "Retry UI",
+      "Saved Reading",
+      "Saved Code",
+    );
+  });
+
+  it("E4 R2 fix: keeps settings when a confirmed external single-file read returns", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    await openPath("/notes/a.md");
+    const read = deferred<string>();
+    mocks.readSingleFile.mockImplementation(() => read.promise);
+    await openPath("/elsewhere/b.md");
+    expect(dialog()?.textContent).toContain("这个文件不在已打开的文件夹中");
+    dialogButton("只打开这个文件").click();
+    await settle();
+    expect(mocks.acceptSingleFile).toHaveBeenCalledWith("/elsewhere/b.md");
+    expect(mocks.readSingleFile).toHaveBeenCalledWith("/elsewhere/b.md");
+
+    await openSettingsFromShortcut();
+    expect(settingsView()).not.toBeNull();
+    expect(document.activeElement).toBe(host.querySelector("#settings-theme"));
+    read.resolve("# B\n");
+    await settle();
+
+    expect(settingsView()).not.toBeNull();
+    expect(document.activeElement).toBe(host.querySelector("#settings-theme"));
+    expect(
+      tabElements().some((tab) => tab.textContent?.includes("b.md")),
+    ).toBe(false);
+    expect(host.querySelector(".cm-editor")).toBeNull();
+    expect(mocks.releaseSingleFile).toHaveBeenCalledWith("/elsewhere/b.md");
+  });
+
+  it("E4 R2 fix: releases a confirmed single-file authorization when accept returns after settings", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    await openPath("/notes/a.md");
+    const accept = deferred<{ path: string; name: string }>();
+    mocks.acceptSingleFile.mockImplementation(() => accept.promise);
+    mocks.readSingleFile.mockResolvedValue("# B\n");
+    await openPath("/elsewhere/b.md");
+    dialogButton("只打开这个文件").click();
+    await settle();
+    expect(mocks.acceptSingleFile).toHaveBeenCalledWith("/elsewhere/b.md");
+    expect(mocks.readSingleFile).not.toHaveBeenCalled();
+
+    await openSettingsFromShortcut();
+    accept.resolve({ path: "/elsewhere/b.md", name: "b.md" });
+    await settle();
+
+    expect(settingsView()).not.toBeNull();
+    expect(document.activeElement).toBe(host.querySelector("#settings-theme"));
+    expect(mocks.readSingleFile).not.toHaveBeenCalled();
+    expect(mocks.releaseSingleFile).toHaveBeenCalledWith("/elsewhere/b.md");
+    expect(
+      tabElements().some((tab) => tab.textContent?.includes("b.md")),
+    ).toBe(false);
+  });
+
+  it("E4 R2 fix: opens a new single file normally after settings", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    await openPath("/notes/a.md");
+    await openSettingsFromShortcut();
+    mocks.readSingleFile.mockResolvedValue("# B\n");
+
+    await appSetupState().openSingleFile("/elsewhere/b.md", "b.md");
+    await settle();
+    expect(tabNamed("b.md").getAttribute("aria-selected")).toBe("true");
+    expect(editorView().state.doc.toString()).toBe("# B\n");
+  });
+
+  it("E4 R2 fix: lets a newer single-file open join the pending read", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    await openPath("/notes/a.md");
+    const read = deferred<string>();
+    mocks.readSingleFile.mockImplementation(() => read.promise);
+    await openPath("/elsewhere/b.md");
+    dialogButton("只打开这个文件").click();
+    await settle();
+    await openSettingsFromShortcut();
+
+    const joining = appSetupState().openSingleFile(
+      "/elsewhere/b.md",
+      "b.md",
+    );
+    await settle();
+    read.resolve("# B\n");
+    await expect(joining).resolves.toBe(true);
+    await settle();
+
+    expect(tabNamed("b.md").getAttribute("aria-selected")).toBe("true");
+    expect(editorView().state.doc.toString()).toBe("# B\n");
+    expect(mocks.releaseSingleFile).not.toHaveBeenCalled();
+  });
+
   it("filters the tree and hides labels without changing paths or open previews", async () => {
     await setupWorkspace({ "a.md": "# A\n", "cover.png": "png" });
     await openPath("/notes/a.md");
