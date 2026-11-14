@@ -35,7 +35,7 @@
 - 菜单语言固定为简体中文，不提供语言设置。`main.go` 在创建菜单前声明应用语言并解析一次，同时链接 MyGo 的 `zh-Hans` 译文，使角色菜单、`customizeEditMenu` 改写的撤销/重做和更新菜单项都显示中文。macOS 上 AppKit/WebKit 自带的菜单文字和网页右键菜单系统项由 bundle 语言决定，`mygo.config.ts` 通过 `macos.infoPlist` 声明 `zh-Hans`，因此打包应用从启动起就显示中文，不存在切换语言后要下次启动才生效的情况；Windows 和 Linux 的菜单同样使用运行时中文译文。实现与 MyGo 源码依据见[语言与菜单](../references/mygo.md#语言与菜单)。
 - 菜单项的快捷键不能与[快捷键](#快捷键)表冲突，也不能提供会丢失页面状态的操作。MyGo 默认的“显示”菜单（`RoleViewMenu`）包含“重新载入”⌘R、“强制重新载入”⇧⌘R，默认的“窗口”菜单（`RoleWindowMenu`）在 Windows 和 Linux 上把 Ctrl+W 绑定到关闭窗口，这些都要去掉或替换；“显示”菜单中的“切换开发者工具”（⌥⌘I、Ctrl+Shift+I）只在开发构建中保留；缩放（⌘+、⌘-、⌘0）和全屏保留。
 - 应用主题与系统外观不同时，用 `mygo.Theme.SetSource` 同步，让原生菜单、右键菜单和对话框跟随应用主题。
-- MyGo 0.7.3 的 `RoleUndo`/`RoleRedo` 在 macOS 上使用 AppKit 的 `undo:`/`redo:` selector，不会进入 CodeMirror 的历史。这两个菜单项改为向页面发送 `nicole:edit-command`，由页面执行 CodeMirror 的历史命令；输入法组合期间（`EditorView.compositionStarted`）忽略该命令。macOS 上已实测菜单点击、⌘Z 和 ⇧⌘Z 都作用于 CodeMirror 的历史，组合期间的忽略也有 Vitest 覆盖。Windows 和 Linux 的菜单事件行为**待实测**，见[待办](#待办)。
+- MyGo 0.9.0 的 `RoleUndo`/`RoleRedo` 在 macOS 上使用 AppKit 的 `undo:`/`redo:` selector，不会进入 CodeMirror 的历史。这两个菜单项改为向页面发送 `nicole:edit-command`，由页面执行 CodeMirror 的历史命令；输入法组合期间（`EditorView.compositionStarted`）忽略该命令。此前在 MyGo 0.7.3 上实测菜单点击、⌘Z 和 ⇧⌘Z 都作用于 CodeMirror 的历史，组合期间的忽略也有 Vitest 覆盖；本轮升级到 0.9.0 未重测原生菜单。Windows 和 Linux 的菜单事件行为**待实测**，见[待办](#待办)。
 - 窗口启动时在光标所在的屏幕上居中，尺寸沿用上次保存的大小；规则和实现见[工作区与文件](workspace.md#窗口位置)（已由 #8 实现）。
 
 验收：

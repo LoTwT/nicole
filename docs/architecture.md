@@ -12,7 +12,7 @@
 
 | 层 | 选择 |
 |---|---|
-| 桌面外壳 | MyGo Web 模式，Go 后端。要求 Go 1.27.3 以上；开发机当前为 1.27.2，可以用 `GOTOOLCHAIN=auto` 自动下载。 |
+| 桌面外壳 | MyGo Web 模式，Go 后端。要求 Go 1.27.3 以上；`GOTOOLCHAIN=auto` 会在本机版本较低时自动下载所需工具链。 |
 | 界面框架 | Vue 3 + Vite + **Tailwind CSS v4**（通过 `@tailwindcss/vite` 接入）。用户明确要求**不用 UnoCSS**。 |
 | 编辑器 | CodeMirror 6 + `@codemirror/lang-markdown`（GFM），自己实现 decorations 和 widgets。 |
 | 代码块高亮 | `@codemirror/language-data`，按需加载。 |
@@ -250,6 +250,6 @@ Go（main.go）
 | 风险 | 应对 |
 |---|---|
 | 中文输入法在 macOS WKWebView 里的表现 | 技术验证第一周就测；拼音输入过程中不能重建当前行的渲染，见[中文输入法](specs/editor-modes.md#中文输入法)。 |
-| MyGo 的 API 可能变化 | MyGo 仍处于 0.x（当前锁定 0.7.3，见[参考](references/mygo.md)）；锁定版本，并把所有调用集中在 `src/services/` 和 `main.go`。 |
+| MyGo 的 API 可能变化 | MyGo 仍处于 0.x（当前锁定 0.9.0，见[参考](references/mygo.md)）；锁定版本，并把所有调用集中在 `src/services/` 和 `main.go`。 |
 | 沉浸模式的边界情况多 | 先把实时预览做好，再逐步补齐沉浸模式，见[编辑模式](specs/editor-modes.md)。 |
 | Linux 的 WebKitGTK 能力较弱 | 平台优先级排在最后，见[平台优先级](specs/product.md#平台优先级)。 |

@@ -527,7 +527,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### @vue/reactivity - 3.5.44 (MIT)
+### @vue/reactivity - 3.5.45 (MIT)
 
 ```text
 The MIT License (MIT)
@@ -553,7 +553,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### @vue/runtime-core - 3.5.44 (MIT)
+### @vue/runtime-core - 3.5.45 (MIT)
 
 ```text
 The MIT License (MIT)
@@ -579,7 +579,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### @vue/runtime-dom - 3.5.44 (MIT)
+### @vue/runtime-dom - 3.5.45 (MIT)
 
 ```text
 The MIT License (MIT)
@@ -605,7 +605,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### @vue/shared - 3.5.44 (MIT)
+### @vue/shared - 3.5.45 (MIT)
 
 ```text
 The MIT License (MIT)
@@ -681,7 +681,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### mygo-runtime - 0.7.3 (MIT)
+### mygo-runtime - 0.9.0 (MIT)
 
 ```text
 MIT License
@@ -757,7 +757,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### tailwindcss - 4.3.3 (MIT)
+### tailwindcss - 4.3.5 (MIT)
 
 ```text
 MIT License
@@ -783,7 +783,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### vite - 8.3.5 (MIT)
+### vite - 8.3.8 (MIT)
 
 ```text
 # Vite core license
@@ -2898,7 +2898,7 @@ THE SOFTWARE.
 
 ## Go binary
 
-### github.com/ebitengine/purego@v0.11.1
+### github.com/ebitengine/purego@v0.11.3
 
 Targets: darwin/amd64, darwin/arm64, linux/amd64, windows/amd64.
 
@@ -3108,7 +3108,7 @@ Apache License
    limitations under the License.
 ```
 
-### github.com/egoist/mygo@v0.7.3
+### github.com/egoist/mygo@v0.9.0
 
 Targets: darwin/amd64, darwin/arm64, linux/amd64, windows/amd64.
 
@@ -3138,7 +3138,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### golang.org/x/net@v0.59.0
+### golang.org/x/net@v0.62.0
 
 Targets: windows/amd64.
 
@@ -3201,7 +3201,7 @@ rights granted to you under this License for this implementation of Go
 shall terminate as of the date such litigation is filed.
 ```
 
-### golang.org/x/text@v0.43.0
+### golang.org/x/text@v0.44.0
 
 Targets: darwin/amd64, darwin/arm64, linux/amd64, windows/amd64.
 

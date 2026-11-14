@@ -76,6 +76,13 @@ export default defineConfig({
       CFBundleLocalizations: ["zh-Hans"],
     },
   },
+  // MyGo 0.9 builds Debian, RPM and PKGBUILD by default. Nicole has only
+  // ever shipped the Debian package; keeping that set also keeps the
+  // release workflow's asset and SHA256SUMS checks unchanged. See
+  // docs/references/mygo.md.
+  linux: {
+    formats: ["deb"],
+  },
   out: "build",
   ...(updatesDisabled ? {} : { updates }),
 });

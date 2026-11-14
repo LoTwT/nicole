@@ -88,7 +88,7 @@ jobs:
           # The update manifests carry the version's CHANGELOG.md section
           # as the in-app release notes; `mygo build` fails the release
           # without a non-empty one, and this early check names the fix.
-          # This ports MyGo 0.7.3's ReleaseNotes/headingVersion
+          # This ports MyGo 0.9.0's ReleaseNotes/headingVersion
           # (internal/update/update.go) instead of approximating them with a
           # regex: drop CR, take lines starting with "## " as headings, split
           # the first field on whitespace, strip [] and a leading v, keep the
@@ -482,7 +482,7 @@ jobs:
             esac
           }
           assets=$(gh release view "$tag" --repo "$repo" --json assets -q '.assets[].name')
-          # MyGo 0.7.3 names these files without spaces, but GitHub stores
+          # MyGo 0.9.0 names these files without spaces, but GitHub stores
           # every space of an uploaded name as a dot (youkai's 0.6.2 assets
           # hit that), so compare the names as GitHub stores them.
           need=(

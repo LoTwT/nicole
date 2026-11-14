@@ -1,6 +1,6 @@
 # 发布与自动更新
 
-更新日期：2026-11-02。本文维护 Nicole 的版本规则、两条发布渠道、打标签与发布步骤、更新密钥管理、Release 资产一览和发布后验证清单；本地构建与打包 workflow 的用法见[开发指南](development.md#打包与自动更新)，MyGo 0.7.3 的事实与来源见 [MyGo 参考](references/mygo.md#分发)、[自动更新](references/mygo.md#自动更新)和 [GitHub Actions](references/mygo.md#github-actions)。发布由 `LoTwT/nicole` 的 GitHub Releases 承担，也是 MyGo 内置更新的下载源。
+更新日期：2026-11-14。本文维护 Nicole 的版本规则、两条发布渠道、打标签与发布步骤、更新密钥管理、Release 资产一览和发布后验证清单；本地构建与打包 workflow 的用法见[开发指南](development.md#打包与自动更新)，MyGo 0.9.0 的事实与来源见 [MyGo 参考](references/mygo.md#分发)、[自动更新](references/mygo.md#自动更新)和 [GitHub Actions](references/mygo.md#github-actions)。发布由 `LoTwT/nicole` 的 GitHub Releases 承担，也是 MyGo 内置更新的下载源。
 
 ## 版本号与两条渠道
 
@@ -69,7 +69,7 @@ Release 资产一览（`<版本>` 为标签版本，表列为 GitHub 上的存�
 
 两个第三方声明（`THIRD-PARTY-NOTICES.md` 与生成的 `THIRD-PARTY-LICENSES.md`）不单独上传为 Release 资产：它们已内置于三个平台的安装包、`.deb` 和更新归档，安装或解压后即可获得；单独资产不会随安装或更新落到用户机器上，只会增加资产校验与 `SHA256SUMS` 的维护面。`release.yml` 的资产清单因此没有新增项，各平台 job 仍会核对产物内的两个声明。
 
-MyGo 0.7.3 的文件名都不含空格（youkai 的 0.6.2 是 `Youkai 0.0.1 arm64.dmg`、`Youkai Setup 0.0.1 amd64.exe`）。GitHub 上传时仍会把文件名中的空格存成 `.`，发布 job 的资产校验因此按“空格转 `.`”后的存储名比对；当前这些名字转换后不变。
+MyGo 0.9.0 的文件名都不含空格（与 0.7.3 相同；youkai 的 0.6.2 是 `Youkai 0.0.1 arm64.dmg`、`Youkai Setup 0.0.1 amd64.exe`）。GitHub 上传时仍会把文件名中的空格存成 `.`，发布 job 的资产校验因此按“空格转 `.`”后的存储名比对；当前这些名字转换后不变。
 
 ## 不依赖付费证书的分发路线
 
@@ -81,13 +81,13 @@ MyGo 0.7.3 的文件名都不含空格（youkai 的 0.6.2 是 `Youkai 0.0.1 arm6
 | Windows | 不签名 | 新制品可能出现 SmartScreen 提示；Smart App Control 或设备策略可能直接阻止运行。 | 待实测 |
 | Linux | 不签名 | 没有系统级签名检查；`.deb` 只提供手工安装，未配置 apt 软件源。 | — |
 
-- 相关限制来自 MyGo 0.7.3 的分发文档和 Apple/Microsoft 的说明：[MyGo 分发](https://mygo.egoist.dev/docs/distribution)、[Apple 打开应用](https://support.apple.com/en-us/102445)、[SmartScreen](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation)、[Smart App Control](https://support.microsoft.com/en-us/windows/security/threat-malware-protection/smart-app-control-frequently-asked-questions)。
+- 相关限制来自 MyGo 0.9.0 的分发文档和 Apple/Microsoft 的说明：[MyGo 分发](https://mygo.egoist.dev/docs/distribution)、[Apple 打开应用](https://support.apple.com/en-us/102445)、[SmartScreen](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation)、[Smart App Control](https://support.microsoft.com/en-us/windows/security/threat-malware-protection/smart-app-control-frequently-asked-questions)。
 - 不能把实测结果推断到其他 macOS 版本、受管设备或其他系统；不能把“关闭整机保护”写成安装步骤，也不能承诺无提示启动或所有拦截都有“仍要运行”按钮。
 - 需要改善分发信任体验时再评估 Developer ID、公证和 Authenticode；它们不在当前 PR 与首版范围内。这些签名只影响首次打开的信任提示，不改变 MyGo 更新链：更新始终由内置公钥验签。
 
 ## Linux 的更新边界
 
-Nicole 同时发布 `.deb` 与 `.tar.gz`；发布说明必须写清两种安装方式分别由谁负责升级，不要承诺 `.deb` 用户会自动收到新版本。两者的安装位置、更新开关和签名校验条件见 [MyGo 参考](references/mygo.md#自动更新)。
+Nicole 同时发布 `.deb` 与 `.tar.gz`；发布说明必须写清两种安装方式分别由谁负责升级，不要承诺 `.deb` 用户会自动收到新版本。两者的安装位置、更新开关和签名校验条件见 [MyGo 参考](references/mygo.md#自动更新)。MyGo 0.9 默认还会生成 RPM 和 PKGBUILD；`mygo.config.ts` 的 `linux.formats: ["deb"]` 固定只产出 Debian 包，以免改变 Release 资产与 `SHA256SUMS` 的核对范围。
 
 ## 发布后验证
 
@@ -114,7 +114,7 @@ Nicole 同时发布 `.deb` 与 `.tar.gz`；发布说明必须写清两种安装�
 - **安装与重启** — 部分实测（2026-11-01，macOS）：
   1. 从 0.0.1 安装 0.0.2 后应用自动重启，界面显示 v0.0.2，与标签一致；`Info.plist` 版本核对待实测。Windows 的文件属性或“应用和功能”、Linux 的可执行文件与菜单显示待实测。
   2. 更新后用户数据、窗口状态和历史记录保留：待实测。
-  3. Windows 的 NSIS 安装目录（`%LOCALAPPDATA%\Programs\Nicole`）可写，以及“应用和功能”里的版本显示（MyGo 0.7.3 的已知限制见[参考](references/mygo.md#自动更新)）：待实测。若需要随更新刷新，列为后续工作。
+  3. Windows 的 NSIS 安装目录（`%LOCALAPPDATA%\Programs\Nicole`）可写，以及“应用和功能”里的版本显示（MyGo 0.9.0 的已知限制见[参考](references/mygo.md#自动更新)）：待实测。若需要随更新刷新，列为后续工作。
 - **文件关联** — 部分实测（2026-11-01，macOS 构建出的 `.app`）：用 `open -a <构建出的 .app> <临时 .md>` 打开，页面状态栏显示收到的绝对路径；Windows 注册表关联、Linux MIME 关联和未安装时的“打开方式”列表：待实测。
 - **签名拒绝**：待实测。篡改清单或换密钥的归档应安装失败并显示错误，应用继续运行原版本。可用[开发指南](development.md#自动更新的本地演练)的一次性测试密钥对演练，勿用正式密钥。
 - **macOS Gatekeeper** — 实测（2026-11-01，macOS Apple Silicon）：从浏览器下载的 `test-v0.0.1` DMG 安装后，首次打开被 Gatekeeper 拦截；在“系统设置 → 隐私与安全性”选择“仍要打开”后可以正常运行。更新到 `test-v0.0.2` 后打开没有再被拦截。其他 macOS 版本与受管设备待实测。
