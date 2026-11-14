@@ -7,7 +7,7 @@
 | 文档 | 何时阅读 |
 |---|---|
 | [architecture.md](architecture.md) | 了解技术选型、进程与模块结构、依赖边界、IPC 和安全约束，或确认主要风险时。 |
-| [development.md](development.md) | 准备开发环境、安装依赖、启动热更新、构建 `.app`、打测试安装包，或查看测试与 CI 命令时。 |
+| [development.md](development.md) | 准备开发环境、安装依赖、导出与接入应用图标、启动热更新、构建 `.app`、打测试安装包，或查看测试与 CI 命令时。 |
 | [release.md](release.md) | 打标签、发布正式版或测试版、管理更新密钥、核对 Release 资产或执行发布后验证时。 |
 | [specs/product.md](specs/product.md) | 确认产品定位、命名、范围、功能分期、平台优先级和已定决策时。 |
 | [specs/ui.md](specs/ui.md) | 实现或调整窗口布局、侧栏与文件树、标签页、各类状态提示、浮层位置、右键菜单、快捷键或设置项时。 |

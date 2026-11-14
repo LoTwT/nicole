@@ -6,6 +6,7 @@
     "dev": "mygo dev",
     "build": "mygo build",
     "generate": "mygo generate",
+    "icons": "go run ./scripts/generate-icons.go",
     "dev:web": "vite",
     "build:web": "vue-tsc --noEmit && vite build",
     "licenses": "bun scripts/generate-third-party-licenses.mjs",

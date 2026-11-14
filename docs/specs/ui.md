@@ -349,6 +349,10 @@ A 红绿灯（macOS）　B 隐藏侧栏　C 标签页　D 模式切换与大纲�
 
 上次的文件夹已不存在时，在“开始写作”标题上方加一行说明，例如：上次打开的文件夹“写作”已不存在。
 
+开始写作页的内容组最上方居中显示 96 × 96px 透明品牌标志，下方留 20px 间距；亮暗主题共用同一份主体素材，让画布透出，不显示圆角底板。标志不可交互，不加入 Tab 顺序，作为装饰图像不重复播报。没有打开标签页的工作区保持原有简洁空状态。品牌形象与配色见[产品定位](product.md#宣传语与图标)。
+
+内容组在空间足够时垂直居中；最小窗口下若缺失提示和最近项使内容超出高度，则从顶部排布并允许完整滚动，品牌标志和末条最近项都须可达。拖入文件夹的遮罩覆盖可视区域，不随内容滚动。
+
 #### 最近打开
 
 - 标题“最近打开”居中，`--text-muted`，12px 半粗；最多显示 5 条，存储保留 10 条；没有记录时整块不显示。
@@ -698,7 +702,7 @@ A 红绿灯（macOS）　B 隐藏侧栏　C 标签页　D 模式切换与大纲�
 - **交互态**：悬停默认使用 `--surface-subtle`；文件树行悬停使用 `--nicole-file-tree-hover`，Paper 为 `--surface-muted`（`#e2e1e0`，对侧栏 1.17:1），Ink 保持 `--surface-subtle`（1.23:1），其他组件不跟着改。文件树、命令面板和 slash 菜单的选中行使用 `--nicole-selected-row`，选中行不显示悬停色。键盘焦点使用主题包的 `focus-ring` 工具类。主按钮统一使用 `button-primary` 类，颜色从 `--nicole-primary-*` 读取：静止时背景和边框 `--nicole-primary-fill`、文字 `--nicole-primary-content`，悬停时用对应的 `-hover`，按下时用对应的 `-active`。Paper 沿用主题的 `--accent-primary-*` / `--accent-contrast-*` 成对 token；Ink 的主题填充 `lavender-700` 对画布只有 2.98:1，悬停 `lavender-800` 反而降到 2.2:1，因此项目覆盖为 `lavender-300` 填充配 `lavender-900` 文字（6.19:1），悬停 `lavender-200`、按下 `lavender-100`，文字保持 `lavender-900`，默认、悬停和按下都不低于 4.5:1。填充面与内容色必须成对切换；开始写作页的“打开文件夹”、对话框的主按钮和恢复对话框的“全部恢复”共用这一处定义。主按钮的 `:focus-visible` 使用主题包的 on-accent 焦点环 token，避免 Ink 下焦点环与新填充同色；高对比度和强制颜色回退仍由 `focus-ring` 负责。
 - **次要按钮**：中性描边按钮统一使用 `button-secondary` 类：背景 `--surface-subtle`、边框 `--border-default`、文字 `--text-primary`，悬停背景 `--surface-muted`。空状态的“新建文件”“快速打开”、非 Markdown 占位页的两个按钮、对话框的“取消”和恢复对话框的“逐个查看”共用这一处定义；危险变体仍使用 `--status-danger-*`，图标颜色由各组件决定。
 - **选中行**：Paper 的 `--accent-soft`（`lavender-100`）对侧栏只有 1.07:1，改用 `lavender-200`（1.25:1）；Ink 的 `--accent-soft` 与悬停 `--surface-subtle` 只有 1.01:1，改用 `lavender-900`（对侧栏 1.54:1、对悬停 1.25:1，`--text-primary` 在其上 9.24:1）。这个覆盖作用于文件树、命令面板和 slash 菜单，不改变全局 `--accent-soft`，格式工具栏等其他使用 `--accent-soft` 的地方不变。选中行上的 `KeyHint` 和次要文字使用 `--text-secondary`，其余快捷键提示仍为 `--text-muted`。
-- **图标**：内联 SVG，取自 Lucide 1.66.0，统一 24×24 网格、`stroke-width="1.75"`、16px 显示尺寸，颜色为 `currentColor`；不引入图标字体或运行时图标库。ISC 许可与 Feather 来源的 MIT 许可见根目录 [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md)，开发说明见[开发](../development.md#第三方声明)。
+- **操作图标**：内联 SVG，取自 Lucide 1.66.0，统一 24×24 网格、`stroke-width="1.75"`、16px 显示尺寸，颜色为 `currentColor`；不引入图标字体或运行时图标库。品牌图标使用独立 PNG，见[空状态](#空状态)。ISC 许可与 Feather 来源的 MIT 许可见根目录 [THIRD-PARTY-NOTICES.md](../../THIRD-PARTY-NOTICES.md)，开发说明见[开发](../development.md#第三方声明)。
 - **禁用的效果**：不使用 `backdrop-filter`、窗口 `Vibrancy` 或 `Transparent`，因为它们会增加 GPU 和合成层的开销；不使用常驻的 `will-change`。
 - **动效**：只有浮层的出现和消失使用透明度或位移过渡，时长不超过 `--duration-normal`；文件树展开、标签页切换和侧栏显示都没有动画。没有无限循环的动画，“保存中”也是静态的。`prefers-reduced-motion: reduce` 时取消全部过渡。
 - **文字缩放**：界面字号乘以 `--mygo-text-scale`（见 MyGo 的无障碍变量），正文字号由阅读层设置决定。

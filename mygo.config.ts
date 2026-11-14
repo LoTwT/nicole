@@ -41,6 +41,7 @@ export default defineConfig({
   name: "Nicole",
   identifier: "me.eruoo.nicole",
   version: releaseVersion ?? "0.0.1",
+  icon: "resources/icon.png",
   // `mygo dev` runs devCommand and loads devUrl; `mygo build` runs
   // buildCommand and embeds frontendDist into the app.
   devUrl: "http://localhost:5173",
