@@ -33,7 +33,8 @@ function mount(
     close: number[];
     menu: [number, number, number][];
     outline: number;
-  } = { activate: [], close: [], menu: [], outline: 0 };
+    reorder: [number, number, boolean][];
+  } = { activate: [], close: [], menu: [], outline: 0, reorder: [] };
   const Component = defineComponent({
     setup() {
       return () =>
@@ -60,6 +61,8 @@ function mount(
             emitted.outline += 1;
           },
           onOpenFolder: () => {},
+          onReorderTab: (source: number, target: number, after: boolean) =>
+            emitted.reorder.push([source, target, after]),
         });
     },
   });
@@ -85,6 +88,42 @@ afterEach(() => {
 });
 
 describe("TopBar tabs", () => {
+  it("reorders dragged tabs without activating or closing a document", async () => {
+    const emitted = mount(tabs(3), 1);
+    await settle();
+    const elements = [...host.querySelectorAll<HTMLElement>('[role="tab"]')];
+    const dataTransfer = { setData: vi.fn(), effectAllowed: "", dropEffect: "" };
+    const drag = (type: string, target: HTMLElement) => {
+      const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX: 1 });
+      Object.defineProperty(event, "dataTransfer", { value: dataTransfer });
+      target.dispatchEvent(event);
+      return event;
+    };
+    drag("dragstart", elements[0]!);
+    const over = drag("dragover", elements[2]!);
+    await settle();
+    expect(over.defaultPrevented).toBe(true);
+    expect(elements[2]!.dataset.dropPosition).toBe("after");
+    drag("drop", elements[2]!);
+    elements[2]!.click();
+    expect(emitted.reorder).toEqual([[1, 3, true]]);
+    expect(emitted.activate).toEqual([]);
+    expect(emitted.close).toEqual([]);
+  });
+
+  it("ignores external drags and allows keyboard tab reordering", async () => {
+    const emitted = mount(tabs(3), 1);
+    await settle();
+    const elements = [...host.querySelectorAll<HTMLElement>('[role="tab"]')];
+    const drop = new Event("drop", { bubbles: true, cancelable: true });
+    elements[2]!.dispatchEvent(drop);
+    expect(drop.defaultPrevented).toBe(false);
+    expect(emitted.reorder).toEqual([]);
+    elements[1]!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", altKey: true, shiftKey: true, bubbles: true, cancelable: true }));
+    expect(emitted.reorder).toEqual([[2, 1, false]]);
+    expect(emitted.activate).toEqual([]);
+  });
+
   it("keeps fifteen tabs in one horizontally scrollable list", async () => {
     mount(tabs(15), 15);
     await settle();

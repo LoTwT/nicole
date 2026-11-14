@@ -1,8 +1,10 @@
-import { historyKeymap, redo, undo } from "@codemirror/commands";
+import { redo, undo } from "@codemirror/commands";
 
 import type { AppPlatform } from "../app/platform";
 import { formatKeyBinding } from "./registry";
-import type { CommandDefinition, CommandKeyBinding } from "./types";
+import { historyCommands } from "./history";
+import { commandBindings } from "./keybinding-settings";
+import type { CommandDefinition } from "./types";
 
 export type ShortcutSectionID =
   | "file"
@@ -78,7 +80,7 @@ export function shortcutSections(
 ): ShortcutSection[] {
   const grouped = new Map<ShortcutSectionID, ShortcutEntry[]>();
   for (const command of commands) {
-    const keys = (command.keys ?? [])
+    const keys = commandBindings(command)
       .map((binding) => formatKeyBinding(binding, platform))
       .filter((key): key is string => key !== null);
     if (keys.length === 0) continue;
@@ -104,8 +106,7 @@ export function historyShortcutRows(
   platform: AppPlatform,
 ): readonly ShortcutEntry[] {
   const bindingKeys = (wanted: typeof undo): string[] =>
-    (historyKeymap as readonly (CommandKeyBinding & { run?: unknown })[])
-      .filter((binding) => binding.run === wanted)
+    commandBindings(historyCommands.find((command) => command.id === (wanted === undo ? "edit.undo" : "edit.redo"))!)
       .map((binding) => formatKeyBinding(binding, platform))
       .filter((key): key is string => key !== null);
   return [

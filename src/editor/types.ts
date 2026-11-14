@@ -4,6 +4,7 @@ import type { AppPlatform } from "../app/platform";
 import type { CommandDefinition } from "../commands/types";
 import type { FindReplaceController, FindReplaceOptions } from "./find";
 import type { LinkImageEditorSession } from "./link-editor";
+import type { WritingModeOptions } from "./writing";
 
 export type EditorMode = "live" | "immersive" | "source";
 
@@ -45,6 +46,8 @@ export interface InsertionTicket {
 export type PasteImageHandler = (ticket: InsertionTicket) => void;
 
 export interface CreateEditorOptions {
+  linkCompletion?: { getSource: () => string | null; getFiles: () => readonly string[]; getIdentity?: () => unknown };
+  writingPreferences?: WritingModeOptions;
   parent: HTMLElement;
   doc: string;
   mode?: EditorMode;
@@ -88,6 +91,9 @@ export interface CreateEditorOptions {
 }
 
 export interface EditorHandle {
+  setReadOnly(value: boolean): void;
+  setWritingPreferences(value: WritingModeOptions): void;
+  refreshKeybindings(): void;
   readonly view: EditorView;
   readonly mode: EditorMode;
   /** Nicole's find/replace state for this view; destroyed with the editor. */

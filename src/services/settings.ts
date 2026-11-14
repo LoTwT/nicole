@@ -1,4 +1,9 @@
 import { Settings, type AppSettings } from "./mygo";
+import type { WritingPreferences } from "../app/writing-preferences";
+
+export function setWritingPreferences(value: WritingPreferences): Promise<void> {
+  return Settings.setWritingPreferences(value);
+}
 
 export type { AppSettings };
 

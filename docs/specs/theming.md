@@ -34,7 +34,7 @@
 }
 ```
 
-- 默认全部使用系统字体，不打包任何字体文件。
+- 界面和正文字体默认使用系统字体，不打包主题包字体。公式渲染所需的 KaTeX 数学字体随应用构建、在首次显示公式时按需加载，不替换界面/正文字体，也不请求远程字体。
 - 设置里可以分别选择“界面 / 阅读 / 代码”字体，通过更新 `--app-font-sans`、`--app-font-reading` 和 `--app-font-mono` 变量即时生效；空字符串移除覆盖并回到既有字体栈。输入的是本机已装字体名称，应用不枚举、下载或验证字体，找不到时由浏览器继续使用同一字体栈中的回退字体。
 - 界面字体影响 `--font-sans`；阅读字体影响 `--font-reading` 和正文的 `--reading-font-body`；代码字体只覆盖 `--reading-font-mono`，用于行内代码和围栏/缩进代码，不改变命令面板、slash 菜单等界面里的等宽标识。
 - 字体变量只由页面根元素上的内联变量更新，CodeMirror 主题继续读取同一批 CSS 变量，因此修改字体不会重建 `EditorView`，也不会清空选区或撤销历史。
@@ -42,6 +42,16 @@
 - 源码模式使用阅读字体，不用 Space Mono：它太宽，风格也太强。
 
 ## 编辑器主题
+
+### 写作偏好
+
+设置页的“长文写作”提供专注模式、打字机模式、正文字号、行距、正文宽度、自定义快捷键和阅读 CSS。偏好保存在 `settings.json` 的 `writingPreferences` 组中，与工作区无关。
+
+- 默认值沿用主题：字号 18px、行距 1.7、宽度 65ch；范围分别为 12–36px、1.2–2.4、40–100ch。专注与打字机默认关闭，快捷键覆盖和 CSS 默认为空。
+- 字号、行距和宽度分别更新 `--reading-font-size`、`--reading-line-height`、`--reading-measure`；模式通过同一 `EditorView` 的 Compartment 更新，不重建视图或清空撤销历史。初始设置尚未读取时只保留修改字段的意图，不以默认值覆盖未知字段；写入失败回到最近已保存的一组，较早失败不会倒退较新意图。
+- 专注模式淡化当前 Markdown 段落之外的正文；非空选区所在行保持清晰。打字机模式只在输入或选择变化后把光标附近滚到中部，组合输入期间不主动滚动；手动滚动、触摸和点击后暂时让出滚动控制。
+- 阅读 CSS 只作用于带 `data-nicole-reading` 的正文与对照区后代，设置页始终在作用域之外。支持平面的标签/类名/ID/后代规则及文字、颜色、边框、间距属性；禁止 `@import` 等 at-rule、外部 URL、转义、嵌套和定位布局属性。无效内容明确显示错误，不应用；“清除 CSS”和“恢复写作偏好默认值”始终位于作用域之外。
+- 自定义快捷键使用 CodeMirror 的 `Mod-Alt-b` 等格式，`Mod` 表示当前平台的主修饰键；冲突、非法键名和系统剪贴板/退出等保留组合不会写入。设置入口、关闭与切换标签保留默认键位。留空可停用可自定义命令的快捷键，单项或全部重置可恢复默认。命令执行、提示、原生菜单（含撤销/重做）和快捷键帮助使用同一覆盖来源；撤销重做的默认值继续取自 `historyKeymap`。
 
 CodeMirror 6 的主题直接使用 `var(--text-primary)` 这类 CSS 变量。切换亮色和暗色时只改 class，不需要重建编辑器配置。
 
@@ -56,7 +66,7 @@ CodeMirror 6 的主题直接使用 `var(--text-primary)` 这类 CSS 变量。切
 - `src/editor/index.ts` 的 `EditorView.theme` 和 `HighlightStyle` 只引用这些变量，不读主题状态，因此切换主题不会触发 `EditorView` 重建。
 - 选区背景由 CodeMirror 的选择层绘制。基础主题的聚焦规则写成 `&light.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground`，编译后是生成的亮色作用域类加 `.cm-focused` 和三层后代，共五类；`editorTheme` 写出的 `&.cm-editor > .cm-scroller > .cm-selectionLayer .cm-selectionBackground` 本身是四类，编译时再前置生成的作用域类，同为五类。应用主题晚于基础主题挂载，同优先级时后者胜，因此覆盖聚焦和失焦两种状态都不需要 `!important`。`selection.test.ts` 解析实际样式表的层叠，验证亮暗模式下胜出的规则、`--reading-selection` 钩子、`!important` 的缺席，以及 `:root`/`.dark` 的源码顺序和 `@media print` 不会改变结果。
 - `window_options.go` 的 `BackgroundColor` 直接写 Paper 和 Ink 的 `--surface-canvas` 值，避免窗口创建到页面绘制之间闪出旧底色；主题包调整画布颜色时需要同步。
-- 没有引入 `@ayingott/theme/fonts.css`，构建产物里没有字体文件。
+- 没有引入 `@ayingott/theme/fonts.css`；构建产物只额外包含公式所需的 KaTeX 数学字体。代码高亮与只读预览共用 `rendering.css` 的 token 类，读取主题语义变量；Mermaid 的文字、节点和连接线通过宿主变量跟随亮暗切换，无需重新解析图表。
 
 ## 限制
 

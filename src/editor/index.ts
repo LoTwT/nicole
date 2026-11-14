@@ -47,6 +47,16 @@ import {
 } from "@codemirror/view";
 import { tags } from "@lezer/highlight";
 import { basicSetup } from "codemirror";
+import { languages } from "@codemirror/language-data";
+import {
+  codeLanguageHighlighting,
+  createRichRenderingExtensions,
+  mathMarkdown,
+  richContentReplaces,
+  richCalloutMarkerReplaces,
+} from "./rendering";
+import { renderInlineMarkdownPreview } from "./rendering/preview";
+import { tableEditing } from "./tables";
 
 import { isMac, type AppPlatform } from "../app/platform";
 import { matchCommand } from "../commands/keybinding";
@@ -57,6 +67,9 @@ import {
   notifyFindController,
 } from "./find";
 import { createCommandKeymap } from "./keymap";
+import { writingExtensions } from "./writing";
+import { workspaceLinkCompletion } from "./link-completion";
+import { frontmatterEnd } from "./markdown-context";
 import {
   createLinkImageEditorSession,
   inlineTargetAt,
@@ -771,6 +784,7 @@ function buildDecorations(
   resolveImage: ImageResolver,
 ): DecorationSet {
   const { state } = view;
+  const metadataEnd = frontmatterEnd(state) ?? 0;
   const active = reveal ? activeLines(state) : new Set<number>();
   const ranges: { from: number; to: number; decoration: Decoration }[] = [];
   const add = (from: number, to: number, decoration: Decoration) =>
@@ -781,6 +795,11 @@ function buildDecorations(
       from,
       to,
       enter: (node) => {
+        if (node.name !== "Document" && node.from < metadataEnd) return false;
+        // Tables own their complete block and expose untouched source while
+        // selected; inline preview decorations must not partially hide it.
+        if (node.name === "Table") return false;
+        if (richCalloutMarkerReplaces(state, node.from, node.to)) return false;
         const line = state.doc.lineAt(node.from);
         const heading = /^ATXHeading(\d)$/.exec(node.name);
 
@@ -940,6 +959,13 @@ export function collectCodeBlocks(
       to: visible.to,
       enter: (node) => {
         if (node.name !== "FencedCode" && node.name !== "CodeBlock") return;
+        const info = node.node.getChild("CodeInfo");
+        if (
+          node.name === "FencedCode" &&
+          node.node.getChildren("CodeMark").length >= 2 &&
+          info && state.doc.sliceString(info.from, info.to).trim().toLowerCase() === "mermaid" &&
+          richContentReplaces(state, node.from, node.to)
+        ) return false;
         const blockFirst = state.doc.lineAt(node.from).number;
         const blockLast = state.doc.lineAt(
           Math.max(node.from, node.to - 1),
@@ -1187,14 +1213,16 @@ function preview(reveal: boolean, resolveImage: ImageResolver): Extension {
 function modeExtension(
   mode: EditorMode,
   resolveImage: ImageResolver,
+  onOpenLink?: (source: string) => void,
 ): Extension {
+  const tables = tableEditing(mode, { resolveImage, onOpenLink, renderInline: renderInlineMarkdownPreview });
   switch (mode) {
     case "source":
-      return [];
+      return tables;
     case "live":
-      return preview(true, resolveImage);
+      return [preview(true, resolveImage), tables, createRichRenderingExtensions({ mode })];
     case "immersive":
-      return [preview(false, resolveImage), immersiveSelectionGuard()];
+      return [preview(false, resolveImage), immersiveSelectionGuard(), tables, createRichRenderingExtensions({ mode })];
   }
 }
 
@@ -1505,6 +1533,9 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
   } = options;
 
   const modeCompartment = new Compartment();
+  const writingCompartment = new Compartment();
+  const keymapCompartment = new Compartment();
+  const readOnlyCompartment = new Compartment();
   let mode = initialMode;
   let linkSession: LinkImageEditorSession | null = null;
   let wrapContinuation: WrapContinuation | null = null;
@@ -1983,15 +2014,19 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
       }),
     ),
     basicSetup,
+    options.linkCompletion ? workspaceLinkCompletion(options.linkCompletion) : [],
+    readOnlyCompartment.of([]),
     EditorView.lineWrapping,
-    markdown({ base: markdownLanguage }),
+    markdown({ base: markdownLanguage, codeLanguages: languages, extensions: [mathMarkdown] }),
     syntaxHighlighting(highlightStyle),
+    codeLanguageHighlighting,
     findSearchExtension,
     codeBlockPlugin,
     codeBlockBackground,
     selectionLayerClip,
     editorTheme,
-    createCommandKeymap(enabledCommands, platform),
+    keymapCompartment.of(createCommandKeymap(enabledCommands, platform)),
+    writingCompartment.of(writingExtensions(options.writingPreferences)),
     imageHandlers(onPasteImage, createTicketAt),
     EditorView.updateListener.of((update) => {
       // Keep the composition range evidence valid across document updates.
@@ -2009,11 +2044,15 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
           text: update.state.sliceDoc(mapped.from, mapped.to),
         };
       }
-      if (
-        directInput.pendingCompositionEnd !== null &&
-        update.state !== directInput.pendingCompositionEnd.state
-      ) {
-        directInput.pendingCompositionEnd = null;
+      const pendingCompositionEnd = directInput.pendingCompositionEnd;
+      if (pendingCompositionEnd !== null && update.state !== pendingCompositionEnd.state) {
+        if (update.state.doc === pendingCompositionEnd.state.doc &&
+            update.state.selection.eq(pendingCompositionEnd.state.selection, true)) {
+          // Decoration refreshes preserve the pending IME input's content and range.
+          pendingCompositionEnd.state = update.state;
+        } else {
+          directInput.pendingCompositionEnd = null;
+        }
       }
       if (
         directInput.intent !== null &&
@@ -2068,7 +2107,7 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
         scheduleInsertion();
       }
     }),
-    modeCompartment.of(modeExtension(mode, resolveImage)),
+    modeCompartment.of(modeExtension(mode, resolveImage, onOpenLink)),
   ];
 
   let initialState: EditorState | null = null;
@@ -2320,12 +2359,15 @@ export function createEditor(options: CreateEditorOptions): EditorHandle {
       return mode;
     },
     search: find,
+    setReadOnly(value) { view.dispatch({ effects: readOnlyCompartment.reconfigure([EditorState.readOnly.of(value), EditorView.editable.of(!value)]) }); },
+    setWritingPreferences(value) { view.dispatch({effects:writingCompartment.reconfigure(writingExtensions(value))}); },
+    refreshKeybindings() { view.dispatch({effects:keymapCompartment.reconfigure(createCommandKeymap(enabledCommands,platform))}); },
     setMode(next) {
       if (next === mode) return;
       mode = next;
       view.dispatch({
         effects: modeCompartment.reconfigure(
-          modeExtension(next, resolveImage),
+          modeExtension(next, resolveImage, onOpenLink),
         ),
       });
       if (next === "immersive") {

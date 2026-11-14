@@ -37,6 +37,8 @@ const props = defineProps<{
   showOutline: boolean;
   outlineEnabled: boolean;
   outlineOn: boolean;
+  comparisonAvailable?: boolean;
+  comparisonOn?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -48,6 +50,8 @@ const emit = defineEmits<{
   "toggle-outline": [];
   "open-folder": [];
   "mode-menu-will-open": [];
+  "reorder-tab": [sourceId: number, targetId: number, after: boolean];
+  "toggle-comparison": [];
 }>();
 
 const modes: readonly {
@@ -66,7 +70,62 @@ const modeMenuOpen = ref(false);
 const modeArea = ref<HTMLElement | null>(null);
 const modeToggle = ref<HTMLButtonElement | null>(null);
 const tablist = ref<HTMLElement | null>(null);
+const comparisonToggle = ref<HTMLButtonElement | null>(null);
 let resizeObserver: ResizeObserver | null = null;
+const draggingTab = ref<number | null>(null);
+const dropTarget = ref<{ id: number; after: boolean } | null>(null);
+let suppressTabClick = false;
+let dragClickTimer: ReturnType<typeof setTimeout> | null = null;
+
+function activateClickedTab(id: number) {
+  if (!suppressTabClick && draggingTab.value === null) emit("activate-tab", id);
+}
+
+function startTabDrag(event: DragEvent, id: number) {
+  if (event.target instanceof Element && event.target.closest("button")) {
+    event.preventDefault();
+    return;
+  }
+  draggingTab.value = id;
+  closeModeMenu();
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("application/x-nicole-tab", String(id));
+  }
+}
+
+function dragOverTab(event: DragEvent, id: number) {
+  if (draggingTab.value === null || draggingTab.value === id) return;
+  event.preventDefault();
+  event.stopPropagation();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+  const bounds = (event.currentTarget as HTMLElement).getBoundingClientRect();
+  dropTarget.value = { id, after: event.clientX >= bounds.left + bounds.width / 2 };
+}
+
+function endTabDrag() {
+  if (draggingTab.value !== null) {
+    suppressTabClick = true;
+    if (dragClickTimer !== null) clearTimeout(dragClickTimer);
+    dragClickTimer = setTimeout(() => {
+      suppressTabClick = false;
+      dragClickTimer = null;
+    }, 0);
+  }
+  draggingTab.value = null;
+  dropTarget.value = null;
+}
+
+function dropTab(event: DragEvent, id: number) {
+  const sourceId = draggingTab.value;
+  if (sourceId === null) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const bounds = (event.currentTarget as HTMLElement).getBoundingClientRect();
+  const after = event.clientX >= bounds.left + bounds.width / 2;
+  if (sourceId !== id) emit("reorder-tab", sourceId, id, after);
+  endTabDrag();
+}
 
 const activeMode = computed(
   () => modes.find((item) => item.id === props.mode) ?? modes[0]!,
@@ -171,6 +230,18 @@ function focusTab(index: number) {
 }
 
 function handleTabKeydown(event: KeyboardEvent, index: number) {
+  if (event.isComposing) return;
+  if (
+    event.target === event.currentTarget && event.altKey && event.shiftKey &&
+    !event.ctrlKey && !event.metaKey &&
+    (event.key === "ArrowLeft" || event.key === "ArrowRight")
+  ) {
+    event.preventDefault();
+    event.stopPropagation();
+    const target = props.tabs[index + (event.key === "ArrowRight" ? 1 : -1)];
+    if (target) emit("reorder-tab", props.tabs[index]!.id, target.id, event.key === "ArrowRight");
+    return;
+  }
   if (event.key === "ArrowRight") {
     event.preventDefault();
     focusTab(index + 1);
@@ -211,9 +282,14 @@ onBeforeUnmount(() => {
   document.removeEventListener("pointerdown", handlePointerDown, true);
   resizeObserver?.disconnect();
   resizeObserver = null;
+  if (dragClickTimer !== null) clearTimeout(dragClickTimer);
 });
 
-defineExpose({ closeModeMenu });
+function focusComparisonToggle() {
+  comparisonToggle.value?.focus();
+}
+
+defineExpose({ closeModeMenu, focusComparisonToggle });
 </script>
 
 <template>
@@ -258,14 +334,21 @@ defineExpose({ closeModeMenu });
         :aria-selected="tab.id === activeTabId"
         :data-tab-id="tab.id"
         :tabindex="tab.id === activeTabId ? 0 : -1"
-        class="group flex h-7 min-w-24 max-w-50 shrink-0 select-none items-center gap-1.5 rounded-[var(--radius-control)] pl-3 pr-1.5"
-        :class="
+        draggable="true"
+        class="group relative flex h-7 min-w-24 max-w-50 shrink-0 select-none items-center gap-1.5 rounded-[var(--radius-control)] pl-3 pr-1.5"
+        :class="[
           tab.id === activeTabId
             ? 'bg-[var(--surface-muted)] text-[var(--text-primary)]'
-            : 'text-[var(--text-muted)] hover:bg-[var(--surface-subtle)]'
-        "
+            : 'text-[var(--text-muted)] hover:bg-[var(--surface-subtle)]',
+          { 'opacity-50': draggingTab === tab.id },
+        ]"
+        :data-drop-position="dropTarget?.id === tab.id ? (dropTarget.after ? 'after' : 'before') : undefined"
         :title="tab.title"
-        @click="emit('activate-tab', tab.id)"
+        @click="activateClickedTab(tab.id)"
+        @dragstart="startTabDrag($event, tab.id)"
+        @dragover="dragOverTab($event, tab.id)"
+        @drop="dropTab($event, tab.id)"
+        @dragend="endTabDrag"
         @auxclick.middle.prevent="emit('close-tab', tab.id)"
         @contextmenu.prevent="
           emit('tab-menu', tab.id, $event.clientX, $event.clientY)
@@ -316,6 +399,21 @@ defineExpose({ closeModeMenu });
     </div>
 
     <div ref="modeArea" class="app-no-drag relative flex shrink-0 items-center gap-1">
+      <button
+        v-if="comparisonAvailable"
+        ref="comparisonToggle"
+        type="button"
+        data-comparison-toggle
+        class="focus-ring h-7 shrink-0 rounded-[var(--radius-control)] px-2 text-[12px] text-[var(--text-secondary)] hover:bg-[var(--surface-subtle)]"
+        :class="{ 'bg-[var(--surface-subtle)]': comparisonOn }"
+        :aria-pressed="comparisonOn === true"
+        aria-controls="comparison-pane"
+        title="显示或隐藏只读文档对照"
+        @mousedown.prevent
+        @click="emit('toggle-comparison')"
+      >
+        对照
+      </button>
       <div
         v-if="showMode"
         class="flex gap-0.5 rounded-[var(--radius-control)] border border-[var(--border-subtle)] p-0.5"
@@ -391,3 +489,16 @@ defineExpose({ closeModeMenu });
     </div>
   </header>
 </template>
+
+<style scoped>
+[data-drop-position]::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  width: 2px;
+  background: var(--focus-ring-color);
+}
+[data-drop-position="before"]::after { left: 0; }
+[data-drop-position="after"]::after { right: 0; }
+</style>

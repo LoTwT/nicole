@@ -50,6 +50,7 @@ type SlashEnabledSettings struct {
 // AppSettings is the user's global settings. It is stored in
 // PathUserData/settings.json and is independent of any workspace.
 type AppSettings struct {
+	WritingPreferences WritingPreferences `json:"writingPreferences,omitempty"`
 	// Theme is "system", "light" or "dark". System follows the desktop.
 	Theme string `json:"theme"`
 	// EditorMode is the global editor mode: "live", "immersive" or "source".
@@ -289,6 +290,7 @@ func newSettingsStoreIn(filePath string) *settingsStore {
 // settingsFile mirrors AppSettings but distinguishes a missing theme from an
 // explicit one, which legacy migration needs.
 type settingsFile struct {
+	WritingPreferences    json.RawMessage     `json:"writingPreferences"`
 	Theme                 *string             `json:"theme"`
 	EditorMode            json.RawMessage     `json:"editorMode"`
 	OutlineVisible        json.RawMessage     `json:"outlineVisible"`
@@ -307,14 +309,15 @@ type settingsFile struct {
 
 func defaultSettings() AppSettings {
 	return AppSettings{
-		Theme:           themeSystem,
-		EditorMode:      editorModeLive,
-		OutlineVisible:  false,
-		ShowAllFiles:    true,
-		SlashEnabled:    SlashEnabledSettings{Live: true, Immersive: true, Source: true},
-		SidebarWidth:    defaultSidebarWidth,
-		RecentFolders:   []string{},
-		ExpandedFolders: map[string][]string{},
+		WritingPreferences: defaultWritingPreferences(),
+		Theme:              themeSystem,
+		EditorMode:         editorModeLive,
+		OutlineVisible:     false,
+		ShowAllFiles:       true,
+		SlashEnabled:       SlashEnabledSettings{Live: true, Immersive: true, Source: true},
+		SidebarWidth:       defaultSidebarWidth,
+		RecentFolders:      []string{},
+		ExpandedFolders:    map[string][]string{},
 	}
 }
 
@@ -437,6 +440,7 @@ func (s *settingsStore) readLocked() (AppSettings, bool, error) {
 	}
 	themePresent := file.Theme != nil
 	settings := AppSettings{
+		WritingPreferences:    decodeWritingPreferences(file.WritingPreferences),
 		Theme:                 themeSystem,
 		EditorMode:            decodeEditorMode(file.EditorMode),
 		OutlineVisible:        decodeOutlineVisible(file.OutlineVisible),
@@ -566,6 +570,7 @@ func (s *settingsStore) writeLocked(settings AppSettings) error {
 // expects: a known theme and editor mode, a width in range, non-nil
 // collections and no duplicate recent folders.
 func normalizeSettings(settings AppSettings) AppSettings {
+	settings.WritingPreferences = normalizeWritingPreferences(settings.WritingPreferences)
 	settings.Theme = strings.TrimSpace(strings.ToLower(settings.Theme))
 	if !validTheme(settings.Theme) {
 		settings.Theme = themeSystem

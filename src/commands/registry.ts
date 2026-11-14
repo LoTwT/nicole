@@ -2,6 +2,8 @@ import { isMac, type AppPlatform } from "../app/platform";
 import { appCommands } from "./app";
 import { findCommands } from "./find";
 import { formatCommands } from "./format";
+import { historyCommands } from "./history";
+import { commandBindings } from "./keybinding-settings";
 import type { CommandDefinition, CommandKeyBinding } from "./types";
 
 /**
@@ -12,6 +14,7 @@ export const commandRegistry: readonly CommandDefinition[] = [
   ...formatCommands,
   ...findCommands,
   ...appCommands,
+  ...historyCommands,
 ];
 
 const byId = new Map(commandRegistry.map((command) => [command.id, command]));
@@ -164,7 +167,7 @@ export function formatCommandShortcut(
   command: CommandDefinition,
   platform: AppPlatform,
 ): string | null {
-  for (const binding of command.keys ?? []) {
+  for (const binding of commandBindings(command)) {
     const text = formatKeyBinding(binding, platform);
     if (text) return text;
   }
@@ -197,7 +200,7 @@ export function nativeAccelerator(
   command: CommandDefinition,
   platform: AppPlatform,
 ): string | null {
-  for (const binding of command.keys ?? []) {
+  for (const binding of commandBindings(command)) {
     const parsed = parseBinding(binding, platform);
     if (parsed === null) continue;
     const { modifiers, base, key } = parsed;

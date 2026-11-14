@@ -110,9 +110,11 @@ func customizeEditMenu(menu *mygo.Menu) {
 		for _, item := range top.Submenu {
 			switch item.Role {
 			case mygo.RoleUndo:
+				item.ID = "edit.undo"
 				item.Role = ""
 				item.Click = pageCommand("undo")
 			case mygo.RoleRedo:
+				item.ID = "edit.redo"
 				item.Role = ""
 				item.Click = pageCommand("redo")
 			}
@@ -214,6 +216,8 @@ type NativeMenuRequest struct {
 // registry's shortcut text to the application menu's Settings item.
 type NativeMenu struct {
 	settingsItem *mygo.MenuItem
+	undoItem     *mygo.MenuItem
+	redoItem     *mygo.MenuItem
 }
 
 // NewNativeMenu returns the service bound to the application menu.
@@ -221,7 +225,33 @@ func NewNativeMenu(menu *mygo.Menu) NativeMenu {
 	if menu == nil {
 		return NativeMenu{}
 	}
-	return NativeMenu{settingsItem: menu.ItemByID("app.settings")}
+	service := NativeMenu{settingsItem: menu.ItemByID("app.settings")}
+	for _, top := range menu.Items() {
+		if top.Role != mygo.RoleEditMenu {
+			continue
+		}
+		for _, item := range top.Submenu {
+			switch item.ID {
+			case "edit.undo":
+				service.undoItem = item
+			case "edit.redo":
+				service.redoItem = item
+			}
+		}
+	}
+	return service
+}
+
+// SetEditAccelerators keeps native Undo/Redo in step with the page's bindings.
+// Empty disables an accelerator while keeping the menu action available.
+func (m NativeMenu) SetEditAccelerators(undo, redo string) error {
+	if m.undoItem != nil {
+		m.undoItem.SetAccelerator(strings.TrimSpace(undo))
+	}
+	if m.redoItem != nil {
+		m.redoItem.SetAccelerator(strings.TrimSpace(redo))
+	}
+	return nil
 }
 
 // SetSettingsAccelerator copies the page's registry-formatted shortcut onto

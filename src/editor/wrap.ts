@@ -267,8 +267,8 @@ export interface CompositionOperation {
  * A composition whose end carried text that was not yet reconciled by
  * CodeMirror can still deliver that text afterwards. Keep the exact editor
  * state and epoch so the next matching input is consumed once as the
- * composition tail, not as a new direct key; any intervening transaction
- * invalidates it.
+ * composition tail, not as a new direct key; an intervening document or
+ * selection change invalidates it. Decoration-only updates preserve it.
  */
 export interface PendingCompositionEnd {
   id: number;

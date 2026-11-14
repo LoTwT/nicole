@@ -1,5 +1,6 @@
 import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
 import type { EditorState } from "@codemirror/state";
+import { frontmatterEnd } from "./markdown-context";
 
 export type HeadingLevel = 1 | 2 | 3 | 4 | 5 | 6;
 
@@ -85,9 +86,11 @@ export function extractHeadingsWithStatus(
   const ensured = ensureSyntaxTree(state, state.doc.length, timeoutMs);
   const tree = ensured ?? syntaxTree(state);
   const headings: DocumentHeading[] = [];
+  const metadataEnd = frontmatterEnd(state) ?? 0;
 
   tree.iterate({
     enter(node) {
+      if (node.name !== "Document" && node.from < metadataEnd) return false;
       const match = HEADING_NODE.exec(node.name);
       if (!match) {
         return;

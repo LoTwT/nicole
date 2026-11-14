@@ -39,6 +39,7 @@ const props = defineProps<{
   initialExpanded: readonly string[];
   showAllFiles: boolean;
   hideMarkdownExtension: boolean;
+  renameWithReferences?: (path: string, name: string, isDir: boolean) => Promise<string>;
 }>();
 
 const emit = defineEmits<{
@@ -376,7 +377,9 @@ async function commitEdit(source: "enter" | "blur" = "enter") {
       emit("entry-renaming", oldPath, expectedPath, oldDir);
       let newPath: string;
       try {
-        newPath = await renameEntry(oldPath, value, props.generation);
+        newPath = props.renameWithReferences
+          ? await props.renameWithReferences(oldPath, value, oldDir)
+          : await renameEntry(oldPath, value, props.generation);
       } catch (error) {
         emit("entry-rename-failed", oldPath);
         throw error;

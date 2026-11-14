@@ -4,6 +4,8 @@
 
 运行时依赖（前端 bundle 与 Go 二进制）的许可文本见同目录的 `THIRD-PARTY-LICENSES.md`；该文件由 `bun run licenses` 生成，随本文件一起分发。
 
+公式渲染包含 KaTeX 的数学字体与样式；它们随应用构建并按需加载，不使用远程 CDN。KaTeX、Mermaid、DOMPurify、markdown-it 与 CodeMirror 语言解析器的版本及许可全文均由上述生成文件记录。
+
 ## Lucide 1.66.0
 
 `src/components/AppIcon.vue` 内联了 Lucide 1.66.0 的以下图标几何数据：

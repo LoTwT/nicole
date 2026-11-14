@@ -161,7 +161,7 @@ describe("SettingsView", () => {
     for (const label of ["文件", "导航", "标签页", "查找", "格式", "段落"]) {
       expect(headings).toContain(label);
     }
-    const sections = shortcutSections(commandRegistry, "macos");
+    const sections = shortcutSections(commandRegistry.filter((command) => command.id !== "edit.undo" && command.id !== "edit.redo"), "macos");
     const expected = sections.flatMap((section) =>
       section.entries.map((entry) => entry.id),
     );

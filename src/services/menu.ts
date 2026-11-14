@@ -1,5 +1,9 @@
 import { NativeMenu, type NativeMenuItem, type NativeMenuRequest } from "./mygo";
 
+export function setEditAccelerators(undo: string, redo: string): Promise<void> {
+  return NativeMenu.setEditAccelerators(undo,redo);
+}
+
 export type { NativeMenuItem, NativeMenuRequest };
 
 /**

@@ -15,9 +15,9 @@
 | 桌面外壳 | MyGo Web 模式，Go 后端。要求 Go 1.27.3 以上；`GOTOOLCHAIN=auto` 会在本机版本较低时自动下载所需工具链。 |
 | 界面框架 | Vue 3 + Vite + **Tailwind CSS v4**（通过 `@tailwindcss/vite` 接入）。用户明确要求**不用 UnoCSS**。 |
 | 编辑器 | CodeMirror 6 + `@codemirror/lang-markdown`（GFM），自己实现 decorations 和 widgets。 |
-| 代码块高亮 | `@codemirror/language-data`，按需加载。 |
+| 代码块高亮 | `@codemirror/language-data` 提供语言目录，按代码围栏中的语言名懒加载对应解析器；未知语言保留原文。 |
 | Slash 菜单 | `@codemirror/autocomplete` 加自定义触发规则。 |
-| 公式和图表 | KaTeX、Mermaid，都懒加载。 |
+| 公式和图表 | KaTeX、Mermaid，首次实际显示时懒加载；公式字体和 CSS 随 KaTeX 加载，不请求 CDN。 |
 | 导出 | markdown-it 加插件；PDF 用 WebView 自带的打印。用一组测试用例保证和编辑时（Lezer 解析）的渲染一致。 |
 | 安全 | DOMPurify，见[安全](#安全)。 |
 | 文件监听 | Go 端 `Workspace.Watch` 封装 `mygo.WatchFiles`，过滤自写后经 Channel 交给页面，见[工作区与文件](specs/workspace.md#文件监听)。 |
@@ -52,19 +52,28 @@ src/
     shortcut-help.ts      Esc 事件键与设置页只读帮助文案的唯一来源
     status.ts             保存状态、横幅优先级和标签页圆点
     tabs.ts               标签页模型（含无路径的 settings 类型）、同名区分、关闭问题与后台快照映射
+    tab-order.ts          拖动与键盘排序的标签顺序计算
     word-count.ts         字数口径与恢复副本的字数差
+    writing-preferences.ts  写作偏好持久化、阅读统计与 CSS 作用域编译
+    frontmatter.ts        YAML 表单草稿、CST 局部修改与源码边界
+    document-export.ts    安全 HTML、资源内嵌与导出样式快照
+    link-references.ts    标准 Markdown 链接路径与重命名引用规划
+    reference-rename-tabs.ts  后台标签引用变更的选区与历史映射
+    scroll-synchronization.ts  源行/比例双向同步与监听生命周期
     watch-events.ts       监听事件与已打开文档、文件树刷新范围的对应
     workspace-search.ts   搜索结果分组、高亮片段、内容指纹、错误文案与点击定位校验
   commands/               唯一命令注册表、格式/应用/模板命令、键位匹配与格式化、拼音搜索
     snippets.ts           把当前根的用户模板快照转成普通 CommandDefinition
-    shortcuts.ts          从注册表和编辑器历史键位生成设置页的只读快捷键分组
+    shortcuts.ts          从注册表和编辑器历史键位生成设置页的生效快捷键分组
+    keybinding-settings.ts  快捷键覆盖、冲突与保留键验证
   components/             界面组件
     AppSidebar.vue        侧栏外壳、宽度拖动、工作区工具行、搜索入口、底部入口
     FileTree.vue          按需读取的文件树、右键菜单、行内新建与重命名
     FileTreeNode.vue      递归树节点与键盘可见结构
     WorkspaceSearch.vue   侧栏全文搜索的输入、开关、流式结果与匹配高亮
-    TopBar.vue            多标签标签栏、模式切换、侧栏与大纲入口
-    StatusBar.vue         右侧保存状态与临时提示、侧栏不可见时的左侧主题按钮
+    TopBar.vue            多标签标签栏与排序、模式切换、侧栏与大纲入口
+    StatusBar.vue         字数与阅读时间、保存状态与临时提示、侧栏不可见时的主题按钮
+    ComparisonPane.vue    安全的只读文档对照、目标选择与链接转交
     AppBanner.vue         外部修改、删除、保存失败和恢复内容横幅
     AppDialog.vue         模态对话框、焦点陷阱与焦点恢复
     CommandPalette.vue    命令、文件和标题三种模式的命令面板
@@ -73,7 +82,9 @@ src/
     RecoveryDialog.vue    崩溃恢复列表与三个选择
     EmptyState.vue        开始写作、无文件和最近文件夹
     NonMarkdownPlaceholder.vue  非 Markdown 文件的占位页
-    SettingsView.vue      全局设置页的四组控件与只读快捷键列表
+    SettingsView.vue      全局设置页、字体与快捷键列表
+    WritingSettings.vue   长文写作、阅读尺寸、快捷键覆盖与受限 CSS
+    FrontmatterDialog.vue  元数据字段表单、显式应用与取消
     Outline.vue           大纲列表、定点跳转与当前章节
     InlineNameInput.vue   行内文件名输入框
     AppIcon.vue           内联 Lucide 1.66.0 图标
@@ -84,15 +95,21 @@ src/
     find.ts               CodeMirror 查询状态、查找/替换控制器、匹配高亮
     headings.ts           Lezer 语法树的 ATX/Setext 标题提取，供命令面板与大纲复用
     link-editor.ts        链接/图片目标、纯 UI 草稿会话、宿主边界与弹框定位
+    link-completion.ts    工作区文件候选与标准链接补全
     markdown-context.ts   代码、HTML、前置元数据的公共上下文判断
     whitespace.ts         标记外首尾 Unicode 空白的统一切分
     wrap.ts               直接键入标记字符时的选区包裹规则
+    rendering/            公式/图表/Callout、语言高亮、安全的只读 Markdown 预览
+    tables/               GFM 表格网格、源码模型与有界草稿编辑
+    writing.ts            专注与打字机模式，不改写文档
     types.ts              对外类型
   services/               MyGo 边界
     mygo.ts               生成的类型化客户端
     app.ts                薄封装（getAppInfo）
     assets.ts             薄封装（粘贴、拖入图片、窗口文件拖放事件）
     clipboard.ts          复制路径时的剪贴板回退
+    export.ts             一次性导出目标、原生 PDF 与双 MIME 剪贴板
+    link-references.ts    引用快照与可恢复批次重命名
     workspace.ts          薄封装（选择/打开文件夹、列文件、读写、关窗保存）
     files.ts              文件树与文件操作
     settings.ts           全局设置和主题迁移
@@ -122,19 +139,22 @@ Go（main.go）
   Image protocol          只映射当前工作区的图片，并阻止顶层导航（当前；启动时注册）
   Window state            启动时在光标屏幕居中，沿用上次尺寸（当前）
   Workspace.Search        当前工作区 Markdown 的磁盘全文搜索，经 Channel 流式返回（当前）
-  Export                  导出（后续）
+  DocumentExports         一次性保存授权、原生 PDF 和富文本剪贴板（当前）
+  Workspace references    快照预检、批次重命名、引用更新与恢复备份（当前）
 ```
 
 `main.go` 负责注册插件、绑定服务、注册图片协议、设置菜单和创建窗口；`workspace.go` 实现工作区与路径守卫，`workspace_tree.go` 实现文件树和文件操作，`workspace_watch.go` 封装监听，`workspace_search.go` 实现当前工作区的磁盘全文搜索，`workspace_snippets.go` 读取固定的用户模板目录，`single_file.go` 实现单文件授权，`recovery.go` 实现未保存内容副本和磁盘哈希，`settings.go` 实现设置存储，`tabs.go` 实现标签页布局存储，`menu.go` 实现菜单与原生右键菜单，`assets.go` 实现图片保存，`protocol.go` 实现图片协议，`window_options.go` 定义窗口标题栏，`window_state.go` 实现窗口状态的居中策略。`index.html` 是 Vite 入口，`mygo.config.ts` 描述应用、文件关联、前端构建、生成客户端的位置和输出目录。
 
 ## 依赖边界
 
-- `src/editor/` 是纯 TypeScript，不依赖 Vue，也不依赖 MyGo。运行时只导出 `createEditor`；其余导出是调用方需要的类型。
+- `src/editor/` 是纯 TypeScript，不依赖 Vue，也不依赖 MyGo。编辑入口是 `createEditor`；只读呈现由 `src/editor/rendering/preview.ts` 的 `renderMarkdownPreview` 和 `renderInlineMarkdownPreview` 提供，两者返回 Promise HTML，接受图片解析器和可选 AbortSignal。调用方负责过期结果检查和链接导航，不创建第二个可编辑视图。
 - MyGo 调用只放在 `src/services/` 和 Go 入口（`main.go` 及同一包内直接使用 MyGo 的服务实现），其他前端模块通过 `src/services/` 间接使用后端能力。生成的客户端直接输出到 `src/services/mygo.ts`。
 - `main.go` 还注册 MyGo 的 `updater.Plugin`，绑定工作区、图片、设置、单文件、打开方式和原生菜单服务，注册图片协议并设置应用菜单；文件监听由 `Workspace.Watch` 在页面调用时开始。更新源、版本注入和发布流程见[发布与自动更新](release.md)。
 - `src/services/` 是生成的 `mygo.ts` 客户端上的薄封装，不承载业务逻辑。`app.ts` 把 `Application.Info` 和 `Application.OpenExternalURL` 包装成 `getAppInfo` / `openExternalURL`；`workspace.ts` 包装 `Workspace` 的文件与模板方法、`PickFolder`/`OpenFolder` 和关窗保存事件；`files.ts`、`settings.ts`、`single-file.ts`、`menu.ts`、`open-file.ts`、`watch.ts` 和 `search.ts` 分别包装对应服务；`clipboard.ts` 只负责复制界面文字。封装不拼接路径，也不缓存文件内容。
 - `src/app/` 只放不依赖 Vue 组件实例的界面逻辑，`src/components/` 只负责渲染和交互事件；`App.vue` 负责把这些模块与 `services/` 接起来，不直接调用 MyGo。`src/app/workspace-search.ts` 只处理流式结果的分组、行片段、128 位内容指纹和点击定位校验，`WorkspaceSearch.vue` 只处理输入、开关、渲染和 Channel 会话；`src/app/outline.ts` 过滤大纲标题、定位活动章节并给出 840px 布局阈值。
+- `src/app/document-export.ts` 负责准备自包含文档，`export.go` 只处理原生目标授权、隐藏打印窗口、落盘与剪贴板；`workspace_references.go` 在既有根目录授权内固定 generation 并串行执行可恢复的多文件批次。它们的错误、取消和资源限制分别见[文档工具](specs/document-tools.md)与[重命名和引用更新](specs/workspace.md#重命名与引用更新)。
 - `src/commands/` 保存唯一命令注册表、格式与插入命令、应用与文件树命令、键位匹配和显示、拼音搜索/最近使用逻辑；只依赖 CodeMirror、`src/app/platform.ts`，以及类型层面的 `src/app/file-tree.ts`，不依赖 Vue 或 MyGo。`src/commands/snippets.ts` 只接收服务层传来的 `id`/`label`/`body` 快照，把用户模板转成同一种 `CommandDefinition` 并负责变量展开；`App.vue` 负责调用 `Workspace.ListSnippets` 和维护当前快照，命令层不接触 MyGo。`src/editor/slash.ts` 负责 slash 触发、查询和菜单状态，`src/components/SlashMenu.vue` 只负责渲染和定位；`src/app/context-menu.ts` 组装右键菜单并从注册表读取快捷键。`src/app/command-palette.ts` 处理面板模式标识、文件与标题排序；`src/editor/headings.ts` 从 Lezer 树提取标题；`src/components/CommandPalette.vue` 和 `src/components/Outline.vue` 只负责渲染和交互。
+- 写作偏好与键位通过 `EditorHandle.setWritingPreferences` 和 `refreshKeybindings` 的 Compartment 原地更新；`setReadOnly` 在引用批次内冻结输入与格式快捷键，新挂载视图也必须继承批次只读状态，完成后恢复。
 - `createEditor` 的接口为：
 
   ```ts
@@ -182,6 +202,8 @@ Go（main.go）
     platform,      // 命令上下文里的平台，默认按 navigator.platform 推断
     commands,      // 本次编辑器额外的命令；共享注册表始终合并进来
     restore,       // 后台标签页的选区、顶部行、行内偏移和 historyField JSON
+    writingPreferences, // 专注/打字机模式，通过 Compartment 原地更新
+    linkCompletion, // 当前工作区的文件清单、来源路径与稳定 owner 身份
     resolveImage,  // 把图片 URL 解析成可显示地址；返回 null 时保留原文
     onPasteImage,  // 剪贴板里有图片时回调，参数是插入凭据
     onChange,      // 文档变化时回调全文

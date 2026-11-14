@@ -187,6 +187,8 @@ func (w *Workspace) ListDirectory(rel string) (DirectoryListing, error) {
 // extension gets ".md", as the file tree promises; other extensions are
 // refused because this action only creates notes.
 func (w *Workspace) CreateFile(dir, name string, generation int) (string, error) {
+	w.referenceMu.Lock()
+	defer w.referenceMu.Unlock()
 	root, err := w.currentRoot(generation)
 	if err != nil {
 		return "", err
@@ -236,6 +238,8 @@ func (w *Workspace) CreateFile(dir, name string, generation int) (string, error)
 
 // CreateFolder creates a folder in dir.
 func (w *Workspace) CreateFolder(dir, name string, generation int) (string, error) {
+	w.referenceMu.Lock()
+	defer w.referenceMu.Unlock()
 	root, err := w.currentRoot(generation)
 	if err != nil {
 		return "", err
@@ -264,6 +268,8 @@ func (w *Workspace) CreateFolder(dir, name string, generation int) (string, erro
 // RenameEntry renames a file or folder within its folder. name is a bare
 // name, not a path. An existing target is refused instead of replaced.
 func (w *Workspace) RenameEntry(rel, name string, generation int) (string, error) {
+	w.referenceMu.Lock()
+	defer w.referenceMu.Unlock()
 	root, err := w.currentRoot(generation)
 	if err != nil {
 		return "", err
@@ -309,6 +315,8 @@ func (w *Workspace) RenameEntry(rel, name string, generation int) (string, error
 // TrashEntry moves a file or folder to the platform's trash. The trash itself
 // reports when it cannot take the item; it never falls back to deleting it.
 func (w *Workspace) TrashEntry(rel string, generation int) error {
+	w.referenceMu.Lock()
+	defer w.referenceMu.Unlock()
 	root, err := w.currentRoot(generation)
 	if err != nil {
 		return err

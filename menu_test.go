@@ -126,6 +126,23 @@ func TestSettingsMenuItemUsesThePageRegistry(t *testing.T) {
 	}
 }
 
+func TestCustomizedHistoryMenuUsesEffectiveAccelerators(t *testing.T) {
+	undo := &mygo.MenuItem{Role: mygo.RoleUndo, Accelerator: "CmdOrCtrl+Z"}
+	redo := &mygo.MenuItem{Role: mygo.RoleRedo, Accelerator: "Shift+CmdOrCtrl+Z"}
+	menu := mygo.NewMenu([]*mygo.MenuItem{{Role: mygo.RoleEditMenu, Submenu: []*mygo.MenuItem{undo, redo}}})
+	customizeEditMenu(menu)
+	service := NewNativeMenu(menu)
+	if err := service.SetEditAccelerators("Cmd+Alt+Z", ""); err != nil {
+		t.Fatal(err)
+	}
+	if undo.Accelerator != "Cmd+Alt+Z" || redo.Accelerator != "" {
+		t.Fatalf("native bindings not updated: %q %q", undo.Accelerator, redo.Accelerator)
+	}
+	if undo.Click == nil || redo.Click == nil {
+		t.Fatal("disabling a binding removed the menu action")
+	}
+}
+
 func menuLabels(items []*mygo.MenuItem) []string {
 	labels := make([]string, 0, len(items))
 	for _, item := range items {

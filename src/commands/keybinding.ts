@@ -2,6 +2,7 @@ import { base, keyName, shift } from "w3c-keyname";
 
 import type { AppPlatform } from "../app/platform";
 import { isCommandAvailable, resolveKeyBinding } from "./registry";
+import { commandBindings } from "./keybinding-settings";
 import type {
   CommandDefinition,
   CommandKeyBinding,
@@ -249,7 +250,7 @@ export function matchCommand(
     [];
   for (const command of commands) {
     if (command.scope !== scope || !isCommandAvailable(command)) continue;
-    for (const binding of command.keys ?? []) {
+    for (const binding of commandBindings(command)) {
       const parsed = parseKeyBinding(binding, platform);
       if (parsed) candidates.push({ command, parsed });
     }
@@ -261,4 +262,11 @@ export function matchCommand(
     if (matchesPhysicalKey(event, parsed, platform)) return command;
   }
   return null;
+}
+
+/** Suppress a replaced app binding so WebView defaults do not take it over. */
+export function matchesRetiredAppShortcut(event: KeyboardEvent, platform: AppPlatform, commands: readonly CommandDefinition[]): boolean {
+  const retired = commands.filter((command) => command.scope === "app" && commandBindings(command) !== command.keys && JSON.stringify(commandBindings(command)) !== JSON.stringify(command.keys ?? []))
+    .map((command) => ({...command,id:`retired:${command.id}`}));
+  return matchCommand(event,platform,retired,"app") !== null;
 }

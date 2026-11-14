@@ -12,6 +12,7 @@
 | [specs/product.md](specs/product.md) | 确认产品定位、命名、范围、功能分期、平台优先级和已定决策时。 |
 | [specs/ui.md](specs/ui.md) | 实现或调整窗口布局、侧栏与文件树、标签页、各类状态提示、浮层位置、右键菜单、快捷键或设置项时。 |
 | [specs/editor-modes.md](specs/editor-modes.md) | 实现或调整实时预览、沉浸、源码三种模式，或处理中文输入法和渲染粒度时。 |
+| [specs/document-tools.md](specs/document-tools.md) | 编辑 Frontmatter、导出 HTML/PDF、复制富文本，或核对资源内嵌、保存授权和打印边界时。 |
 | [specs/slash-commands.md](specs/slash-commands.md) | 添加命令、用户模板，或调整 slash 菜单、快捷键、命令面板和格式工具栏的命令来源时。 |
 | [specs/workspace.md](specs/workspace.md) | 处理工作区、标签页、保存、崩溃恢复、图片和搜索时。 |
 | [specs/theming.md](specs/theming.md) | 接入主题、字体或自定义 CSS，或处理亮暗切换和导出预览时。 |

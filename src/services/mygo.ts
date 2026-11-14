@@ -22,6 +22,7 @@ export interface AppInfo {
  * PathUserData/settings.json and is independent of any workspace.
  */
 export interface AppSettings {
+  writingPreferences?: WritingPreferences;
   /** Theme is "system", "light" or "dark". System follows the desktop. */
   theme: string;
   /**
@@ -104,6 +105,11 @@ export interface AssetDrop {
 export interface DirectoryListing {
   path: string;
   entries: FileEntry[];
+}
+
+export interface ExportDestination {
+  token: string;
+  canceled: boolean;
 }
 
 /**
@@ -369,6 +375,33 @@ export interface WorkspaceFolder {
   generation: number;
 }
 
+/** WorkspaceReferenceDocument carries original bytes, including line endings. */
+export interface WorkspaceReferenceDocument {
+  path: string;
+  content: string;
+}
+
+/**
+ * Documents must be the complete original snapshot, not unsaved tab text.
+ * Updates contains only changed disk documents, under their original paths.
+ */
+export interface WorkspaceReferenceRenameRequest {
+  source: string;
+  name: string;
+  generation: number;
+  documents: WorkspaceReferenceDocument[];
+  updates: WorkspaceReferenceDocument[];
+}
+
+export interface WorkspaceReferenceRenameResult {
+  path: string;
+  updatedFiles: string[];
+}
+
+export interface WorkspaceReferenceSnapshot {
+  files: WorkspaceReferenceDocument[];
+}
+
 /**
  * WorkspaceSnippet is one user template. Body keeps the variable markers as
  * text; the page expands them when the command runs, so {{date}} uses the
@@ -391,6 +424,17 @@ export interface WorkspaceSnippets {
   warnings: string[];
 }
 
+/** WritingPreferences changes the reading surface, never the Markdown bytes. */
+export interface WritingPreferences {
+  focusMode: boolean;
+  typewriterMode: boolean;
+  fontSize: number;
+  lineHeight: number;
+  contentWidth: number;
+  keybindings: Record<string, string>;
+  customCss: string;
+}
+
 // ---- Services ----
 
 /**
@@ -408,6 +452,29 @@ export const Application = {
    */
   openExternalURL(target: string): Promise<void> {
     return call("Application.OpenExternalURL", target);
+  },
+} as const;
+
+/**
+ * DocumentExports writes only to one-time destinations chosen in a native
+ * save dialog. Paths supplied by page content never grant filesystem access.
+ */
+export const DocumentExports = {
+  /** Cancel revokes an unused destination or cancels its in-progress PDF job. */
+  cancel(token: string): Promise<void> {
+    return call("DocumentExports.Cancel", token);
+  },
+  copyRichText(html: string, plainText: string): Promise<void> {
+    return call("DocumentExports.CopyRichText", html, plainText);
+  },
+  pick(format: string, title: string): Promise<ExportDestination> {
+    return call("DocumentExports.Pick", format, title);
+  },
+  saveHTML(token: string, html: string): Promise<string> {
+    return call("DocumentExports.SaveHTML", token, html);
+  },
+  savePDF(token: string, html: string): Promise<string> {
+    return call("DocumentExports.SavePDF", token, html);
   },
 } as const;
 
@@ -534,11 +601,27 @@ export const Workspace = {
     return call("Workspace.ReadFile", rel);
   },
   /**
+   * ReadReferenceSnapshot does not expand the ListFiles authorization boundary.
+   * Any skipped, invalid or oversized document rejects the complete operation.
+   */
+  readReferenceSnapshot(generation: number): Promise<WorkspaceReferenceSnapshot> {
+    return call("Workspace.ReadReferenceSnapshot", generation);
+  },
+  /**
    * RenameEntry renames a file or folder within its folder. name is a bare
    * name, not a path. An existing target is refused instead of replaced.
    */
   renameEntry(rel: string, name: string, generation: number): Promise<string> {
     return call("Workspace.RenameEntry", rel, name, generation);
+  },
+  /**
+   * RenameEntryWithReferences stages every result and a durable recovery copy
+   * before touching source files. This is a recoverable batch, not an OS-wide
+   * multi-file transaction. The frontend serializes its own saves and keeps all
+   * dirty overlays in memory; this method accepts disk snapshot bytes only.
+   */
+  renameEntryWithReferences(request: WorkspaceReferenceRenameRequest): Promise<WorkspaceReferenceRenameResult> {
+    return call("Workspace.RenameEntryWithReferences", request);
   },
   /**
    * RevealEntry shows a file or folder in the desktop's file manager. The
@@ -722,6 +805,13 @@ export const Settings = {
   setTheme(theme: string): Promise<void> {
     return call("Settings.SetTheme", theme);
   },
+  /**
+   * SetWritingPreferences updates this group atomically without replacing any
+   * existing setting outside it. The page merges field intents with a read baseline.
+   */
+  setWritingPreferences(value: WritingPreferences): Promise<void> {
+    return call("Settings.SetWritingPreferences", value);
+  },
 } as const;
 
 /**
@@ -889,6 +979,13 @@ export const NativeMenu = {
    */
   popupNativeMenu(request: NativeMenuRequest): Promise<string> {
     return call("NativeMenu.PopupNativeMenu", request);
+  },
+  /**
+   * SetEditAccelerators keeps native Undo/Redo in step with the page's bindings.
+   * Empty disables an accelerator while keeping the menu action available.
+   */
+  setEditAccelerators(undo: string, redo: string): Promise<void> {
+    return call("NativeMenu.SetEditAccelerators", undo, redo);
   },
   /**
    * SetSettingsAccelerator copies the page's registry-formatted shortcut onto

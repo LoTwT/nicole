@@ -11,9 +11,12 @@ import {
 } from "../commands/shortcuts";
 import type { ThemeSetting } from "../services/settings";
 import KeyHint from "./KeyHint.vue";
+import WritingSettings from "./WritingSettings.vue";
+import { defaultWritingPreferences, type WritingPreferences } from "../app/writing-preferences";
 
 const props = defineProps<{
   platform: AppPlatform;
+  writingPreferences?: WritingPreferences;
   theme: ThemeSetting;
   uiFont: string;
   readingFont: string;
@@ -25,6 +28,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
+  "update:writing-preferences": [patch: Partial<WritingPreferences>];
   "update:theme": [theme: ThemeSetting];
   "update:font": [field: FontField, value: string];
   "update:show-all-files": [value: boolean];
@@ -34,7 +38,7 @@ const emit = defineEmits<{
 }>();
 
 const themeSelect = ref<HTMLSelectElement | null>(null);
-const sections = computed(() => shortcutSections(commandRegistry, props.platform));
+const sections = computed(() => shortcutSections(commandRegistry.filter((command) => command.id !== "edit.undo" && command.id !== "edit.redo"), props.platform));
 const historyRows = computed(() => historyShortcutRows(props.platform));
 
 const slashModes: readonly { id: SlashMode; label: string }[] = [
@@ -295,6 +299,7 @@ onMounted(() => {
               </label>
             </div>
           </fieldset>
+          <WritingSettings :value="writingPreferences ?? defaultWritingPreferences()" :platform="platform" @update="emit('update:writing-preferences',$event)" />
         </div>
       </section>
 

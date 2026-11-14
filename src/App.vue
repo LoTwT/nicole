@@ -21,6 +21,12 @@ import {
 import { buildContextMenu } from "./app/context-menu";
 import { classifyLinkDestination, findHeadingByFragment } from "./app/link-navigation";
 import { outlinePlacement } from "./app/outline";
+import { reorderTabs } from "./app/tab-order";
+import { planLinkReferenceUpdates } from "./app/link-references";
+import { referenceUpdatedSnapshot } from "./app/reference-rename-tabs";
+import { readReferenceSnapshot, renameEntryWithReferences } from "./services/link-references";
+import { readFrontmatter, type FrontmatterDraft } from "./app/frontmatter";
+import { isolateHistory } from "@codemirror/commands";
 import {
   absoluteBaseName,
   absoluteParent,
@@ -29,7 +35,17 @@ import {
   relativePath,
 } from "./app/paths";
 import { trashLabel, type AppPlatform } from "./app/platform";
-import { matchCommand } from "./commands/keybinding";
+import { matchCommand, matchesRetiredAppShortcut } from "./commands/keybinding";
+import {
+  setCommandKeybindings,
+  validatedKeybindings,
+} from "./commands/keybinding-settings";
+import {
+  compileReadingCSS,
+  useWritingPreferences,
+  writingStatistics,
+  type WritingPreferences,
+} from "./app/writing-preferences";
 import {
   EMPTY_FORMAT_TOOLBAR_STATE,
   formatToolbarStateFor,
@@ -103,9 +119,11 @@ import AppDialog from "./components/AppDialog.vue";
 import RecoveryDialog from "./components/RecoveryDialog.vue";
 import AppSidebar from "./components/AppSidebar.vue";
 import CommandPalette from "./components/CommandPalette.vue";
+import ComparisonPane, { type ComparisonDocument } from "./components/ComparisonPane.vue";
 import EmptyState from "./components/EmptyState.vue";
 import FindReplacePanel from "./components/FindReplacePanel.vue";
 import FormatToolbar from "./components/FormatToolbar.vue";
+import FrontmatterDialog from "./components/FrontmatterDialog.vue";
 import LinkImageEditor from "./components/LinkImageEditor.vue";
 import NonMarkdownPlaceholder from "./components/NonMarkdownPlaceholder.vue";
 import Outline from "./components/Outline.vue";
@@ -125,6 +143,7 @@ import {
   type SavedSelection,
 } from "./editor";
 import { EMPTY_FIND_OPTIONS } from "./editor/find";
+import { TABLE_DIALOG_EVENT, tableEditorDialogOpen } from "./editor/tables";
 import {
   extractHeadingsWithStatus,
   type DocumentHeading,
@@ -140,6 +159,7 @@ import { resolveImageUrl, resolveLocalImagePath } from "./image-url";
 import { getAppInfo, openExternalURL, type AppInfo } from "./services/app";
 import { onWindowFileDrop, type AssetDrop } from "./services/assets";
 import { copyText } from "./services/clipboard";
+import { chooseDocumentExport, saveHTMLExport, savePDFExport, cancelDocumentExport, copyRichDocument } from "./services/export";
 import {
   listDirectory,
   openWithDefaultApp,
@@ -147,7 +167,7 @@ import {
   revealImage,
   trashEntry,
 } from "./services/files";
-import { popupNativeMenu, setSettingsAccelerator } from "./services/menu";
+import { popupNativeMenu, setSettingsAccelerator, setEditAccelerators } from "./services/menu";
 import { onOpenFile, takePendingOpenedEntries } from "./services/open-file";
 import {
   getSettings,
@@ -155,6 +175,7 @@ import {
   setEditorMode,
   setExpandedFolders,
   setFonts,
+  setWritingPreferences,
   setHideMarkdownExtension,
   setOutlineVisible,
   setFormatToolbarVisible as persistFormatToolbarVisible,
@@ -292,6 +313,35 @@ const activeTabId = ref<number | null>(null);
 const closedTabs = ref<ClosedTab[]>([]);
 const notice = ref<Notice | null>(null);
 const mode = ref<EditorMode>("live");
+const comparisonOpen = ref(false);
+const comparisonTabId = ref<number | null>(null);
+let comparisonNavigationSequence = 0;
+const frontmatterSession = shallowRef<{ tabId: number; view: EditorView; doc: Text; draft: FrontmatterDraft } | null>(null);
+const exportJob = shallowRef<{ controller: AbortController; token: string; current: () => boolean } | null>(null);
+const referenceRenamePhase = ref<"preparing" | "confirming" | "writing" | null>(null);
+const referenceRenameEvents: WorkspaceFileEvent[] = [];
+let referenceRenameBarrier: Promise<void> | null = null;
+
+async function runAfterReferenceRename<T>(operation: () => Promise<T>): Promise<T> {
+  while (referenceRenameBarrier !== null) await referenceRenameBarrier;
+  return operation();
+}
+const linkCompletionFiles = shallowRef<readonly string[]>([]);
+let linkCompletionSequence = 0;
+
+async function refreshLinkCompletionFiles() {
+  const owner = workspace.value;
+  const sequence = ++linkCompletionSequence;
+  if (!owner) { linkCompletionFiles.value = []; return; }
+  try {
+    const files = await listFiles();
+    if (sequence === linkCompletionSequence && workspace.value?.root === owner.root && workspace.value?.generation === owner.generation) linkCompletionFiles.value = files;
+  } catch { if (sequence === linkCompletionSequence) linkCompletionFiles.value = []; }
+}
+watch(() => [workspace.value?.root, workspace.value?.generation] as const, () => {
+  linkCompletionFiles.value = [];
+  void refreshLinkCompletionFiles();
+});
 
 const theme = ref<ThemeSetting>("system");
 const sidebarWidth = ref(252);
@@ -393,6 +443,71 @@ let folderOperation: Promise<boolean> | null = null;
 let recoveryChecking = false;
 
 let editor: EditorHandle | null = null;
+const writing = useWritingPreferences({
+  load: async () => {
+    const retry = retrySettingsBaseline();
+    if (retry !== null) {
+      if (!(await retry)) throw new Error("设置尚未加载");
+      return writingPreference.value;
+    }
+    const loaded = await getSettings();
+    applySettings(loaded, { startup: false });
+    return loaded.writingPreferences;
+  },
+  save: setWritingPreferences,
+  canRetry: () => initialSettingsLoadFinished,
+  onError: (error) => showNotice("保存写作偏好失败", "danger", undefined, String(error)),
+});
+const writingPreference = writing.value;
+const shortcutRevision = ref(0);
+setCommandKeybindings({}, () => { void shortcutRevision.value; });
+const statistics = ref<ReturnType<typeof writingStatistics> | null>(null);
+let statisticsTimer: ReturnType<typeof setTimeout> | null = null;
+let lastKeybindings = "";
+let readingStyle: HTMLStyleElement | null = null;
+function applyWritingPreferences() {
+  const value = writingPreference.value;
+  const rootStyle = document.documentElement.style;
+  rootStyle.setProperty("--reading-font-size", `${value.fontSize}px`);
+  rootStyle.setProperty("--reading-line-height", String(value.lineHeight));
+  rootStyle.setProperty("--reading-measure", `${value.contentWidth}ch`);
+  const css = compileReadingCSS(value.customCss);
+  if (readingStyle === null) {
+    readingStyle = document.createElement("style");
+    readingStyle.dataset.nicoleCustomReading = "";
+    document.head.append(readingStyle);
+  }
+  readingStyle.textContent = css.css;
+  editor?.setWritingPreferences?.(value);
+  const keys = validatedKeybindings(value.keybindings, commandRegistry, platform.value);
+  const signature = JSON.stringify(keys);
+  if (signature !== lastKeybindings) {
+    lastKeybindings = signature;
+    setCommandKeybindings(keys, () => { void shortcutRevision.value; });
+    shortcutRevision.value++;
+    editor?.refreshKeybindings?.();
+    pushNativeSettingsShortcut();
+  }
+}
+watch(writingPreference, applyWritingPreferences, { deep: true });
+function updateWritingPreference(patch: Partial<WritingPreferences>) {
+  writing.update(patch);
+}
+function refreshWritingStatistics() {
+  if (statisticsTimer !== null) clearTimeout(statisticsTimer);
+  statisticsTimer = setTimeout(() => {
+    statisticsTimer = null;
+    const tab = currentMarkdown.value;
+    const state = editor?.view.state;
+    const selected = state?.selection.ranges.filter((range) => !range.empty)
+      .map((range) => state.sliceDoc(range.from, range.to)).join(" ") ?? "";
+    statistics.value = tab === null ? null : writingStatistics(tab.text, selected);
+  }, 150);
+}
+function handleWritingSelectionChange() {
+  refreshFormatToolbarState();
+  refreshWritingStatistics();
+}
 const findController = shallowRef<FindReplaceController | null>(null);
 let findOptions: FindReplaceOptions = { ...EMPTY_FIND_OPTIONS };
 let mountSequence = 0;
@@ -783,6 +898,135 @@ const currentSettings = computed<SettingsTabModel | null>(() => {
   return tab?.kind === "settings" ? tab : null;
 });
 const isMarkdownOpen = computed(() => currentMarkdown.value !== null);
+const comparisonDocuments = computed<ComparisonDocument[]>(() => tabs.value
+  .filter((tab): tab is DocumentTabModel => isEditableTab(tab))
+  .map((tab) => ({
+    id: tab.id,
+    name: tab.kind === "single" ? displayPath(tab.path, homeDir.value) : tab.path,
+    text: tab.text,
+    sourceKey: `${tab.id}:${tab.kind}:${tab.path}:${tab.generation}`,
+  })));
+const comparisonDocument = computed(() =>
+  comparisonDocuments.value.find((doc) => doc.id === comparisonTabId.value) ??
+  comparisonDocuments.value.find((doc) => doc.id === currentMarkdown.value?.id) ?? null,
+);
+const comparisonDisplayed = computed(() => comparisonOpen.value && isMarkdownOpen.value);
+
+function openFrontmatter() {
+  const tab = currentMarkdown.value;
+  const view = editor?.view;
+  if (!tab || !view || view.compositionStarted || view.composing || documentDialogOpen()) return;
+  try {
+    const draft = readFrontmatter(view.state.doc.toString());
+    closePopoverMenus();
+    closeLinkImageEditor({ restoreFocus: false });
+    editor?.search.close({ restoreFocus: false });
+    slashMenu?.close();
+    frontmatterSession.value = { tabId: tab.id, view, doc: view.state.doc, draft };
+  } catch (cause) { showNotice(errorText(cause), "danger"); }
+}
+
+function applyFrontmatterChange(change: { from: number; to: number; insert: string } | null) {
+  const session = frontmatterSession.value;
+  frontmatterSession.value = null;
+  if (!session || currentMarkdown.value?.id !== session.tabId || editor?.view !== session.view || session.view.state.doc !== session.doc) return;
+  if (change) session.view.dispatch({ changes: change, annotations: isolateHistory.of("full"), userEvent: "input.frontmatter" });
+  session.view.focus();
+}
+
+function abortDocumentExport() {
+  const job = exportJob.value;
+  if (!job) return;
+  job.controller.abort();
+  if (job.token) void cancelDocumentExport(job.token).catch(() => {});
+  exportJob.value = null;
+}
+
+async function exportCurrentDocument(format: "html" | "pdf" | "rich") {
+  const tab = currentMarkdown.value;
+  const view = editor?.view;
+  if (!tab || !view || exportJob.value || editorComposing.value) return;
+  const doc = view.state.doc, path = tab.path, generation = tab.generation;
+  const controller = new AbortController();
+  const current = () => !controller.signal.aborted && editor?.view === view && view.state.doc === doc &&
+    currentMarkdown.value?.id === tab.id && tab.path === path && tab.generation === generation;
+  const job = { controller, token: "", current };
+  exportJob.value = job;
+  try {
+    if (format !== "rich") {
+      const destination = await chooseDocumentExport(format, tab.name.replace(/\.md$/i, ""));
+      job.token = destination.token;
+      if (!current() || destination.canceled) return;
+    }
+    showNotice("正在准备导出，按 Esc 可取消", "muted");
+    const { prepareDocumentExport, captureExportReadingStyle } = await import("./app/document-export");
+    if (!current()) return;
+    const style = { ...captureExportReadingStyle(view.contentDOM), ...writingPreference.value, css: writingPreference.value.customCss };
+    const prepared = await prepareDocumentExport({
+      source: doc.toString(), title: tab.name.replace(/\.md$/i, ""),
+      resolveImage: (source) => tab.kind === "workspace" ? resolveImageUrl(source, path, generation) : null,
+      signal: controller.signal, isCurrent: current, style, expandCallouts: format !== "html",
+    });
+    if (!current()) return;
+    const saved = format === "html" ? await saveHTMLExport(job.token, prepared.html)
+      : format === "pdf" ? await savePDFExport(job.token, prepared.html)
+      : await copyRichDocument(prepared.html, prepared.plainText);
+    if (current()) showNotice((format === "rich" ? "已复制为富文本" : `已导出：${saved}`) + (prepared.warnings.length ? `；${prepared.warnings.join("；")}` : ""), "muted");
+  } catch (cause) {
+    if (current()) showNotice(`导出失败：${errorText(cause)}`, "danger");
+  } finally {
+    if (job.token) void cancelDocumentExport(job.token).catch(() => {});
+    if (exportJob.value === job) exportJob.value = null;
+  }
+}
+
+watch(() => [currentMarkdown.value?.id, currentMarkdown.value?.path, currentMarkdown.value?.generation, currentMarkdown.value?.text, editorRevision.value] as const, () => {
+  const session = frontmatterSession.value;
+  if (session && (currentMarkdown.value?.id !== session.tabId || editor?.view !== session.view || editor.view.state.doc !== session.doc)) frontmatterSession.value = null;
+  if (exportJob.value && !exportJob.value.current()) { abortDocumentExport(); showNotice("文档已变化，已取消导出", "muted"); }
+});
+
+function reorderOpenTab(sourceId: number, targetId: number, after: boolean) {
+  if (dialogOpen || recoveryDialog.value !== null) return;
+  const next = reorderTabs(tabs.value, sourceId, targetId, after);
+  if (next === tabs.value) return;
+  tabs.value = [...next];
+  schedulePersistTabs();
+}
+
+function toggleComparison() {
+  comparisonOpen.value = !comparisonOpen.value;
+  comparisonNavigationSequence += 1;
+  closeOutlineOverlay();
+}
+
+function closeComparison() {
+  comparisonOpen.value = false;
+  comparisonNavigationSequence += 1;
+  void nextTick(() => topBar.value?.focusComparisonToggle());
+}
+
+function resolveComparisonImage(source: string, id: number): string | null {
+  const tab = findTab(id);
+  return tab?.kind === "workspace" ? resolveImageUrl(source, tab.path, tab.generation) : null;
+}
+
+async function openComparisonLink(href: string, id: number) {
+  const source = findTab(id);
+  if (!source || !isEditableTab(source) || editorComposing.value) return;
+  const sequence = ++comparisonNavigationSequence;
+  const revision = source.revision;
+  const sourceKey = comparisonDocument.value?.sourceKey;
+  await activateTab(id, false);
+  if (
+    sequence !== comparisonNavigationSequence || !comparisonOpen.value ||
+    currentMarkdown.value?.id !== id || source.revision !== revision ||
+    comparisonDocument.value?.sourceKey !== sourceKey
+  ) return;
+  // href has already been decoded from HTML; preserve literal ampersands and
+  // backslashes through the source-address decoder used by editor navigation.
+  await openLinkAddress(href.replace(/&/g, "&amp;").replace(/\\/g, "\\\\"));
+}
 const effectiveHideMarkdownExtension = computed(
   () => !showAllFiles.value && hideMarkdownExtension.value,
 );
@@ -801,7 +1045,7 @@ const outlineContentWidth = computed(() => {
   return Math.max(0, viewportWidth.value - sidebarWidth.value);
 });
 const outlineWide = computed(
-  () => outlinePlacement(outlineContentWidth.value) === "fixed",
+  () => !comparisonDisplayed.value && outlinePlacement(outlineContentWidth.value) === "fixed",
 );
 const outlineEnabled = computed(() => currentMarkdown.value !== null);
 const outlineDisplayed = computed(
@@ -822,6 +1066,7 @@ const outlinePanelKey = computed(() => {
 
 /** Whether the current page state satisfies a command's runtime requirements. */
 function commandContextAllows(command: CommandDefinition): boolean {
+  if (documentDialogOpen()) return false;
   return (
     (!command.requiresWorkspace || hasWorkspace.value) &&
     (!command.requiresOpenTab || tabs.value.length > 0) &&
@@ -1267,6 +1512,7 @@ function applySettings(
   loaded: AppSettings,
   options: { startup?: boolean } = {},
 ) {
+  writing.hydrate(loaded.writingPreferences);
   const normalizedTheme: ThemeSetting =
     loaded.theme === "light" || loaded.theme === "dark"
       ? loaded.theme
@@ -2592,6 +2838,7 @@ function saveTab(
   trigger: SaveTrigger = "explicit",
 ): Promise<boolean> {
   const tab = findTab(tabId);
+  if (referenceRenamePhase.value !== null) return Promise.resolve(false);
   if (tab === null || !isDocumentTab(tab)) {
     return Promise.resolve(true);
   }
@@ -2885,6 +3132,7 @@ function snapshotActiveEditor() {
 }
 
 function clearEditor() {
+  frontmatterSession.value = null;
   closeLinkImageEditor({ restoreFocus: false });
   slashMenu?.destroy();
   slashMenu = null;
@@ -2939,25 +3187,36 @@ async function mountActive(
     parent: host,
     doc: tab.text,
     mode: mode.value,
+    writingPreferences: writingPreference.value,
     platform: platform.value,
     restore: restore ?? undefined,
     find: findOptions,
+    linkCompletion: {
+      getSource: () => tab.kind === "workspace" && currentMarkdown.value?.id === tab.id && workspace.value?.generation === tab.generation ? tab.path : null,
+      getFiles: () => linkCompletionFiles.value,
+      getIdentity: () => `${workspace.value?.root}:${workspace.value?.generation}:${tab.id}:${tab.path}`,
+    },
     resolveImage: (src) =>
       tab.kind === "workspace"
         ? resolveImageUrl(src, tab.path, tab.generation)
         : null,
     onPasteImage: (ticket) => imageInsertion.handlePaste(ticket),
-    onChange: (text) => handleEditorChange(tab.id, text),
+    onChange: (text) => {
+      handleEditorChange(tab.id, text);
+      refreshWritingStatistics();
+    },
     onCompositionStart: () => handleEditorCompositionStart(tab.id),
     onCompositionEnd: () => handleEditorCompositionEnd(tab.id),
-    onSelectionChange: refreshFormatToolbarState,
+    onSelectionChange: handleWritingSelectionChange,
     onEditLinkImage: handleEditLinkImage,
     onOpenLink: (source) => {
       void openLinkAddress(source);
     },
   });
+  if (referenceRenamePhase.value !== null) editor.setReadOnly(true);
   editorComposing.value = false;
   refreshFormatToolbarState();
+  refreshWritingStatistics();
   const activation =
     navigationIntent === undefined
       ? null
@@ -3913,7 +4172,10 @@ function renameTabPaths(oldPath: string, newPath: string, isDir: boolean) {
 }
 
 async function handleWatchEvents(allEvents: readonly WorkspaceFileEvent[]) {
-  if (workspace.value === null) {
+  if (referenceRenamePhase.value !== null) { referenceRenameEvents.push(...allEvents); return; }
+  void refreshLinkCompletionFiles();
+  const owner = currentWorkspaceContext();
+  if (owner === null) {
     return;
   }
   const now = Date.now();
@@ -3934,6 +4196,8 @@ async function handleWatchEvents(allEvents: readonly WorkspaceFileEvent[]) {
     return;
   }
   await sidebar.value?.refreshFromEvents(events);
+  if (!isCurrentWorkspace(owner.root, owner.generation)) return;
+  if (referenceRenamePhase.value !== null) { referenceRenameEvents.push(...events); return; }
 
   for (const event of events) {
     if (event.op === "rename" && event.oldPath && event.oldPath !== event.path) {
@@ -3954,6 +4218,7 @@ async function handleWatchEvents(allEvents: readonly WorkspaceFileEvent[]) {
   for (const tab of tabs.value.filter(
     (item): item is DocumentTabModel => item.kind === "workspace",
   )) {
+    if (referenceRenamePhase.value !== null) { referenceRenameEvents.push(...contentEvents); return; }
     const classification = classifyWatchEvents(contentEvents, tab.path, true);
     if (classification.document === "deleted") {
       markExternalState(tab, "deleted");
@@ -3990,37 +4255,34 @@ async function handleExternalModification(tabId: number) {
   }
   const sequence = (externalReadSequence.get(tabId) ?? 0) + 1;
   externalReadSequence.set(tabId, sequence);
+  const captured = {
+    tab, path: tab.path, generation: tab.generation, revision: tab.revision,
+    text: tab.text, originalText: tab.originalText,
+  };
+  const currentReadTarget = () => {
+    const current = findTab(tabId);
+    return referenceRenamePhase.value === null &&
+      sequence === externalReadSequence.get(tabId) && current === captured.tab &&
+      current.kind === "workspace" && current.path === captured.path &&
+      current.generation === captured.generation && current.revision === captured.revision &&
+      current.originalText === captured.originalText && current.externalState === "none" &&
+      workspace.value?.generation === captured.generation ? current : null;
+  };
   let text: string;
   try {
-    text = await readFile(tab.path);
+    text = await readFile(captured.path);
   } catch {
-    const current = findTab(tabId);
-    if (
-      sequence === externalReadSequence.get(tabId) &&
-      current !== null &&
-      current.kind === "workspace" &&
-      current.path === tab.path &&
-      current.generation === tab.generation &&
-      workspace.value?.generation === current.generation
-    ) {
+    const current = currentReadTarget();
+    if (current !== null) {
       markExternalState(current, "deleted");
       clearTabSaveTimer(tabId);
     }
     return;
   }
-  const current = findTab(tabId);
+  const current = currentReadTarget();
+  if (current === null) return;
   if (
-    sequence !== externalReadSequence.get(tabId) ||
-    current === null ||
-    current.kind !== "workspace" ||
-    current.path !== tab.path ||
-    current.generation !== tab.generation ||
-    workspace.value?.generation !== current.generation ||
-    current.externalState !== "none"
-  ) {
-    return;
-  }
-  if (
+    current.text !== captured.text ||
     isDirty(current) ||
     current.saveError !== null ||
     (writesInFlight.get(tabId) ?? 0) > 0
@@ -4735,6 +4997,7 @@ async function handleOpenedPath(path: string, offerId: string) {
 }
 
 async function receiveOpenedFiles() {
+  if (referenceRenamePhase.value !== null) { pendingOpenSignal = true; return; }
   openedFilesQueue = openedFilesQueue
     .then(async () => {
       // The recovery decision comes first; otherwise askOpenSingleFile could
@@ -4746,11 +5009,13 @@ async function receiveOpenedFiles() {
         }
         await wait;
       }
-      const entries = await takePendingOpenedEntries();
+      const entries = await runAfterReferenceRename(takePendingOpenedEntries);
       const last = entries.at(-1);
       if (last) {
         try {
-          await handleOpenedPath(last.path, last.offerId);
+          // Keep the already-consumed offer alive while a reference batch
+          // owns the document set; a later native drain cannot retrieve it.
+          await runAfterReferenceRename(() => handleOpenedPath(last.path, last.offerId));
         } finally {
           // The offer is one-time: opening the parent consumes it in Go,
           // AcceptSingleFile consumes it for a single file, and cancelling
@@ -4768,6 +5033,10 @@ async function receiveOpenedFiles() {
 function handleEditCommand(event: Event) {
   const command = (event as CustomEvent<unknown>).detail;
   if (command !== "undo" && command !== "redo") {
+    return;
+  }
+  if (documentDialogOpen()) {
+    document.execCommand(command);
     return;
   }
   const target = editor;
@@ -4806,7 +5075,7 @@ function runAppCommand(id: string): boolean {
 
 /** Runs a command requested by native chrome, honouring modal guards. */
 function runChromeCommand(id: string) {
-  if (dialogOpen || recoveryDialog.value !== null) {
+  if (dialogOpen || recoveryDialog.value !== null || documentDialogOpen()) {
     return;
   }
   runAppCommand(id);
@@ -4819,7 +5088,7 @@ function runChromeCommand(id: string) {
  * returns focus to the document after the click.
  */
 function runToolbarCommand(id: string) {
-  if (editorComposing.value) return;
+  if (editorComposing.value || documentDialogOpen()) return;
   const command = getCommand(id);
   if (
     command === undefined ||
@@ -5889,6 +6158,13 @@ function commandContext(view: CommandContext["view"]): CommandContext {
       },
       toggleSidebar,
       toggleOutline,
+      toggleComparison,
+      toggleFocusMode: () => updateWritingPreference({ focusMode: !writingPreference.value.focusMode }),
+      toggleTypewriterMode: () => updateWritingPreference({ typewriterMode: !writingPreference.value.typewriterMode }),
+      editFrontmatter: openFrontmatter,
+      exportHTML: () => exportCurrentDocument("html"),
+      exportPDF: () => exportCurrentDocument("pdf"),
+      copyRichText: () => exportCurrentDocument("rich"),
       setFormatToolbarVisible,
       setMode,
       toggleTheme,
@@ -6005,7 +6281,21 @@ function noteSlashEscape(event: KeyboardEvent) {
     event.keyCode !== 229;
 }
 
+function documentDialogOpen(): boolean {
+  return referenceRenamePhase.value !== null || frontmatterSession.value !== null || (editor !== null && tableEditorDialogOpen(editor.view.dom));
+}
+
+function handleTableDialogChange(event: Event) {
+  if (!(event instanceof CustomEvent) || event.detail?.open !== true) return;
+  if (event.target !== editor?.view.dom) return;
+  closePopoverMenus();
+  closeCommandPalette();
+  editor.search.close({ restoreFocus: false });
+}
+
 function handleGlobalKeydown(event: KeyboardEvent) {
+  if (event.key === "Escape" && !event.isComposing && exportJob.value) { abortDocumentExport(); showNotice("已取消导出", "muted"); event.preventDefault(); return; }
+  if (documentDialogOpen()) return;
   noteCompositionEndKey(event);
   if (event.isComposing || event.keyCode === 229) {
     return;
@@ -6073,6 +6363,14 @@ function runAppShortcutEvent(event: KeyboardEvent): boolean {
   }
   const command = matchCommand(event, platform.value, commandRegistry, "app");
   if (command === null) {
+    const editorTarget = event.target instanceof Node && editor?.view.dom.contains(event.target);
+    const treeTarget = event.target instanceof HTMLElement && event.target.closest('[role="tree"]');
+    if ((editorTarget && matchCommand(event, platform.value, commandRegistry, "editor")) ||
+        (treeTarget && matchCommand(event, platform.value, commandRegistry, "file-tree"))) return false;
+    if (matchesRetiredAppShortcut(event, platform.value, commandRegistry)) {
+      event.preventDefault();
+      return true;
+    }
     return false;
   }
   if (
@@ -6120,6 +6418,7 @@ function editorOwnsKeyboardFocus(): boolean {
  */
 function handleLinkImageCapture(event: KeyboardEvent) {
   if (
+    documentDialogOpen() ||
     linkImageEditor.value === null ||
     event.isComposing ||
     event.keyCode === 229 ||
@@ -6165,6 +6464,10 @@ function handleLinkImageCapture(event: KeyboardEvent) {
  * handler, where their overlay order is decided.
  */
 function handleAppShortcutCapture(event: KeyboardEvent) {
+  if (documentDialogOpen()) {
+    if (matchCommand(event, platform.value, commandRegistry, "app")) event.preventDefault();
+    return;
+  }
   if (event.key === ESCAPE_HELP.eventKey) {
     return;
   }
@@ -6227,6 +6530,109 @@ async function handleEntryRenamed(
   }
   renameTabPaths(oldPath, newPath, isDir);
   schedulePersistTabs();
+}
+
+async function renameWithDocumentReferences(oldPath: string, name: string, isDir: boolean): Promise<string> {
+  const owner = workspace.value;
+  if (!owner || referenceRenamePhase.value !== null || dialogOpen || recoveryDialog.value !== null || editorComposing.value) throw new Error("请先结束当前操作后重试重命名。");
+  const slash = oldPath.lastIndexOf("/");
+  const newPath = oldPath.slice(0, slash + 1) + name;
+  let releaseBarrier!: () => void;
+  referenceRenameBarrier = new Promise<void>((resolve) => { releaseBarrier = resolve; });
+  referenceRenamePhase.value = "preparing";
+  editor?.setReadOnly(true);
+  for (const tab of tabs.value) {
+    clearTabSaveTimer(tab.id);
+    if (tab.kind === "workspace") externalReadSequence.set(tab.id, (externalReadSequence.get(tab.id) ?? 0) + 1);
+  }
+  let executionStarted = false;
+  let executionCompleted = false;
+  const currentOwner = () => workspace.value?.root === owner.root && workspace.value?.generation === owner.generation;
+  try {
+    await saveQueue;
+    if (!currentOwner()) throw new Error("工作区已变化，请重试。");
+    const snapshot = await readReferenceSnapshot(owner.generation);
+    if (!currentOwner()) throw new Error("工作区已变化，请重试。");
+    const opened = tabs.value.filter((tab): tab is DocumentTabModel => tab.kind === "workspace");
+    for (const tab of opened) {
+      const disk = snapshot.files.find((file) => file.path === tab.path);
+      if (!disk || normalizeLineEndings(disk.content) !== tab.originalText) {
+        markExternalState(tab, disk ? "modified" : "deleted");
+        clearTabSaveTimer(tab.id);
+      }
+      if (!disk || normalizeLineEndings(disk.content) !== tab.originalText || tab.externalState !== "none" || tab.saveError || tab.mixedLineEndings || tab.restored) {
+        throw new Error(`请先处理“${tab.name}”的外部修改、恢复或保存问题后再重命名。`);
+      }
+    }
+    const plans = planLinkReferenceUpdates(snapshot.files, oldPath, newPath, isDir);
+    const overlays = planLinkReferenceUpdates(opened.map((tab) => ({ path: tab.path, content: tab.text })), oldPath, newPath, isDir);
+    const captured = opened.map((tab) => ({ tab, path: tab.path, text: tab.text, original: tab.originalText, revision: tab.revision }));
+    const changed = plans.filter((plan) => plan.edits.length);
+    const changedFiles = new Set([...changed.map((plan) => plan.path), ...overlays.filter((plan) => plan.edits.length).map((plan) => plan.path)]);
+    if (changedFiles.size) {
+      referenceRenamePhase.value = "confirming";
+      const answer = await askDialog({ title: "重命名并更新引用", message: `将“${oldPath}”重命名为“${name}”，并更新 ${changedFiles.size} 个 Markdown 文件中的引用。未保存的编辑会保留。`, details: [...changedFiles], actions: [{ value: "cancel", label: "取消", autofocus: true }, { value: "rename", label: "重命名并更新", primary: true }] });
+      if (answer !== "rename") throw new Error("已取消重命名。");
+    }
+    if (!currentOwner() || captured.some(({ tab, path, text, original, revision }) => !tabs.value.includes(tab) || tab.path !== path || tab.text !== text || tab.originalText !== original || tab.revision !== revision)) throw new Error("文档已变化，请重试重命名。");
+    referenceRenamePhase.value = "writing";
+    executionStarted = true;
+    const result = await renameEntryWithReferences({ source: oldPath, name, generation: owner.generation, documents: snapshot.files, updates: changed.map((plan) => ({ path: plan.path, content: plan.updatedContent })) });
+    executionCompleted = true;
+    if (!currentOwner()) throw new Error("重命名已完成，但工作区已变化；请重新打开文件夹。");
+    const unexpected = new Set(tabs.value.filter((tab): tab is DocumentTabModel => tab.kind === "workspace").filter((tab) => {
+      const before = captured.find((item) => item.tab === tab);
+      return !before || tab.path !== before.path || tab.text !== before.text ||
+        tab.originalText !== before.original || tab.revision !== before.revision ||
+        (tab.id === activeTabId.value && editor !== null && editor.view.state.doc.toString() !== before.text);
+    }));
+    applyingExternal = true;
+    try {
+      // The disk rename has committed. Update every current tab's path
+      // before touching overlays, including tabs opened by an older task.
+      renameTabPaths(oldPath, result.path, isDir);
+      for (const { tab, path } of captured) {
+        if (!tabs.value.includes(tab) || tab.kind !== "workspace" || unexpected.has(tab)) continue;
+        const overlay = overlays.find((plan) => plan.path === path);
+        const baseline = plans.find((plan) => plan.path === path);
+        if (baseline) tab.originalText = normalizeLineEndings(baseline.updatedContent);
+        if (overlay?.edits.length) {
+          if (tab.id === activeTabId.value && editor) editor.view.dispatch({ changes: overlay.edits.map((edit) => ({ from: edit.from, to: edit.to, insert: edit.after })), annotations: isolateHistory.of("full"), userEvent: "input.references" });
+          else {
+            const next = referenceUpdatedSnapshot(tab.snapshot, overlay);
+            tab.snapshot = next ? markRaw(next) : null;
+          }
+          tab.text = overlay.updatedContent;
+        }
+        tab.savePhase = isDirty(tab) ? "editing" : "saved";
+        if (!isDirty(tab)) forgetRecoveryForTab(tab);
+      }
+      for (const tab of unexpected) {
+        markExternalState(tab, tab.externalState === "deleted" ? "deleted" : "modified");
+        clearTabSaveTimer(tab.id);
+        tab.savePhase = "paused";
+      }
+    } finally { applyingExternal = false; }
+    schedulePersistTabs();
+    if (unexpected.size) showNotice("已重命名。部分文档在操作期间发生变化，已保留当前编辑并暂停自动保存，请核对外部修改。", "danger");
+    else showNotice(`已重命名并更新 ${changedFiles.size} 个文件的引用`, "success");
+    return result.path;
+  } catch (cause) {
+    if (currentOwner() && (executionCompleted || executionStarted && errorText(cause).includes("重命名或引用更新失败："))) {
+      for (const tab of tabs.value) if (tab.kind === "workspace") { markExternalState(tab, "modified"); clearTabSaveTimer(tab.id); tab.savePhase = "paused"; }
+    }
+    throw cause;
+  } finally {
+    referenceRenamePhase.value = null;
+    editor?.setReadOnly(false);
+    referenceRenameBarrier = null;
+    releaseBarrier();
+    rescheduleDirtyTabs();
+    void refreshLinkCompletionFiles();
+    const events = referenceRenameEvents.splice(0);
+    if (currentOwner() && events.length) void handleWatchEvents(events);
+    if (pendingOpenSignal) { pendingOpenSignal = false; void receiveOpenedFiles(); }
+  }
 }
 
 async function requestTrash(entry: TreeNode) {
@@ -6495,6 +6901,7 @@ async function openTabMenu(id: number, x: number, y: number) {
 }
 
 function handleVisibilityChange() {
+  void writing.flush();
   if (document.visibilityState === "hidden") {
     if (fontWriteTimer !== null) flushFontPreferences();
     writeAllRecoveryCopies();
@@ -6504,6 +6911,7 @@ function handleVisibilityChange() {
 }
 
 function saveBeforeExit() {
+  void writing.flush();
   if (fontWriteTimer !== null) flushFontPreferences();
   writeAllRecoveryCopies();
   void saveAllTabs();
@@ -6517,8 +6925,18 @@ function handleWindowResize() {
 // The native app menu reads the registry-formatted Settings shortcut from the
 // page. Re-send it when the real platform arrives after App.Info().
 watch(platform, pushNativeSettingsShortcut, { immediate: true });
+watch(platform, applyWritingPreferences);
+watch([platform, shortcutRevision], () => {
+  const undo = getCommand("edit.undo")!;
+  const redo = getCommand("edit.redo")!;
+  void setEditAccelerators(
+    nativeAccelerator(undo, platform.value) ?? "",
+    nativeAccelerator(redo, platform.value) ?? "",
+  ).catch(() => {});
+});
 
 onMounted(async () => {
+  applyWritingPreferences();
   window.addEventListener("beforeunload", saveBeforeExit);
   window.addEventListener("pagehide", saveBeforeExit);
   window.addEventListener("resize", handleWindowResize);
@@ -6526,6 +6944,7 @@ onMounted(async () => {
   window.addEventListener("keydown", handleLinkImageCapture, true);
   window.addEventListener("keydown", handleGlobalKeydown);
   window.addEventListener("keydown", handleAppShortcutCapture, true);
+  window.addEventListener(TABLE_DIALOG_EVENT, handleTableDialogChange);
   document.addEventListener("pointerdown", handleOutlinePointerDown, true);
   document.addEventListener("visibilitychange", handleVisibilityChange);
   systemTheme.addEventListener("change", handleSystemThemeChange);
@@ -6539,6 +6958,7 @@ onMounted(async () => {
     void receiveOpenedFiles();
   });
   offFileDrop = onWindowFileDrop((drop) => {
+    if (documentDialogOpen()) return;
     imageInsertion.handleDrop(drop);
     void handleFolderDrop(drop);
   });
@@ -6548,6 +6968,7 @@ onMounted(async () => {
     writeAllRecoveryCopies();
     await nextTick();
     const saved = await saveAllTabs();
+    await writing.flush();
     await persistTabsNow();
     // Give the copy writes and deletes a short window to finish, while
     // keeping room inside Go's five-second close timeout.
@@ -6584,6 +7005,12 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  abortDocumentExport();
+  void writing.flush();
+  if (statisticsTimer!==null) clearTimeout(statisticsTimer);
+  readingStyle?.remove();
+  setCommandKeybindings({});
+  for (const variable of ["--reading-font-size","--reading-line-height","--reading-measure"]) document.documentElement.style.removeProperty(variable);
   cancelPendingOutlineFocusSettlement();
   if (fontWriteTimer !== null) {
     flushFontPreferences();
@@ -6595,6 +7022,7 @@ onBeforeUnmount(() => {
   window.removeEventListener("keydown", handleLinkImageCapture, true);
   window.removeEventListener("keydown", handleGlobalKeydown);
   window.removeEventListener("keydown", handleAppShortcutCapture, true);
+  window.removeEventListener(TABLE_DIALOG_EVENT, handleTableDialogChange);
   document.removeEventListener("pointerdown", handleOutlinePointerDown, true);
   document.removeEventListener("visibilitychange", handleVisibilityChange);
   systemTheme.removeEventListener("change", handleSystemThemeChange);
@@ -6655,6 +7083,7 @@ defineExpose({
       :root-name="rootName"
       :root-path="workspace.root"
       :generation="workspace.generation"
+      :rename-with-references="renameWithDocumentReferences"
       :selected-path="selectedTreePath"
       :initial-expanded="expandedForRoot"
       :is-dark="isDark"
@@ -6699,6 +7128,8 @@ defineExpose({
         :show-outline="!startState && currentSettings === null"
         :outline-enabled="outlineEnabled"
         :outline-on="outlineDisplayed"
+        :comparison-available="isMarkdownOpen"
+        :comparison-on="comparisonDisplayed"
         @close-tab="closeTab"
         @activate-tab="activateTab"
         @tab-menu="openTabMenu"
@@ -6707,10 +7138,12 @@ defineExpose({
         @toggle-outline="toggleOutline"
         @open-folder="chooseFolder"
         @mode-menu-will-open="handleModeMenuWillOpen"
+        @reorder-tab="reorderOpenTab"
+        @toggle-comparison="runChromeCommand('nav.toggle-comparison')"
       />
 
-      <div class="relative flex min-h-0 flex-1">
-        <main class="flex min-w-0 flex-1 flex-col">
+      <div class="relative flex min-h-0 flex-1 max-[759px]:flex-col">
+        <main class="flex min-h-0 min-w-0 flex-1 flex-col">
           <FormatToolbar
             v-if="formatToolbarVisible && isMarkdownOpen"
             ref="formatToolbar"
@@ -6775,6 +7208,8 @@ defineExpose({
               :hide-markdown-extension="hideMarkdownExtension"
               :format-toolbar-visible="formatToolbarVisible"
               :slash-enabled="slashEnabled"
+              :writing-preferences="writingPreference"
+              @update:writing-preferences="updateWritingPreference"
               @update:theme="chooseTheme"
               @update:font="setFontPreference"
               @update:show-all-files="setShowAllFilesPreference"
@@ -6789,6 +7224,7 @@ defineExpose({
               v-show="isMarkdownOpen"
               class="h-full"
               aria-label="Markdown 编辑器"
+              data-nicole-reading
             ></div>
             <FindReplacePanel
               v-if="findController"
@@ -6799,6 +7235,17 @@ defineExpose({
             />
           </div>
         </main>
+        <ComparisonPane
+          v-if="comparisonDisplayed && comparisonDocument"
+          :documents="comparisonDocuments"
+          :selected-id="comparisonDocument.id"
+          :resolve-image="resolveComparisonImage"
+          :editor-view="activeEditorView"
+          :active-document-id="currentMarkdown?.id"
+          @select="comparisonTabId = $event"
+          @close="closeComparison"
+          @open-link="openComparisonLink"
+        />
         <Outline
           v-if="outlineDisplayed && activeEditorView && currentMarkdown"
           :key="outlinePanelKey"
@@ -6811,6 +7258,7 @@ defineExpose({
       </div>
 
       <StatusBar
+        :statistics="isMarkdownOpen ? statistics : null"
         :save-status="saveStatus"
         :notice="notice?.text ?? null"
         :notice-tone="notice?.tone"
@@ -6873,6 +7321,11 @@ defineExpose({
       @review="finishRecovery('review')"
       @restore="finishRecovery('restore')"
     />
+
+    <AppDialog :open="referenceRenamePhase === 'preparing' || referenceRenamePhase === 'writing'" title="正在重命名并更新引用">
+      <p class="m-0" role="status">正在核对并更新文件，完成前请稍候。</p>
+    </AppDialog>
+    <FrontmatterDialog v-if="frontmatterSession" :draft="frontmatterSession.draft" @cancel="frontmatterSession = null" @apply="applyFrontmatterChange" />
 
     <AppDialog
       :open="dialog !== null"
