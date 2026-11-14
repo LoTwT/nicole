@@ -13,6 +13,8 @@ export interface ContextMenuOptions {
   target: MenuTarget;
   platform: AppPlatform;
   isMarkdown: boolean;
+  /** The settings page is not a file; file actions stay disabled. */
+  isSettings?: boolean;
   /** The tab belongs to the open workspace, so it can be revealed there. */
   inWorkspace: boolean;
   /** Tab menus: more than one tab is open, so "close others" applies. */
@@ -55,11 +57,27 @@ export function buildContextMenu(
         disabled: !options.canReopen,
       },
       { id: "", label: "", separator: true },
-      { id: "reveal-in-tree", label: "在文件树中定位", disabled: !options.inWorkspace },
-      { id: "reveal", label: revealLabel(platform) },
+      {
+        id: "reveal-in-tree",
+        label: "在文件树中定位",
+        disabled: !(options.inWorkspace && options.isSettings !== true),
+      },
+      {
+        id: "reveal",
+        label: revealLabel(platform),
+        disabled: options.isSettings === true,
+      },
       { id: "", label: "", separator: true },
-      { id: "copy-path", label: "复制路径" },
-      { id: "copy-relative-path", label: "复制相对路径", disabled: !options.inWorkspace },
+      {
+        id: "copy-path",
+        label: "复制路径",
+        disabled: options.isSettings === true,
+      },
+      {
+        id: "copy-relative-path",
+        label: "复制相对路径",
+        disabled: !(options.inWorkspace && options.isSettings !== true),
+      },
     ];
   }
 

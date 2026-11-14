@@ -71,6 +71,11 @@ export interface SlashMenuOptions {
     | (() => readonly CommandDefinition[]);
   platform: AppPlatform;
   onChange: (state: SlashMenuSnapshot) => void;
+  /**
+   * False disables new triggers for the current editor mode. An open menu is
+   * closed by the owner when the preference changes.
+   */
+  enabled?: () => boolean;
   /** Called after the menu opens, so the page can refresh its snapshot. */
   onOpen?: () => void;
   /** Called once when an open menu closes or is destroyed. */
@@ -278,6 +283,9 @@ export function createSlashMenu(options: SlashMenuOptions): SlashMenuController 
   }
 
   function maybeOpen(update: ViewUpdate) {
+    if (options.enabled !== undefined && !options.enabled()) {
+      return;
+    }
     // Pasting or programmatic insertion at a valid position is not typing a
     // slash; only direct input (including IME output) opens the menu.
     if (!update.transactions.some((tr) => tr.isUserEvent("input.type"))) {

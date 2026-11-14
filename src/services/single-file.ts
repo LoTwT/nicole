@@ -12,13 +12,19 @@ export function chooseSingleFile(): Promise<SingleFileSelection> {
 }
 
 /** Grants a file the system opened with Nicole after the user confirms it. */
-export function acceptSingleFile(path: string): Promise<SingleFile> {
-  return SingleFileService.acceptSingleFile(path);
+export function acceptSingleFile(
+  path: string,
+  offerId: string,
+): Promise<SingleFile> {
+  return SingleFileService.acceptSingleFile(path, offerId);
 }
 
 /** Forgets a system-opened file the user chose not to open. */
-export function dismissOfferedFile(path: string): Promise<void> {
-  return SingleFileService.dismissOfferedFile(path);
+export function dismissOfferedFile(
+  path: string,
+  offerId: string,
+): Promise<void> {
+  return SingleFileService.dismissOfferedFile(path, offerId);
 }
 
 /** Reads a granted single file byte for byte. */

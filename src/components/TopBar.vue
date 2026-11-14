@@ -33,6 +33,7 @@ const props = defineProps<{
   sidebarShown: boolean;
   showSidebarToggle: boolean;
   showOpenFolder: boolean;
+  showMode: boolean;
   showOutline: boolean;
   outlineEnabled: boolean;
   outlineOn: boolean;
@@ -316,7 +317,7 @@ defineExpose({ closeModeMenu });
 
     <div ref="modeArea" class="app-no-drag relative flex shrink-0 items-center gap-1">
       <div
-        v-if="tabs.length > 0"
+        v-if="showMode"
         class="flex gap-0.5 rounded-[var(--radius-control)] border border-[var(--border-subtle)] p-0.5"
         role="group"
         aria-label="编辑模式"

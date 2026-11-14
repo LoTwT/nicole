@@ -41,6 +41,29 @@ export interface AppSettings {
    */
   formatToolbarVisible: boolean;
   /**
+   * ShowAllFiles shows non-Markdown files in the tree. Directories are
+   * always shown; the preference only filters files.
+   */
+  showAllFiles: boolean;
+  /**
+   * HideMarkdownExtension removes the .md suffix from tree rows and tab
+   * labels. Paths, rename inputs and file access keep the full name.
+   */
+  hideMarkdownExtension: boolean;
+  /**
+   * UIFont, ReadingFont and CodeFont are installed font names. Empty keeps
+   * the interface's default stack. They never name bundled or downloaded
+   * fonts.
+   */
+  uiFont: string;
+  readingFont: string;
+  codeFont: string;
+  /**
+   * SlashEnabled switches the slash menu per editor mode. Every mode
+   * defaults to enabled when its field is missing.
+   */
+  slashEnabled: SlashEnabledSettings;
+  /**
    * SidebarWidth is the sidebar width in CSS pixels, within
    * [200, 400].
    */
@@ -133,6 +156,16 @@ export interface NativeMenuRequest {
   x: number;
   y: number;
   items: NativeMenuItem[];
+}
+
+/**
+ * PendingOpenedFile is one system-provided path and the specific offer that
+ * delivered it. A later offer for the same path gets a new OfferID, so the
+ * page can dismiss the occurrence it handled without consuming the new one.
+ */
+export interface PendingOpenedFile {
+  path: string;
+  offerId: string;
 }
 
 /**
@@ -271,6 +304,16 @@ export interface SingleFileSelection {
   path: string;
   name: string;
   canceled: boolean;
+}
+
+/**
+ * SlashEnabledSettings is the per-mode slash menu switch. The page maps the
+ * saved editor mode names to these fields.
+ */
+export interface SlashEnabledSettings {
+  live: boolean;
+  immersive: boolean;
+  source: boolean;
 }
 
 /**
@@ -632,9 +675,23 @@ export const Settings = {
   setExpandedFolders(root: string, folders: string[]): Promise<void> {
     return call("Settings.SetExpandedFolders", root, folders);
   },
+  /**
+   * SetFonts saves the interface, reading and code font names. Empty strings
+   * mean the built-in stack; the page decides how a missing font falls back.
+   */
+  setFonts(uiFont: string, readingFont: string, codeFont: string): Promise<void> {
+    return call("Settings.SetFonts", uiFont, readingFont, codeFont);
+  },
   /** SetFormatToolbarVisible remembers the global formatting toolbar switch. */
   setFormatToolbarVisible(visible: boolean): Promise<void> {
     return call("Settings.SetFormatToolbarVisible", visible);
+  },
+  /**
+   * SetHideMarkdownExtension remembers the tree and tab label preference. It
+   * does not change stored paths, rename inputs or file operations.
+   */
+  setHideMarkdownExtension(hidden: boolean): Promise<void> {
+    return call("Settings.SetHideMarkdownExtension", hidden);
   },
   /**
    * SetOutlineVisible remembers the global outline switch. Narrow windows keep
@@ -643,12 +700,23 @@ export const Settings = {
   setOutlineVisible(visible: boolean): Promise<void> {
     return call("Settings.SetOutlineVisible", visible);
   },
+  /** SetShowAllFiles remembers whether the file tree includes non-Markdown files. */
+  setShowAllFiles(visible: boolean): Promise<void> {
+    return call("Settings.SetShowAllFiles", visible);
+  },
   /**
    * SetSidebarWidth saves the sidebar width, clamped to the range the interface
    * supports.
    */
   setSidebarWidth(width: number): Promise<void> {
     return call("Settings.SetSidebarWidth", width);
+  },
+  /**
+   * SetSlashEnabled switches the slash menu for one editor mode. The page can
+   * update one mode without replacing the other two values.
+   */
+  setSlashEnabled(mode: string, enabled: boolean): Promise<void> {
+    return call("Settings.SetSlashEnabled", mode, enabled);
   },
   /** SetTheme saves the theme and makes the native appearance follow it. */
   setTheme(theme: string): Promise<void> {
@@ -689,8 +757,8 @@ export const SingleFileService = {
    * through the file association is accepted; a page cannot grant a path of its
    * own choosing.
    */
-  acceptSingleFile(path: string): Promise<SingleFile> {
-    return call("SingleFileService.AcceptSingleFile", path);
+  acceptSingleFile(path: string, offerID: string): Promise<SingleFile> {
+    return call("SingleFileService.AcceptSingleFile", path, offerID);
   },
   /**
    * ChooseSingleFile shows a Markdown file picker and grants the choice. The
@@ -700,17 +768,21 @@ export const SingleFileService = {
     return call("SingleFileService.ChooseSingleFile");
   },
   /**
-   * DismissOfferedFile forgets a file the system offered but the user chose not
-   * to open. It only removes an offer; it never grants access.
+   * DismissOfferedFile forgets the exact offer the page handled. A newer offer
+   * for the same path keeps its own identity and remains available. It only
+   * removes an offer; it never grants access.
    */
-  dismissOfferedFile(path: string): Promise<void> {
-    return call("SingleFileService.DismissOfferedFile", path);
+  dismissOfferedFile(path: string, offerID: string): Promise<void> {
+    return call("SingleFileService.DismissOfferedFile", path, offerID);
   },
   /** ReadSingleFile returns the exact bytes of a granted file. */
   readSingleFile(path: string): Promise<string> {
     return call("SingleFileService.ReadSingleFile", path);
   },
-  /** ReleaseSingleFile forgets a grant, such as when its tab closes. */
+  /**
+   * ReleaseSingleFile forgets a grant, such as when its tab closes. A pending
+   * system offer is a separate occurrence and is not consumed here.
+   */
   releaseSingleFile(path: string): Promise<void> {
     return call("SingleFileService.ReleaseSingleFile", path);
   },
@@ -794,12 +866,20 @@ export const OpenedFiles = {
   takePendingOpenedFiles(): Promise<string[]> {
     return call("OpenedFiles.TakePendingOpenedFiles");
   },
+  /**
+   * TakePendingOpenedFilesWithOffers returns each path with the offer that
+   * delivered it and clears the queue.
+   */
+  takePendingOpenedFilesWithOffers(): Promise<PendingOpenedFile[]> {
+    return call("OpenedFiles.TakePendingOpenedFilesWithOffers");
+  },
 } as const;
 
 /**
  * NativeMenu shows the native context menus the file tree and tabs assemble.
  * The page chooses the labels and shortcut text; the menu itself, keyboard
- * navigation and platform look come from the system.
+ * navigation and platform look come from the system. It also forwards the
+ * registry's shortcut text to the application menu's Settings item.
  */
 export const NativeMenu = {
   /**
@@ -809,6 +889,14 @@ export const NativeMenu = {
    */
   popupNativeMenu(request: NativeMenuRequest): Promise<string> {
     return call("NativeMenu.PopupNativeMenu", request);
+  },
+  /**
+   * SetSettingsAccelerator copies the page's registry-formatted shortcut onto
+   * the native Settings item. The page owns the registry; Go stores no second
+   * key table.
+   */
+  setSettingsAccelerator(accelerator: string): Promise<void> {
+    return call("NativeMenu.SetSettingsAccelerator", accelerator);
   },
 } as const;
 

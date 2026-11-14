@@ -11,3 +11,11 @@ export function popupNativeMenu(
 ): Promise<string> {
   return NativeMenu.popupNativeMenu(request);
 }
+
+/**
+ * Copies the registry-formatted shortcut onto the native Settings item. Go
+ * owns no key table; the page is the only source.
+ */
+export function setSettingsAccelerator(accelerator: string): Promise<void> {
+  return NativeMenu.setSettingsAccelerator(accelerator);
+}

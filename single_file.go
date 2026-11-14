@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"sync"
 
 	"github.com/egoist/mygo"
@@ -44,17 +45,18 @@ type singleFileGrant struct {
 // Reading or writing a path that was not granted, including another file in
 // the same folder, fails.
 type SingleFileService struct {
-	mu      sync.Mutex
-	grants  map[string]singleFileGrant
-	offered map[string]bool
-	hashes  *diskHashes
+	mu        sync.Mutex
+	grants    map[string]singleFileGrant
+	offered   map[string]string
+	nextOffer uint64
+	hashes    *diskHashes
 }
 
 // NewSingleFileService returns a service with no grants.
 func NewSingleFileService() *SingleFileService {
 	return &SingleFileService{
 		grants:  map[string]singleFileGrant{},
-		offered: map[string]bool{},
+		offered: map[string]string{},
 	}
 }
 
@@ -90,7 +92,7 @@ func (s *SingleFileService) ChooseSingleFile(ctx context.Context) (SingleFileSel
 // confirmed opening it as a single-file tab. Only a path that reached the app
 // through the file association is accepted; a page cannot grant a path of its
 // own choosing.
-func (s *SingleFileService) AcceptSingleFile(path string) (SingleFile, error) {
+func (s *SingleFileService) AcceptSingleFile(path, offerID string) (SingleFile, error) {
 	clean := filepath.Clean(path)
 	if !filepath.IsAbs(clean) {
 		return SingleFile{}, fmt.Errorf("%w: %q", errSingleFileNotGranted, path)
@@ -99,12 +101,12 @@ func (s *SingleFileService) AcceptSingleFile(path string) (SingleFile, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := clean
-	if !s.offered[key] {
+	if s.offered[key] != offerID {
 		if resolved, err := filepath.EvalSymlinks(clean); err == nil {
 			key = resolved
 		}
 	}
-	if !s.offered[key] {
+	if offerID == "" || s.offered[key] != offerID {
 		return SingleFile{}, fmt.Errorf("%w: %q", errSingleFileNotGranted, path)
 	}
 	file, err := resolveSingleFile(key)
@@ -112,9 +114,7 @@ func (s *SingleFileService) AcceptSingleFile(path string) (SingleFile, error) {
 		return SingleFile{}, err
 	}
 	s.grants[file.Path] = singleFileGrant{path: file.Path}
-	delete(s.offered, clean)
-	delete(s.offered, key)
-	delete(s.offered, file.Path)
+	s.deleteOfferID(offerID)
 	return file, nil
 }
 
@@ -179,46 +179,79 @@ func (s *SingleFileService) RevealSingleFile(path string) error {
 	return nil
 }
 
-// ReleaseSingleFile forgets a grant, such as when its tab closes.
+// ReleaseSingleFile forgets a grant, such as when its tab closes. A pending
+// system offer is a separate occurrence and is not consumed here.
 func (s *SingleFileService) ReleaseSingleFile(path string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	clean := filepath.Clean(path)
 	delete(s.grants, clean)
-	delete(s.offered, clean)
 	if resolved, err := filepath.EvalSymlinks(clean); err == nil {
 		delete(s.grants, resolved)
-		delete(s.offered, resolved)
 	}
 }
 
-// offer remembers a file the system asked Nicole to open. It grants nothing:
-// the page must confirm it with AcceptSingleFile.
-func (s *SingleFileService) offer(path string) {
+// offer remembers a file the system asked Nicole to open and returns the
+// identity of this occurrence. It grants nothing: the page must confirm that
+// exact offer with AcceptSingleFile.
+func (s *SingleFileService) offer(path string) string {
 	clean := filepath.Clean(path)
 	if !filepath.IsAbs(clean) {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nextOffer++
+	offerID := strconv.FormatUint(s.nextOffer, 10)
+	resolved := clean
+	if target, err := filepath.EvalSymlinks(clean); err == nil {
+		resolved = target
+	}
+	s.offered[clean] = offerID
+	s.offered[resolved] = offerID
+	// A new offer through another alias supersedes all older aliases of the
+	// same resolved file, so an old confirmation cannot consume it.
+	for existing := range s.offered {
+		if existing == clean || existing == resolved {
+			continue
+		}
+		if target, err := filepath.EvalSymlinks(existing); err == nil &&
+			target == resolved {
+			s.offered[existing] = offerID
+		}
+	}
+	return offerID
+}
+
+// DismissOfferedFile forgets the exact offer the page handled. A newer offer
+// for the same path keeps its own identity and remains available. It only
+// removes an offer; it never grants access.
+func (s *SingleFileService) DismissOfferedFile(path, offerID string) {
+	clean := filepath.Clean(path)
+	if !filepath.IsAbs(clean) || offerID == "" {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.offered[clean] = true
-	if resolved, err := filepath.EvalSymlinks(clean); err == nil {
-		s.offered[resolved] = true
+	key := clean
+	if s.offered[key] != offerID {
+		if resolved, err := filepath.EvalSymlinks(clean); err == nil {
+			key = resolved
+		}
 	}
-}
-
-// DismissOfferedFile forgets a file the system offered but the user chose not
-// to open. It only removes an offer; it never grants access.
-func (s *SingleFileService) DismissOfferedFile(path string) {
-	clean := filepath.Clean(path)
-	if !filepath.IsAbs(clean) {
+	if s.offered[key] != offerID {
 		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.offered, clean)
-	if resolved, err := filepath.EvalSymlinks(clean); err == nil {
-		delete(s.offered, resolved)
+	s.deleteOfferID(offerID)
+}
+
+// deleteOfferID removes every alias of one offer occurrence. The caller holds
+// s.mu.
+func (s *SingleFileService) deleteOfferID(offerID string) {
+	for path, offeredID := range s.offered {
+		if offeredID == offerID {
+			delete(s.offered, path)
+		}
 	}
 }
 

@@ -16,6 +16,11 @@ const mocks = vi.hoisted(() => ({
   setTheme: vi.fn(),
   setEditorMode: vi.fn(),
   setOutlineVisible: vi.fn(),
+  setFormatToolbarVisible: vi.fn(),
+  setFonts: vi.fn(),
+  setShowAllFiles: vi.fn(),
+  setHideMarkdownExtension: vi.fn(),
+  setSlashEnabled: vi.fn(),
   setSidebarWidth: vi.fn(),
   setExpandedFolders: vi.fn(),
   addRecentFolder: vi.fn(),
@@ -27,7 +32,9 @@ const mocks = vi.hoisted(() => ({
   writeSingleFile: vi.fn(),
   releaseSingleFile: vi.fn(),
   popupNativeMenu: vi.fn(),
+  setSettingsAccelerator: vi.fn(),
   takePendingOpenedFiles: vi.fn(),
+  takePendingOpenedFilesWithOffers: vi.fn(),
   appOpenFileOn: vi.fn(),
   saveRecovery: vi.fn(),
   deleteRecovery: vi.fn(),
@@ -55,6 +62,11 @@ vi.mock("./mygo", () => ({
     setTheme: mocks.setTheme,
     setEditorMode: mocks.setEditorMode,
     setOutlineVisible: mocks.setOutlineVisible,
+    setFormatToolbarVisible: mocks.setFormatToolbarVisible,
+    setFonts: mocks.setFonts,
+    setShowAllFiles: mocks.setShowAllFiles,
+    setHideMarkdownExtension: mocks.setHideMarkdownExtension,
+    setSlashEnabled: mocks.setSlashEnabled,
     setSidebarWidth: mocks.setSidebarWidth,
     setExpandedFolders: mocks.setExpandedFolders,
     addRecentFolder: mocks.addRecentFolder,
@@ -70,9 +82,11 @@ vi.mock("./mygo", () => ({
   },
   NativeMenu: {
     popupNativeMenu: mocks.popupNativeMenu,
+    setSettingsAccelerator: mocks.setSettingsAccelerator,
   },
   OpenedFiles: {
     takePendingOpenedFiles: mocks.takePendingOpenedFiles,
+    takePendingOpenedFilesWithOffers: mocks.takePendingOpenedFilesWithOffers,
   },
   Recovery: {
     save: mocks.saveRecovery,
@@ -98,8 +112,12 @@ import {
   trashEntry,
 } from "./files";
 import { listSnippets, openFolder, pickFolder } from "./workspace";
-import { popupNativeMenu } from "./menu";
-import { onOpenFile, takePendingOpenedFiles } from "./open-file";
+import { popupNativeMenu, setSettingsAccelerator } from "./menu";
+import {
+  onOpenFile,
+  takePendingOpenedEntries,
+  takePendingOpenedFiles,
+} from "./open-file";
 import {
   acceptSingleFile,
   chooseSingleFile,
@@ -122,8 +140,13 @@ import {
   removeRecentFolder,
   setEditorMode,
   setExpandedFolders,
+  setFonts,
+  setFormatToolbarVisible,
+  setHideMarkdownExtension,
   setOutlineVisible,
+  setShowAllFiles,
   setSidebarWidth,
+  setSlashEnabled,
   setTheme,
 } from "./settings";
 
@@ -181,6 +204,9 @@ beforeEach(() => {
   mocks.releaseSingleFile.mockResolvedValue(undefined);
   mocks.popupNativeMenu.mockResolvedValue("new-file");
   mocks.takePendingOpenedFiles.mockResolvedValue(["/tmp/note.md"]);
+  mocks.takePendingOpenedFilesWithOffers.mockResolvedValue([
+    { path: "/tmp/note.md", offerId: "offer-1" },
+  ]);
   mocks.appOpenFileOn.mockReturnValue(() => {});
   mocks.saveRecovery.mockResolvedValue("0123456789abcdef");
   mocks.deleteRecovery.mockResolvedValue(undefined);
@@ -249,6 +275,11 @@ describe("service wrappers", () => {
     await setTheme("light");
     await setEditorMode("source");
     await setOutlineVisible(true);
+    await setFormatToolbarVisible(true);
+    await setFonts("Interface", "Reading", "Code");
+    await setShowAllFiles(false);
+    await setHideMarkdownExtension(true);
+    await setSlashEnabled("immersive", false);
     await setSidebarWidth(300);
     await setExpandedFolders("/notes", ["a"]);
     await addRecentFolder("/notes");
@@ -259,6 +290,11 @@ describe("service wrappers", () => {
     expect(mocks.setTheme).toHaveBeenCalledWith("light");
     expect(mocks.setEditorMode).toHaveBeenCalledWith("source");
     expect(mocks.setOutlineVisible).toHaveBeenCalledWith(true);
+    expect(mocks.setFormatToolbarVisible).toHaveBeenCalledWith(true);
+    expect(mocks.setFonts).toHaveBeenCalledWith("Interface", "Reading", "Code");
+    expect(mocks.setShowAllFiles).toHaveBeenCalledWith(false);
+    expect(mocks.setHideMarkdownExtension).toHaveBeenCalledWith(true);
+    expect(mocks.setSlashEnabled).toHaveBeenCalledWith("immersive", false);
     expect(mocks.setSidebarWidth).toHaveBeenCalledWith(300);
     expect(mocks.setExpandedFolders).toHaveBeenCalledWith("/notes", ["a"]);
     expect(mocks.addRecentFolder).toHaveBeenCalledWith("/notes");
@@ -267,15 +303,21 @@ describe("service wrappers", () => {
 
   it("forwards single-file calls", async () => {
     await chooseSingleFile();
-    await acceptSingleFile("/tmp/note.md");
-    await dismissOfferedFile("/tmp/note.md");
+    await acceptSingleFile("/tmp/note.md", "offer-1");
+    await dismissOfferedFile("/tmp/note.md", "offer-1");
     await expect(readSingleFile("/tmp/note.md")).resolves.toBe("text");
     await writeSingleFile("/tmp/note.md", "new");
     await releaseSingleFile("/tmp/note.md");
 
     expect(mocks.chooseSingleFile).toHaveBeenCalledOnce();
-    expect(mocks.acceptSingleFile).toHaveBeenCalledWith("/tmp/note.md");
-    expect(mocks.dismissOfferedFile).toHaveBeenCalledWith("/tmp/note.md");
+    expect(mocks.acceptSingleFile).toHaveBeenCalledWith(
+      "/tmp/note.md",
+      "offer-1",
+    );
+    expect(mocks.dismissOfferedFile).toHaveBeenCalledWith(
+      "/tmp/note.md",
+      "offer-1",
+    );
     expect(mocks.readSingleFile).toHaveBeenCalledWith("/tmp/note.md");
     expect(mocks.writeSingleFile).toHaveBeenCalledWith("/tmp/note.md", "new");
     expect(mocks.releaseSingleFile).toHaveBeenCalledWith("/tmp/note.md");
@@ -289,6 +331,8 @@ describe("service wrappers", () => {
     };
     await expect(popupNativeMenu(request)).resolves.toBe("new-file");
     expect(mocks.popupNativeMenu).toHaveBeenCalledWith(request);
+    await setSettingsAccelerator("Cmd+,");
+    expect(mocks.setSettingsAccelerator).toHaveBeenCalledWith("Cmd+,");
 
     const handler = vi.fn();
     const off = onOpenFile(handler);
@@ -303,6 +347,10 @@ describe("service wrappers", () => {
 
     await expect(takePendingOpenedFiles()).resolves.toEqual(["/tmp/note.md"]);
     expect(mocks.takePendingOpenedFiles).toHaveBeenCalledOnce();
+    await expect(takePendingOpenedEntries()).resolves.toEqual([
+      { path: "/tmp/note.md", offerId: "offer-1" },
+    ]);
+    expect(mocks.takePendingOpenedFilesWithOffers).toHaveBeenCalledOnce();
   });
 });
 

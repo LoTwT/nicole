@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"strings"
 	"sync"
 
 	"github.com/egoist/mygo"
@@ -25,8 +26,18 @@ func appMenu(dev bool) *mygo.Menu {
 	appItems := []*mygo.MenuItem{
 		{Role: mygo.RoleAbout},
 		updater.MenuItem(),
-		mygo.Separator(),
 	}
+	if runtime.GOOS == "darwin" {
+		// The label and shortcut belong to the page's command registry. The
+		// page sends the shortcut text after it reads the registry; this item
+		// only forwards the command like the File menu does.
+		appItems = append(appItems, &mygo.MenuItem{
+			ID:    "app.settings",
+			Label: "设置",
+			Click: pageRunCommand("app.settings"),
+		})
+	}
+	appItems = append(appItems, mygo.Separator())
 	if runtime.GOOS == "darwin" {
 		appItems = append(appItems,
 			&mygo.MenuItem{Role: mygo.RoleHide},
@@ -199,8 +210,34 @@ type NativeMenuRequest struct {
 
 // NativeMenu shows the native context menus the file tree and tabs assemble.
 // The page chooses the labels and shortcut text; the menu itself, keyboard
-// navigation and platform look come from the system.
-type NativeMenu struct{}
+// navigation and platform look come from the system. It also forwards the
+// registry's shortcut text to the application menu's Settings item.
+type NativeMenu struct {
+	settingsItem *mygo.MenuItem
+}
+
+// NewNativeMenu returns the service bound to the application menu.
+func NewNativeMenu(menu *mygo.Menu) NativeMenu {
+	if menu == nil {
+		return NativeMenu{}
+	}
+	return NativeMenu{settingsItem: menu.ItemByID("app.settings")}
+}
+
+// SetSettingsAccelerator copies the page's registry-formatted shortcut onto
+// the native Settings item. The page owns the registry; Go stores no second
+// key table.
+func (m NativeMenu) SetSettingsAccelerator(accelerator string) error {
+	if m.settingsItem == nil {
+		return errors.New("menu: the Settings menu item is unavailable")
+	}
+	accelerator = strings.TrimSpace(accelerator)
+	if accelerator == "" {
+		return errors.New("menu: the Settings accelerator is empty")
+	}
+	m.settingsItem.SetAccelerator(accelerator)
+	return nil
+}
 
 // PopupNativeMenu shows the menu and returns the ID of the chosen item, or an
 // empty string when the menu was dismissed. Disabled items and separators

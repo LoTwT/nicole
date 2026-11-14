@@ -43,6 +43,7 @@ export interface AppCommandActions {
   setFormatToolbarVisible(visible: boolean): void | Promise<void>;
   setMode(mode: CommandEditorMode): void | Promise<void>;
   toggleTheme(): void | Promise<void>;
+  openSettings(): void | Promise<void>;
   closeActiveTab(): void | Promise<void>;
   closeWorkspace(): void | Promise<void>;
   collapseAllFolders(): void | Promise<void>;

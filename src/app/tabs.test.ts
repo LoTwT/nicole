@@ -8,12 +8,12 @@ import {
   tabBadge,
   tabCloseProblems,
   tabTooltip,
-  type TabModel,
+  type DocumentTabModel,
 } from "./tabs";
 
 let nextId = 1;
 
-function model(overrides: Partial<TabModel> = {}): TabModel {
+function model(overrides: Partial<DocumentTabModel> = {}): DocumentTabModel {
   return {
     id: nextId++,
     kind: "workspace",

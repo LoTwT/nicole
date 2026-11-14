@@ -51,6 +51,11 @@ const mocks = vi.hoisted(() => ({
   setEditorMode: vi.fn(),
   setOutlineVisible: vi.fn(),
   setFormatToolbarVisible: vi.fn(),
+  setFonts: vi.fn(),
+  setShowAllFiles: vi.fn(),
+  setHideMarkdownExtension: vi.fn(),
+  setSlashEnabled: vi.fn(),
+  setSettingsAccelerator: vi.fn(),
   setSidebarWidth: vi.fn(),
   setExpandedFolders: vi.fn(),
   addRecentFolder: vi.fn(),
@@ -71,6 +76,7 @@ const mocks = vi.hoisted(() => ({
   restoreRecoverySingleFile: vi.fn(),
   onOpenFile: vi.fn(),
   takePendingOpenedFiles: vi.fn(),
+  takePendingOpenedEntries: vi.fn(),
   onWindowFileDrop: vi.fn(),
   pasteImage: vi.fn(),
   importImages: vi.fn(),
@@ -104,7 +110,10 @@ vi.mock("./services/files", () => ({
   revealEntry: mocks.revealEntry,
   revealImage: mocks.revealImage,
 }));
-vi.mock("./services/menu", () => ({ popupNativeMenu: mocks.popupNativeMenu }));
+vi.mock("./services/menu", () => ({
+  popupNativeMenu: mocks.popupNativeMenu,
+  setSettingsAccelerator: mocks.setSettingsAccelerator,
+}));
 vi.mock("./services/clipboard", () => ({ copyText: mocks.copyText }));
 vi.mock("./services/settings", () => ({
   getSettings: mocks.getSettings,
@@ -113,6 +122,10 @@ vi.mock("./services/settings", () => ({
   setEditorMode: mocks.setEditorMode,
   setOutlineVisible: mocks.setOutlineVisible,
   setFormatToolbarVisible: mocks.setFormatToolbarVisible,
+  setFonts: mocks.setFonts,
+  setShowAllFiles: mocks.setShowAllFiles,
+  setHideMarkdownExtension: mocks.setHideMarkdownExtension,
+  setSlashEnabled: mocks.setSlashEnabled,
   setSidebarWidth: mocks.setSidebarWidth,
   setExpandedFolders: mocks.setExpandedFolders,
   addRecentFolder: mocks.addRecentFolder,
@@ -141,6 +154,7 @@ vi.mock("./services/recovery", () => ({
 vi.mock("./services/open-file", () => ({
   onOpenFile: mocks.onOpenFile,
   takePendingOpenedFiles: mocks.takePendingOpenedFiles,
+  takePendingOpenedEntries: mocks.takePendingOpenedEntries,
 }));
 vi.mock("./services/assets", () => ({
   onWindowFileDrop: mocks.onWindowFileDrop,
@@ -212,7 +226,34 @@ let dropHandler: ((drop: import("./services/mygo").AssetDrop) => void) | null =
   null;
 let closeHandler: ((token: number) => Promise<void>) | null = null;
 let openHandler: (() => void) | null = null;
-let pendingFiles: string[] = [];
+interface TestOpenedEntry {
+  path: string;
+  offerId: string;
+}
+let pendingFiles: Array<string | TestOpenedEntry> = [];
+let openedOfferSequence = 0;
+
+function nextTestOfferId(): string {
+  openedOfferSequence += 1;
+  return `test-offer-${openedOfferSequence}`;
+}
+
+function takePendingOpenEntries(): TestOpenedEntry[] {
+  const items = pendingFiles;
+  pendingFiles = [];
+  return items.map((item) =>
+    typeof item === "string"
+      ? { path: item, offerId: nextTestOfferId() }
+      : item,
+  );
+}
+
+function pendingOpenDrainCalls(): number {
+  return (
+    mocks.takePendingOpenedFiles.mock.calls.length +
+    mocks.takePendingOpenedEntries.mock.calls.length
+  );
+}
 
 interface FakeSearchSession {
   request: SearchRequest;
@@ -822,6 +863,7 @@ beforeEach(async () => {
   localStorage.clear();
   tree = [];
   pendingFiles = [];
+  openedOfferSequence = 0;
   openFileText = "";
   watchEvents = null;
   dropHandler = null;
@@ -878,6 +920,11 @@ beforeEach(async () => {
   mocks.setEditorMode.mockResolvedValue(undefined);
   mocks.setOutlineVisible.mockResolvedValue(undefined);
   mocks.setFormatToolbarVisible.mockResolvedValue(undefined);
+  mocks.setFonts.mockResolvedValue(undefined);
+  mocks.setShowAllFiles.mockResolvedValue(undefined);
+  mocks.setHideMarkdownExtension.mockResolvedValue(undefined);
+  mocks.setSlashEnabled.mockResolvedValue(undefined);
+  mocks.setSettingsAccelerator.mockResolvedValue(undefined);
   mocks.setSidebarWidth.mockResolvedValue(undefined);
   mocks.setExpandedFolders.mockResolvedValue(undefined);
   mocks.addRecentFolder.mockResolvedValue(undefined);
@@ -901,11 +948,12 @@ beforeEach(async () => {
     path: `/tmp/${id}.md`,
     name: `${id}.md`,
   }));
-  mocks.takePendingOpenedFiles.mockImplementation(async () => {
-    const files = pendingFiles;
-    pendingFiles = [];
-    return files;
-  });
+  mocks.takePendingOpenedFiles.mockImplementation(async () =>
+    takePendingOpenEntries().map((entry) => entry.path),
+  );
+  mocks.takePendingOpenedEntries.mockImplementation(async () =>
+    takePendingOpenEntries(),
+  );
   mocks.onOpenFile.mockImplementation((handler: () => void) => {
     openHandler = handler;
     return () => {
@@ -968,11 +1016,15 @@ beforeEach(async () => {
   host = document.querySelector<HTMLElement>("#app")!;
   app = createApp(App);
   app.mount(host);
-  // Startup ends with TakePendingOpenedFiles. Waiting for it here keeps the
-  // real-clock startup out of tests that then install fake timers or swap the
-  // mocks; otherwise the old instance keeps reading the new values.
+  // Startup ends with a pending-opened-files drain. Waiting for it here keeps
+  // the real-clock startup out of tests that then install fake timers or swap
+  // the mocks; otherwise the old instance keeps reading the new values.
   await vi.waitFor(
-    () => expect(mocks.takePendingOpenedFiles).toHaveBeenCalled(),
+    () =>
+      expect(
+        mocks.takePendingOpenedFiles.mock.calls.length +
+          mocks.takePendingOpenedEntries.mock.calls.length,
+      ).toBeGreaterThan(0),
     { interval: 1, timeout: 4000 },
   );
 });
@@ -3304,7 +3356,7 @@ describe("single files and dialogs", () => {
     dialogButton("取消").click();
     await settle();
 
-    expect(mocks.dismissOfferedFile).toHaveBeenCalledWith("/tmp/single.md");
+    expect(mocks.dismissOfferedFile.mock.calls.at(-1)?.[0]).toBe("/tmp/single.md");
     expect(mocks.acceptSingleFile).not.toHaveBeenCalled();
   });
 
@@ -3318,7 +3370,7 @@ describe("single files and dialogs", () => {
     dialogButton("只打开这个文件").click();
     await settle();
 
-    expect(mocks.acceptSingleFile).toHaveBeenCalledWith("/tmp/single.md");
+    expect(mocks.acceptSingleFile.mock.calls.at(-1)?.[0]).toBe("/tmp/single.md");
     expect(mocks.readSingleFile).toHaveBeenCalledWith("/tmp/single.md");
     expect(host.textContent).toContain("这个文件不在已打开的文件夹中");
     expect(host.querySelector('[role="tab"]')?.textContent).toContain("single.md");
@@ -3423,7 +3475,7 @@ describe("single files and dialogs", () => {
     await settle();
 
     expect(dialog()).toBeNull();
-    expect(mocks.acceptSingleFile).toHaveBeenCalledWith("/tmp/single.md");
+    expect(mocks.acceptSingleFile.mock.calls.at(-1)?.[0]).toBe("/tmp/single.md");
     expect(editorView().state.doc.toString()).toBe("# Single\n");
     expect(host.querySelectorAll('[role="tab"]').length).toBe(2);
   });
@@ -3711,7 +3763,7 @@ describe("theme and accessibility", () => {
     expect(editorView().state.doc.toString()).toBe("# A\n");
   });
 
-  it("skips unavailable placeholder shortcuts", async () => {
+  it("opens the settings tab from Mod-, without an editor command", async () => {
     await openFile();
     const settings = new KeyboardEvent("keydown", {
       key: ",",
@@ -3721,7 +3773,10 @@ describe("theme and accessibility", () => {
       cancelable: true,
     });
     window.dispatchEvent(settings);
-    expect(settings.defaultPrevented).toBe(false);
+    await settle();
+    expect(settings.defaultPrevented).toBe(true);
+    expect(tabNamed("设置")).toBeTruthy();
+    expect(document.querySelector("[data-settings-view]")).not.toBeNull();
   });
 
   it("swallows tab shortcuts when their commands cannot run", async () => {
@@ -4356,8 +4411,8 @@ async function setupWorkspace(
   await openFolder();
 }
 
-async function openPath(path: string): Promise<void> {
-  pendingFiles = [path];
+async function openPath(path: string, offerId?: string): Promise<void> {
+  pendingFiles = [offerId === undefined ? path : { path, offerId }];
   openHandler?.();
   await settle();
 }
@@ -4372,6 +4427,47 @@ function tabNamed(name: string): HTMLElement {
   );
   if (!found) throw new Error(`tab ${name} not found`);
   return found;
+}
+
+function settingsTabs(): HTMLElement[] {
+  return tabElements().filter((tab) =>
+    (tab.textContent ?? "").replace(/\s+/g, "").startsWith("设置"),
+  );
+}
+
+function settingsView(): HTMLElement | null {
+  return host.querySelector<HTMLElement>("[data-settings-view]");
+}
+
+async function openSettingsFromShortcut() {
+  pressAppShortcut(",");
+  await settle();
+}
+
+function settingsCheckbox(group: string, index: number): HTMLInputElement {
+  const boxes = host.querySelectorAll<HTMLInputElement>(
+    `[data-settings-group="${group}"] input[type=checkbox]`,
+  );
+  const box = boxes[index];
+  if (!box) throw new Error(`settings checkbox ${group}[${index}] not found`);
+  return box;
+}
+
+function settingsFontInput(name: "ui" | "reading" | "code"): HTMLInputElement {
+  const input = host.querySelector<HTMLInputElement>(
+    `#settings-${name}-font`,
+  );
+  if (!input) throw new Error(`${name} font input not found`);
+  return input;
+}
+
+function typeSettingsFont(
+  name: "ui" | "reading" | "code",
+  value: string,
+): void {
+  const input = settingsFontInput(name);
+  input.value = value;
+  input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
 describe("multi-tab shell", () => {
@@ -6284,7 +6380,7 @@ describe("command palette", () => {
       true,
     );
     expect(paletteOptions().some((item) => item.textContent?.includes("设置"))).toBe(
-      false,
+      true,
     );
     expect(
       paletteOptions().some((item) => item.textContent?.includes("全文搜索")),
@@ -8732,14 +8828,15 @@ describe("crash recovery", () => {
   it("waits for the recovery decision before handling an opened file", async () => {
     await mountWithRecovery([recoveryItem()]);
     mocks.takePendingOpenedFiles.mockClear();
+    mocks.takePendingOpenedEntries.mockClear();
     pendingFiles = ["/notes/b.md"];
     openHandler?.();
     await settle();
-    expect(mocks.takePendingOpenedFiles).not.toHaveBeenCalled();
+    expect(pendingOpenDrainCalls()).toBe(0);
 
     dialogButton("逐个查看").click();
     await settle();
-    expect(mocks.takePendingOpenedFiles).toHaveBeenCalled();
+    expect(pendingOpenDrainCalls()).toBeGreaterThan(0);
   });
 
   it("does not delete a copy when new input follows a successful save", async () => {
@@ -11494,5 +11591,1275 @@ describe("link and image editing", () => {
     await nextTask();
     expect(linkImageDialog()).toBeNull();
     expect(view.state.selection.main.head).toBe(0);
+  });
+});
+
+describe("settings tab", () => {
+  it("opens one global settings tab from every entry without a workspace", async () => {
+    await mountAppWithApi();
+    await openSettingsFromShortcut();
+    expect(settingsTabs()).toHaveLength(1);
+    expect(settingsTabs()[0]!.getAttribute("title")).toBe("设置");
+    expect(settingsView()).not.toBeNull();
+    expect(mocks.setSettingsAccelerator).toHaveBeenCalledWith("Cmd+,");
+
+    await openSettingsFromShortcut();
+    window.dispatchEvent(
+      new CustomEvent("nicole:run-command", { detail: "app.settings" }),
+    );
+    await settle();
+    expect(settingsTabs()).toHaveLength(1);
+
+    pressAppShortcut("P", true);
+    await settle();
+    expect(paletteOffers("设置")).toBe(true);
+    const settingsCommand = paletteOptions().find((item) =>
+      item.textContent?.includes("设置"),
+    )!;
+    settingsCommand.click();
+    await settle();
+    expect(settingsTabs()).toHaveLength(1);
+
+    pressAppShortcut("w");
+    await settle();
+    expect(settingsTabs()).toHaveLength(0);
+    await openFolder();
+    sidebarButton("设置").click();
+    await settle();
+    expect(settingsTabs()).toHaveLength(1);
+    expect(settingsView()).not.toBeNull();
+  });
+
+  it("orders settings with Ctrl+Tab and includes it in close-other tabs", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    await openPath("/notes/a.md");
+    await openSettingsFromShortcut();
+    expect(settingsTabs()[0]!.getAttribute("aria-selected")).toBe("true");
+
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Tab",
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await settle();
+    expect(tabNamed("a.md").getAttribute("aria-selected")).toBe("true");
+
+    mocks.popupNativeMenu.mockResolvedValue("close-other-tabs");
+    tabNamed("a.md").dispatchEvent(
+      new MouseEvent("contextmenu", {
+        bubbles: true,
+        cancelable: true,
+        clientX: 10,
+        clientY: 10,
+      }),
+    );
+    await settle();
+    expect(settingsTabs()).toHaveLength(0);
+    expect(tabNamed("a.md")).toBeTruthy();
+  });
+
+  it("keeps settings across root switches and closing the workspace while filtering saved layouts", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    await openPath("/notes/a.md");
+    await openSettingsFromShortcut();
+    expect(settingsTabs()).toHaveLength(1);
+
+    mocks.pickFolder.mockResolvedValue({ path: "/other", canceled: false });
+    mocks.openFolder.mockResolvedValue(folder("/other", 2));
+    pressAppShortcut("o");
+    await settle();
+    dialogButton("切换").click();
+    await settle();
+    expect(settingsTabs()).toHaveLength(1);
+    expect(settingsView()).not.toBeNull();
+    expect(tabElements().map((tab) => tab.textContent?.trim())).toContain(
+      "设置",
+    );
+
+    const savedTabs = mocks.saveWorkspaceTabs.mock.calls.flatMap(
+      (call) => call[1] as { kind: string }[],
+    );
+    expect(savedTabs.every((tab) => tab.kind !== "settings")).toBe(true);
+
+    window.dispatchEvent(
+      new CustomEvent("nicole:run-command", {
+        detail: "app.close-workspace",
+      }),
+    );
+    await settle();
+    expect(settingsTabs()).toHaveLength(1);
+    expect(settingsView()).not.toBeNull();
+
+    pressAppShortcut("w");
+    await settle();
+    expect(settingsTabs()).toHaveLength(0);
+    expect(button("打开文件夹")).toBeTruthy();
+  });
+
+  it("hides editor chrome and leaves the background document untouched", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    await openPath("/notes/a.md");
+    const view = editorView();
+    view.dispatch({
+      changes: { from: view.state.doc.length, insert: "typed\n" },
+      userEvent: "input.type",
+    });
+    view.dispatch({ selection: { anchor: 3, head: 6 } });
+    await openSettingsFromShortcut();
+
+    expect(host.querySelector(".cm-editor")).toBeNull();
+    expect(buttons("源码").filter((item) => item.closest("header"))).toHaveLength(
+      0,
+    );
+    expect(outlineToggle()).toBeNull();
+    expect(host.querySelector("footer")?.textContent?.trim()).toBe("");
+    const saved = pressAppShortcut("s");
+    await settle();
+    expect(saved.defaultPrevented).toBe(true);
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+
+    pressAppShortcut("w");
+    await settle();
+    const restored = editorView();
+    expect(restored.state.doc.toString()).toBe("# A\ntyped\n");
+    expect(restored.state.selection.main.from).toBe(3);
+    expect(restored.state.selection.main.to).toBe(6);
+  });
+
+  it("applies font text immediately and keeps selection and undo history", async () => {
+    await setupWorkspace({ "a.md": "hello\n" });
+    await openPath("/notes/a.md");
+    typeIntoEditor("X");
+    await settle();
+    const before = editorView();
+    before.dispatch({ selection: { anchor: 1, head: 4 } });
+    await openSettingsFromShortcut();
+    typeSettingsFont("reading", "Songti SC");
+    expect(
+      document.documentElement.style.getPropertyValue("--app-font-reading"),
+    ).toContain('"Songti SC"');
+    await vi.waitFor(() =>
+      expect(mocks.setFonts).toHaveBeenCalledWith("", "Songti SC", ""),
+    );
+
+    pressAppShortcut("w");
+    await settle();
+    const restored = editorView();
+    expect(restored.state.selection.main.from).toBe(1);
+    expect(restored.state.selection.main.to).toBe(4);
+    expect(restored.state.doc.toString()).toContain("X");
+    pressMod("z", "KeyZ", "macos");
+    await settle();
+    expect(restored.state.doc.toString()).not.toContain("X");
+  });
+
+  it("closes the slash menu for a disabled mode without affecting another mode", async () => {
+    await setupWorkspace({ "a.md": "\n" });
+    await openPath("/notes/a.md");
+    await openSettingsFromShortcut();
+    settingsCheckbox("editing", 1).click();
+    await settle();
+    expect(mocks.setSlashEnabled).toHaveBeenCalledWith("live", false);
+    pressAppShortcut("w");
+    await settle();
+
+    editorView().dispatch({ selection: { anchor: 0 } });
+    typeSlashAtEnd();
+    await settle();
+    expect(slashMenuElement()).toBeNull();
+
+    const immersive = buttons("沉浸").find((item) => item.closest("header"));
+    expect(immersive).toBeTruthy();
+    immersive!.click();
+    await settle();
+    expect(immersive!.getAttribute("aria-pressed")).toBe("true");
+    const ready = editorView();
+    ready.dispatch({
+      changes: { from: 0, to: ready.state.doc.length, insert: "\n" },
+      selection: { anchor: 0 },
+    });
+    typeSlashAtEnd();
+    await settle();
+    expect(slashMenuElement()).not.toBeNull();
+  });
+
+  it("keeps late init from replacing user choices and writes the last font intent", async () => {
+    const loaded = deferred<Record<string, unknown>>();
+    mocks.getSettings.mockImplementation(() => loaded.promise);
+    await mountAppWithApi();
+    await openSettingsFromShortcut();
+
+    const theme = host.querySelector<HTMLSelectElement>("#settings-theme")!;
+    theme.value = "dark";
+    theme.dispatchEvent(new Event("change"));
+    const showAll = settingsCheckbox("file-tree", 0);
+    showAll.checked = false;
+    showAll.dispatchEvent(new Event("change"));
+    typeSettingsFont("reading", "First");
+    typeSettingsFont("reading", "Second");
+
+    loaded.resolve({
+      theme: "system",
+      editorMode: "source",
+      sidebarWidth: 252,
+      recentFolders: [],
+      expandedFolders: {},
+      showAllFiles: true,
+      hideMarkdownExtension: true,
+      readingFont: "Stale",
+      slashEnabled: { live: false, immersive: true, source: true },
+    });
+    await settle();
+    expect(theme.value).toBe("dark");
+    expect(showAll.checked).toBe(false);
+    expect(settingsFontInput("reading").value).toBe("Second");
+    expect(settingsCheckbox("file-tree", 1).checked).toBe(true);
+    expect(
+      host.querySelector<HTMLInputElement>('[data-slash-mode="live"]')!.checked,
+    ).toBe(false);
+
+    await vi.waitFor(() =>
+      expect(mocks.setFonts).toHaveBeenCalledWith("", "Second", ""),
+    );
+    const fontCalls = mocks.setFonts.mock.calls.length;
+    typeSettingsFont("reading", "Third");
+    typeSettingsFont("reading", "Fourth");
+    await vi.waitFor(() => expect(mocks.setFonts).toHaveBeenCalledTimes(fontCalls + 1));
+    expect(mocks.setFonts).toHaveBeenLastCalledWith("", "Fourth", "");
+  });
+
+  it("does not let an older failed write undo a newer preference intent", async () => {
+    await openSettingsFromShortcut();
+    const showAll = settingsCheckbox("file-tree", 0);
+    mocks.setShowAllFiles
+      .mockRejectedValueOnce(new Error("readonly"))
+      .mockResolvedValueOnce(undefined);
+    showAll.checked = false;
+    showAll.dispatchEvent(new Event("change"));
+    showAll.checked = true;
+    showAll.dispatchEvent(new Event("change"));
+    await settle();
+    expect(mocks.setShowAllFiles).toHaveBeenNthCalledWith(1, false);
+    expect(mocks.setShowAllFiles).toHaveBeenNthCalledWith(2, true);
+    expect(settingsCheckbox("file-tree", 0).checked).toBe(true);
+  });
+
+  it("reverts a failed settings write and reports it once", async () => {
+    await openSettingsFromShortcut();
+    const showAll = settingsCheckbox("file-tree", 0);
+    mocks.setShowAllFiles.mockRejectedValueOnce(new Error("readonly"));
+    showAll.checked = false;
+    showAll.dispatchEvent(new Event("change"));
+    await settle();
+    await vi.waitFor(() =>
+      expect(host.textContent).toContain("保存设置失败"),
+    );
+    expect(settingsCheckbox("file-tree", 0).checked).toBe(true);
+    expect(mocks.setShowAllFiles).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels a batch close atomically with settings and dirty documents", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    await openPath("/notes/a.md");
+    typeIntoEditor("dirty");
+    await openSettingsFromShortcut();
+    tabNamed("a.md").click();
+    await settle();
+    mocks.writeFile.mockRejectedValue(new Error("readonly"));
+    mocks.popupNativeMenu.mockResolvedValue("close-all-tabs");
+    tabNamed("a.md").dispatchEvent(
+      new MouseEvent("contextmenu", {
+        bubbles: true,
+        cancelable: true,
+        clientX: 10,
+        clientY: 10,
+      }),
+    );
+    await settle();
+    expect(dialog()).not.toBeNull();
+    dialogButton("取消").click();
+    await settle();
+    expect(tabNamed("a.md")).toBeTruthy();
+    expect(tabNamed("设置")).toBeTruthy();
+    expect(editorView().state.doc.toString()).toContain("dirty");
+  });
+
+  it("E4 R1 fix: keeps cross-control writes and the toolbar command in queue order", async () => {
+    await openSettingsFromShortcut();
+    const gate = deferred<void>();
+    const effects: string[] = [];
+    mocks.setTheme.mockImplementation(async () => {
+      await gate.promise;
+      effects.push("theme");
+    });
+    mocks.setShowAllFiles.mockImplementation(async () => {
+      effects.push("tree");
+    });
+    mocks.setFonts.mockImplementation(async () => {
+      effects.push("fonts");
+    });
+    mocks.setFormatToolbarVisible.mockImplementation(async () => {
+      effects.push("toolbar");
+    });
+    vi.useFakeTimers();
+    const theme = host.querySelector<HTMLSelectElement>("#settings-theme")!;
+    theme.value = "dark";
+    theme.dispatchEvent(new Event("change"));
+    settingsCheckbox("file-tree", 0).click();
+    typeSettingsFont("reading", "New Reading");
+    await vi.advanceTimersByTimeAsync(350);
+    window.dispatchEvent(
+      new CustomEvent("nicole:run-command", {
+        detail: "app.show-format-toolbar",
+      }),
+    );
+    await settle();
+    expect(effects).toEqual([]);
+    expect(mocks.setFonts).not.toHaveBeenCalled();
+    expect(mocks.setFormatToolbarVisible).not.toHaveBeenCalled();
+
+    gate.resolve();
+    await settle();
+    expect(effects).toEqual(["theme", "tree", "fonts", "toolbar"]);
+    expect(mocks.setFonts).toHaveBeenLastCalledWith("", "New Reading", "");
+    expect(mocks.setFormatToolbarVisible).toHaveBeenLastCalledWith(true);
+  });
+
+  it("E4 R1 fix: keeps a background external read behind settings", async () => {
+    await setupWorkspace({ "a.md": "# Before\n" });
+    await openPath("/notes/a.md");
+    const read = deferred<string>();
+    mocks.readFile.mockImplementation(() => read.promise);
+    watchEvents!([{ op: "write", path: "a.md", isDir: false }]);
+    await settle();
+    expect(mocks.readFile).toHaveBeenCalledWith("a.md");
+    await openSettingsFromShortcut();
+    read.resolve("# After\n");
+    await settle();
+
+    expect(settingsView()).not.toBeNull();
+    expect(host.querySelector(".cm-editor")).toBeNull();
+    expect(host.textContent).not.toContain("已载入磁盘上的新内容");
+    tabNamed("a.md").click();
+    await settle();
+    expect(editorView().state.doc.toString()).toBe("# After\n");
+  });
+
+  it("E4 R1 fix: waits for initial settings before saving an edited font", async () => {
+    const loaded = deferred<Record<string, unknown>>();
+    mocks.getSettings.mockImplementation(() => loaded.promise);
+    await mountAppWithApi();
+    await openSettingsFromShortcut();
+
+    typeSettingsFont("ui", "New UI");
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 420));
+    expect(mocks.setFonts).not.toHaveBeenCalled();
+
+    loaded.resolve({
+      theme: "system",
+      sidebarWidth: 252,
+      recentFolders: [],
+      expandedFolders: {},
+      uiFont: "Old UI",
+      readingFont: "Old Reading",
+      codeFont: "Old Code",
+    });
+    await settle();
+    expect(settingsFontInput("ui").value).toBe("New UI");
+    expect(settingsFontInput("reading").value).toBe("Old Reading");
+    expect(settingsFontInput("code").value).toBe("Old Code");
+    await vi.waitFor(() =>
+      expect(mocks.setFonts).toHaveBeenLastCalledWith(
+        "New UI",
+        "Old Reading",
+        "Old Code",
+      ),
+    );
+  });
+
+  it("E4 R1 fix: never writes unknown font fields after the initial read fails", async () => {
+    mocks.getSettings.mockRejectedValue(new Error("unreadable"));
+    await mountAppWithApi();
+    await openSettingsFromShortcut();
+
+    typeSettingsFont("ui", "New UI");
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 420));
+    expect(mocks.setFonts).not.toHaveBeenCalled();
+    expect(settingsFontInput("ui").value).toBe("New UI");
+    expect(host.textContent).toContain("保存设置失败");
+  });
+
+  it("E4 R1 fix: restores the saved font baseline after an early write fails", async () => {
+    const loaded = deferred<Record<string, unknown>>();
+    const write = deferred<void>();
+    mocks.getSettings.mockImplementation(() => loaded.promise);
+    mocks.setFonts.mockImplementation(() => write.promise);
+    await mountAppWithApi();
+    await openSettingsFromShortcut();
+
+    typeSettingsFont("ui", "New UI");
+    loaded.resolve({
+      theme: "system",
+      sidebarWidth: 252,
+      recentFolders: [],
+      expandedFolders: {},
+      uiFont: "Old UI",
+      readingFont: "Old Reading",
+      codeFont: "Old Code",
+    });
+    await settle();
+    await vi.waitFor(() => expect(mocks.setFonts).toHaveBeenCalled());
+    write.reject(new Error("readonly"));
+    await settle();
+    await vi.waitFor(() =>
+      expect(host.textContent).toContain("保存设置失败"),
+    );
+    expect(settingsFontInput("ui").value).toBe("Old UI");
+    expect(settingsFontInput("reading").value).toBe("Old Reading");
+    expect(settingsFontInput("code").value).toBe("Old Code");
+  });
+
+  it("E4 R1 fix: rolls a failed early theme write back to the saved theme", async () => {
+    const loaded = deferred<Record<string, unknown>>();
+    const write = deferred<void>();
+    mocks.getSettings.mockImplementation(() => loaded.promise);
+    mocks.setTheme.mockImplementation(() => write.promise);
+    await mountAppWithApi();
+    await openSettingsFromShortcut();
+    const select = host.querySelector<HTMLSelectElement>("#settings-theme")!;
+
+    select.value = "light";
+    select.dispatchEvent(new Event("change"));
+    loaded.resolve({
+      theme: "dark",
+      sidebarWidth: 252,
+      recentFolders: [],
+      expandedFolders: {},
+    });
+    await settle();
+    expect(select.value).toBe("light");
+    await vi.waitFor(() =>
+      expect(mocks.setTheme).toHaveBeenCalledWith("light"),
+    );
+    write.reject(new Error("readonly"));
+    await settle();
+    await vi.waitFor(() =>
+      expect(host.textContent).toContain("保存设置失败"),
+    );
+    expect(select.value).toBe("dark");
+  });
+
+  it("E4 R1 fix: keeps a successful early baseline ahead of a late read", async () => {
+    const loaded = deferred<Record<string, unknown>>();
+    mocks.getSettings.mockImplementation(() => loaded.promise);
+    mocks.setTheme
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("readonly"));
+    await mountAppWithApi();
+    await openSettingsFromShortcut();
+    const select = host.querySelector<HTMLSelectElement>("#settings-theme")!;
+
+    select.value = "light";
+    select.dispatchEvent(new Event("change"));
+    await vi.waitFor(() =>
+      expect(mocks.setTheme).toHaveBeenCalledWith("light"),
+    );
+    loaded.resolve({
+      theme: "dark",
+      sidebarWidth: 252,
+      recentFolders: [],
+      expandedFolders: {},
+    });
+    await settle();
+    select.value = "system";
+    select.dispatchEvent(new Event("change"));
+    await settle();
+    await vi.waitFor(() =>
+      expect(host.textContent).toContain("保存设置失败"),
+    );
+    expect(select.value).toBe("light");
+  });
+
+  it("E4 R1 fix: restores a saved boolean baseline after an early write fails", async () => {
+    const loaded = deferred<Record<string, unknown>>();
+    const write = deferred<void>();
+    mocks.getSettings.mockImplementation(() => loaded.promise);
+    mocks.setShowAllFiles.mockImplementation(() => write.promise);
+    await mountAppWithApi();
+    await openSettingsFromShortcut();
+    const showAll = settingsCheckbox("file-tree", 0);
+
+    showAll.checked = false;
+    showAll.dispatchEvent(new Event("change"));
+    loaded.resolve({
+      theme: "system",
+      sidebarWidth: 252,
+      recentFolders: [],
+      expandedFolders: {},
+      showAllFiles: false,
+    });
+    await settle();
+    await vi.waitFor(() =>
+      expect(mocks.setShowAllFiles).toHaveBeenCalledWith(false),
+    );
+    write.reject(new Error("readonly"));
+    await settle();
+    await vi.waitFor(() =>
+      expect(host.textContent).toContain("保存设置失败"),
+    );
+    expect(showAll.checked).toBe(false);
+  });
+
+  it("E4 R1 fix: keeps settings when an earlier ordinary file read returns", async () => {
+    await setupWorkspace({ "a.md": "# A\n", "b.md": "# B\n" });
+    await openPath("/notes/a.md");
+    const read = deferred<string>();
+    mocks.readFile.mockImplementation((path: string) =>
+      path === "b.md" ? read.promise : Promise.resolve("# A\n"),
+    );
+    treeRow("b.md").click();
+    await settle();
+    expect(mocks.readFile).toHaveBeenCalledWith("b.md");
+
+    await openSettingsFromShortcut();
+    expect(settingsView()).not.toBeNull();
+    read.resolve("# B\n");
+    await settle();
+    expect(settingsView()).not.toBeNull();
+    expect(
+      tabElements().some((tab) => tab.textContent?.includes("b.md")),
+    ).toBe(false);
+  });
+
+  it("E4 R1 fix: lets a new ordinary open join the read started before settings", async () => {
+    await setupWorkspace({ "a.md": "# A\n", "b.md": "# B\n" });
+    await openPath("/notes/a.md");
+    const read = deferred<string>();
+    mocks.readFile.mockImplementation((path: string) =>
+      path === "b.md" ? read.promise : Promise.resolve("# A\n"),
+    );
+    treeRow("b.md").click();
+    await settle();
+    await openSettingsFromShortcut();
+    treeRow("b.md").click();
+    await settle();
+
+    read.resolve("# B\n");
+    await settle();
+    expect(tabNamed("b.md").getAttribute("aria-selected")).toBe("true");
+    expect(editorView().state.doc.toString()).toBe("# B\n");
+  });
+
+  it("E4 R1 fix: opens a workspace search result from settings", async () => {
+    await setupWorkspace({ "a.md": "foo\nnext\n" });
+    await openSettingsFromShortcut();
+    sidebarButton("搜索工作区").click();
+    await settle();
+    typeSearch("foo");
+    await vi.waitFor(() => expect(searchSessions).toHaveLength(1));
+    lastSearch().onLine(searchLine("a.md", 1, "foo", 0, "foo"));
+    await settle();
+    const result = host.querySelector<HTMLButtonElement>("[data-search-result]");
+    expect(result).not.toBeNull();
+    result!.click();
+    await settle();
+
+    expect(host.querySelector(".cm-editor")).not.toBeNull();
+    expect(
+      editorView().state.sliceDoc(
+        editorView().state.selection.main.from,
+        editorView().state.selection.main.to,
+      ),
+    ).toBe("foo");
+    expect(tabNamed("a.md").getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("E4 R1 fix: revokes a settings-source search after the tab changes", async () => {
+    await setupWorkspace({ "a.md": "# A\n", "b.md": "foo\n" });
+    await openPath("/notes/a.md");
+    await openSettingsFromShortcut();
+    const read = deferred<string>();
+    mocks.readFile.mockImplementationOnce(() => read.promise);
+    const line = searchLineFromPart(searchLine("b.md", 1, "foo", 0, "foo"))!;
+    const opening = appSetupState().openSearchResult({
+      generation: 1,
+      line,
+      match: line.matches[0],
+    });
+    expect(mocks.readFile).toHaveBeenLastCalledWith("b.md");
+    tabNamed("a.md").click();
+    await settle();
+    read.resolve("foo\n");
+    await expect(opening).resolves.toBe(false);
+    await settle();
+
+    expect(tabNamed("a.md").getAttribute("aria-selected")).toBe("true");
+    expect(
+      tabElements().some((tab) => tab.textContent?.includes("b.md")),
+    ).toBe(false);
+  });
+
+  it("E4 R1 fix: cycles tabs from a focused settings select", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    await openPath("/notes/a.md");
+    await openSettingsFromShortcut();
+    const select = host.querySelector<HTMLSelectElement>("#settings-theme")!;
+    expect(document.activeElement).toBe(select);
+
+    const event = new KeyboardEvent("keydown", {
+      key: "Tab",
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    select.dispatchEvent(event);
+    await settle();
+    expect(event.defaultPrevented).toBe(true);
+    expect(tabNamed("a.md").getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("E4 R1 fix: closes settings with ModW from a focused font input", async () => {
+    await openSettingsFromShortcut();
+    const input = settingsFontInput("ui");
+    input.focus();
+    expect(document.activeElement).toBe(input);
+
+    const event = new KeyboardEvent("keydown", {
+      key: "w",
+      metaKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    input.dispatchEvent(event);
+    await settle();
+    expect(event.defaultPrevented).toBe(true);
+    expect(settingsView()).toBeNull();
+  });
+
+  it("E4 R1 fix: hides mode controls on start, settings and empty-workspace states", async () => {
+    await mountAppWithApi();
+    const modeGroup = () =>
+      host.querySelector('[role="group"][aria-label="编辑模式"]');
+    expect(modeGroup()).toBeNull();
+
+    await setupWorkspace({ "a.md": "# A\n" });
+    await openPath("/notes/a.md");
+    expect(modeGroup()).not.toBeNull();
+    await openSettingsFromShortcut();
+    expect(modeGroup()).toBeNull();
+    pressAppShortcut("w");
+    await settle();
+    expect(modeGroup()).not.toBeNull();
+
+    pressAppShortcut("w");
+    await settle();
+    expect(tabElements()).toHaveLength(0);
+    expect(modeGroup()).toBeNull();
+    sidebarButton("设置").click();
+    await settle();
+    expect(settingsView()).not.toBeNull();
+    expect(modeGroup()).toBeNull();
+  });
+
+  it("E4 R2 fix: retries a failed settings baseline once and preserves newer font intent", async () => {
+    mocks.getSettings.mockClear();
+    const retry = deferred<Record<string, unknown>>();
+    mocks.getSettings
+      .mockRejectedValueOnce(new Error("initial read failure"))
+      .mockImplementationOnce(() => retry.promise);
+    await mountAppWithApi();
+    await openSettingsFromShortcut();
+    try {
+      await vi.waitFor(() =>
+        expect(mocks.getSettings).toHaveBeenCalledTimes(2),
+      );
+    } catch (error) {
+      retry.resolve({});
+      throw error;
+    }
+
+    vi.useFakeTimers();
+    typeSettingsFont("ui", "First UI");
+    typeSettingsFont("reading", "New Reading");
+    await vi.advanceTimersByTimeAsync(400);
+    await settle();
+    expect(mocks.getSettings).toHaveBeenCalledTimes(2);
+    expect(mocks.setFonts).not.toHaveBeenCalled();
+
+    retry.resolve({
+      theme: "system",
+      sidebarWidth: 252,
+      recentFolders: ["/should-not-open"],
+      expandedFolders: {},
+      uiFont: "Saved UI",
+      readingFont: "Saved Reading",
+      codeFont: "Saved Code",
+    });
+    await settle();
+    expect(mocks.setFonts).toHaveBeenLastCalledWith(
+      "First UI",
+      "New Reading",
+      "Saved Code",
+    );
+    expect(mocks.openFolder).not.toHaveBeenCalled();
+  });
+
+  it("E4 R2 fix: reports a failed retry, writes nothing unknown, then recovers", async () => {
+    mocks.getSettings.mockClear();
+    const retry = deferred<Record<string, unknown>>();
+    mocks.getSettings
+      .mockRejectedValueOnce(new Error("initial read failure"))
+      .mockImplementationOnce(() => retry.promise);
+    await mountAppWithApi();
+    await openSettingsFromShortcut();
+    try {
+      await vi.waitFor(() =>
+        expect(mocks.getSettings).toHaveBeenCalledTimes(2),
+      );
+    } catch (error) {
+      retry.resolve({});
+      throw error;
+    }
+
+    vi.useFakeTimers();
+    typeSettingsFont("ui", "First UI");
+    await vi.advanceTimersByTimeAsync(400);
+    await settle();
+    expect(mocks.setFonts).not.toHaveBeenCalled();
+    retry.reject(new Error("retry read failure"));
+    await settle();
+    expect(host.textContent).toContain("保存设置失败");
+
+    mocks.getSettings.mockResolvedValueOnce({
+      theme: "system",
+      sidebarWidth: 252,
+      recentFolders: [],
+      expandedFolders: {},
+      uiFont: "Saved UI",
+      readingFont: "Saved Reading",
+      codeFont: "Saved Code",
+    });
+    typeSettingsFont("ui", "Retry UI");
+    await settle();
+    expect(mocks.getSettings).toHaveBeenCalledTimes(3);
+    expect(mocks.setFonts).toHaveBeenLastCalledWith(
+      "Retry UI",
+      "Saved Reading",
+      "Saved Code",
+    );
+  });
+
+  it("E4 R2 fix: keeps settings when a confirmed external single-file read returns", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    await openPath("/notes/a.md");
+    const read = deferred<string>();
+    mocks.readSingleFile.mockImplementation(() => read.promise);
+    await openPath("/elsewhere/b.md");
+    expect(dialog()?.textContent).toContain("这个文件不在已打开的文件夹中");
+    dialogButton("只打开这个文件").click();
+    await settle();
+    expect(mocks.acceptSingleFile.mock.calls.at(-1)?.[0]).toBe("/elsewhere/b.md");
+    expect(mocks.readSingleFile).toHaveBeenCalledWith("/elsewhere/b.md");
+
+    await openSettingsFromShortcut();
+    expect(settingsView()).not.toBeNull();
+    expect(document.activeElement).toBe(host.querySelector("#settings-theme"));
+    read.resolve("# B\n");
+    await settle();
+
+    expect(settingsView()).not.toBeNull();
+    expect(document.activeElement).toBe(host.querySelector("#settings-theme"));
+    expect(
+      tabElements().some((tab) => tab.textContent?.includes("b.md")),
+    ).toBe(false);
+    expect(host.querySelector(".cm-editor")).toBeNull();
+    expect(mocks.releaseSingleFile).toHaveBeenCalledWith("/elsewhere/b.md");
+  });
+
+  it("E4 R2 fix: releases a confirmed single-file authorization when accept returns after settings", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    await openPath("/notes/a.md");
+    const accept = deferred<{ path: string; name: string }>();
+    mocks.acceptSingleFile.mockImplementation(() => accept.promise);
+    mocks.readSingleFile.mockResolvedValue("# B\n");
+    await openPath("/elsewhere/b.md");
+    dialogButton("只打开这个文件").click();
+    await settle();
+    expect(mocks.acceptSingleFile.mock.calls.at(-1)?.[0]).toBe("/elsewhere/b.md");
+    expect(mocks.readSingleFile).not.toHaveBeenCalled();
+
+    await openSettingsFromShortcut();
+    accept.resolve({ path: "/elsewhere/b.md", name: "b.md" });
+    await settle();
+
+    expect(settingsView()).not.toBeNull();
+    expect(document.activeElement).toBe(host.querySelector("#settings-theme"));
+    expect(mocks.readSingleFile).not.toHaveBeenCalled();
+    expect(mocks.releaseSingleFile).toHaveBeenCalledWith("/elsewhere/b.md");
+    expect(
+      tabElements().some((tab) => tab.textContent?.includes("b.md")),
+    ).toBe(false);
+  });
+
+  it("E4 R2 fix: opens a new single file normally after settings", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    await openPath("/notes/a.md");
+    await openSettingsFromShortcut();
+    mocks.readSingleFile.mockResolvedValue("# B\n");
+
+    await appSetupState().openSingleFile("/elsewhere/b.md", "b.md");
+    await settle();
+    expect(tabNamed("b.md").getAttribute("aria-selected")).toBe("true");
+    expect(editorView().state.doc.toString()).toBe("# B\n");
+  });
+
+  it("E4 R2 fix: lets a newer single-file open join the pending read", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    await openPath("/notes/a.md");
+    const read = deferred<string>();
+    mocks.readSingleFile.mockImplementation(() => read.promise);
+    await openPath("/elsewhere/b.md");
+    dialogButton("只打开这个文件").click();
+    await settle();
+    await openSettingsFromShortcut();
+
+    const joining = appSetupState().openSingleFile(
+      "/elsewhere/b.md",
+      "b.md",
+    );
+    await settle();
+    read.resolve("# B\n");
+    await expect(joining).resolves.toBe(true);
+    await settle();
+
+    expect(tabNamed("b.md").getAttribute("aria-selected")).toBe("true");
+    expect(editorView().state.doc.toString()).toBe("# B\n");
+    expect(mocks.releaseSingleFile).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])(
+    "E4 R3 fix: preserves a newer same-path system offer after stale cleanup (during release: %s)",
+    async (duringRelease) => {
+      await setupWorkspace({ "a.md": "# A\n" });
+      await openPath("/notes/a.md");
+      const path = "/elsewhere/b.md";
+      const offered = new Map<string, string>();
+      const effects: string[] = [];
+      let granted = false;
+      const read = deferred<string>();
+      const release = deferred<void>();
+
+      mocks.acceptSingleFile.mockImplementation(
+        async (requested: string, offerId?: string) => {
+          const current = offered.get(requested);
+          effects.push(
+            `accept:${current ?? "none"}:${offerId ?? "legacy"}`,
+          );
+          if (current === undefined) throw new Error("offer missing");
+          if (offerId !== undefined && current !== offerId) {
+            throw new Error("offer superseded");
+          }
+          offered.delete(requested);
+          granted = true;
+          return { path: requested, name: "b.md" };
+        },
+      );
+      mocks.readSingleFile
+        .mockImplementationOnce(() => read.promise)
+        .mockImplementation(async () => {
+          if (!granted) throw new Error("not granted");
+          return "# B\n";
+        });
+      mocks.releaseSingleFile.mockImplementation(async () => {
+        effects.push("release");
+        granted = false;
+        await release.promise;
+      });
+      mocks.dismissOfferedFile.mockImplementation(
+        async (requested: string, offerId?: string) => {
+          const current = offered.get(requested);
+          effects.push(
+            `dismiss:${current ?? "none"}:${offerId ?? "legacy"}`,
+          );
+          if (offerId === undefined) {
+            offered.delete(requested);
+          } else if (current === offerId) {
+            offered.delete(requested);
+          }
+        },
+      );
+
+      offered.set(path, "offer-1");
+      await openPath(path, "offer-1");
+      expect(dialog()?.textContent).toContain("这个文件不在已打开的文件夹中");
+      dialogButton("只打开这个文件").click();
+      await settle();
+      expect(mocks.readSingleFile).toHaveBeenCalledTimes(1);
+
+      await openSettingsFromShortcut();
+      read.resolve("# B\n");
+      await settle();
+      expect(mocks.releaseSingleFile).toHaveBeenCalledWith(path);
+
+      if (duringRelease) {
+        offered.set(path, "offer-2");
+        await openPath(path, "offer-2");
+        expect(dialog()).toBeNull();
+        release.resolve();
+        await settle();
+      } else {
+        release.resolve();
+        await settle();
+        expect(dialog()).toBeNull();
+        offered.set(path, "offer-2");
+        await openPath(path, "offer-2");
+      }
+
+      await vi.waitFor(() => expect(dialog()).not.toBeNull());
+      dialogButton("只打开这个文件").click();
+      await settle();
+      expect(host.textContent).not.toContain("无法打开文件");
+      expect(
+        tabElements().some(
+          (tab) =>
+            tab.textContent?.includes("b.md") &&
+            tab.getAttribute("aria-selected") === "true",
+        ),
+      ).toBe(true);
+      expect(editorView().state.doc.toString()).toBe("# B\n");
+      expect(effects).toContain("release");
+    },
+  );
+
+  it.each([false, true])(
+    "E4 R4 fix: settles restored tabs when Settings is retained or closed during restore (closed: %s)",
+    async (closeSettings) => {
+      await setupWorkspace({ "a.md": "# A\n", "b.md": "# Restored\n" });
+      await openSettingsFromShortcut();
+      const stored = deferred<{
+        tabs: import("./services/tabs").StoredTab[];
+        active: string;
+        recentFiles: string[];
+      }>();
+      mocks.getWorkspaceTabs.mockImplementationOnce(() => stored.promise);
+      mocks.pickFolder.mockResolvedValue({ path: "/other", canceled: false });
+      mocks.openFolder.mockResolvedValue(folder("/other", 2));
+      pressAppShortcut("o");
+      await settle();
+      expect(mocks.getWorkspaceTabs).toHaveBeenLastCalledWith("/other");
+      expect(settingsView()).not.toBeNull();
+
+      if (closeSettings) {
+        settingsTabs()[0]!
+          .querySelector<HTMLButtonElement>('button[aria-label^="关闭"]')!
+          .click();
+        await settle();
+        expect(settingsTabs()).toHaveLength(0);
+      }
+
+      stored.resolve({
+        tabs: [{ kind: "markdown", path: "b.md" }],
+        active: "b.md",
+        recentFiles: [],
+      });
+      await settle();
+
+      if (closeSettings) {
+        expect(settingsView()).toBeNull();
+        expect(tabNamed("b.md").getAttribute("aria-selected")).toBe("true");
+        expect(editorView().state.doc.toString()).toBe("# Restored\n");
+      } else {
+        expect(settingsView()).not.toBeNull();
+        expect(settingsTabs()[0]!.getAttribute("aria-selected")).toBe("true");
+        settingsTabs()[0]!
+          .querySelector<HTMLButtonElement>('button[aria-label^="关闭"]')!
+          .click();
+        await settle();
+        expect(tabNamed("b.md").getAttribute("aria-selected")).toBe("true");
+        expect(editorView().state.doc.toString()).toBe("# Restored\n");
+      }
+    },
+  );
+
+  it("E4 R4 fix: keeps a tab selected during restore in front", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    await openPath("/tmp/single.md");
+    dialogButton("只打开这个文件").click();
+    await settle();
+    await openSettingsFromShortcut();
+    const stored = deferred<{
+      tabs: import("./services/tabs").StoredTab[];
+      active: string;
+      recentFiles: string[];
+    }>();
+    mocks.getWorkspaceTabs.mockImplementationOnce(() => stored.promise);
+    mocks.pickFolder.mockResolvedValue({ path: "/other", canceled: false });
+    mocks.openFolder.mockResolvedValue(folder("/other", 2));
+    pressAppShortcut("o");
+    await settle();
+    expect(settingsView()).not.toBeNull();
+
+    tabNamed("single.md").click();
+    await settle();
+    expect(tabNamed("single.md").getAttribute("aria-selected")).toBe("true");
+
+    stored.resolve({
+      tabs: [{ kind: "markdown", path: "b.md" }],
+      active: "b.md",
+      recentFiles: [],
+    });
+    await settle();
+
+    expect(tabNamed("single.md").getAttribute("aria-selected")).toBe("true");
+    expect(editorView().state.doc.toString()).toBe("# Single\n");
+    expect(tabNamed("b.md").getAttribute("aria-selected")).not.toBe("true");
+  });
+
+  it("E4 R4 fix: restores the remembered document when Settings was in the background", async () => {
+    await setupWorkspace({ "a.md": "# A\n", "b.md": "# Restored\n" });
+    await openPath("/notes/a.md");
+    await openSettingsFromShortcut();
+    tabNamed("a.md").click();
+    await settle();
+    const stored = deferred<{
+      tabs: import("./services/tabs").StoredTab[];
+      active: string;
+      recentFiles: string[];
+    }>();
+    mocks.getWorkspaceTabs.mockImplementationOnce(() => stored.promise);
+    mocks.pickFolder.mockResolvedValue({ path: "/other", canceled: false });
+    mocks.openFolder.mockResolvedValue(folder("/other", 2));
+    pressAppShortcut("o");
+    await settle();
+    dialogButton("切换").click();
+    await settle();
+    expect(mocks.getWorkspaceTabs).toHaveBeenLastCalledWith("/other");
+
+    stored.resolve({
+      tabs: [{ kind: "markdown", path: "b.md" }],
+      active: "b.md",
+      recentFiles: [],
+    });
+    await settle();
+
+    expect(settingsTabs()).toHaveLength(1);
+    expect(settingsView()).toBeNull();
+    expect(tabNamed("b.md").getAttribute("aria-selected")).toBe("true");
+    expect(editorView().state.doc.toString()).toBe("# Restored\n");
+  });
+
+  it("E4 R4 fix: shows the empty workspace after an empty restore", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    await openSettingsFromShortcut();
+    const stored = deferred<{
+      tabs: import("./services/tabs").StoredTab[];
+      active: string;
+      recentFiles: string[];
+    }>();
+    mocks.getWorkspaceTabs.mockImplementationOnce(() => stored.promise);
+    mocks.pickFolder.mockResolvedValue({ path: "/other", canceled: false });
+    mocks.openFolder.mockResolvedValue(folder("/other", 2));
+    pressAppShortcut("o");
+    await settle();
+    settingsTabs()[0]!
+      .querySelector<HTMLButtonElement>('button[aria-label^="关闭"]')!
+      .click();
+    await settle();
+
+    stored.resolve({ tabs: [], active: "", recentFiles: [] });
+    await settle();
+
+    expect(settingsTabs()).toHaveLength(0);
+    expect(tabElements()).toHaveLength(0);
+    expect(host.querySelector(".cm-editor")).toBeNull();
+    expect(host.textContent).toContain("选择一个文件开始写作");
+  });
+
+  it("E4 R4 fix: does not revive Settings closed while closing the workspace", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    await openSettingsFromShortcut();
+    const closing = deferred<void>();
+    mocks.closeWorkspace.mockImplementationOnce(() => closing.promise);
+    window.dispatchEvent(
+      new CustomEvent("nicole:run-command", {
+        detail: "app.close-workspace",
+      }),
+    );
+    await vi.waitFor(() => expect(mocks.closeWorkspace).toHaveBeenCalled());
+
+    settingsTabs()[0]!
+      .querySelector<HTMLButtonElement>('button[aria-label^="关闭"]')!
+      .click();
+    await settle();
+    expect(settingsTabs()).toHaveLength(0);
+
+    closing.resolve();
+    await settle();
+
+    expect(settingsTabs()).toHaveLength(0);
+    expect(settingsView()).toBeNull();
+    expect(tabElements()).toHaveLength(0);
+    expect(host.textContent).toContain("打开文件夹");
+  });
+
+  describe("E4 R5 fix: explicit Settings entry during restore", () => {
+    type RestoredLayout = {
+      tabs: import("./services/tabs").StoredTab[];
+      active: string;
+      recentFiles: string[];
+    };
+
+    function beginRestore() {
+      const stored = deferred<RestoredLayout>();
+      mocks.getWorkspaceTabs.mockImplementationOnce(() => stored.promise);
+      mocks.pickFolder.mockResolvedValue({ path: "/other", canceled: false });
+      mocks.openFolder.mockResolvedValue(folder("/other", 2));
+      pressAppShortcut("o");
+      return stored;
+    }
+
+    function finishRestore(stored: ReturnType<typeof deferred<RestoredLayout>>) {
+      stored.resolve({
+        tabs: [{ kind: "markdown", path: "b.md" }],
+        active: "b.md",
+        recentFiles: [],
+      });
+    }
+
+    async function switchFromOpenDocument(): Promise<
+      ReturnType<typeof deferred<RestoredLayout>>
+    > {
+      await setupWorkspace({ "a.md": "# A\n", "b.md": "# Restored\n" });
+      await openPath("/notes/a.md");
+      await openSettingsFromShortcut();
+      tabNamed("a.md").click();
+      await settle();
+      const stored = beginRestore();
+      await settle();
+      dialogButton("切换").click();
+      await settle();
+      expect(mocks.getWorkspaceTabs).toHaveBeenLastCalledWith("/other");
+      expect(settingsView()).not.toBeNull();
+      return stored;
+    }
+
+    it.each(["none", "shortcut", "tab-click"] as const)(
+      "keeps only an explicit Settings intent in front (entry: %s)",
+      async (entry) => {
+        const stored = await switchFromOpenDocument();
+        if (entry === "shortcut") {
+          await openSettingsFromShortcut();
+        } else if (entry === "tab-click") {
+          settingsTabs()[0]!.click();
+          await settle();
+        }
+
+        finishRestore(stored);
+        await settle();
+
+        if (entry === "none") {
+          expect(settingsView()).toBeNull();
+          expect(tabNamed("b.md").getAttribute("aria-selected")).toBe("true");
+          expect(editorView().state.doc.toString()).toBe("# Restored\n");
+        } else {
+          expect(settingsView()).not.toBeNull();
+          expect(settingsTabs()[0]!.getAttribute("aria-selected")).toBe("true");
+          expect(host.querySelector(".cm-editor")).toBeNull();
+          expect(tabNamed("b.md").getAttribute("aria-selected")).not.toBe(
+            "true",
+          );
+          if (entry === "shortcut") {
+            expect(document.activeElement).toBe(
+              host.querySelector("#settings-theme"),
+            );
+          }
+        }
+      },
+    );
+
+    it("keeps a document selected after the explicit Settings entry", async () => {
+      await setupWorkspace({ "a.md": "# A\n", "b.md": "# Restored\n" });
+      await openPath("/tmp/single.md");
+      dialogButton("只打开这个文件").click();
+      await settle();
+      await openPath("/notes/a.md");
+      await openSettingsFromShortcut();
+      tabNamed("a.md").click();
+      await settle();
+      const stored = beginRestore();
+      await settle();
+      dialogButton("切换").click();
+      await settle();
+      expect(settingsView()).not.toBeNull();
+
+      await openSettingsFromShortcut();
+      tabNamed("single.md").click();
+      await settle();
+      expect(tabNamed("single.md").getAttribute("aria-selected")).toBe("true");
+
+      finishRestore(stored);
+      await settle();
+
+      expect(tabNamed("single.md").getAttribute("aria-selected")).toBe("true");
+      expect(editorView().state.doc.toString()).toBe("# Single\n");
+      expect(editorView().hasFocus).toBe(true);
+      expect(tabNamed("b.md").getAttribute("aria-selected")).not.toBe("true");
+      expect(settingsView()).toBeNull();
+    });
+
+    it("does not revive Settings closed after the explicit entry", async () => {
+      const stored = await switchFromOpenDocument();
+      await openSettingsFromShortcut();
+      settingsTabs()[0]!
+        .querySelector<HTMLButtonElement>('button[aria-label^="关闭"]')!
+        .click();
+      await settle();
+      expect(settingsTabs()).toHaveLength(0);
+
+      finishRestore(stored);
+      await settle();
+
+      expect(settingsTabs()).toHaveLength(0);
+      expect(settingsView()).toBeNull();
+      expect(tabNamed("b.md").getAttribute("aria-selected")).toBe("true");
+      expect(editorView().state.doc.toString()).toBe("# Restored\n");
+    });
+  });
+
+  it("filters the tree and hides labels without changing paths or open previews", async () => {
+    await setupWorkspace({ "a.md": "# A\n", "cover.png": "png" });
+    await openPath("/notes/a.md");
+    await openPath("/notes/cover.png");
+    expect(tabNamed("cover.png")).toBeTruthy();
+    await openSettingsFromShortcut();
+    const showAll = settingsCheckbox("file-tree", 0);
+    showAll.checked = false;
+    showAll.dispatchEvent(new Event("change"));
+    await settle();
+    expect(host.querySelector('[data-tree-path="cover.png"]')).toBeNull();
+    expect(tabNamed("cover.png")).toBeTruthy();
+    expect(host.querySelector('[data-tree-path="a.md"]')?.textContent?.trim()).toBe(
+      "a.md",
+    );
+
+    const hide = settingsCheckbox("file-tree", 1);
+    hide.checked = true;
+    hide.dispatchEvent(new Event("change"));
+    await settle();
+    expect(host.querySelector('[data-tree-path="a.md"]')?.textContent?.trim()).toBe(
+      "a",
+    );
+    expect(tabNamed("a")).toBeTruthy();
+    expect(tabNamed("a").getAttribute("title")).toBe("notes/a.md");
+
+    showAll.checked = true;
+    showAll.dispatchEvent(new Event("change"));
+    await settle();
+    expect(host.querySelector('[data-tree-path="a.md"]')?.textContent?.trim()).toBe(
+      "a.md",
+    );
   });
 });

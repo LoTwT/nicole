@@ -39,6 +39,7 @@ import {
   commandRegistry,
   getCommand,
   isCommandAvailable,
+  nativeAccelerator,
   slashCommands as slashCommandList,
 } from "./commands/registry";
 import { createSnippetCommands } from "./commands/snippets";
@@ -69,12 +70,26 @@ import {
   distinguishingSuffixes,
   insertionIndex,
   isDirty,
+  isDocumentTab,
+  isEditableTab,
   mapSnapshotForReplacement,
   tabBadge,
   tabCloseProblems,
   tabTooltip,
+  type DocumentTabModel,
+  type SettingsTabModel,
   type TabModel,
 } from "./app/tabs";
+import {
+  customFontStack,
+  CODE_FONT_FALLBACK,
+  READING_FONT_FALLBACK,
+  UI_FONT_FALLBACK,
+  fileDisplayName,
+  type FontField,
+  type SlashMode,
+} from "./app/settings-display";
+import { ESCAPE_HELP } from "./app/shortcut-help";
 import { classifyWatchEvents } from "./app/watch-events";
 import {
   locateSearchMatch,
@@ -92,6 +107,7 @@ import FormatToolbar from "./components/FormatToolbar.vue";
 import LinkImageEditor from "./components/LinkImageEditor.vue";
 import NonMarkdownPlaceholder from "./components/NonMarkdownPlaceholder.vue";
 import Outline from "./components/Outline.vue";
+import SettingsView from "./components/SettingsView.vue";
 import SlashMenu from "./components/SlashMenu.vue";
 import StatusBar from "./components/StatusBar.vue";
 import TopBar, { type TopBarTab } from "./components/TopBar.vue";
@@ -129,16 +145,20 @@ import {
   revealImage,
   trashEntry,
 } from "./services/files";
-import { popupNativeMenu } from "./services/menu";
-import { onOpenFile, takePendingOpenedFiles } from "./services/open-file";
+import { popupNativeMenu, setSettingsAccelerator } from "./services/menu";
+import { onOpenFile, takePendingOpenedEntries } from "./services/open-file";
 import {
   getSettings,
   migrateLegacyTheme,
   setEditorMode,
   setExpandedFolders,
+  setFonts,
+  setHideMarkdownExtension,
   setOutlineVisible,
   setFormatToolbarVisible as persistFormatToolbarVisible,
+  setShowAllFiles,
   setSidebarWidth,
+  setSlashEnabled,
   setTheme,
   removeRecentFolder,
   type AppSettings,
@@ -299,6 +319,16 @@ const outlineVisible = ref(false);
 const outlineOverlayOpen = ref(false);
 const outlinePanel = ref<InstanceType<typeof Outline> | null>(null);
 const formatToolbarVisible = ref(false);
+const showAllFiles = ref(true);
+const hideMarkdownExtension = ref(false);
+const uiFont = ref("");
+const readingFont = ref("");
+const codeFont = ref("");
+const slashEnabled = ref<Record<SlashMode, boolean>>({
+  live: true,
+  immersive: true,
+  source: true,
+});
 const formatToolbarState = shallowRef<FormatToolbarState>(
   EMPTY_FORMAT_TOOLBAR_STATE,
 );
@@ -309,7 +339,45 @@ const editorComposing = ref(false);
 const editorRevision = ref(0);
 let outlineChosen = false;
 let formatToolbarChosen = false;
-let formatToolbarWriteQueue: Promise<void> = Promise.resolve();
+let themeChosen = false;
+let showAllFilesChosen = false;
+let hideMarkdownExtensionChosen = false;
+const fontChosen: Record<FontField, boolean> = {
+  ui: false,
+  reading: false,
+  code: false,
+};
+const slashModeChosen: Record<SlashMode, boolean> = {
+  live: false,
+  immersive: false,
+  source: false,
+};
+let settingsWriteQueue: Promise<void> = Promise.resolve();
+let fontWriteTimer: ReturnType<typeof setTimeout> | null = null;
+const preferenceRevisions = new Map<string, number>();
+// A preference has a saved baseline once the initial read or a successful
+// write supplies one. A failed write before that can only restore after the
+// read arrives, because the startup defaults are not the stored values.
+const preferenceBaselines = new Set<string>();
+const pendingPreferenceRestores = new Map<
+  string,
+  { revision: number; restore: () => void }
+>();
+let fontsBaselineReady = false;
+let fontWritePending = false;
+let fontBaselineFailureReported = false;
+let initialSettingsLoadFinished = false;
+let settingsBaselineRetry: Promise<boolean> | null = null;
+let lastActiveDocumentId: number | null = null;
+let lastSavedFonts = { ui: "", reading: "", code: "" };
+let fontRevision = 0;
+let savedPreferences = {
+  theme: "system" as ThemeSetting,
+  showAllFiles: true,
+  hideMarkdownExtension: false,
+  formatToolbarVisible: false,
+  slashEnabled: { live: true, immersive: true, source: true },
+};
 let outlineOverlayReturnFocus: HTMLElement | null = null;
 let outlineFocusSettlement: (() => void) | null = null;
 const handledAppShortcutEvents = new WeakSet<KeyboardEvent>();
@@ -330,6 +398,12 @@ let nextTabId = 1;
 // Search result navigation captures this revision. Any later active-tab
 // change makes the pending search intent stale before it can take focus.
 let tabNavigationRevision = 0;
+// Explicit Settings entry is separate from active ID changes: reopening the
+// same tab during restore still represents a newer user intent.
+let settingsEntryRevision = 0;
+function noteExplicitSettingsEntry() {
+  settingsEntryRevision += 1;
+}
 // A newer result click supersedes an older one even when both are still
 // waiting for their files.
 let searchNavigationSequence = 0;
@@ -369,10 +443,26 @@ let applyingExternal = false;
 let restoringTabs = false;
 // Two entry points can request the same file before either read finishes.
 const openingTabs = new Map<string, Promise<boolean>>();
+const openingSingleRequests = new Map<string, number[]>();
+// A pending ordinary read may satisfy several callers, but a newer Settings
+// activation revokes the activation authority of reads requested before it.
+let ordinaryOpenActivationRevision = 0;
+function invalidateOlderOrdinaryOpens() {
+  ordinaryOpenActivationRevision += 1;
+}
+function latestCurrentSingleOpenRequest(
+  requests: readonly number[],
+): number | undefined {
+  for (let index = requests.length - 1; index >= 0; index -= 1) {
+    const revision = requests[index]!;
+    if (revision === ordinaryOpenActivationRevision) return revision;
+  }
+  return undefined;
+}
 // A pending workspace read can satisfy several callers, but only the latest
 // caller whose intent is still current may own the activation and its
-// follow-up work (a search jump or heading anchor). Ordinary opens have no
-// guard, so a stale link request cannot cancel them.
+// follow-up work (a search jump or heading anchor). Ordinary opens are kept
+// current unless a Settings activation supersedes them.
 interface WorkspaceOpenRequest {
   isRequestCurrent?: () => boolean;
   onHandoff?: (activation: WorkspaceActivation) => void;
@@ -410,10 +500,10 @@ interface WorkspaceActivation {
 }
 
 function captureWorkspaceActivation(
-  tab: TabModel,
+  tab: DocumentTabModel,
   navigationIntent: number,
 ): WorkspaceActivation | null {
-  if (editor === null || tab.kind === "preview") return null;
+  if (editor === null || !isEditableTab(tab)) return null;
   return {
     navigationIntent,
     tabNavigationRevision: tabNavigationRevision,
@@ -498,6 +588,7 @@ function captureNavigationSource(
   navigationIntent: number,
 ): NavigationSourceSnapshot {
   const tab = currentTab.value;
+  const documentTab = tab !== null && isDocumentTab(tab) ? tab : null;
   const sourceEditor = editor;
   const view = sourceEditor?.view ?? null;
   return {
@@ -507,8 +598,8 @@ function captureNavigationSource(
     workspaceGeneration: workspace.value?.generation ?? 0,
     tabId: tab?.id ?? null,
     tabKind: tab?.kind ?? null,
-    tabPath: tab?.path ?? null,
-    tabText: tab?.text ?? null,
+    tabPath: documentTab?.path ?? null,
+    tabText: documentTab?.text ?? null,
     editor: sourceEditor,
     view,
     doc: view?.state.doc ?? null,
@@ -553,24 +644,40 @@ function navigationSourceCurrent(source: NavigationSourceSnapshot): boolean {
   } else {
     if (activeTabId.value !== source.tabId) return false;
     const tab = findTab(source.tabId);
-    if (
-      tab === null ||
-      tab.kind !== source.tabKind ||
-      tab.path !== source.tabPath ||
-      tab.text !== source.tabText
-    ) {
-      return false;
-    }
-    if (source.editor === null) {
-      if (editor !== null) return false;
-    } else if (
-      editor !== source.editor ||
-      source.view === null ||
-      source.doc === null ||
-      editor.view !== source.view ||
-      source.view.state.doc !== source.doc
-    ) {
-      return false;
+    if (tab === null) return false;
+    if (source.tabKind === "settings") {
+      if (
+        tab.kind !== "settings" ||
+        currentTab.value?.kind !== "settings" ||
+        source.tabPath !== null ||
+        source.tabText !== null ||
+        source.editor !== null ||
+        source.view !== null ||
+        source.doc !== null ||
+        editor !== null
+      ) {
+        return false;
+      }
+    } else {
+      if (
+        !isDocumentTab(tab) ||
+        tab.kind !== source.tabKind ||
+        tab.path !== source.tabPath ||
+        tab.text !== source.tabText
+      ) {
+        return false;
+      }
+      if (source.editor === null) {
+        if (editor !== null) return false;
+      } else if (
+        editor !== source.editor ||
+        source.view === null ||
+        source.doc === null ||
+        editor.view !== source.view ||
+        source.view.state.doc !== source.doc
+      ) {
+        return false;
+      }
     }
   }
   return sourceDialogCurrent(source);
@@ -661,15 +768,22 @@ const hasWorkspace = computed(() => workspace.value !== null);
 const currentTab = computed<TabModel | null>(
   () => tabs.value.find((tab) => tab.id === activeTabId.value) ?? null,
 );
-const currentMarkdown = computed<TabModel | null>(() => {
+const currentMarkdown = computed<DocumentTabModel | null>(() => {
   const tab = currentTab.value;
-  return tab !== null && tab.kind !== "preview" ? tab : null;
+  return tab !== null && isEditableTab(tab) ? tab : null;
 });
-const currentPreview = computed<TabModel | null>(() => {
+const currentPreview = computed<DocumentTabModel | null>(() => {
   const tab = currentTab.value;
   return tab?.kind === "preview" ? tab : null;
 });
+const currentSettings = computed<SettingsTabModel | null>(() => {
+  const tab = currentTab.value;
+  return tab?.kind === "settings" ? tab : null;
+});
 const isMarkdownOpen = computed(() => currentMarkdown.value !== null);
+const effectiveHideMarkdownExtension = computed(
+  () => !showAllFiles.value && hideMarkdownExtension.value,
+);
 
 /**
  * The content area is the editor-side region to the right of the sidebar. Its
@@ -899,12 +1013,26 @@ const banner = computed(() => {
 });
 
 const topBarTabs = computed<TopBarTab[]>(() => {
-  const suffixes = distinguishingSuffixes(tabs.value, rootName.value);
+  const documents = tabs.value.filter(isDocumentTab);
+  const suffixes = distinguishingSuffixes(documents, rootName.value);
   return tabs.value.map((tab) => {
+    if (tab.kind === "settings") {
+      return {
+        id: tab.id,
+        name: "设置",
+        suffix: null,
+        title: "设置",
+        problem: null,
+        problemLabel: "",
+      };
+    }
     const badge = tabBadge(tab);
     return {
       id: tab.id,
-      name: tab.name,
+      name: fileDisplayName(
+        { name: tab.name, isDir: false },
+        effectiveHideMarkdownExtension.value,
+      ),
       suffix: suffixes.get(tab.id) ?? null,
       title: tabTooltip(tab, rootName.value),
       problem: badge?.tone ?? null,
@@ -1004,7 +1132,7 @@ function openingKey(
   return `${kind}\u0000${scope}\u0000${path}`;
 }
 
-function tabKey(tab: Pick<TabModel, "kind" | "path">): string {
+function tabKey(tab: Pick<DocumentTabModel, "kind" | "path">): string {
   return `${tab.kind}\u0000${tab.path}`;
 }
 
@@ -1018,7 +1146,7 @@ function sameFilePath(left: string, right: string): boolean {
 
 /** True when a tab already represents a workspace-relative file path. */
 function isTabForWorkspacePath(
-  tab: Pick<TabModel, "kind" | "path">,
+  tab: Pick<DocumentTabModel, "kind" | "path">,
   root: string,
   path: string,
 ): boolean {
@@ -1034,15 +1162,19 @@ function findOpenTabForWorkspacePathIn(
   list: readonly TabModel[],
   root: string,
   path: string,
-): TabModel | undefined {
+): DocumentTabModel | undefined {
   const workspaceTab = list.find(
-    (tab) => tab.kind === "workspace" && tab.path === path,
+    (tab): tab is DocumentTabModel =>
+      isDocumentTab(tab) && tab.kind === "workspace" && tab.path === path,
   );
   if (workspaceTab !== undefined) {
     return workspaceTab;
   }
   return list.find(
-    (tab) => tab.kind === "single" && isTabForWorkspacePath(tab, root, path),
+    (tab): tab is DocumentTabModel =>
+      isDocumentTab(tab) &&
+      tab.kind === "single" &&
+      isTabForWorkspacePath(tab, root, path),
   );
 }
 
@@ -1099,15 +1231,43 @@ function applyTheme() {
 
 applyTheme();
 
+/**
+ * Font preferences only update inherited CSS variables. The editor theme
+ * already reads them, so a change never rebuilds the view or touches its
+ * selection and undo history.
+ */
+function applyFontPreferences() {
+  const root = document.documentElement;
+  const fonts: [string, string, string][] = [
+    ["--app-font-sans", uiFont.value, UI_FONT_FALLBACK],
+    ["--app-font-reading", readingFont.value, READING_FONT_FALLBACK],
+    ["--app-font-mono", codeFont.value, CODE_FONT_FALLBACK],
+  ];
+  for (const [property, name, fallback] of fonts) {
+    const stack = customFontStack(name, fallback);
+    if (stack === null) {
+      root.style.removeProperty(property);
+    } else {
+      root.style.setProperty(property, stack);
+    }
+  }
+}
+
 function isEditorMode(value: unknown): value is EditorMode {
   return value === "live" || value === "immersive" || value === "source";
 }
 
-function applySettings(loaded: AppSettings) {
-  theme.value =
+function applySettings(
+  loaded: AppSettings,
+  options: { startup?: boolean } = {},
+) {
+  const normalizedTheme: ThemeSetting =
     loaded.theme === "light" || loaded.theme === "dark"
       ? loaded.theme
       : "system";
+  if (!themeChosen) {
+    theme.value = normalizedTheme;
+  }
   if (!editorModeChosen) {
     const restored = isEditorMode(loaded.editorMode) ? loaded.editorMode : "live";
     mode.value = restored;
@@ -1119,29 +1279,148 @@ function applySettings(loaded: AppSettings) {
   if (!formatToolbarChosen) {
     formatToolbarVisible.value = loaded.formatToolbarVisible === true;
   }
-  sidebarWidth.value = Math.min(400, Math.max(200, loaded.sidebarWidth || 252));
-  recentFolders.value = [...loaded.recentFolders].slice(0, 10);
-  expandedByRoot.value = { ...loaded.expandedFolders };
-  workspaceClosed.value = loaded.workspaceClosed === true;
+  if (!showAllFilesChosen) {
+    showAllFiles.value = loaded.showAllFiles !== false;
+  }
+  if (!hideMarkdownExtensionChosen) {
+    hideMarkdownExtension.value = loaded.hideMarkdownExtension === true;
+  }
+  if (!fontChosen.ui) uiFont.value = loaded.uiFont ?? "";
+  if (!fontChosen.reading) readingFont.value = loaded.readingFont ?? "";
+  if (!fontChosen.code) codeFont.value = loaded.codeFont ?? "";
+  const slash = loaded.slashEnabled;
+  if (!slashModeChosen.live) slashEnabled.value.live = slash?.live !== false;
+  if (!slashModeChosen.immersive) {
+    slashEnabled.value.immersive = slash?.immersive !== false;
+  }
+  if (!slashModeChosen.source) slashEnabled.value.source = slash?.source !== false;
+  if (!slashEnabled.value[mode.value]) {
+    slashMenu?.close();
+  }
+  if (!fontsBaselineReady) {
+    lastSavedFonts = {
+      ui: loaded.uiFont ?? "",
+      reading: loaded.readingFont ?? "",
+      code: loaded.codeFont ?? "",
+    };
+    fontsBaselineReady = true;
+  }
+  if (!preferenceBaselines.has("theme")) {
+    savedPreferences.theme = normalizedTheme;
+  }
+  if (!preferenceBaselines.has("showAllFiles")) {
+    savedPreferences.showAllFiles = loaded.showAllFiles !== false;
+  }
+  if (!preferenceBaselines.has("hideMarkdownExtension")) {
+    savedPreferences.hideMarkdownExtension =
+      loaded.hideMarkdownExtension === true;
+  }
+  if (!preferenceBaselines.has("formatToolbarVisible")) {
+    savedPreferences.formatToolbarVisible =
+      loaded.formatToolbarVisible === true;
+  }
+  if (!preferenceBaselines.has("slash:live")) {
+    savedPreferences.slashEnabled.live = slash?.live !== false;
+  }
+  if (!preferenceBaselines.has("slash:immersive")) {
+    savedPreferences.slashEnabled.immersive = slash?.immersive !== false;
+  }
+  if (!preferenceBaselines.has("slash:source")) {
+    savedPreferences.slashEnabled.source = slash?.source !== false;
+  }
+  for (const key of [
+    "theme",
+    "showAllFiles",
+    "hideMarkdownExtension",
+    "formatToolbarVisible",
+    "slash:live",
+    "slash:immersive",
+    "slash:source",
+  ]) {
+    preferenceBaselines.add(key);
+  }
+  for (const [key, pending] of pendingPreferenceRestores) {
+    if (!preferenceRevisionCurrent(key, pending.revision)) {
+      pendingPreferenceRestores.delete(key);
+      continue;
+    }
+    pending.restore();
+    pendingPreferenceRestores.delete(key);
+  }
+  fontBaselineFailureReported = false;
+  if (options.startup !== false) {
+    sidebarWidth.value = Math.min(
+      400,
+      Math.max(200, loaded.sidebarWidth || 252),
+    );
+    recentFolders.value = [...loaded.recentFolders].slice(0, 10);
+    expandedByRoot.value = { ...loaded.expandedFolders };
+    workspaceClosed.value = loaded.workspaceClosed === true;
+  }
   applyTheme();
+  applyFontPreferences();
+  if (fontWritePending) flushFontPreferences();
 }
 
 async function loadSettings() {
-  const legacy = localStorage.getItem("nicole-theme");
-  if (legacy !== null) {
-    try {
-      applySettings(await migrateLegacyTheme(legacy));
-      localStorage.removeItem("nicole-theme");
-      return;
-    } catch {
-      // Keep the legacy value for the next launch.
-    }
-  }
   try {
-    applySettings(await getSettings());
-  } catch {
-    // Defaults: system theme, 252 px, no recent folders.
+    const legacy = localStorage.getItem("nicole-theme");
+    if (legacy !== null) {
+      try {
+        applySettings(await migrateLegacyTheme(legacy));
+        if (themeChosen) {
+          // Migration may have applied the legacy native appearance after the
+          // user already chose another theme in this session.
+          chooseTheme(theme.value, false);
+        }
+        localStorage.removeItem("nicole-theme");
+        return;
+      } catch {
+        // Keep the legacy value for the next launch.
+      }
+    }
+    try {
+      applySettings(await getSettings());
+    } catch {
+      reportUnavailableFontBaseline();
+    }
+  } finally {
+    initialSettingsLoadFinished = true;
   }
+}
+
+/**
+ * A failed startup read leaves the font baseline unknown. A later explicit
+ * Settings open or font edit gets one bounded retry; repeated user intent while
+ * it is in flight shares that promise, and no workspace startup runs again.
+ */
+function retrySettingsBaseline(): Promise<boolean> | null {
+  if (fontsBaselineReady || !initialSettingsLoadFinished) return null;
+  if (settingsBaselineRetry !== null) return settingsBaselineRetry;
+  if (fontWritePending) fontBaselineFailureReported = false;
+  let task: Promise<boolean> | null = null;
+  const started = (async () => {
+    try {
+      applySettings(await getSettings(), { startup: false });
+      return true;
+    } catch {
+      reportUnavailableFontBaseline();
+      return false;
+    } finally {
+      if (settingsBaselineRetry === task) {
+        settingsBaselineRetry = null;
+      }
+    }
+  })();
+  task = started;
+  settingsBaselineRetry = started;
+  return started;
+}
+
+function reportUnavailableFontBaseline() {
+  if (!fontWritePending || fontBaselineFailureReported) return;
+  fontBaselineFailureReported = true;
+  showNotice("保存设置失败", "danger", undefined, "设置尚未加载");
 }
 
 function handleSystemThemeChange(event: MediaQueryListEvent) {
@@ -1151,15 +1430,8 @@ function handleSystemThemeChange(event: MediaQueryListEvent) {
   }
 }
 
-async function toggleTheme() {
-  const next: ThemeSetting = isDark.value ? "light" : "dark";
-  theme.value = next;
-  applyTheme();
-  try {
-    await setTheme(next);
-  } catch {
-    // Keep the choice for this session.
-  }
+function toggleTheme() {
+  chooseTheme(isDark.value ? "light" : "dark", false);
 }
 
 function rememberRecent(folder: string) {
@@ -1561,6 +1833,7 @@ function recoveryKindFor(tab: TabModel): "workspace" | "single" | null {
  * content lives in the tab until the user saves or closes it.
  */
 function needsRecoveryCopy(tab: TabModel): boolean {
+  if (!isDocumentTab(tab)) return false;
   return (
     recoveryKindFor(tab) !== null &&
     (isDirty(tab) || tab.externalState === "deleted")
@@ -1568,6 +1841,7 @@ function needsRecoveryCopy(tab: TabModel): boolean {
 }
 
 function recoveryPayload(tab: TabModel): RecoveryCopy | null {
+  if (!isDocumentTab(tab)) return null;
   const kind = recoveryKindFor(tab);
   if (kind === null) {
     return null;
@@ -1660,7 +1934,7 @@ function tabInRecoveryDialog(tab: TabModel): boolean {
 function rescheduleDirtyTabs() {
   for (const tab of tabs.value) {
     if (
-      tab.kind === "preview" ||
+      !isEditableTab(tab) ||
       !isDirty(tab) ||
       tab.restored ||
       tab.externalState !== "none" ||
@@ -1698,6 +1972,7 @@ function startRecoveryTimer(tabId: number) {
 }
 
 function deleteRecoveryForTab(tab: TabModel) {
+  if (!isDocumentTab(tab)) return;
   const id = tab.recoveryId;
   tab.recoveryId = null;
   if (id === null) {
@@ -1717,6 +1992,7 @@ function deleteRecoveryForTab(tab: TabModel) {
  * clean or gone.
  */
 function forgetRecoveryForTab(tab: TabModel) {
+  if (!isDocumentTab(tab)) return;
   recoveryTicker.stop(tab.id);
   recoveryWrites.delete(tab.id);
   recoveryEpoch.set(tab.id, (recoveryEpoch.get(tab.id) ?? 0) + 1);
@@ -1725,7 +2001,7 @@ function forgetRecoveryForTab(tab: TabModel) {
 
 function writeRecoveryCopy(tabId: number) {
   const tab = findTab(tabId);
-  if (tab === null || !needsRecoveryCopy(tab)) {
+  if (tab === null || !isDocumentTab(tab) || !needsRecoveryCopy(tab)) {
     return;
   }
   const payload = recoveryPayload(tab);
@@ -1763,11 +2039,16 @@ function writeRecoveryCopy(tabId: number) {
       if (
         (recoveryEpoch.get(tabId) ?? 0) !== epoch ||
         current === null ||
+        !isDocumentTab(current) ||
         current.kind !== tab.kind ||
         current.path !== captured.path ||
         !needsRecoveryCopy(current)
       ) {
-        if (current === null || current.recoveryId !== id) {
+        if (
+          current === null ||
+          !isDocumentTab(current) ||
+          current.recoveryId !== id
+        ) {
           void trackRecovery(deleteRecovery(id, generation)).catch(() => {});
         }
         return;
@@ -1791,7 +2072,12 @@ function writeRecoveryCopy(tabId: number) {
       }
       currentState.writing = false;
       const current = findTab(tabId);
-      if (currentState.queued && current !== null && isDirty(current)) {
+      if (
+        currentState.queued &&
+        current !== null &&
+        isDocumentTab(current) &&
+        isDirty(current)
+      ) {
         currentState.queued = false;
         writeRecoveryCopy(tabId);
       } else {
@@ -1894,7 +2180,7 @@ function asLineEnding(value: string): LineEnding {
  * attached so saving, loading the disk version or closing the tab removes it.
  */
 function setRecoveredContent(
-  tab: TabModel,
+  tab: DocumentTabModel,
   item: RecoveryItem,
   mode: "review" | "restore",
   existing: boolean,
@@ -2031,7 +2317,10 @@ async function applyRecoveryItem(
     return null;
   }
   const existing = tabs.value.find(
-    (tab) => tab.kind === "single" && sameFilePath(tab.path, item.path),
+    (tab): tab is DocumentTabModel =>
+      isDocumentTab(tab) &&
+      tab.kind === "single" &&
+      sameFilePath(tab.path, item.path),
   );
   if (existing !== undefined) {
     if (isDirty(existing) && existing.recoveryId === null) {
@@ -2093,7 +2382,12 @@ async function finishRecovery(mode: "review" | "restore") {
   closeRecoveryDialog();
   for (const id of autosave) {
     const tab = findTab(id);
-    if (tab !== null && isDirty(tab) && !tab.restored) {
+    if (
+      tab !== null &&
+      isDocumentTab(tab) &&
+      isDirty(tab) &&
+      !tab.restored
+    ) {
       scheduleAutosave(id);
     }
   }
@@ -2105,6 +2399,7 @@ async function finishRecovery(mode: "review" | "restore") {
 }
 
 function markExternalState(tab: TabModel, next: "none" | "modified" | "deleted") {
+  if (!isDocumentTab(tab)) return;
   tab.externalState = next;
   tab.revision += 1;
   if (next !== "none") {
@@ -2202,7 +2497,7 @@ function scheduleAutosave(tabId: number) {
 
 function handleEditorChange(tabId: number, text: string) {
   const tab = findTab(tabId);
-  if (tab === null) {
+  if (tab === null || !isEditableTab(tab)) {
     return;
   }
   if (paletteSession.value !== null) {
@@ -2229,6 +2524,7 @@ function handleEditorChange(tabId: number, text: string) {
  * changes and the end of a composition, which can happen without a change.
  */
 function applyAutosaveState(tab: TabModel) {
+  if (!isEditableTab(tab)) return;
   const tabId = tab.id;
   if (tab.text === tab.originalText) {
     clearTabSaveTimer(tabId);
@@ -2268,7 +2564,7 @@ function applyAutosaveState(tab: TabModel) {
  */
 function handleEditorCompositionEnd(tabId: number) {
   const tab = findTab(tabId);
-  if (tab === null || tab.kind === "preview") {
+  if (tab === null || !isEditableTab(tab)) {
     return;
   }
   invalidatedCompositions.delete(tabId);
@@ -2290,7 +2586,7 @@ function saveTab(
   trigger: SaveTrigger = "explicit",
 ): Promise<boolean> {
   const tab = findTab(tabId);
-  if (tab === null) {
+  if (tab === null || !isDocumentTab(tab)) {
     return Promise.resolve(true);
   }
   // Only the files listed in the recovery dialog are frozen until the user
@@ -2319,6 +2615,7 @@ function beginWrite(tabId: number) {
       const tab = findTab(tabId);
       if (
         tab !== null &&
+        isDocumentTab(tab) &&
         (writesInFlight.get(tabId) ?? 0) > 0 &&
         tab.savePhase !== "failed"
       ) {
@@ -2340,7 +2637,7 @@ async function saveTabNow(
   trigger: SaveTrigger,
 ): Promise<boolean> {
   let tab = findTab(tabId);
-  if (tab === null) {
+  if (tab === null || !isDocumentTab(tab)) {
     return true;
   }
   if (force && tab.revision !== revisionAtRequest) {
@@ -2360,7 +2657,7 @@ async function saveTabNow(
   let mustWrite = force;
   for (;;) {
     tab = findTab(tabId);
-    if (tab === null) {
+    if (tab === null || !isDocumentTab(tab)) {
       return true;
     }
     if (tab.mixedLineEndings && !force) {
@@ -2409,7 +2706,11 @@ async function saveTabNow(
     } catch (error) {
       endWrite(tabId);
       const current = findTab(tabId);
-      if (current !== null && current.path === edit.path) {
+      if (
+        current !== null &&
+        isDocumentTab(current) &&
+        current.path === edit.path
+      ) {
         const raw = errorText(error);
         current.saveError = saveFailureMessage(raw);
         current.saveErrorDetail = raw;
@@ -2421,7 +2722,7 @@ async function saveTabNow(
     endWrite(tabId);
     mustWrite = false;
     const current = findTab(tabId);
-    if (current === null) {
+    if (current === null || !isDocumentTab(current)) {
       return true;
     }
     if (force && current.revision !== revisionAtRequest) {
@@ -2455,12 +2756,13 @@ function stopForcedSave(tabId: number): false {
   const tab = findTab(tabId);
   if (
     tab !== null &&
+    isDocumentTab(tab) &&
     tab.externalState !== "deleted" &&
     tab.text !== tab.originalText
   ) {
     markExternalState(tab, "modified");
   }
-  if (tab !== null) {
+  if (tab !== null && isDocumentTab(tab)) {
     tab.savePhase = "paused";
     writeRecoveryCopy(tabId);
   }
@@ -2469,6 +2771,7 @@ function stopForcedSave(tabId: number): false {
 
 async function saveAllTabs(force = false): Promise<boolean> {
   const ids = tabs.value
+    .filter(isDocumentTab)
     .filter((tab) => tab.kind !== "preview")
     .map((tab) => tab.id);
   const results = await Promise.all(ids.map((id) => saveTab(id, force)));
@@ -2492,7 +2795,7 @@ function makeMarkdownTab(
     generation?: number;
     snapshot?: EditorRestoreState | null;
   } = {},
-): TabModel {
+): DocumentTabModel {
   const detected = detectLineEndings(text);
   const normalized = normalizeLineEndings(text);
   return {
@@ -2532,7 +2835,7 @@ function makePreviewTab(
   name: string,
   size: number,
   options: { generation?: number } = {},
-): TabModel {
+): DocumentTabModel {
   return {
     id: nextTabId++,
     kind: "preview",
@@ -2563,7 +2866,7 @@ function insertTab(tab: TabModel) {
 
 function snapshotActiveEditor() {
   const tab = findTab(activeTabId.value);
-  if (tab === null || tab.kind === "preview" || editor === null) {
+  if (tab === null || !isEditableTab(tab) || editor === null) {
     return;
   }
   const state = editor.getRestoreState();
@@ -2607,15 +2910,16 @@ async function mountActive(
   const sequence = ++mountSequence;
   clearEditor();
   const target = findTab(activeTabId.value);
-  if (target === null || target.kind === "preview") {
+  if (target === null || !isEditableTab(target)) {
     return null;
   }
+  lastActiveDocumentId = target.id;
   await nextTick();
   if (sequence !== mountSequence) {
     return null;
   }
   const tab = findTab(activeTabId.value);
-  if (tab === null || tab.id !== target.id || tab.kind === "preview") {
+  if (tab === null || tab.id !== target.id || !isEditableTab(tab)) {
     return null;
   }
   const host = editorHost.value;
@@ -2657,6 +2961,7 @@ async function mountActive(
     view: editor.view,
     platform: platform.value,
     commands: () => slashCommandList(workspaceSnippetCommands.value),
+    enabled: () => slashEnabled.value[mode.value],
     onOpen: () => {
       void refreshSnippetCommands();
     },
@@ -2693,15 +2998,24 @@ async function activateTab(
   if (target === null) {
     return null;
   }
+  if (target.kind === "settings") {
+    invalidateOlderOrdinaryOpens();
+  }
   if (activeTabId.value === id) {
+    if (target.kind === "settings") {
+      noteExplicitSettingsEntry();
+    }
     if (target.kind === "workspace" && workspace.value !== null) {
       rememberRecentWorkspaceFile(workspace.value.root, target.path);
     }
+    if (isDocumentTab(target)) {
+      lastActiveDocumentId = target.id;
+    }
     closeOverlaySidebar();
-    if (focus) {
+    if (focus && isEditableTab(target)) {
       editor?.focus();
     }
-    return navigationIntent === undefined
+    return navigationIntent === undefined || !isEditableTab(target)
       ? null
       : captureWorkspaceActivation(target, navigationIntent);
   }
@@ -2710,10 +3024,19 @@ async function activateTab(
   if (target.kind === "workspace" || target.kind === "preview") {
     lastWorkspaceActivePath = target.path;
   }
+  if (isDocumentTab(target)) {
+    lastActiveDocumentId = target.id;
+  }
   if (target.kind === "workspace" && workspace.value !== null) {
     rememberRecentWorkspaceFile(workspace.value.root, target.path);
   }
-  const activation = await mountActive(focus, navigationIntent);
+  // The preview placeholder and settings page have no editor view.
+  let activation: WorkspaceActivation | null = null;
+  if (isEditableTab(target)) {
+    activation = await mountActive(focus, navigationIntent);
+  } else {
+    clearEditor();
+  }
   closeOverlaySidebar();
   schedulePersistTabs();
   return activation;
@@ -2747,8 +3070,12 @@ async function openWorkspaceFile(
   if (context === null) {
     return false;
   }
+  const ordinaryActivationRevision = ordinaryOpenActivationRevision;
+  const requestIsCurrent =
+    options.isRequestCurrent ??
+    (() => ordinaryOpenActivationRevision === ordinaryActivationRevision);
   const request: WorkspaceOpenRequest = {
-    isRequestCurrent: options.isRequestCurrent,
+    isRequestCurrent: requestIsCurrent,
     onHandoff: options.onHandoff,
     handedOff: false,
     navigationIntent:
@@ -2756,7 +3083,7 @@ async function openWorkspaceFile(
   };
   const existing = findOpenTabForWorkspacePath(context.root, path);
   if (existing !== undefined) {
-    if (options.isRequestCurrent && !options.isRequestCurrent()) return false;
+    if (!requestIsCurrent()) return false;
     const activation = await activateTab(
       existing.id,
       true,
@@ -2980,7 +3307,7 @@ function applyWorkspaceState(folder: {
 async function restoreTabsForRoot(
   root: string,
   generation: number,
-): Promise<{ tabs: TabModel[]; activePath: string | null } | null> {
+): Promise<{ tabs: DocumentTabModel[]; activePath: string | null } | null> {
   let stored;
   try {
     stored = await getWorkspaceTabs(root);
@@ -2991,7 +3318,7 @@ async function restoreTabsForRoot(
     return null;
   }
   setRecentFilesForRoot(root, stored.recentFiles);
-  const restored: TabModel[] = [];
+  const restored: DocumentTabModel[] = [];
   const seen = new Set<string>();
   for (const item of stored.tabs) {
     if (item.kind !== "markdown" && item.kind !== "preview") {
@@ -3074,6 +3401,13 @@ async function applyWorkspace(folder: {
   closeWorkspaceSearch({ restoreFocus: false });
   const previous = findTab(activeTabId.value);
   const keepSingle = previous?.kind === "single";
+  const settingsTab = findSettingsTab();
+  const settingsActive =
+    settingsTab !== null && activeTabId.value === settingsTab.id;
+  const settingsIndex =
+    settingsTab === null
+      ? -1
+      : tabs.value.findIndex((tab) => tab.id === settingsTab.id);
   const singles = tabs.value.filter((tab) => tab.kind === "single");
   if (!keepSingle) {
     clearEditor();
@@ -3087,9 +3421,21 @@ async function applyWorkspace(folder: {
     // notices (including their timers) are deliberately left alone.
     clearNotice("folder-open-failure");
     closedTabs.value = [];
-    tabs.value = [...singles];
-    const restoreStartActiveId = keepSingle ? previous.id : null;
+    const retained: TabModel[] = [...singles];
+    if (settingsTab !== null) {
+      retained.splice(
+        Math.min(Math.max(settingsIndex, 0), retained.length),
+        0,
+        settingsTab,
+      );
+    }
+    tabs.value = retained;
+    const restoreStartActiveId = keepSingle
+      ? previous.id
+      : settingsTab?.id ?? null;
     activeTabId.value = restoreStartActiveId;
+    const restoreStartNavigationRevision = tabNavigationRevision;
+    const restoreStartSettingsEntryRevision = settingsEntryRevision;
     lastWorkspaceActivePath = null;
     const restored = await restoreTabsForRoot(
       context.root,
@@ -3102,7 +3448,9 @@ async function applyWorkspace(folder: {
       return false;
     }
     const merged = [...tabs.value];
-    const seen = new Set(merged.map(tabKey));
+    const seen = new Set(
+      merged.filter(isDocumentTab).map((tab) => tabKey(tab)),
+    );
     for (const tab of restored.tabs) {
       // A remembered workspace tab can be the same file the user already
       // opened as a single-file tab before switching to its folder.
@@ -3121,22 +3469,54 @@ async function applyWorkspace(folder: {
       merged.push(tab);
     }
     tabs.value = merged;
+    const currentActive = findTab(activeTabId.value);
+    const currentSettingsTab = findSettingsTab();
+    const selectionChangedDuringRestore =
+      tabNavigationRevision !== restoreStartNavigationRevision;
+    const settingsEnteredDuringRestore =
+      settingsEntryRevision !== restoreStartSettingsEntryRevision;
+    // A background Settings page is only the restore placeholder. Keep it when
+    // it was active before, explicitly entered, or selected during restore.
+    const keepSettings =
+      currentActive?.kind === "settings" &&
+      (settingsActive ||
+        selectionChangedDuringRestore ||
+        settingsEnteredDuringRestore ||
+        currentActive.id !== restoreStartActiveId);
     // Leave a tab the user opened or activated during restore in front.
-    if (!keepSingle && activeTabId.value === restoreStartActiveId) {
-      const currentSingles = merged.filter((tab) => tab.kind === "single");
+    if (keepSettings) {
+      // The global page survives a root switch and stays in front. Remember a
+      // document as the layout's active tab for the next open.
+      lastWorkspaceActivePath = restored.activePath;
+    } else if (currentActive === null || currentActive.kind === "settings") {
+      const currentSingles = merged.filter(
+        (tab): tab is DocumentTabModel =>
+          isDocumentTab(tab) && tab.kind === "single",
+      );
       const active =
         restored.activePath === null
           ? currentSingles.at(-1) ?? null
-          : (merged.find((tab) => tab.path === restored.activePath) ??
+          : (merged.find(
+              (tab): tab is DocumentTabModel =>
+                isDocumentTab(tab) && tab.path === restored.activePath,
+            ) ??
             findOpenTabForWorkspacePathIn(
               merged,
               context.root,
               restored.activePath,
             ) ??
             null);
-      activeTabId.value = active?.id ?? null;
+      activeTabId.value = active?.id ?? currentSettingsTab?.id ?? null;
+      if (active !== null) {
+        lastActiveDocumentId = active.id;
+      }
       if (active !== null && active.kind !== "single") {
         lastWorkspaceActivePath = active.path;
+      }
+      if (active === null && currentSettingsTab !== null) {
+        // No document survives the switch; show the retained global page
+        // instead of an empty content area.
+        lastWorkspaceActivePath = restored.activePath;
       }
       if (active?.kind === "workspace") {
         rememberRecentWorkspaceFile(context.root, active.path);
@@ -3165,7 +3545,9 @@ async function switchToFolder(
   const targetName = absoluteBaseName(path);
   const currentWorkspace = workspace.value;
   const closingTabs = tabs.value.filter(
-    (tab) => tab.kind === "workspace" || tab.kind === "preview",
+    (tab): tab is DocumentTabModel =>
+      isDocumentTab(tab) &&
+      (tab.kind === "workspace" || tab.kind === "preview"),
   );
 
   if (currentWorkspace !== null) {
@@ -3273,7 +3655,7 @@ async function closeWorkspace() {
     return false;
   }
   return startFolderOperation(async () => {
-    const closing = [...tabs.value];
+    const closing = tabs.value.filter(isDocumentTab);
     await saveAllTabs();
     const problems = closing.flatMap(tabCloseProblems);
     if (problems.length > 0) {
@@ -3345,8 +3727,10 @@ async function closeWorkspace() {
     closePopoverMenus();
     cancelPersistTimer();
     clearEditor();
-    tabs.value = [];
-    activeTabId.value = null;
+    const currentSettingsTab = findSettingsTab();
+    tabs.value = currentSettingsTab === null ? [] : [currentSettingsTab];
+    activeTabId.value = currentSettingsTab?.id ?? null;
+    lastActiveDocumentId = null;
     lastWorkspaceActivePath = null;
     closedTabs.value = [];
     clearSnippetCommands();
@@ -3360,7 +3744,9 @@ async function closeWorkspace() {
       ...recentFolders.value.filter((folder) => folder !== current.root),
     ].slice(0, 10);
     await nextTick();
-    emptyState.value?.focusOpenFolder();
+    if (currentSettingsTab === null) {
+      emptyState.value?.focusOpenFolder();
+    }
     return true;
   });
 }
@@ -3463,7 +3849,7 @@ function remapTabPath(
 
 function renameTabPaths(oldPath: string, newPath: string, isDir: boolean) {
   for (const tab of tabs.value) {
-    if (tab.kind === "single") {
+    if (!isDocumentTab(tab) || tab.kind === "single") {
       continue;
     }
     const updated = remapTabPath(tab.path, oldPath, newPath, isDir);
@@ -3559,7 +3945,9 @@ async function handleWatchEvents(allEvents: readonly WorkspaceFileEvent[]) {
     return;
   }
 
-  for (const tab of tabs.value.filter((item) => item.kind === "workspace")) {
+  for (const tab of tabs.value.filter(
+    (item): item is DocumentTabModel => item.kind === "workspace",
+  )) {
     const classification = classifyWatchEvents(contentEvents, tab.path, true);
     if (classification.document === "deleted") {
       markExternalState(tab, "deleted");
@@ -3639,6 +4027,7 @@ async function handleExternalModification(tabId: number) {
 }
 
 function applyExternalText(tab: TabModel, text: string) {
+  if (!isEditableTab(tab)) return;
   const detected = detectLineEndings(text);
   const normalized = normalizeLineEndings(text);
   const active = tab.id === activeTabId.value;
@@ -3751,6 +4140,7 @@ async function latestRecoveryItem(
 
 /** Updates only the disk baseline and external state; the text stays put. */
 function applyRecoveryDiskChange(tab: TabModel, item: RecoveryItem) {
+  if (!isDocumentTab(tab)) return;
   clearTabSaveTimer(tab.id);
   clearSavingDisplay(tab.id);
   recoveryTicker.stop(tab.id);
@@ -3784,7 +4174,7 @@ async function keepRestoredContent() {
       return;
     }
     const current = findTab(tab.id);
-    if (current === null || current.recoveryId !== recoveryId) {
+    if (current === null || !isDocumentTab(current) || current.recoveryId !== recoveryId) {
       return;
     }
     if (current.revision !== revision || current.externalState !== "none") {
@@ -3873,10 +4263,11 @@ async function handleBannerAction(
 }
 
 async function confirmCloseTabs(models: readonly TabModel[]): Promise<boolean> {
-  if (models.length === 0) {
+  const documents = models.filter(isDocumentTab);
+  if (documents.length === 0) {
     return true;
   }
-  for (const model of models) {
+  for (const model of documents) {
     if (
       isDirty(model) &&
       model.externalState === "none" &&
@@ -3887,7 +4278,10 @@ async function confirmCloseTabs(models: readonly TabModel[]): Promise<boolean> {
   }
   const currentModels = models
     .map((model) => findTab(model.id))
-    .filter((model): model is TabModel => model !== null);
+    .filter(
+      (model): model is DocumentTabModel =>
+        model !== null && isDocumentTab(model),
+    );
   const problems = currentModels.flatMap(tabCloseProblems);
   if (problems.length === 0) {
     return true;
@@ -3922,12 +4316,17 @@ async function closeTabsById(
   }
   const activeBefore = activeTabId.value;
   const activeIndex = tabs.value.findIndex((tab) => tab.id === activeBefore);
+  const activeBeforeSettings =
+    findTab(activeBefore)?.kind === "settings";
   const record = options.record ?? true;
   for (const tab of tabs.value) {
     if (!closing.has(tab.id)) continue;
     clearTabSaveTimer(tab.id);
     clearSavingDisplay(tab.id);
     forgetRecoveryForTab(tab);
+    if (!isDocumentTab(tab)) {
+      continue;
+    }
     if (tab.kind === "single") {
       void releaseSingleFile(tab.path).catch(() => {});
     } else if (record) {
@@ -3945,11 +4344,20 @@ async function closeTabsById(
       activeTabId.value = null;
       clearEditor();
     } else {
+      // Closing the settings page returns to the last document the user was
+      // reading when it still exists; otherwise the neighbouring tab wins.
+      const previous =
+        activeBeforeSettings && lastActiveDocumentId !== null
+          ? tabs.value.find((tab) => tab.id === lastActiveDocumentId)
+          : undefined;
       const nextIndex = Math.min(Math.max(activeIndex, 0), tabs.value.length - 1);
-      const next = tabs.value[nextIndex]!;
+      const next = previous ?? tabs.value[nextIndex] ?? tabs.value[0]!;
       activeTabId.value = next.id;
-      if (next.kind !== "single") {
+      if (next.kind === "workspace" || next.kind === "preview") {
         lastWorkspaceActivePath = next.path;
+      }
+      if (isDocumentTab(next)) {
+        lastActiveDocumentId = next.id;
       }
       if (next.kind === "workspace" && workspace.value !== null) {
         rememberRecentWorkspaceFile(workspace.value.root, next.path);
@@ -4015,7 +4423,8 @@ async function reopenClosedTab() {
   while (closedTabs.value.length > 0) {
     const closed = closedTabs.value.shift()!;
     const existing = tabs.value.find(
-      (tab) => tab.kind !== "single" && tab.path === closed.path,
+      (tab): tab is DocumentTabModel =>
+        isDocumentTab(tab) && tab.kind !== "single" && tab.path === closed.path,
     );
     if (existing) {
       await activateTab(existing.id);
@@ -4066,7 +4475,11 @@ async function reopenClosedTab() {
 async function openSingleFile(
   path: string,
   name: string,
+  offerId = "",
 ): Promise<boolean> {
+  const activationRevision = ordinaryOpenActivationRevision;
+  const requestIsCurrent = () =>
+    activationRevision === ordinaryOpenActivationRevision;
   const context = currentWorkspaceContext();
   if (context !== null && isInFolder(context.root, path)) {
     return openWorkspaceFile(relativePath(context.root, path), name);
@@ -4075,26 +4488,41 @@ async function openSingleFile(
     (tab) => tab.kind === "single" && tab.path === path,
   );
   if (existing) {
+    if (!requestIsCurrent()) return false;
     await activateTab(existing.id);
     return true;
   }
   const key = openingKey("single", path);
   const pending = openingTabs.get(key);
   if (pending !== undefined) {
+    openingSingleRequests.get(key)?.push(activationRevision);
     return pending;
   }
 
+  const requests = [activationRevision];
   const task = (async (): Promise<boolean> => {
     let file;
     try {
-      file = await acceptSingleFile(path);
+      file = await acceptSingleFile(path, offerId);
     } catch (error) {
-      showNotice(`无法打开文件：${errorText(error)}`, "danger");
+      if (
+        requests.some(
+          (revision) => revision === ordinaryOpenActivationRevision,
+        )
+      ) {
+        showNotice(`无法打开文件：${errorText(error)}`, "danger");
+      }
       return false;
     }
     const alreadyOpen = tabs.value.find(
       (tab) => tab.kind === "single" && tab.path === file.path,
     );
+    if (latestCurrentSingleOpenRequest(requests) === undefined) {
+      if (alreadyOpen === undefined) {
+        await releaseSingleFile(file.path).catch(() => {});
+      }
+      return false;
+    }
     if (alreadyOpen) {
       await activateTab(alreadyOpen.id);
       return true;
@@ -4107,14 +4535,24 @@ async function openSingleFile(
         (tab) => tab.kind === "single" && tab.path === file.path,
       );
       if (current === undefined) {
-        void releaseSingleFile(file.path).catch(() => {});
-        showNotice(`读取失败：${errorText(error)}`, "danger");
+        await releaseSingleFile(file.path).catch(() => {});
+        if (
+          latestCurrentSingleOpenRequest(requests) !== undefined
+        ) {
+          showNotice(`读取失败：${errorText(error)}`, "danger");
+        }
       }
       return false;
     }
     const current = tabs.value.find(
       (tab) => tab.kind === "single" && tab.path === file.path,
     );
+    if (latestCurrentSingleOpenRequest(requests) === undefined) {
+      if (current === undefined) {
+        await releaseSingleFile(file.path).catch(() => {});
+      }
+      return false;
+    }
     if (current) {
       await activateTab(current.id);
       return true;
@@ -4131,11 +4569,13 @@ async function openSingleFile(
   })();
 
   openingTabs.set(key, task);
+  openingSingleRequests.set(key, requests);
   try {
     return await task;
   } finally {
     if (openingTabs.get(key) === task) {
       openingTabs.delete(key);
+      openingSingleRequests.delete(key);
     }
   }
 }
@@ -4206,7 +4646,7 @@ function canOpenParentFolder(parent: string): boolean {
   return true;
 }
 
-async function askOpenSingleFile(path: string) {
+async function askOpenSingleFile(path: string, offerId: string) {
   const parent = absoluteParent(path);
   const name = absoluteBaseName(path);
   const canOpenFolder = canOpenParentFolder(parent);
@@ -4229,7 +4669,7 @@ async function askOpenSingleFile(path: string) {
     ],
   });
   if (choice === "single") {
-    await openSingleFile(path, name);
+    await openSingleFile(path, name, offerId);
     return;
   }
   if (choice === "folder" && canOpenFolder) {
@@ -4241,10 +4681,10 @@ async function askOpenSingleFile(path: string) {
   }
 }
 
-async function openPathInWorkspace(path: string) {
+async function openPathInWorkspace(path: string, offerId = "") {
   const context = currentWorkspaceContext();
   if (context === null || !isInFolder(context.root, path)) {
-    await askOpenSingleFile(path);
+    await askOpenSingleFile(path, offerId);
     return;
   }
   const rel = relativePath(context.root, path);
@@ -4271,21 +4711,21 @@ async function openPathInWorkspace(path: string) {
   );
 }
 
-async function handleOpenedPath(path: string) {
+async function handleOpenedPath(path: string, offerId: string) {
   const root = workspace.value?.root;
   if (root && isInFolder(root, path)) {
-    await openPathInWorkspace(path);
+    await openPathInWorkspace(path, offerId);
     return;
   }
   const parent = absoluteParent(path);
   if (recentFolders.value.includes(parent) && parent !== root) {
     const opened = await startFolderOperation(() => switchToFolder(parent));
     if (opened) {
-      await openPathInWorkspace(path);
+      await openPathInWorkspace(path, offerId);
     }
     return;
   }
-  await askOpenSingleFile(path);
+  await askOpenSingleFile(path, offerId);
 }
 
 async function receiveOpenedFiles() {
@@ -4300,16 +4740,16 @@ async function receiveOpenedFiles() {
         }
         await wait;
       }
-      const paths = await takePendingOpenedFiles();
-      const last = paths.at(-1);
+      const entries = await takePendingOpenedEntries();
+      const last = entries.at(-1);
       if (last) {
         try {
-          await handleOpenedPath(last);
+          await handleOpenedPath(last.path, last.offerId);
         } finally {
           // The offer is one-time: opening the parent consumes it in Go,
           // AcceptSingleFile consumes it for a single file, and cancelling
           // or failing to open must not leave the directory grant behind.
-          await dismissOfferedFile(last).catch(() => {});
+          await dismissOfferedFile(last.path, last.offerId).catch(() => {});
         }
       }
     })
@@ -4476,6 +4916,9 @@ function setMode(next: EditorMode) {
   editorModeChosen = true;
   mode.value = next;
   editor?.setMode(next);
+  if (!slashEnabled.value[next]) {
+    slashMenu?.close();
+  }
   editor?.focus();
   void setEditorMode(next).catch(() => {
     // Keep this session's choice if the write fails.
@@ -4494,20 +4937,319 @@ function refreshFormatToolbarState() {
 }
 
 /**
- * Applies the global toolbar preference immediately and writes the latest
- * intent in order. An older failed or slow write cannot make a newer toggle
- * lose the persisted value.
+ * Serializes every preference write from the settings page and the format
+ * toolbar command. A failed write is reported once; the control returns to
+ * the last saved value unless the user already made a newer choice.
+ */
+function enqueueSettingsWrite(
+  persist: () => Promise<unknown>,
+  handlers: { onSuccess?: () => void; onError: (error: unknown) => void },
+) {
+  settingsWriteQueue = settingsWriteQueue
+    .catch(() => {})
+    .then(async () => {
+      try {
+        await persist();
+        handlers.onSuccess?.();
+      } catch (error) {
+        handlers.onError(error);
+      }
+    });
+}
+
+function reportSettingsFailure(error: unknown) {
+  showNotice("保存设置失败", "danger", undefined, errorText(error));
+}
+
+function nextPreferenceRevision(key: string): number {
+  pendingPreferenceRestores.delete(key);
+  const next = (preferenceRevisions.get(key) ?? 0) + 1;
+  preferenceRevisions.set(key, next);
+  return next;
+}
+
+function preferenceRevisionCurrent(key: string, revision: number): boolean {
+  return (preferenceRevisions.get(key) ?? 0) === revision;
+}
+
+function markPreferenceBaseline(key: string) {
+  preferenceBaselines.add(key);
+}
+
+/**
+ * A failure can only restore a known saved value. Before the initial read
+ * establishes that value, keep the user's preview and finish the rollback when
+ * applySettings receives the stored baseline.
+ */
+function settlePreferenceFailure(
+  key: string,
+  revision: number,
+  stillShowsFailedValue: () => boolean,
+  restore: () => void,
+) {
+  const run = () => {
+    if (!preferenceRevisionCurrent(key, revision)) return;
+    if (!stillShowsFailedValue()) return;
+    restore();
+  };
+  if (preferenceBaselines.has(key)) {
+    run();
+  } else {
+    pendingPreferenceRestores.set(key, { revision, restore: run });
+  }
+}
+
+function chooseTheme(next: ThemeSetting, reportFailure = true) {
+  themeChosen = true;
+  theme.value = next;
+  applyTheme();
+  const revision = nextPreferenceRevision("theme");
+  enqueueSettingsWrite(
+    () => setTheme(next),
+    {
+      onSuccess: () => {
+        savedPreferences.theme = next;
+        markPreferenceBaseline("theme");
+      },
+      onError: (error) => {
+        if (reportFailure) {
+          settlePreferenceFailure(
+            "theme",
+            revision,
+            () => theme.value === next,
+            () => {
+              theme.value = savedPreferences.theme;
+              applyTheme();
+            },
+          );
+          reportSettingsFailure(error);
+        }
+      },
+    },
+  );
+}
+
+function setShowAllFilesPreference(value: boolean) {
+  showAllFilesChosen = true;
+  if (showAllFiles.value === value) return;
+  showAllFiles.value = value;
+  const revision = nextPreferenceRevision("showAllFiles");
+  enqueueSettingsWrite(
+    () => setShowAllFiles(value),
+    {
+      onSuccess: () => {
+        savedPreferences.showAllFiles = value;
+        markPreferenceBaseline("showAllFiles");
+      },
+      onError: (error) => {
+        settlePreferenceFailure(
+          "showAllFiles",
+          revision,
+          () => showAllFiles.value === value,
+          () => {
+            showAllFiles.value = savedPreferences.showAllFiles;
+          },
+        );
+        reportSettingsFailure(error);
+      },
+    },
+  );
+}
+
+function setHideMarkdownExtensionPreference(value: boolean) {
+  hideMarkdownExtensionChosen = true;
+  if (hideMarkdownExtension.value === value) return;
+  hideMarkdownExtension.value = value;
+  const revision = nextPreferenceRevision("hideMarkdownExtension");
+  enqueueSettingsWrite(
+    () => setHideMarkdownExtension(value),
+    {
+      onSuccess: () => {
+        savedPreferences.hideMarkdownExtension = value;
+        markPreferenceBaseline("hideMarkdownExtension");
+      },
+      onError: (error) => {
+        settlePreferenceFailure(
+          "hideMarkdownExtension",
+          revision,
+          () => hideMarkdownExtension.value === value,
+          () => {
+            hideMarkdownExtension.value =
+              savedPreferences.hideMarkdownExtension;
+          },
+        );
+        reportSettingsFailure(error);
+      },
+    },
+  );
+}
+
+function setSlashEnabledPreference(modeToChange: SlashMode, value: boolean) {
+  slashModeChosen[modeToChange] = true;
+  if (slashEnabled.value[modeToChange] === value) return;
+  slashEnabled.value = { ...slashEnabled.value, [modeToChange]: value };
+  if (!value && mode.value === modeToChange) {
+    slashMenu?.close();
+  }
+  const revisionKey = `slash:${modeToChange}`;
+  const revision = nextPreferenceRevision(revisionKey);
+  enqueueSettingsWrite(
+    () => setSlashEnabled(modeToChange, value),
+    {
+      onSuccess: () => {
+        savedPreferences.slashEnabled = {
+          ...savedPreferences.slashEnabled,
+          [modeToChange]: value,
+        };
+        markPreferenceBaseline(revisionKey);
+      },
+      onError: (error) => {
+        settlePreferenceFailure(
+          revisionKey,
+          revision,
+          () => slashEnabled.value[modeToChange] === value,
+          () => {
+            slashEnabled.value = {
+              ...slashEnabled.value,
+              [modeToChange]: savedPreferences.slashEnabled[modeToChange],
+            };
+          },
+        );
+        reportSettingsFailure(error);
+      },
+    },
+  );
+}
+
+/**
+ * Applies font text immediately for preview and writes the last snapshot
+ * after a short pause. Continuous typing therefore produces one write.
+ */
+function setFontPreference(field: FontField, value: string) {
+  fontChosen[field] = true;
+  fontRevision += 1;
+  fontWritePending = true;
+  if (field === "ui") uiFont.value = value;
+  else if (field === "reading") readingFont.value = value;
+  else codeFont.value = value;
+  applyFontPreferences();
+  void retrySettingsBaseline();
+  if (fontWriteTimer !== null) {
+    clearTimeout(fontWriteTimer);
+  }
+  fontWriteTimer = setTimeout(() => {
+    fontWriteTimer = null;
+    flushFontPreferences();
+  }, 350);
+}
+
+function flushFontPreferences() {
+  if (fontWriteTimer !== null) {
+    clearTimeout(fontWriteTimer);
+    fontWriteTimer = null;
+  }
+  fontWritePending = true;
+  if (!fontsBaselineReady) {
+    return;
+  }
+  fontWritePending = false;
+  const revision = fontRevision;
+  const snapshot = {
+    ui: uiFont.value,
+    reading: readingFont.value,
+    code: codeFont.value,
+  };
+  enqueueSettingsWrite(
+    () => setFonts(snapshot.ui, snapshot.reading, snapshot.code),
+    {
+      onSuccess: () => {
+        lastSavedFonts = snapshot;
+      },
+      onError: (error) => {
+        if (revision !== fontRevision) {
+          return;
+        }
+        uiFont.value = lastSavedFonts.ui;
+        readingFont.value = lastSavedFonts.reading;
+        codeFont.value = lastSavedFonts.code;
+        applyFontPreferences();
+        reportSettingsFailure(error);
+      },
+    },
+  );
+}
+
+/**
+ * Applies the global toolbar preference immediately and writes through the
+ * shared preference queue. An older failed or slow write cannot make a newer
+ * toggle lose the persisted value.
  */
 function setFormatToolbarVisible(visible: boolean) {
   formatToolbarChosen = true;
+  if (formatToolbarVisible.value === visible) return;
   formatToolbarVisible.value = visible;
   if (visible) refreshFormatToolbarState();
-  formatToolbarWriteQueue = formatToolbarWriteQueue
-    .catch(() => {})
-    .then(() => persistFormatToolbarVisible(visible))
-    .catch(() => {
-      // Keep this session's choice if the write fails.
-    });
+  const revision = nextPreferenceRevision("formatToolbarVisible");
+  enqueueSettingsWrite(
+    () => persistFormatToolbarVisible(visible),
+    {
+      onSuccess: () => {
+        savedPreferences.formatToolbarVisible = visible;
+        markPreferenceBaseline("formatToolbarVisible");
+      },
+      onError: (error) => {
+        settlePreferenceFailure(
+          "formatToolbarVisible",
+          revision,
+          () => formatToolbarVisible.value === visible,
+          () => {
+            formatToolbarVisible.value =
+              savedPreferences.formatToolbarVisible;
+          },
+        );
+        reportSettingsFailure(error);
+      },
+    },
+  );
+}
+
+function findSettingsTab(): SettingsTabModel | null {
+  return (
+    tabs.value.find((tab): tab is SettingsTabModel => tab.kind === "settings") ??
+    null
+  );
+}
+
+/** The four entries all run the registry's app.settings command. */
+function openSettings() {
+  noteExplicitSettingsEntry();
+  closeOverlaySidebar();
+  void retrySettingsBaseline();
+  const existing = findSettingsTab();
+  if (existing !== null) {
+    if (activeTabId.value === existing.id) {
+      invalidateOlderOrdinaryOpens();
+      void nextTick(() => {
+        document.getElementById("settings-theme")?.focus();
+      });
+    } else {
+      void activateTab(existing.id);
+    }
+    return;
+  }
+  const tab: SettingsTabModel = { id: nextTabId++, kind: "settings" };
+  insertTab(tab);
+  void activateTab(tab.id);
+}
+
+function pushNativeSettingsShortcut() {
+  const command = getCommand("app.settings");
+  if (command === undefined) return;
+  const accelerator = nativeAccelerator(command, platform.value);
+  if (accelerator === null) return;
+  void setSettingsAccelerator(accelerator).catch(() => {
+    // Windows and Linux have no native Settings item.
+  });
 }
 
 function activateCurrentTab() {
@@ -4536,6 +5278,27 @@ function isWorkspaceSearchInput(target: EventTarget | null): boolean {
   return (
     target instanceof HTMLElement &&
     target.matches("[data-search-panel] [data-search-input]")
+  );
+}
+
+// The Settings page uses native controls, so their text-editing ownership must
+// stay intact. Only tab navigation and closing are global even from those
+// controls; every other command still yields to the focused input.
+const SETTINGS_GLOBAL_COMMANDS = new Set([
+  "tab.next",
+  "tab.previous",
+  "tab.close",
+]);
+
+function settingsControlOwnsGlobalShortcut(
+  target: EventTarget | null,
+  commandId: string,
+): boolean {
+  return (
+    currentSettings.value !== null &&
+    target instanceof HTMLElement &&
+    target.closest("[data-settings-view]") !== null &&
+    SETTINGS_GLOBAL_COMMANDS.has(commandId)
   );
 }
 
@@ -5122,9 +5885,8 @@ function commandContext(view: CommandContext["view"]): CommandContext {
       toggleOutline,
       setFormatToolbarVisible,
       setMode,
-      toggleTheme: () => {
-        void toggleTheme();
-      },
+      toggleTheme,
+      openSettings,
       closeActiveTab: () => {
         void closeActiveTab();
       },
@@ -5230,7 +5992,7 @@ async function jumpToPaletteHeading(position: number) {
  * same Escape does not also close the find panel or the overlay sidebar.
  */
 function noteSlashEscape(event: KeyboardEvent) {
-  if (event.key !== "Escape") return;
+  if (event.key !== ESCAPE_HELP.eventKey) return;
   slashHandledEscape =
     slashState.value !== null &&
     !event.isComposing &&
@@ -5246,7 +6008,7 @@ function handleGlobalKeydown(event: KeyboardEvent) {
     return;
   }
   if (paletteSession.value !== null) {
-    if (event.key === "Escape") {
+    if (event.key === ESCAPE_HELP.eventKey) {
       event.preventDefault();
       closeCommandPalette();
       return;
@@ -5258,7 +6020,7 @@ function handleGlobalKeydown(event: KeyboardEvent) {
     }
     return;
   }
-  if (event.key === "Escape") {
+  if (event.key === ESCAPE_HELP.eventKey) {
     const handledBySlash = slashHandledEscape;
     slashHandledEscape = false;
     if (handledBySlash) {
@@ -5300,11 +6062,17 @@ function runAppShortcutEvent(event: KeyboardEvent): boolean {
   if (handledAppShortcutEvents.has(event)) {
     return true;
   }
-  if (event.defaultPrevented || isTextInput(event.target)) {
+  if (event.defaultPrevented) {
     return false;
   }
   const command = matchCommand(event, platform.value, commandRegistry, "app");
   if (command === null) {
+    return false;
+  }
+  if (
+    isTextInput(event.target) &&
+    !settingsControlOwnsGlobalShortcut(event.target, command.id)
+  ) {
     return false;
   }
   handledAppShortcutEvents.add(event);
@@ -5355,7 +6123,7 @@ function handleLinkImageCapture(event: KeyboardEvent) {
   ) {
     return;
   }
-  if (event.key === "Escape") {
+  if (event.key === ESCAPE_HELP.eventKey) {
     if (
       targetInsideLinkImageEditor(event.target) ||
       !editorOwnsKeyboardFocus()
@@ -5391,7 +6159,7 @@ function handleLinkImageCapture(event: KeyboardEvent) {
  * handler, where their overlay order is decided.
  */
 function handleAppShortcutCapture(event: KeyboardEvent) {
-  if (event.key === "Escape") {
+  if (event.key === ESCAPE_HELP.eventKey) {
     return;
   }
   if (event.isComposing || event.keyCode === 229) {
@@ -5495,7 +6263,8 @@ async function requestTrash(entry: TreeNode) {
   }
   await sidebar.value?.removePath(entry.path);
   const affected = tabs.value.filter(
-    (tab) =>
+    (tab): tab is DocumentTabModel =>
+      isDocumentTab(tab) &&
       tab.kind !== "single" &&
       (tab.path === entry.path ||
         (entry.isDir && tab.path.startsWith(`${entry.path}/`))),
@@ -5540,7 +6309,11 @@ function storedTabsPayload(): {
   active: string;
   recentFiles: string[];
 } {
-  const workspaceTabs = tabs.value.filter((tab) => tab.kind !== "single");
+  const workspaceTabs = tabs.value.filter(
+    (tab): tab is DocumentTabModel =>
+      isDocumentTab(tab) &&
+      (tab.kind === "workspace" || tab.kind === "preview"),
+  );
   const activePath =
     lastWorkspaceActivePath !== null &&
     workspaceTabs.some((tab) => tab.path === lastWorkspaceActivePath)
@@ -5620,7 +6393,8 @@ async function openTabMenu(id: number, x: number, y: number) {
     target: "tab",
     platform: platform.value,
     isMarkdown: tab.kind !== "preview",
-    inWorkspace: tab.kind !== "single",
+    isSettings: tab.kind === "settings",
+    inWorkspace: tab.kind === "workspace" || tab.kind === "preview",
     hasOtherTabs: tabs.value.length > 1,
     hasTabsRight: index !== -1 && index < tabs.value.length - 1,
     canReopen: closedTabs.value.length > 0,
@@ -5641,6 +6415,16 @@ async function openTabMenu(id: number, x: number, y: number) {
   }
   const currentTab = findTab(id);
   if (currentTab === null) {
+    return;
+  }
+  const documentTab = isDocumentTab(currentTab) ? currentTab : null;
+  if (
+    documentTab === null &&
+    (choice === "reveal-in-tree" ||
+      choice === "reveal" ||
+      choice === "copy-path" ||
+      choice === "copy-relative-path")
+  ) {
     return;
   }
   switch (choice) {
@@ -5669,16 +6453,16 @@ async function openTabMenu(id: number, x: number, y: number) {
         }
       }
       await nextTick();
-      if (currentTab.kind !== "single") {
-        await sidebar.value?.reveal(currentTab.path);
+      if (documentTab !== null && documentTab.kind !== "single") {
+        await sidebar.value?.reveal(documentTab.path);
       }
       break;
     case "reveal":
       try {
-        if (currentTab.kind === "single") {
-          await revealSingleFile(currentTab.path);
-        } else if (workspace.value !== null) {
-          await revealEntry(currentTab.path, workspace.value.generation);
+        if (documentTab !== null && documentTab.kind === "single") {
+          await revealSingleFile(documentTab.path);
+        } else if (documentTab !== null && workspace.value !== null) {
+          await revealEntry(documentTab.path, workspace.value.generation);
         }
       } catch (error) {
         showNotice(`无法显示：${errorText(error)}`, "danger");
@@ -5686,17 +6470,17 @@ async function openTabMenu(id: number, x: number, y: number) {
       break;
     case "copy-path": {
       const absolute =
-        currentTab.kind === "single"
-          ? currentTab.path
-          : `${workspace.value?.root ?? ""}/${currentTab.path}`;
+        documentTab !== null && documentTab.kind === "single"
+          ? documentTab.path
+          : `${workspace.value?.root ?? ""}/${documentTab?.path ?? ""}`;
       if (!(await copyText(absolute))) {
         showNotice("复制失败", "danger");
       }
       break;
     }
     case "copy-relative-path":
-      if (currentTab.kind !== "single") {
-        if (!(await copyText(currentTab.path))) {
+      if (documentTab !== null && documentTab.kind !== "single") {
+        if (!(await copyText(documentTab.path))) {
           showNotice("复制失败", "danger");
         }
       }
@@ -5706,6 +6490,7 @@ async function openTabMenu(id: number, x: number, y: number) {
 
 function handleVisibilityChange() {
   if (document.visibilityState === "hidden") {
+    if (fontWriteTimer !== null) flushFontPreferences();
     writeAllRecoveryCopies();
     void saveAllTabs();
     void persistTabsNow();
@@ -5713,6 +6498,7 @@ function handleVisibilityChange() {
 }
 
 function saveBeforeExit() {
+  if (fontWriteTimer !== null) flushFontPreferences();
   writeAllRecoveryCopies();
   void saveAllTabs();
   void persistTabsNow();
@@ -5721,6 +6507,10 @@ function saveBeforeExit() {
 function handleWindowResize() {
   handleResize();
 }
+
+// The native app menu reads the registry-formatted Settings shortcut from the
+// page. Re-send it when the real platform arrives after App.Info().
+watch(platform, pushNativeSettingsShortcut, { immediate: true });
 
 onMounted(async () => {
   window.addEventListener("beforeunload", saveBeforeExit);
@@ -5789,6 +6579,9 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   cancelPendingOutlineFocusSettlement();
+  if (fontWriteTimer !== null) {
+    flushFontPreferences();
+  }
   window.removeEventListener("beforeunload", saveBeforeExit);
   window.removeEventListener("pagehide", saveBeforeExit);
   window.removeEventListener("resize", handleWindowResize);
@@ -5860,6 +6653,8 @@ defineExpose({
       :initial-expanded="expandedForRoot"
       :is-dark="isDark"
       :search-active="searchOpen"
+      :show-all-files="showAllFiles"
+      :hide-markdown-extension="effectiveHideMarkdownExtension"
       @hide-sidebar="toggleSidebar"
       @open-folder="chooseFolder"
       @toggle-theme="toggleTheme"
@@ -5894,7 +6689,8 @@ defineExpose({
         :sidebar-shown="sidebarShown"
         :show-sidebar-toggle="showSidebarToggle"
         :show-open-folder="!hasWorkspace && tabs.length > 0"
-        :show-outline="!startState"
+        :show-mode="tabs.length > 0 && currentSettings === null"
+        :show-outline="!startState && currentSettings === null"
         :outline-enabled="outlineEnabled"
         :outline-on="outlineDisplayed"
         @close-tab="closeTab"
@@ -5961,6 +6757,26 @@ defineExpose({
               :platform="platform"
               @open-default="openPreviewDefault"
               @reveal="revealPreview"
+            />
+            <SettingsView
+              v-else-if="currentSettings"
+              :platform="platform"
+              :theme="theme"
+              :ui-font="uiFont"
+              :reading-font="readingFont"
+              :code-font="codeFont"
+              :show-all-files="showAllFiles"
+              :hide-markdown-extension="hideMarkdownExtension"
+              :format-toolbar-visible="formatToolbarVisible"
+              :slash-enabled="slashEnabled"
+              @update:theme="chooseTheme"
+              @update:font="setFontPreference"
+              @update:show-all-files="setShowAllFilesPreference"
+              @update:hide-markdown-extension="
+                setHideMarkdownExtensionPreference
+              "
+              @update:format-toolbar-visible="setFormatToolbarVisible"
+              @update:slash-enabled="setSlashEnabledPreference"
             />
             <div
               ref="editorHost"

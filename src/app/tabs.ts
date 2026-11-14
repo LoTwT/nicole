@@ -4,7 +4,8 @@ import type { SavedSelection, EditorRestoreState } from "../editor";
 import type { LineEnding } from "./line-endings";
 import { tabProblem, type SavePhase } from "./status";
 
-export type TabKind = "workspace" | "single" | "preview";
+export type DocumentTabKind = "workspace" | "single" | "preview";
+export type TabKind = DocumentTabKind | "settings";
 export type ExternalTabState = "none" | "modified" | "deleted";
 
 /**
@@ -12,9 +13,9 @@ export type ExternalTabState = "none" | "modified" | "deleted";
  * state, line endings and the background restore state live here. Saves only
  * ever use this model's path, never whichever tab happens to be active.
  */
-export interface TabModel {
+export interface DocumentTabModel {
   id: number;
-  kind: TabKind;
+  kind: DocumentTabKind;
   /** Workspace-relative for workspace/preview tabs, absolute for single files. */
   path: string;
   name: string;
@@ -41,15 +42,36 @@ export interface TabModel {
   snapshot: EditorRestoreState | null;
 }
 
-export function isDirty(model: TabModel): boolean {
+/**
+ * The global settings page is a typed tab, not a document with an empty or
+ * invented path. It owns no view, save state or workspace membership.
+ */
+export interface SettingsTabModel {
+  id: number;
+  kind: "settings";
+}
+
+export type TabModel = DocumentTabModel | SettingsTabModel;
+
+export function isDocumentTab(tab: TabModel): tab is DocumentTabModel {
+  return tab.kind !== "settings";
+}
+
+export function isEditableTab(
+  tab: TabModel,
+): tab is DocumentTabModel & { kind: "workspace" | "single" } {
+  return tab.kind === "workspace" || tab.kind === "single";
+}
+
+export function isDirty(model: DocumentTabModel): boolean {
   return model.text !== model.originalText;
 }
 
-export function isMarkdownTab(model: TabModel): boolean {
+export function isMarkdownTab(model: DocumentTabModel): boolean {
   return model.kind !== "preview";
 }
 
-export function tabBadge(model: TabModel): {
+export function tabBadge(model: DocumentTabModel): {
   tone: "danger" | "warning";
   label: string;
 } | null {
@@ -75,7 +97,7 @@ export function tabBadge(model: TabModel): {
  * failure or mixed endings always count, even if the text was undone back to
  * the disk version: the user still has to acknowledge the state.
  */
-export function tabCloseProblems(model: TabModel): string[] {
+export function tabCloseProblems(model: DocumentTabModel): string[] {
   const problems: string[] = [];
   if (model.externalState === "deleted") {
     problems.push(`${model.name}：文件已在磁盘上被删除或移走`);
@@ -139,7 +161,7 @@ export function distinguishingSuffixes(
   return suffixes;
 }
 
-export function tabTooltip(model: TabModel, rootName: string): string {
+export function tabTooltip(model: DocumentTabModel, rootName: string): string {
   return model.kind === "single"
     ? model.path
     : `${rootName}/${model.path}`;
@@ -147,7 +169,7 @@ export function tabTooltip(model: TabModel, rootName: string): string {
 
 /** New tabs open immediately to the right of the active tab. */
 export function insertionIndex(
-  tabs: readonly TabModel[],
+  tabs: readonly { id: number }[],
   activeId: number | null,
 ): number {
   if (activeId === null) {

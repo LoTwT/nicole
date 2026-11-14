@@ -39,6 +39,14 @@ var (
 	errRecentFolderNotCurrent = errors.New("settings: recent folder must be the open workspace")
 )
 
+// SlashEnabledSettings is the per-mode slash menu switch. The page maps the
+// saved editor mode names to these fields.
+type SlashEnabledSettings struct {
+	Live      bool `json:"live"`
+	Immersive bool `json:"immersive"`
+	Source    bool `json:"source"`
+}
+
 // AppSettings is the user's global settings. It is stored in
 // PathUserData/settings.json and is independent of any workspace.
 type AppSettings struct {
@@ -54,6 +62,21 @@ type AppSettings struct {
 	// switch. The toolbar itself is hidden while no Markdown tab is active;
 	// this value keeps the user's choice for the next Markdown tab.
 	FormatToolbarVisible bool `json:"formatToolbarVisible"`
+	// ShowAllFiles shows non-Markdown files in the tree. Directories are
+	// always shown; the preference only filters files.
+	ShowAllFiles bool `json:"showAllFiles"`
+	// HideMarkdownExtension removes the .md suffix from tree rows and tab
+	// labels. Paths, rename inputs and file access keep the full name.
+	HideMarkdownExtension bool `json:"hideMarkdownExtension"`
+	// UIFont, ReadingFont and CodeFont are installed font names. Empty keeps
+	// the interface's default stack. They never name bundled or downloaded
+	// fonts.
+	UIFont      string `json:"uiFont"`
+	ReadingFont string `json:"readingFont"`
+	CodeFont    string `json:"codeFont"`
+	// SlashEnabled switches the slash menu per editor mode. Every mode
+	// defaults to enabled when its field is missing.
+	SlashEnabled SlashEnabledSettings `json:"slashEnabled"`
 	// SidebarWidth is the sidebar width in CSS pixels, within
 	// [200, 400].
 	SidebarWidth int `json:"sidebarWidth"`
@@ -125,6 +148,53 @@ func (s *Settings) SetOutlineVisible(visible bool) error {
 // SetFormatToolbarVisible remembers the global formatting toolbar switch.
 func (s *Settings) SetFormatToolbarVisible(visible bool) error {
 	return s.store.setFormatToolbarVisible(visible)
+}
+
+// SetFonts saves the interface, reading and code font names. Empty strings
+// mean the built-in stack; the page decides how a missing font falls back.
+func (s *Settings) SetFonts(uiFont string, readingFont string, codeFont string) error {
+	return s.store.update(func(settings *AppSettings) {
+		settings.UIFont = strings.TrimSpace(uiFont)
+		settings.ReadingFont = strings.TrimSpace(readingFont)
+		settings.CodeFont = strings.TrimSpace(codeFont)
+	})
+}
+
+// SetShowAllFiles remembers whether the file tree includes non-Markdown files.
+func (s *Settings) SetShowAllFiles(visible bool) error {
+	return s.store.update(func(settings *AppSettings) {
+		settings.ShowAllFiles = visible
+	})
+}
+
+// SetHideMarkdownExtension remembers the tree and tab label preference. It
+// does not change stored paths, rename inputs or file operations.
+func (s *Settings) SetHideMarkdownExtension(hidden bool) error {
+	return s.store.update(func(settings *AppSettings) {
+		settings.HideMarkdownExtension = hidden
+	})
+}
+
+// SetSlashEnabled switches the slash menu for one editor mode. The page can
+// update one mode without replacing the other two values.
+func (s *Settings) SetSlashEnabled(mode string, enabled bool) error {
+	mode = strings.TrimSpace(strings.ToLower(mode))
+	switch mode {
+	case editorModeLive:
+		return s.store.update(func(settings *AppSettings) {
+			settings.SlashEnabled.Live = enabled
+		})
+	case editorModeImmersive:
+		return s.store.update(func(settings *AppSettings) {
+			settings.SlashEnabled.Immersive = enabled
+		})
+	case editorModeSource:
+		return s.store.update(func(settings *AppSettings) {
+			settings.SlashEnabled.Source = enabled
+		})
+	default:
+		return errInvalidEditorMode
+	}
 }
 
 // SetSidebarWidth saves the sidebar width, clamped to the range the interface
@@ -219,14 +289,20 @@ func newSettingsStoreIn(filePath string) *settingsStore {
 // settingsFile mirrors AppSettings but distinguishes a missing theme from an
 // explicit one, which legacy migration needs.
 type settingsFile struct {
-	Theme                *string             `json:"theme"`
-	EditorMode           json.RawMessage     `json:"editorMode"`
-	OutlineVisible       json.RawMessage     `json:"outlineVisible"`
-	FormatToolbarVisible json.RawMessage     `json:"formatToolbarVisible"`
-	SidebarWidth         int                 `json:"sidebarWidth"`
-	RecentFolders        []string            `json:"recentFolders"`
-	ExpandedFolders      map[string][]string `json:"expandedFolders"`
-	WorkspaceClosed      bool                `json:"workspaceClosed"`
+	Theme                 *string             `json:"theme"`
+	EditorMode            json.RawMessage     `json:"editorMode"`
+	OutlineVisible        json.RawMessage     `json:"outlineVisible"`
+	FormatToolbarVisible  json.RawMessage     `json:"formatToolbarVisible"`
+	ShowAllFiles          json.RawMessage     `json:"showAllFiles"`
+	HideMarkdownExtension json.RawMessage     `json:"hideMarkdownExtension"`
+	UIFont                json.RawMessage     `json:"uiFont"`
+	ReadingFont           json.RawMessage     `json:"readingFont"`
+	CodeFont              json.RawMessage     `json:"codeFont"`
+	SlashEnabled          json.RawMessage     `json:"slashEnabled"`
+	SidebarWidth          int                 `json:"sidebarWidth"`
+	RecentFolders         []string            `json:"recentFolders"`
+	ExpandedFolders       map[string][]string `json:"expandedFolders"`
+	WorkspaceClosed       bool                `json:"workspaceClosed"`
 }
 
 func defaultSettings() AppSettings {
@@ -234,6 +310,8 @@ func defaultSettings() AppSettings {
 		Theme:           themeSystem,
 		EditorMode:      editorModeLive,
 		OutlineVisible:  false,
+		ShowAllFiles:    true,
+		SlashEnabled:    SlashEnabledSettings{Live: true, Immersive: true, Source: true},
 		SidebarWidth:    defaultSidebarWidth,
 		RecentFolders:   []string{},
 		ExpandedFolders: map[string][]string{},
@@ -359,14 +437,20 @@ func (s *settingsStore) readLocked() (AppSettings, bool, error) {
 	}
 	themePresent := file.Theme != nil
 	settings := AppSettings{
-		Theme:                themeSystem,
-		EditorMode:           decodeEditorMode(file.EditorMode),
-		OutlineVisible:       decodeOutlineVisible(file.OutlineVisible),
-		FormatToolbarVisible: decodeFormatToolbarVisible(file.FormatToolbarVisible),
-		SidebarWidth:         file.SidebarWidth,
-		RecentFolders:        file.RecentFolders,
-		ExpandedFolders:      file.ExpandedFolders,
-		WorkspaceClosed:      file.WorkspaceClosed,
+		Theme:                 themeSystem,
+		EditorMode:            decodeEditorMode(file.EditorMode),
+		OutlineVisible:        decodeOutlineVisible(file.OutlineVisible),
+		FormatToolbarVisible:  decodeFormatToolbarVisible(file.FormatToolbarVisible),
+		ShowAllFiles:          decodeBoolWithDefault(file.ShowAllFiles, true),
+		HideMarkdownExtension: decodeBoolWithDefault(file.HideMarkdownExtension, false),
+		UIFont:                decodeString(file.UIFont),
+		ReadingFont:           decodeString(file.ReadingFont),
+		CodeFont:              decodeString(file.CodeFont),
+		SlashEnabled:          decodeSlashEnabled(file.SlashEnabled),
+		SidebarWidth:          file.SidebarWidth,
+		RecentFolders:         file.RecentFolders,
+		ExpandedFolders:       file.ExpandedFolders,
+		WorkspaceClosed:       file.WorkspaceClosed,
 	}
 	if file.Theme != nil {
 		settings.Theme = *file.Theme
@@ -406,14 +490,54 @@ func decodeOutlineVisible(raw json.RawMessage) bool {
 // decodeFormatToolbarVisible keeps a missing or mistyped toolbar preference
 // from resetting the other saved settings. An explicit false round-trips.
 func decodeFormatToolbarVisible(raw json.RawMessage) bool {
+	return decodeBoolWithDefault(raw, false)
+}
+
+// decodeBoolWithDefault applies one field's fallback without treating a
+// hand-edited wrong type as a corrupt file.
+func decodeBoolWithDefault(raw json.RawMessage, fallback bool) bool {
+	if len(raw) == 0 || string(raw) == "null" {
+		return fallback
+	}
+	var value bool
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return fallback
+	}
+	return value
+}
+
+// decodeString accepts only a JSON string for a font name. A missing or
+// mistyped field keeps the built-in font stack.
+func decodeString(raw json.RawMessage) string {
 	if len(raw) == 0 {
-		return false
+		return ""
 	}
-	var visible bool
-	if err := json.Unmarshal(raw, &visible); err != nil {
-		return false
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return ""
 	}
-	return visible
+	return value
+}
+
+// decodeSlashEnabled defaults every missing mode to enabled. Each subfield is
+// decoded separately, so a valid false survives a bad sibling value.
+func decodeSlashEnabled(raw json.RawMessage) SlashEnabledSettings {
+	settings := SlashEnabledSettings{Live: true, Immersive: true, Source: true}
+	if len(raw) == 0 {
+		return settings
+	}
+	var file struct {
+		Live      json.RawMessage `json:"live"`
+		Immersive json.RawMessage `json:"immersive"`
+		Source    json.RawMessage `json:"source"`
+	}
+	if err := json.Unmarshal(raw, &file); err != nil {
+		return settings
+	}
+	settings.Live = decodeBoolWithDefault(file.Live, true)
+	settings.Immersive = decodeBoolWithDefault(file.Immersive, true)
+	settings.Source = decodeBoolWithDefault(file.Source, true)
+	return settings
 }
 
 // backupCorruptLocked moves a damaged settings file aside so the next write
@@ -450,6 +574,9 @@ func normalizeSettings(settings AppSettings) AppSettings {
 	if !validEditorMode(settings.EditorMode) {
 		settings.EditorMode = editorModeLive
 	}
+	settings.UIFont = strings.TrimSpace(settings.UIFont)
+	settings.ReadingFont = strings.TrimSpace(settings.ReadingFont)
+	settings.CodeFont = strings.TrimSpace(settings.CodeFont)
 	if settings.SidebarWidth <= 0 {
 		settings.SidebarWidth = defaultSidebarWidth
 	}

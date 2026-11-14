@@ -27,12 +27,13 @@ const props = defineProps<{
   initialExpanded: readonly string[];
   isDark: boolean;
   searchActive?: boolean;
+  showAllFiles: boolean;
+  hideMarkdownExtension: boolean;
 }>();
 
 const emit = defineEmits<{
   "hide-sidebar": [];
   "open-folder": [];
-  "open-settings": [];
   "toggle-theme": [];
   "search-all": [];
   "close-search": [];
@@ -307,6 +308,8 @@ defineExpose({
         :selected-path="selectedPath"
         :platform="platform"
         :initial-expanded="initialExpanded"
+        :show-all-files="showAllFiles"
+        :hide-markdown-extension="hideMarkdownExtension"
         @open-entry="emit('open-entry', $event)"
         @entry-created="(path, isDir) => emit('entry-created', path, isDir)"
         @entry-renaming="
@@ -353,11 +356,10 @@ defineExpose({
         />
         <button
           type="button"
-          class="focus-ring grid size-6 place-items-center rounded-[var(--radius-control)] text-[var(--text-muted)] disabled:cursor-default disabled:opacity-50"
-          disabled
-          aria-label="设置，将在后续版本提供"
-          title="设置将在后续版本提供"
-          @click="emit('open-settings')"
+          class="focus-ring grid size-6 place-items-center rounded-[var(--radius-control)] text-[var(--text-muted)] hover:bg-[var(--surface-subtle)] hover:text-[var(--text-primary)]"
+          :aria-label="`设置 ${commandShortcut('app.settings', platform)}`"
+          :title="`设置 ${commandShortcut('app.settings', platform)}`"
+          @click="emit('run-command', 'app.settings')"
         >
           <AppIcon name="gear" :size="14" />
         </button>

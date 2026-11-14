@@ -151,8 +151,8 @@ func main() {
 	// A file opened from the system is offered to the page; only accepting it
 	// grants the page access to that exact file. See docs/architecture.md.
 	mygo.App.OnOpenFile(func(path string) {
-		openedFiles.add(path)
-		singleFiles.offer(path)
+		offerID := singleFiles.offer(path)
+		openedFiles.addWithOffer(path, offerID)
 	})
 
 	stateStore, err := startupWindowStateStore()
@@ -160,6 +160,10 @@ func main() {
 		log.Fatal(err)
 	}
 	mygo.App.SetWindowStateStore(stateStore)
+
+	menu := appMenu(mygo.IsDev())
+	customizeEditMenu(menu)
+	mygo.App.SetMenu(menu)
 
 	mygo.Bind(
 		NewApplication(mygo.App.Version()),
@@ -170,11 +174,8 @@ func main() {
 		singleFiles,
 		recovery,
 		openedFiles,
-		NativeMenu{},
+		NewNativeMenu(menu),
 	)
-	menu := appMenu(mygo.IsDev())
-	customizeEditMenu(menu)
-	mygo.App.SetMenu(menu)
 
 	mygo.App.WhenReady(func() {
 		window := mygo.NewWindow(mainWindowOptions())

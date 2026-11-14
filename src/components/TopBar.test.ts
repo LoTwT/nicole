@@ -46,6 +46,7 @@ function mount(
           sidebarShown: true,
           showSidebarToggle: false,
           showOpenFolder: false,
+          showMode: true,
           showOutline,
           outlineEnabled: outline.enabled,
           outlineOn: outline.on,

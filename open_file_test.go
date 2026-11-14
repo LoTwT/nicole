@@ -81,6 +81,27 @@ func TestOpenedFilesStayPendingWithoutAWindow(t *testing.T) {
 	}
 }
 
+func TestOpenedFilesKeepTheLatestOfferIdentity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "note.md")
+	service := newOpenedFiles(
+		func() *mygo.Window { return &mygo.Window{} },
+		func(*mygo.Window, bool) error { return nil },
+	)
+
+	service.addWithOffer(path, "offer-1")
+	service.addWithOffer(path, "offer-2")
+	entries := service.TakePendingOpenedFilesWithOffers()
+	if len(entries) != 1 {
+		t.Fatalf("pending entries = %+v, want one", entries)
+	}
+	if entries[0].Path != path || entries[0].OfferID != "offer-2" {
+		t.Errorf("pending entry = %+v, want path with newest offer", entries[0])
+	}
+	if got := service.TakePendingOpenedFiles(); len(got) != 0 {
+		t.Errorf("legacy drain after entry drain = %q, want empty", got)
+	}
+}
+
 func TestOpenFileEventName(t *testing.T) {
 	if got := appOpenFile.Name(); got != "app:open-file" {
 		t.Errorf("event name = %q, want app:open-file", got)

@@ -157,13 +157,14 @@ Go 的 `Workspace` 服务通过 `mygo.Bind` 暴露，前端经 `src/services/wor
 工作区之外的单个 `.md` 文件由 `SingleFileService` 读写。授权按文件进行，不代表所在文件夹：
 
 - `ChooseSingleFile()` 打开只显示 `.md` 的原生文件对话框；用户选中的文件直接授权。
-- 系统“打开方式”或双击把文件交给 `App.OnOpenFile`；Go 把它记为“已提供”，但**不自动授权**。页面显示确认后调用 `AcceptSingleFile(path)`，只有与已提供路径一致的请求才会授权。
-- “打开所在文件夹”是一次性授权：`OpenFolder` 成功后 Go 删除该文件对应的已提供项；用户取消、对话框被关闭或打开失败时，页面调用 `DismissOfferedFile(path)` 删除它。位于主目录、文件系统根目录或盘符根目录的文件不显示这个选项；当授权来源只是该文件时，Go 的 `OpenFolder` 也拒绝这些根目录。用户主动选择、当前根目录和最近列表不受这条限制。
-- 授权保存解析符号链接后的绝对路径；`ReadSingleFile(path)` 和 `WriteSingleFile(path, content)` 只接受完全相同的路径。同一目录下的其他文件、相对路径、目录和非 `.md` 文件都拒绝。
-- 授权只存在内存中；关闭标签页时调用 `ReleaseSingleFile(path)`，重启应用后需要重新选择或确认。单文件标签页不属于任何根目录：切换文件夹时保留，不计入“会关闭”的标签页数量，不写入标签页布局。唯一的例外是[崩溃恢复](#崩溃恢复)：用户从副本列表中选择恢复时，Go 重新核对路径后按解析后的绝对路径授权一次；页面没有按任意路径授权的入口。
+- 系统“打开方式”或双击把文件交给 `App.OnOpenFile`；Go 给每次提供记录独立的 offer ID，但**不自动授权**。页面只能确认当前仍有效的同一 offer：`AcceptSingleFile(path, offerID)` 只有在路径和 ID 都匹配时才授权；同一路径再次提供会生成新 ID，旧确认不能消费新 offer。
+- “打开所在文件夹”是一次性授权：`OpenFolder` 成功后 Go 删除该文件对应的已提供项；用户取消、对话框被关闭或打开失败时，页面调用 `DismissOfferedFile(path, offerID)`，只删除自己处理的这次 offer。较早请求的收尾不能删除同路径后来到达的新 offer。位于主目录、文件系统根目录或盘符根目录的文件不显示这个选项；当授权来源只是该文件时，Go 的 `OpenFolder` 也拒绝这些根目录。用户主动选择、当前根目录和最近列表不受这条限制。
+- 授权保存解析符号链接后的绝对路径；`ReadSingleFile(path)` 和 `WriteSingleFile(path, content)` 只接受完全相同的路径。同一目录下的其他文件、相对路径、目录和非 `.md` 文件都拒绝。同一真实文件通过 canonical/alias 再次提供时，新 offer 会使旧别名的确认失效。
+- 授权只存在内存中；关闭标签页时调用 `ReleaseSingleFile(path)`，重启应用后需要重新选择或确认。释放只删除 grant，不消耗同路径待确认的系统 offer。单文件标签页不属于任何根目录：切换文件夹时保留，不计入“会关闭”的标签页数量，不写入标签页布局。唯一的例外是[崩溃恢复](#崩溃恢复)：用户从副本列表中选择恢复时，Go 重新核对路径后按解析后的绝对路径授权一次；页面没有按任意路径授权的入口。
 - 写入复用[写入保证](#写入保证)的原子替换：先写同目录临时文件，再改名；保留权限位，只读文件拒绝写入，失败时旧内容不变。文件已被外部删除时，再次保存会在原路径重新创建，与工作区文件的行为一致。换行风格的检测和“换行风格混合”保护仍由前端负责。
 - 单文件不属于工作区文件树，不在 `Watch` 范围内；界面按[界面与交互](ui.md#打开工作区之外的文件)显示完整路径、横幅和独立标签页。外部修改/删除不会自动发现，保存失败等状态仍由前端按普通文件处理。
 - 打开单文件总是在活动标签页右侧新开标签页；同一路径同时最多一个标签页，已在标签页中时切换到该标签页。关闭某个单文件的标签页时释放该文件的授权。
+- 单文件与工作区普通打开共用同一套 ordinary 激活资格。设置激活会撤销更早请求在 accept 和 read 两个 await 之后的插入、激活与挂载权限；若 accept 已授权但已无可用的当前请求且没有标签使用该授权，页面释放该单文件授权，不泄漏也不误释放已有标签的授权。设置之后发起的新单文件打开，以及与旧读取合并的新 pending 请求，仍按最新有效 owner 正常打开。
 
 安全模型见[架构](../architecture.md#安全)。
 
@@ -179,11 +180,15 @@ Go 的 `Workspace` 服务通过 `mygo.Bind` 暴露，前端经 `src/services/wor
 | `SetEditorMode(mode)` | 保存全局编辑模式 `live`、`immersive` 或 `source`；非法值返回错误且不改写文件。 |
 | `SetOutlineVisible(visible)` | 保存宽布局下的大纲开关；窄窗口的临时浮层只存在页面内，不调用这个接口。 |
 | `SetFormatToolbarVisible(visible)` | 保存全局固定格式工具栏开关；没有 Markdown 标签页时工具栏隐藏，但页面保留并继续写入这个选择。 |
+| `SetFonts(uiFont, readingFont, codeFont)` | 保存界面、阅读和代码字体名称；空字符串表示既有字体栈。只存名称，不枚举、下载或验证字体是否安装。 |
+| `SetShowAllFiles(visible)` | 保存文件树是否显示非 Markdown 文件；目录不受影响。 |
+| `SetHideMarkdownExtension(hidden)` | 保存文件树和标签页的 `.md` 显示后缀偏好；不改变真实路径、重命名输入或文件访问。 |
+| `SetSlashEnabled(mode, enabled)` | 按 `live`、`immersive`、`source` 保存 slash 菜单开关；非法模式返回错误，其他两个值保持不变。 |
 | `SetSidebarWidth(width)` | 保存侧栏宽度，限制在 200–400px。 |
 | `SetExpandedFolders(root, folders)` | 按根目录保存文件树展开状态；`folders` 是相对路径，只存显示状态，不用于访问文件。 |
 | `AddRecentFolder(folder)` / `RemoveRecentFolder(folder)` | `AddRecentFolder` 只接受当前已打开的根目录，页面不能用它授权另一个目录；`Workspace.open` 成功后由 Go 写入最近列表，页面只更新本地显示。`RemoveRecentFolder` 只移除记录。 |
 
-`settings.json` 的字段为 `theme`、`editorMode`、`outlineVisible`、`formatToolbarVisible`、`sidebarWidth`、`recentFolders`、`expandedFolders`（根目录绝对路径 → 展开的相对路径数组）和 `workspaceClosed`。默认主题是 `system`，默认编辑模式是 `live`（实时预览），大纲和格式工具栏默认隐藏，默认宽度 252px，最近文件夹和展开状态为空，`workspaceClosed` 缺省为 `false`；`editorMode` 缺失或非法时按 `live` 读取，`outlineVisible` 或 `formatToolbarVisible` 缺失或类型不对时按 `false` 读取。这些项的容错只影响自己的值，不会把其他合法字段重置为默认值；显式保存的 `false` 照常写入并读回。`workspaceClosed` 由 `Workspace.CloseWorkspace()` 写成 `true`，由任何一次成功打开文件夹（`ChooseFolder`、`OpenFolder`、`OpenDroppedFolder`）清除；页面只在启动时读取它来决定是否恢复上次的文件夹，没有单独写入它的接口。写入在目标目录创建临时文件后改名替换，一次只写一个完整文件；损坏的设置文件不会被部分覆盖。
+`settings.json` 的字段为 `theme`、`editorMode`、`outlineVisible`、`formatToolbarVisible`、`showAllFiles`、`hideMarkdownExtension`、`uiFont`、`readingFont`、`codeFont`、`slashEnabled`、`sidebarWidth`、`recentFolders`、`expandedFolders`（根目录绝对路径 → 展开的相对路径数组）和 `workspaceClosed`。`slashEnabled` 是包含 `live`、`immersive`、`source` 三个布尔值的对象。默认主题是 `system`，默认编辑模式是 `live`（实时预览），大纲和格式工具栏默认隐藏，`showAllFiles` 默认 `true`，`hideMarkdownExtension` 默认 `false`，三个字体字段默认为空字符串，`slashEnabled` 的三个子字段默认都为 `true`，默认宽度 252px，最近文件夹和展开状态为空，`workspaceClosed` 缺省为 `false`。`editorMode` 缺失或非法时按 `live` 读取，`outlineVisible`、`formatToolbarVisible`、`showAllFiles` 或 `hideMarkdownExtension` 缺失或类型不对时按各自默认值读取；字体字段不是字符串时按空字符串读取。`slashEnabled` 缺失或不是对象时三个模式都按开启读取；对象内每个子字段独立解析，缺失或类型不对的子字段按开启读取，合法的 `false` 不会被相邻坏值重置。这些项的容错只影响自己的值，不会把其他合法字段重置为默认值；显式保存的 `false` 照常写入并读回。读取时为缺失字段补默认值不会主动写盘。`workspaceClosed` 由 `Workspace.CloseWorkspace()` 写成 `true`，由任何一次成功打开文件夹（`ChooseFolder`、`OpenFolder`、`OpenDroppedFolder`）清除；页面只在启动时读取它来决定是否恢复上次的文件夹，没有单独写入它的接口。写入在目标目录创建临时文件后改名替换，一次只写一个完整文件；损坏的设置文件不会被部分覆盖。
 
 文件已存在但不是合法 JSON 时，读取会先把原文件重命名为 `settings.json.corrupt-<UTC 时间>`，再以默认值继续，后续设置可以正常保存；原文件保留下来供排查。备份重命名失败时返回错误，不覆盖损坏文件。启动时的主题读取也遵循这个行为，失败时保持系统外观。
 
@@ -202,7 +207,7 @@ Go 的 `Workspace` 服务通过 `mygo.Bind` 暴露，前端经 `src/services/wor
 
 每条记录包含标签类型（`markdown` 或 `preview`）、相对路径、占位页文件大小，以及 Markdown 标签的选区、顶部行号和行内像素偏移。`recentFiles` 是这个根目录最近激活的 `.md` 相对路径，最新在前、去重、最多 20 条；标签页切换时更新，随现有的标签页写入节流保存。它只用于[命令面板](ui.md#命令面板)文件模式的排序，不是文件列表缓存，也不是访问授权。撤销历史只在内存中保留，不写入这里，所以切换文件夹再切回和重启都只恢复文本、选区和滚动位置。单次保存最多保留 200 个标签；选区有大小上限，超出时丢弃选区而不是整个布局。JSON 语法无效的选区会被丢弃。
 
-`tabs.json` 与 `settings.json` 一样原子替换；文件损坏时先改名为 `tabs.json.corrupt-<UTC 时间>`，再以空布局继续。读取或备份失败不会阻止编辑，标签页记忆是尽力而为。启动和切换文件夹时，恢复前会重新读取文件或目录项，已不存在的标签跳过。
+`tabs.json` 与 `settings.json` 一样原子替换；文件损坏时先改名为 `tabs.json.corrupt-<UTC 时间>`，再以空布局继续。读取或备份失败不会阻止编辑，标签页记忆是尽力而为。启动和切换文件夹时，恢复前会重新读取文件或目录项，已不存在的标签跳过。恢复返回时会重新核对当前仍存在的活动标签：读取期间用户选择或打开的标签保留在前；没有有效活动标签时，才按布局的活动项或保留的单文件标签选中并挂载，只有仍存在的设置页可以作为无文档时的回退。
 
 ## 窗口位置
 
@@ -344,9 +349,9 @@ Go 在 `PathUserData/recovery/` 保存未保存内容的副本；界面流程见
 - `#fragment` 只定位当前文档；`other.md#fragment` 在目标文件打开后定位；`other.md#` 到目标文档开头。目标文件复用已有标签和内存文本，不重读覆盖脏标签；已授权且与目标同物理路径的单文件标签也按正常 `findOpenTabForWorkspacePathIn` 身份复用，不重复建标签或重新读取。找不到锚点不 clamp 到任意位置，跨文件时保留正常打开后的选区并提示。
 - 标题锚点使用现有 ATX/Setext 提取和位置，不解释 HTML id。自动 id 按 GitHub 规则从可见文本生成：去除 inline 格式标记、保留 inline code/链接 label、不计 URL；小写，只有普通空格变成 `-`，其他空白和其他标点直接移除，保留 Unicode 字母和数字以及 `-`、`_`，重复按文档顺序追加 `-1`、`-2` 并避开现有碰撞。fragment 先匹配自动 id，再以完全等于可见标题文本作为友好别名。
 - 标题提取 `complete=false` 不等于缺失：第一次沿用 250ms 预算，未完成时只做一次异步让出后的 250ms 补齐；前后核对导航所有权、根/generation、目标标签、视图和文档身份。仍不完整时提示“标题仍在解析，请稍后重试”；只在完整解析后命中或报告缺失。新导航、编辑、切换标签/根或发起新打开会丢弃旧补齐结果和提示。
-- 打开意图在 await 前捕获来源标签、当前 editor/view 实例、文档、根、generation、链接地址、导航序号、tab 导航修订，以及弹框生命周期 revision、session/id 和字段修订；初始没有弹框也记录该状态。来源编辑、view 重建、字段变动、新 owner、开后又关的弹框、较新导航、tab 或根变化都会使旧成功、失败和 yield 出口失效；即使 tab、文本和 doc 未变，只要来源 editor/view 已不是当前实例也丢弃。失效后不插入标签、不定位、不抢焦点、不显示旧提示，也不关闭新弹框。正常 open 的自身激活会销毁来源 view/弹框，此时只在准确激活边界把所有权交给目标标签/view/文档继续核验，并以目标生命周期阻止新 owner 或重建；仍只关闭该请求拥有的弹框。跨文件复用现有打开/去重/pending 逻辑，输入法组合期间不导航，也不抢占组合按键；失败提示不提交未确认草稿。link 与 workspace search 共用同一来源 capture/validator；search 允许无 Markdown/editor 的开始写作或 preview 来源，以 nullable snapshot 固定并校验“不存在”，但不继承 link 的相对路径授权。来源资格只在自身激活前生效，获准后由 `WorkspaceActivation` 接管；source 失效只停止该 caller，不取消仍有效 ordinary join。
+- 打开意图在 await 前捕获来源标签、当前 editor/view 实例、文档、根、generation、链接地址、导航序号、tab 导航修订，以及弹框生命周期 revision、session/id 和字段修订；初始没有弹框也记录该状态。来源编辑、view 重建、字段变动、新 owner、开后又关的弹框、较新导航、tab 或根变化都会使旧成功、失败和 yield 出口失效；即使 tab、文本和 doc 未变，只要来源 editor/view 已不是当前实例也丢弃。失效后不插入标签、不定位、不抢焦点、不显示旧提示，也不关闭新弹框。正常 open 的自身激活会销毁来源 view/弹框，此时只在准确激活边界把所有权交给目标标签/view/文档继续核验，并以目标生命周期阻止新 owner 或重建；仍只关闭该请求拥有的弹框。跨文件复用现有打开/去重/pending 逻辑，输入法组合期间不导航，也不抢占组合按键；失败提示不提交未确认草稿。link 与 workspace search 共用同一来源 capture/validator；search 允许无 Markdown/editor 的开始写作、preview 或 settings 来源。开始写作和 preview 以 nullable snapshot 固定并校验“不存在”；settings 以非空 tab ID 加明确的 `settings` 无文档类型校验，不能借用文档身份，只确认设置标签仍活动、没有 editor，并且 tab 导航修订、根/generation 和弹框状态未变。它们都不继承 link 的相对路径授权。来源资格只在自身激活前生效，获准后由 `WorkspaceActivation` 接管；source 失效只停止该 caller，不取消仍有效 ordinary join。
 - `openWorkspaceFile` 在实际 target 已创建/恢复的同步段（或已有 active target 的分支）生成 `WorkspaceActivation` 凭据，记录 target tab/editor/view/doc、根/generation、tab 导航修订、导航 intent 和弹框生命周期，并只把它交给真实获准 owner 的 `onHandoff`；调用者不再在 await 后采集当前 target 作为旧凭据。凭据持续校验单调导航 intent、target tab/editor/view/doc、target 文本、root/generation、tab 和弹框状态；较新的普通打开即使同文件或 activeTabId 不变也会撤销旧凭据，target 编辑/view 重建/popup 开关或字段变化不得被 fresh snapshot 掩盖。link 和 search 的定位、notice、focus、close 均消费该凭据；合法自身激活后不再要求 source 存活。
-- 多个调用可以共享同一次 pending 磁盘读取；共享读取成功不等于所有 caller 都获得激活或后续定位资格。每个调用独立保留自己的来源 guard、导航 intent 和 handoff 状态；真正激活前按调用顺序选择最新仍有效（普通打开始终有效）的请求作为 owner，只有该请求在 target 同步挂载边界收到带固定 target 身份的 `WorkspaceActivation`，旧 link 不能因共享 task 返回 `true` 或后来采集到当前 target 而复活。普通有效打开不会被失效 link 取消；较新的普通打开、link 或搜索结果也不会重新授权旧 link。已有目标复用和 pending 新读取使用同一 owner/activation 检查，成功后由 owner 使用同一凭据继续标题/搜索定位。
+- 多个调用可以共享同一次 pending 磁盘读取；共享读取成功不等于所有 caller 都获得激活或后续定位资格。每个调用独立保留自己的来源 guard、导航 intent 和 handoff 状态；真正激活前按调用顺序选择最新仍有效（普通打开在没有较新 settings 激活时有效）的请求作为 owner，只有该请求在 target 同步挂载边界收到带固定 target 身份的 `WorkspaceActivation`，旧 link 不能因共享 task 返回 `true` 或后来采集到当前 target 而复活。设置激活会撤销更早普通打开的激活权限，但不取消共享读取；设置之后发起的普通打开或与旧读取合并的新普通请求使用新凭据，仍可正常激活。普通有效打开不会被失效 link 取消；较新的普通打开、link 或搜索结果也不会重新授权旧 link。已有目标复用和 pending 新读取使用同一 owner/activation 检查，成功后由 owner 使用同一凭据继续标题/搜索定位。
 
 ## 拖入文件夹
 

@@ -92,8 +92,9 @@ describe("keyboard matcher", () => {
   it("does not derive letters from a physical key for ASCII input", () => {
     // AZERTY: the key labeled Z is at the QWERTY W position.
     expect(idFor(key("z", { meta: true, code: "KeyW" }))).toBeNull();
-    // Dvorak: comma is at the QWERTY W position; B is at N.
-    expect(idFor(key(",", { meta: true, code: "KeyW" }))).toBeNull();
+    // Dvorak: comma is at the QWERTY W position; the character itself still
+    // matches the registered Settings shortcut without a physical-key guess.
+    expect(idFor(key(",", { meta: true, code: "KeyW" }))).toBe("app.settings");
     expect(idFor(key("b", { meta: true, code: "KeyN" }))).toBeNull();
     // Dvorak: period is at the QWERTY E position.
     expect(
@@ -324,7 +325,7 @@ describe("keyboard matcher", () => {
     expect(idFor(key("o", { meta: true, ctrl: true }), "macos")).toBe(
       "nav.toggle-outline",
     );
-    expect(idFor(key(",", { meta: true }), "macos")).toBeNull();
+    expect(idFor(key(",", { meta: true }), "macos")).toBe("app.settings");
 
     const placeholder: CommandDefinition = {
       id: "test.placeholder",

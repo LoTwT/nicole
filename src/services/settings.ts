@@ -38,6 +38,33 @@ export function setFormatToolbarVisible(visible: boolean): Promise<void> {
   return Settings.setFormatToolbarVisible(visible);
 }
 
+/** Saves the interface, reading and code font names; empty keeps the defaults. */
+export function setFonts(
+  uiFont: string,
+  readingFont: string,
+  codeFont: string,
+): Promise<void> {
+  return Settings.setFonts(uiFont, readingFont, codeFont);
+}
+
+/** Remembers whether the file tree includes non-Markdown files. */
+export function setShowAllFiles(visible: boolean): Promise<void> {
+  return Settings.setShowAllFiles(visible);
+}
+
+/** Remembers the tree and tab label .md suffix preference. */
+export function setHideMarkdownExtension(hidden: boolean): Promise<void> {
+  return Settings.setHideMarkdownExtension(hidden);
+}
+
+/** Switches the slash menu for one editor mode. */
+export function setSlashEnabled(
+  mode: EditorModeSetting,
+  enabled: boolean,
+): Promise<void> {
+  return Settings.setSlashEnabled(mode, enabled);
+}
+
 /** Saves the sidebar width; Go clamps it to 200–400 px. */
 export function setSidebarWidth(width: number): Promise<void> {
   return Settings.setSidebarWidth(width);
