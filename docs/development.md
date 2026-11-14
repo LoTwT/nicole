@@ -10,9 +10,9 @@
 
 | 工具 | 要求 | 说明 |
 |---|---|---|
-| Go | 1.27.3 以上 | `go.mod` 要求 1.27.3；本机 1.27.2 时用 `GOTOOLCHAIN=auto` 自动下载。 |
+| Go | 1.27.3 以上 | `go.mod` 要求 1.27.3；本机版本较低时用 `GOTOOLCHAIN=auto` 自动下载。 |
 | Bun | 1.4.4 | 管理前端依赖并运行 Vite、Vitest。 |
-| MyGo | 0.7.3 | 由 `go.mod` 的 `github.com/egoist/mygo` 和 `package.json` 的 `mygo-cli` / `mygo-runtime` 精确锁定为 `0.7.3`。 |
+| MyGo | 0.9.0 | 由 `go.mod` 的 `github.com/egoist/mygo` 和 `package.json` 的 `mygo-cli` / `mygo-runtime` 精确锁定为 `0.9.0`。 |
 | WebView | 系统自带 | macOS 12+ 使用 WKWebView；Windows 10/11 需要 WebView2 Runtime；Linux 需要 GTK 3 和 WebKitGTK 4.1。 |
 
 `bunx mygo doctor` 可以检查开发机是否满足要求。
@@ -23,7 +23,9 @@
 bun install
 ```
 
-TypeScript 固定为 5.9.x。MyGo 模板默认安装 TypeScript 7，但 `vue-tsc` 3.3.14 仍需要 `typescript/lib/tsc` 入口，TypeScript 7 不再提供；升级前先确认 `vue-tsc` 已支持。
+TypeScript 使用 6.0.x（当前 `^6.0.3`）。MyGo 模板默认安装 TypeScript 7，但 `vue-tsc` 3.3.14 通过 `require.resolve('typescript/lib/tsc')` 启动 `tsc`；TypeScript 7 的 `package.json` `exports` 不再导出该子路径，`bun run typecheck` 会以 `ERR_PACKAGE_PATH_NOT_EXPORTED` 失败（2026-11-14 实测）。在 `vue-tsc` 支持 TypeScript 7 前保留 6.0.x，不要为追版本移除 `vue-tsc`。
+
+jsdom 固定在 30.1.x（当前 `^30.1.3`）。31.0.1 的 `requestAnimationFrame` 与现有 fake timers 测试交互时，`App.test.ts` 的“restores the scroll position of a background tab”在整文件运行时会一直等待动画帧并超时；单独运行该用例仍通过。升级 jsdom 大版本前先运行完整 Vitest。
 
 MyGo 生成的 TypeScript 客户端放在 `src/services/mygo.ts`，由 `mygo.config.ts` 的 `bindings` 指定。修改 Go 服务后重新生成：
 
@@ -74,7 +76,7 @@ GOTOOLCHAIN=auto bun run build -- -skip-dmg
 GOTOOLCHAIN=auto bun run build -- -platform darwin/universal,windows/amd64,linux/amd64
 ```
 
-macOS 的签名、通用二进制合成和 DMG 需要 macOS；Windows 安装包需要 `makensis`（本机没有时只跳过安装包并告警，产物仍有 EXE），Linux 的 `.deb` 和 `.tar.gz` 不需要额外工具。发布构建由标签触发，见[发布与自动更新](release.md)。
+macOS 的签名、通用二进制合成和 DMG 需要 macOS；Windows 安装包需要 `makensis`（本机没有时只跳过安装包并告警，产物仍有 EXE），Linux 的 `.deb` 和 `.tar.gz` 不需要额外工具。MyGo 0.9 默认还生成 RPM 和 PKGBUILD，`mygo.config.ts` 的 `linux.formats: ["deb"]` 保持项目原有的 Debian 包产物集。发布构建由标签触发，见[发布与自动更新](release.md)。
 
 ## 打包与自动更新
 
@@ -226,7 +228,7 @@ scripts/measure-memory.sh --budget 120
 
 界面图标内联自 Lucide 1.66.0，运行时没有新增图标依赖。Lucide 的 ISC 许可、Feather 来源图标的 MIT 许可以及本项目使用的图标清单见根目录的 [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md)。修改图标或升级 Lucide 时同步更新该声明和 `src/components/AppIcon.vue` 的版本注释。
 
-手写的 Lucide/Feather 声明和生成的运行时许可文本都登记在 `mygo.config.ts` 的 `resources` 中，由 MyGo 0.7.3 复制进每个平台的产物：
+手写的 Lucide/Feather 声明和生成的运行时许可文本都登记在 `mygo.config.ts` 的 `resources` 中，由 MyGo 0.9.0 复制进每个平台的产物：
 
 | 平台 | 产物中的位置 |
 |---|---|
