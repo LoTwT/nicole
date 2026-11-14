@@ -45,10 +45,12 @@ GOTOOLCHAIN=auto bun run dev
 
 1. 生成 TypeScript 客户端。
 2. 启动 `devCommand`，也就是 Vite 开发服务器（默认 `http://localhost:5173`）。
-3. 构建并启动 `Nicole Dev`。macOS 上是 `.mygo/dev/Nicole Dev.app`，identifier 为 `me.eruoo.nicole.dev`，与安装版的数据隔离。
+3. 构建并启动 `Nicole Dev`。macOS 上是 `.mygo/dev/darwin-<arch>/Nicole Dev.app`（本机为 `darwin-arm64`），identifier 为 `me.eruoo.nicole.dev`，与安装版的数据隔离。
 4. 修改 `src/` 下的前端文件时由 Vite 热更新页面；修改 Go 代码、`mygo.config.ts`、图标或资源时重新构建并重启应用。编译失败会保留上一个可运行的版本。
 
 在终端里按 `r` 重新构建并重启，按 `q` 退出。只调试前端、且已经单独运行 Vite 时，可以给 `mygo dev` 加 `-skip-dev-command`。
+
+新增静态素材时，先生成或复制文件，再修改组件里的 `import`。如果素材尚未落盘就触发 Vite 热更新，导入会失败，已经打开的原生窗口可能保留旧组件；素材补齐后应按 `r` 重启开发窗口，并核对该窗口的实际画面。新浏览器页面加载成功不代表旧窗口已恢复。
 
 只运行 `bun run dev:web` 也能打开 Vite 页面，但没有 Go 后端，界面底部会显示“Go 服务未连接”。
 
@@ -77,6 +79,29 @@ GOTOOLCHAIN=auto bun run build -- -platform darwin/universal,windows/amd64,linux
 ```
 
 macOS 的签名、通用二进制合成和 DMG 需要 macOS；Windows 安装包需要 `makensis`（本机没有时只跳过安装包并告警，产物仍有 EXE），Linux 的 `.deb` 和 `.tar.gz` 不需要额外工具。MyGo 0.9 默认还生成 RPM 和 PKGBUILD，`mygo.config.ts` 的 `linux.formats: ["deb"]` 保持项目原有的 Debian 包产物集。发布构建由标签触发，见[发布与自动更新](release.md)。
+
+## 应用图标
+
+定稿形象、深浅配色与原图见[产品定位：宣传语与图标](specs/product.md#宣传语与图标)。原图与生成提示词保存在 `assets/icons/`，不放进会整体随包复制的 `resources/`。
+
+修改原图后，在项目根目录重新导出并一起提交产物：
+
+```sh
+GOTOOLCHAIN=auto bun run icons
+```
+
+`scripts/generate-icons.go` 只使用 Go 标准库：带底板的两版以深色原图外部连通的黑色画布生成透明遮罩，共用同一遮罩，保留圆角底板和内部图形；透明品牌标志直接保留源图的 alpha 通道。按预乘透明度缩小，避免边缘出现黑边；相同内容不重写，避免触发不必要的原生应用重启。它生成：
+
+| 文件 | 尺寸 | 用途 |
+|---|---|---|
+| `resources/icon.png` | 1024 × 1024 | 默认原生应用图标，采用深色版；由 `mygo.config.ts` 的 `icon` 指定 |
+| `src/assets/icon-light.png` | 256 × 256 | favicon 的浅色版 |
+| `src/assets/icon-dark.png` | 256 × 256 | favicon 的深色版 |
+| `src/assets/brand-mark.png` | 256 × 256 | 开始写作页的透明品牌标志，亮暗主题共用 |
+
+MyGo 从统一 PNG 生成 macOS `.icns`、Windows EXE/安装包图标与 Linux 桌面入口图标，开发版同样使用它。自动更新窗口从应用资源目录读取 `icon.png`，无需另加一份图标或改插件。原生图标固定采用默认深色版，不随编辑器主题切换。
+
+favicon 使用已解析的亮暗主题，跟随系统或手动选择均会同步更新。开始写作页使用同一份透明主体，让应用画布自然透出，不增加一块不同颜色的底板，也不另改主体配色。图标 URL 由 Vite 处理并随前端嵌入应用，不在运行时读取构建素材目录。修改原生图标后，应用须重新构建并重启；页面品牌标志由 Vite 热更新。
 
 ## 打包与自动更新
 

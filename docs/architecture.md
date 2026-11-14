@@ -35,6 +35,7 @@ src/
   main.ts                 挂载 Vue
   sample.ts               示例文本
   style.css               Tailwind、主题和字体变量
+  assets/                 导出的深浅 favicon 与开始写作页透明品牌标志
   image-url.ts            解析/序列化 Markdown destination 与图片协议地址
   image-insertion.ts      粘贴、拖入图片与编辑器插入凭据的接线
   app/                    界面状态与纯逻辑辅助

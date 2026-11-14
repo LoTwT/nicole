@@ -114,7 +114,7 @@ bunx mygo-cli@0.9.0 init <name>
 
 - `mygo dev` 生成 TypeScript 客户端，运行 `devCommand`，等待 `devUrl` 可访问，然后构建并启动开发版应用。项目里通过 `bun run dev` 调用；在项目外可以用 `bunx mygo-cli dev`。
 - 前端改动由 Vite 热更新；Go 代码、配置、图标或资源改动会重新构建并重启应用，编译失败时保留上一个运行版本。
-- 开发版应用名为 `<name> Dev`，identifier 为 `<identifier>.dev`。macOS 上是 `.mygo/dev/<name> Dev.app`。
+- 开发版应用名为 `<name> Dev`，identifier 为 `<identifier>.dev`。macOS 上是 `.mygo/dev/darwin-<arch>/<name> Dev.app`。
 - `mygo build` 先运行 `buildCommand`，再把 `frontendDist` 嵌入 Go 程序，输出到 `build/<os>-<arch>/`。macOS 生成 `.app` 和 dmg；`-skip-dmg` 可只保留 `.app`。
 - `bunx mygo doctor` 检查开发机环境。
 

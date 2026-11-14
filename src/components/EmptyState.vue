@@ -13,6 +13,7 @@ import type { AppPlatform } from "../app/platform";
 import { layoutRecentRows } from "../app/recent-layout";
 import { distinguishingSuffixes } from "../app/tabs";
 import { commandShortcut } from "../commands/registry";
+import brandMark from "../assets/brand-mark.png";
 import AppIcon from "./AppIcon.vue";
 
 const props = defineProps<{
@@ -249,150 +250,161 @@ defineExpose({
 </script>
 
 <template>
-  <div
-    class="relative flex h-full items-center justify-center overflow-auto px-6 py-10"
-  >
-    <div v-if="mode === 'start'" class="w-full max-w-[420px] text-center">
-      <p
-        v-if="missingLastFolder"
-        class="mb-3 text-[12px] text-[var(--status-warning-fg)]"
-      >
-        上次打开的文件夹“{{ folderName(missingLastFolder) }}”已不存在
-      </p>
-      <h1 class="m-0 text-[24px] font-semibold tracking-tight">开始写作</h1>
-      <p class="mt-2 text-[13px] text-[var(--text-secondary)]">
-        打开一个文件夹作为工作区，里面的文件就是你的文章
-      </p>
-      <button
-        ref="openFolderButton"
-        type="button"
-        class="button-primary focus-ring mt-5 inline-flex items-center gap-2 rounded-full px-4 py-2 text-[13px] font-medium"
-        :aria-label="`打开文件夹 ${openFolderKey}`"
-        :title="`打开文件夹 ${openFolderKey}`"
-        @click="emit('open-folder')"
-      >
-        打开文件夹
-      </button>
-
-      <div v-if="visibleRecent.length > 0" class="mt-8 text-center">
-        <h2 class="m-0 text-[12px] font-semibold text-[var(--text-muted)]">
-          最近打开
-        </h2>
-        <div
-          ref="recentList"
-          role="list"
-          class="mt-2 flex flex-wrap items-center justify-center gap-2"
+  <div class="relative h-full">
+    <div
+      class="flex h-full items-center justify-center overflow-auto px-6 py-10"
+    >
+      <div v-if="mode === 'start'" class="my-auto w-full max-w-[420px] text-center">
+        <img
+          :src="brandMark"
+          alt=""
+          aria-hidden="true"
+          width="96"
+          height="96"
+          draggable="false"
+          class="mx-auto mb-5 block size-24"
+        />
+        <p
+          v-if="missingLastFolder"
+          class="mb-3 text-[12px] text-[var(--status-warning-fg)]"
         >
-          <template v-for="(item, index) in recentItems" :key="item.path">
-            <div
-              v-if="recentRowBreaks.has(index)"
-              class="basis-full h-0"
-              aria-hidden="true"
-            ></div>
-            <div
-              role="listitem"
-              data-recent-item
-              :data-recent-path="item.path"
-              class="group relative inline-flex items-center"
-              :style="{ maxWidth: 'min(200px, 100%)' }"
-              :title="recentPathTitle(item)"
-            >
+          上次打开的文件夹“{{ folderName(missingLastFolder) }}”已不存在
+        </p>
+        <h1 class="m-0 text-[24px] font-semibold tracking-tight">开始写作</h1>
+        <p class="mt-2 text-[13px] text-[var(--text-secondary)]">
+          打开一个文件夹作为工作区，里面的文件就是你的文章
+        </p>
+        <button
+          ref="openFolderButton"
+          type="button"
+          class="button-primary focus-ring mt-5 inline-flex items-center gap-2 rounded-full px-4 py-2 text-[13px] font-medium"
+          :aria-label="`打开文件夹 ${openFolderKey}`"
+          :title="`打开文件夹 ${openFolderKey}`"
+          @click="emit('open-folder')"
+        >
+          打开文件夹
+        </button>
+
+        <div v-if="visibleRecent.length > 0" class="mt-8 text-center">
+          <h2 class="m-0 text-[12px] font-semibold text-[var(--text-muted)]">
+            最近打开
+          </h2>
+          <div
+            ref="recentList"
+            role="list"
+            class="mt-2 flex flex-wrap items-center justify-center gap-2"
+          >
+            <template v-for="(item, index) in recentItems" :key="item.path">
               <div
-                data-recent-capsule
-                class="flex min-w-0 items-center rounded-full border border-[var(--border-default)] bg-[var(--surface-elevated)] text-[var(--text-primary)] transition-colors"
-                :class="
-                  item.missing ? 'opacity-60' : 'hover:bg-[var(--surface-subtle)]'
-                "
+                v-if="recentRowBreaks.has(index)"
+                class="basis-full h-0"
+                aria-hidden="true"
+              ></div>
+              <div
+                role="listitem"
+                data-recent-item
+                :data-recent-path="item.path"
+                class="group relative inline-flex items-center"
+                :style="{ maxWidth: 'min(200px, 100%)' }"
+                :title="recentPathTitle(item)"
               >
+                <div
+                  data-recent-capsule
+                  class="flex min-w-0 items-center rounded-full border border-[var(--border-default)] bg-[var(--surface-elevated)] text-[var(--text-primary)] transition-colors"
+                  :class="
+                    item.missing ? 'opacity-60' : 'hover:bg-[var(--surface-subtle)]'
+                  "
+                >
+                  <button
+                    type="button"
+                    class="focus-ring flex min-w-0 items-center justify-center gap-1.5 rounded-full px-4 py-1.5 text-left"
+                    :aria-label="openRecentLabel(item)"
+                    :title="recentPathTitle(item)"
+                    @click="openRecent(item)"
+                  >
+                    <AppIcon
+                      name="folder"
+                      :size="14"
+                      class="shrink-0 text-[var(--text-muted)]"
+                    />
+                    <span
+                      class="min-w-0 flex-1 truncate text-[13px]"
+                      :class="{ 'line-through': item.missing }"
+                    >
+                      {{ item.name }}
+                    </span>
+                    <span
+                      v-if="item.suffix"
+                      class="min-w-0 max-w-[80px] shrink truncate text-[11px] text-[var(--text-muted)]"
+                    >
+                      · {{ item.suffix }}
+                    </span>
+                  </button>
+                </div>
                 <button
                   type="button"
-                  class="focus-ring flex min-w-0 items-center justify-center gap-1.5 rounded-full px-4 py-1.5 text-left"
-                  :aria-label="openRecentLabel(item)"
-                  :title="recentPathTitle(item)"
-                  @click="openRecent(item)"
+                  class="group/remove focus-ring absolute -right-2 -top-2 z-10 grid size-6 place-items-center rounded-full bg-transparent"
+                  :class="
+                    item.missing
+                      ? 'opacity-100'
+                      : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100 group-focus-within:opacity-100'
+                  "
+                  :aria-label="removeRecentLabel(item)"
+                  :title="removeRecentLabel(item)"
+                  @click.stop="removeRecent(item)"
                 >
-                  <AppIcon
-                    name="folder"
-                    :size="14"
-                    class="shrink-0 text-[var(--text-muted)]"
-                  />
                   <span
-                    class="min-w-0 flex-1 truncate text-[13px]"
-                    :class="{ 'line-through': item.missing }"
+                    class="grid size-4 place-items-center rounded-full border border-[var(--border-default)] bg-[var(--surface-elevated)] text-[var(--text-muted)] transition-colors group-hover/remove:bg-[var(--surface-muted)] group-hover/remove:text-[var(--text-primary)] group-active/remove:bg-[var(--surface-muted)] group-active/remove:text-[var(--text-primary)] group-focus-visible/remove:bg-[var(--surface-muted)] group-focus-visible/remove:text-[var(--text-primary)]"
                   >
-                    {{ item.name }}
-                  </span>
-                  <span
-                    v-if="item.suffix"
-                    class="min-w-0 max-w-[80px] shrink truncate text-[11px] text-[var(--text-muted)]"
-                  >
-                    · {{ item.suffix }}
+                    <AppIcon name="close" :size="10" />
                   </span>
                 </button>
               </div>
-              <button
-                type="button"
-                class="group/remove focus-ring absolute -right-2 -top-2 z-10 grid size-6 place-items-center rounded-full bg-transparent"
-                :class="
-                  item.missing
-                    ? 'opacity-100'
-                    : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100 group-focus-within:opacity-100'
-                "
-                :aria-label="removeRecentLabel(item)"
-                :title="removeRecentLabel(item)"
-                @click.stop="removeRecent(item)"
-              >
-                <span
-                  class="grid size-4 place-items-center rounded-full border border-[var(--border-default)] bg-[var(--surface-elevated)] text-[var(--text-muted)] transition-colors group-hover/remove:bg-[var(--surface-muted)] group-hover/remove:text-[var(--text-primary)] group-active/remove:bg-[var(--surface-muted)] group-active/remove:text-[var(--text-primary)] group-focus-visible/remove:bg-[var(--surface-muted)] group-focus-visible/remove:text-[var(--text-primary)]"
-                >
-                  <AppIcon name="close" :size="10" />
-                </span>
-              </button>
-            </div>
-          </template>
+            </template>
+          </div>
         </div>
       </div>
 
-      <div
-        v-if="dropActive"
-        data-drop-hint
-        class="pointer-events-none absolute inset-2 z-20 flex items-center justify-center rounded-[var(--radius-card)] border-2 border-dashed border-[var(--nicole-primary-fill)] bg-[var(--surface-canvas)]"
-      >
-        <div
-          data-drop-hint-tint
-          aria-hidden="true"
-          class="absolute inset-0 rounded-[var(--radius-card)] bg-[var(--accent-soft)]/40"
-        ></div>
-        <p class="relative m-0 text-[13px] font-medium text-[var(--text-primary)]">
-          松开以打开文件夹
-        </p>
+      <div v-else class="text-center">
+        <p class="m-0 text-[13px] text-[var(--text-secondary)]">选择一个文件开始写作</p>
+        <div class="mt-3 flex flex-wrap items-center justify-center gap-2.5">
+          <button
+            type="button"
+            class="button-secondary focus-ring inline-flex items-center gap-1.5 rounded-[var(--radius-control)] border px-[14px] py-[7px] text-[12px]"
+            :aria-label="`新建文件 ${newFileKey}`"
+            :title="`新建文件 ${newFileKey}`"
+            @click="emit('new-file')"
+          >
+            <AppIcon name="file-plus" :size="14" class="text-[var(--text-secondary)]" />
+            新建文件
+          </button>
+          <button
+            type="button"
+            class="button-secondary focus-ring inline-flex items-center gap-1.5 rounded-[var(--radius-control)] border px-[14px] py-[7px] text-[12px]"
+            :aria-label="`快速打开 ${quickOpenKey}`"
+            :title="`快速打开 ${quickOpenKey}`"
+            @click="emit('quick-open')"
+          >
+            <AppIcon name="search" :size="14" class="text-[var(--text-secondary)]" />
+            快速打开
+          </button>
+        </div>
       </div>
     </div>
 
-    <div v-else class="text-center">
-      <p class="m-0 text-[13px] text-[var(--text-secondary)]">选择一个文件开始写作</p>
-      <div class="mt-3 flex flex-wrap items-center justify-center gap-2.5">
-        <button
-          type="button"
-          class="button-secondary focus-ring inline-flex items-center gap-1.5 rounded-[var(--radius-control)] border px-[14px] py-[7px] text-[12px]"
-          :aria-label="`新建文件 ${newFileKey}`"
-          :title="`新建文件 ${newFileKey}`"
-          @click="emit('new-file')"
-        >
-          <AppIcon name="file-plus" :size="14" class="text-[var(--text-secondary)]" />
-          新建文件
-        </button>
-        <button
-          type="button"
-          class="button-secondary focus-ring inline-flex items-center gap-1.5 rounded-[var(--radius-control)] border px-[14px] py-[7px] text-[12px]"
-          :aria-label="`快速打开 ${quickOpenKey}`"
-          :title="`快速打开 ${quickOpenKey}`"
-          @click="emit('quick-open')"
-        >
-          <AppIcon name="search" :size="14" class="text-[var(--text-secondary)]" />
-          快速打开
-        </button>
-      </div>
+    <div
+      v-if="mode === 'start' && dropActive"
+      data-drop-hint
+      class="pointer-events-none absolute inset-2 z-20 flex items-center justify-center rounded-[var(--radius-card)] border-2 border-dashed border-[var(--nicole-primary-fill)] bg-[var(--surface-canvas)]"
+    >
+      <div
+        data-drop-hint-tint
+        aria-hidden="true"
+        class="absolute inset-0 rounded-[var(--radius-card)] bg-[var(--accent-soft)]/40"
+      ></div>
+      <p class="relative m-0 text-[13px] font-medium text-[var(--text-primary)]">
+        松开以打开文件夹
+      </p>
     </div>
   </div>
 </template>

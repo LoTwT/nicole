@@ -96,6 +96,8 @@ import {
   type SearchOpenTarget,
 } from "./app/workspace-search";
 import type { TreeNode } from "./app/file-tree";
+import darkIcon from "./assets/icon-dark.png";
+import lightIcon from "./assets/icon-light.png";
 import AppBanner from "./components/AppBanner.vue";
 import AppDialog from "./components/AppDialog.vue";
 import RecoveryDialog from "./components/RecoveryDialog.vue";
@@ -1227,6 +1229,10 @@ function applyTheme() {
   const dark =
     theme.value === "system" ? systemPrefersDark.value : theme.value === "dark";
   document.documentElement.classList.toggle("dark", dark);
+  const favicon = document.querySelector<HTMLLinkElement>("#app-favicon");
+  if (favicon !== null) {
+    favicon.href = dark ? darkIcon : lightIcon;
+  }
 }
 
 applyTheme();
