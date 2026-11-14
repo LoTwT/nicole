@@ -9,6 +9,10 @@ function state(doc: string): EditorState {
 }
 
 describe("extractHeadings", () => {
+  it("does not treat Frontmatter fields or comments as document headings", () => {
+    const source = "---\ntitle: 标题\n# 元数据注释\ncustom: [a, b]\n---\n\n# 正文\n";
+    expect(extractHeadings(state(source))).toEqual([{ level: 1, text: "正文", position: source.indexOf("# 正文"), line: 7 }]);
+  });
   it("reads ATX and Setext headings in document order", () => {
     const doc = [
       "# 标题",

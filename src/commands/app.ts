@@ -5,6 +5,15 @@ import type { CommandDefinition } from "./types";
  * command context so the registry stays static and testable.
  */
 export const appCommands: readonly CommandDefinition[] = [
+  ...([
+    ["document.frontmatter", "编辑 Frontmatter", "editFrontmatter", "metadata yaml frontmatter"],
+    ["document.export-html", "导出 HTML", "exportHTML", "export html daochu"],
+    ["document.export-pdf", "导出 PDF", "exportPDF", "export pdf daochu"],
+    ["document.copy-rich-text", "复制为富文本", "copyRichText", "copy rich text fuwenben"],
+  ] as const).map(([id, label, action, pinyin]): CommandDefinition => ({
+    id, label, pinyin, group: "app", scope: "app", requiresActiveMarkdown: true,
+    run: ({ app }) => { if (!app?.[action]) return false; void app[action](); return true; },
+  })),
   {
     id: "app.open-folder",
     label: "打开文件夹",
@@ -193,6 +202,45 @@ export const appCommands: readonly CommandDefinition[] = [
     run: ({ app }) => {
       void app?.toggleOutline();
       return app !== undefined;
+    },
+  },
+  {
+    id: "nav.toggle-comparison",
+    label: "显示或隐藏文档对照",
+    pinyin: "duizhao compare split preview",
+    group: "app",
+    scope: "app",
+    requiresActiveMarkdown: true,
+    run: ({ app }) => {
+      if (!app?.toggleComparison) return false;
+      void app.toggleComparison();
+      return true;
+    },
+  },
+  {
+    id: "view.toggle-focus",
+    label: "切换专注模式",
+    pinyin: "zhuanzhu focus paragraph",
+    group: "app",
+    scope: "app",
+    requiresActiveMarkdown: true,
+    run: ({ app }) => {
+      if (!app?.toggleFocusMode) return false;
+      void app.toggleFocusMode();
+      return true;
+    },
+  },
+  {
+    id: "view.toggle-typewriter",
+    label: "切换打字机模式",
+    pinyin: "daziji typewriter center",
+    group: "app",
+    scope: "app",
+    requiresActiveMarkdown: true,
+    run: ({ app }) => {
+      if (!app?.toggleTypewriterMode) return false;
+      void app.toggleTypewriterMode();
+      return true;
     },
   },
   {

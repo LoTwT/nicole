@@ -12,6 +12,7 @@ const props = defineProps<{
   open: boolean;
   title: string;
   width?: number;
+  compositionActive?: boolean;
 }>();
 
 const emit = defineEmits<{ cancel: [] }>();
@@ -62,11 +63,11 @@ watch(
       restore.focus();
     }
   },
-  { flush: "post" },
+  { flush: "post", immediate: true },
 );
 
 function handleKeydown(event: KeyboardEvent) {
-  if (!props.open || event.isComposing || event.keyCode === 229) {
+  if (!props.open || props.compositionActive || event.isComposing || event.keyCode === 229) {
     return;
   }
   if (event.key === "Escape") {

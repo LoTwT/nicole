@@ -6,6 +6,7 @@ import ThemeToggle from "./ThemeToggle.vue";
 
 const props = defineProps<{
   saveStatus: SaveStatusPresentation | null;
+  statistics?: { words: number; selectedWords: number; hasSelection: boolean; minutes: number } | null;
   notice: string | null;
   noticeTone?: "success" | "danger" | "muted";
   noticeDetail?: string;
@@ -52,6 +53,9 @@ const dotClass = computed(() => {
         @toggle="emit('toggle-theme')"
       />
     </div>
+    <span v-if="statistics" class="min-w-0 truncate text-[var(--text-secondary)]" data-writing-statistics :title="'按中日韩文字250字/分钟、其他文字200词/分钟估算'">
+      <template v-if="statistics.hasSelection">选中 {{statistics.selectedWords.toLocaleString()}} 字 · </template>{{statistics.words.toLocaleString()}} 字 · 约 {{statistics.minutes}} 分钟
+    </span>
     <span class="ml-auto flex min-w-0 flex-1 items-center justify-end gap-1.5">
       <template v-if="notice">
         <span class="size-[7px] shrink-0 rounded-full" :class="dotClass"></span>

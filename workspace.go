@@ -68,9 +68,11 @@ type WorkspaceFolder struct {
 // reading and replacing them. `mygo generate` turns the methods into typed
 // functions in src/services/mygo.ts.
 type Workspace struct {
-	state  *workspaceState
-	writes *selfWrites
-	hashes *diskHashes
+	state *workspaceState
+	// referenceMu serializes normal saves/tree mutations with reference batches.
+	referenceMu sync.Mutex
+	writes      *selfWrites
+	hashes      *diskHashes
 	// openSingleFiles reports the single-file tabs that still hold a grant.
 	// Their hashes must survive a workspace switch even when they live below
 	// the old root.
@@ -699,6 +701,8 @@ func (w *Workspace) recordDiskHash(root, requested, target string, data []byte) 
 // to the target and renames it into place, so a failure leaves the original
 // file as it was, and the bytes are written unchanged.
 func (w *Workspace) WriteFile(rel, content string, generation int) error {
+	w.referenceMu.Lock()
+	defer w.referenceMu.Unlock()
 	root, err := w.currentRoot(generation)
 	if err != nil {
 		return err

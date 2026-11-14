@@ -1,5 +1,6 @@
 import { isolateHistory } from "@codemirror/commands";
 import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
+import { EditorView } from "@codemirror/view";
 import type {
   ChangeSpec,
   EditorState,
@@ -8,6 +9,7 @@ import type {
 } from "@codemirror/state";
 
 import { openLinkEditorEffect } from "../editor/link-editor";
+import { editTableAtCursor } from "../editor/tables";
 import type { CommandDefinition, CommandTarget } from "./types";
 
 interface InlineFormat {
@@ -671,6 +673,16 @@ export const formatCommands: readonly CommandDefinition[] = [
       insertBlock(view, TABLE_TEMPLATE, textRange(TABLE_TEMPLATE, "列 1"));
       return true;
     },
+  },
+  {
+    id: "format.edit-table",
+    label: "编辑表格",
+    pinyin: "bianji biaoge edit table",
+    icon: "table",
+    group: "block",
+    scope: "editor",
+    keys: [{ key: "Alt-Enter" }],
+    run: ({ view }) => view instanceof EditorView ? editTableAtCursor(view) : false,
   },
   {
     id: "insert.callout",

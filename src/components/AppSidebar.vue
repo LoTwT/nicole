@@ -29,6 +29,7 @@ const props = defineProps<{
   searchActive?: boolean;
   showAllFiles: boolean;
   hideMarkdownExtension: boolean;
+  renameWithReferences?: (path: string, name: string, isDir: boolean) => Promise<string>;
 }>();
 
 const emit = defineEmits<{
@@ -302,6 +303,7 @@ defineExpose({
       </div>
 
       <FileTree
+        :rename-with-references="props.renameWithReferences"
         ref="tree"
         :root-path="rootPath"
         :generation="generation"

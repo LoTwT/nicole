@@ -167,6 +167,7 @@ func main() {
 
 	mygo.Bind(
 		NewApplication(mygo.App.Version()),
+		NewDocumentExports(),
 		workspace,
 		assets,
 		settings,

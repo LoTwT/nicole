@@ -4,6 +4,7 @@ import { createApp, defineComponent, h, nextTick, ref } from "vue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App.vue";
+import { readFrontmatter } from "./app/frontmatter";
 import type { AppPlatform } from "./app/platform";
 import type {
   SearchPart,
@@ -39,6 +40,14 @@ const mocks = vi.hoisted(() => ({
   createFile: vi.fn(),
   createFolder: vi.fn(),
   renameEntry: vi.fn(),
+  readReferenceSnapshot: vi.fn(),
+  renameEntryWithReferences: vi.fn(),
+  chooseDocumentExport: vi.fn(),
+  saveHTMLExport: vi.fn(),
+  savePDFExport: vi.fn(),
+  cancelDocumentExport: vi.fn(),
+  copyRichDocument: vi.fn(),
+  prepareDocumentExport: vi.fn(),
   trashEntry: vi.fn(),
   openWithDefaultApp: vi.fn(),
   revealEntry: vi.fn(),
@@ -52,10 +61,12 @@ const mocks = vi.hoisted(() => ({
   setOutlineVisible: vi.fn(),
   setFormatToolbarVisible: vi.fn(),
   setFonts: vi.fn(),
+  setWritingPreferences: vi.fn(),
   setShowAllFiles: vi.fn(),
   setHideMarkdownExtension: vi.fn(),
   setSlashEnabled: vi.fn(),
   setSettingsAccelerator: vi.fn(),
+  setEditAccelerators: vi.fn(),
   setSidebarWidth: vi.fn(),
   setExpandedFolders: vi.fn(),
   addRecentFolder: vi.fn(),
@@ -113,8 +124,12 @@ vi.mock("./services/files", () => ({
 vi.mock("./services/menu", () => ({
   popupNativeMenu: mocks.popupNativeMenu,
   setSettingsAccelerator: mocks.setSettingsAccelerator,
+  setEditAccelerators: mocks.setEditAccelerators,
 }));
 vi.mock("./services/clipboard", () => ({ copyText: mocks.copyText }));
+vi.mock("./services/link-references", () => ({ readReferenceSnapshot: mocks.readReferenceSnapshot, renameEntryWithReferences: mocks.renameEntryWithReferences }));
+vi.mock("./services/export", () => ({ chooseDocumentExport: mocks.chooseDocumentExport, saveHTMLExport: mocks.saveHTMLExport, savePDFExport: mocks.savePDFExport, cancelDocumentExport: mocks.cancelDocumentExport, copyRichDocument: mocks.copyRichDocument }));
+vi.mock("./app/document-export", () => ({ prepareDocumentExport: mocks.prepareDocumentExport, captureExportReadingStyle: () => ({ theme: "light" }) }));
 vi.mock("./services/settings", () => ({
   getSettings: mocks.getSettings,
   migrateLegacyTheme: mocks.migrateLegacyTheme,
@@ -123,6 +138,7 @@ vi.mock("./services/settings", () => ({
   setOutlineVisible: mocks.setOutlineVisible,
   setFormatToolbarVisible: mocks.setFormatToolbarVisible,
   setFonts: mocks.setFonts,
+  setWritingPreferences: mocks.setWritingPreferences,
   setShowAllFiles: mocks.setShowAllFiles,
   setHideMarkdownExtension: mocks.setHideMarkdownExtension,
   setSlashEnabled: mocks.setSlashEnabled,
@@ -888,6 +904,14 @@ beforeEach(async () => {
   mocks.listFiles.mockResolvedValue([]);
   mocks.listSnippets.mockResolvedValue({ snippets: [], warnings: [] });
   mocks.writeFile.mockResolvedValue(undefined);
+  mocks.readReferenceSnapshot.mockImplementation(async () => ({ files: await Promise.all((await mocks.listFiles()).map(async (path: string) => ({ path, content: await mocks.readFile(path) }))) }));
+  mocks.renameEntryWithReferences.mockImplementation(async (request) => ({ path: await mocks.renameEntry(request.source, request.name, request.generation), updatedFiles: request.updates.map((item: { path: string }) => item.path) }));
+  mocks.chooseDocumentExport.mockResolvedValue({ token: "export-token", canceled: false });
+  mocks.prepareDocumentExport.mockResolvedValue({ html: "<html><body>导出</body></html>", plainText: "导出", warnings: [] });
+  mocks.saveHTMLExport.mockResolvedValue("/tmp/export.html");
+  mocks.savePDFExport.mockResolvedValue("/tmp/export.pdf");
+  mocks.cancelDocumentExport.mockResolvedValue(undefined);
+  mocks.copyRichDocument.mockResolvedValue(undefined);
   mocks.listDirectory.mockImplementation(async (path: string) => ({
     path,
     entries: path === "." ? tree : [],
@@ -921,10 +945,12 @@ beforeEach(async () => {
   mocks.setOutlineVisible.mockResolvedValue(undefined);
   mocks.setFormatToolbarVisible.mockResolvedValue(undefined);
   mocks.setFonts.mockResolvedValue(undefined);
+  mocks.setWritingPreferences.mockResolvedValue(undefined);
   mocks.setShowAllFiles.mockResolvedValue(undefined);
   mocks.setHideMarkdownExtension.mockResolvedValue(undefined);
   mocks.setSlashEnabled.mockResolvedValue(undefined);
   mocks.setSettingsAccelerator.mockResolvedValue(undefined);
+  mocks.setEditAccelerators.mockResolvedValue(undefined);
   mocks.setSidebarWidth.mockResolvedValue(undefined);
   mocks.setExpandedFolders.mockResolvedValue(undefined);
   mocks.addRecentFolder.mockResolvedValue(undefined);
@@ -3165,8 +3191,186 @@ describe("external changes", () => {
   });
 });
 
+describe("writing feature completion", () => {
+  it("applies Frontmatter as one undo step, and cancels stale or composition-owned drafts", async () => {
+    const source = "---\ntitle: 原文\nextra: [a, b]\n---\n\n正文\n";
+    await setupWorkspace({ "a.md": source });
+    await openPath("/notes/a.md");
+    const run = () => window.dispatchEvent(new CustomEvent("nicole:run-command", { detail: "document.frontmatter" }));
+    run();
+    await settle();
+    const value = document.querySelector<HTMLTextAreaElement>('[aria-label="字段 1 值"]')!;
+    value.value = "新标题";
+    value.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(editorView().state.doc.toString()).toBe(source);
+    dialogButton("应用修改").click();
+    await settle();
+    expect(readFrontmatter(editorView().state.doc.toString()).fields.find((field) => field.key === "title")?.value).toBe("新标题");
+    expect(editorView().state.doc.toString()).toContain("extra: [a, b]");
+    window.dispatchEvent(new CustomEvent("nicole:edit-command", { detail: "undo" }));
+    expect(editorView().state.doc.toString()).toBe(source);
+    run();
+    await settle();
+    replaceEditorText("外部替换\n");
+    await settle();
+    expect(document.querySelector("[data-frontmatter-dialog]")).toBeNull();
+    expect(editorView().state.doc.toString()).toBe("外部替换\n");
+  });
+
+  it("exports only the captured current document and cancels an obsolete result", async () => {
+    await setupWorkspace({ "a.md": "# A\n" });
+    await openPath("/notes/a.md");
+    window.dispatchEvent(new CustomEvent("nicole:run-command", { detail: "document.export-html" }));
+    await vi.waitFor(() => expect(mocks.saveHTMLExport).toHaveBeenCalledWith("export-token", "<html><body>导出</body></html>"));
+    await settle();
+    const pending = deferred<{ html: string; plainText: string; warnings: string[] }>();
+    mocks.prepareDocumentExport.mockImplementationOnce(() => pending.promise);
+    window.dispatchEvent(new CustomEvent("nicole:run-command", { detail: "document.export-pdf" }));
+    await vi.waitFor(() => expect(mocks.prepareDocumentExport).toHaveBeenCalledTimes(2));
+    replaceEditorText("# Changed\n");
+    await settle();
+    pending.resolve({ html: "obsolete", plainText: "old", warnings: [] });
+    await settle();
+    expect(mocks.savePDFExport).not.toHaveBeenCalled();
+    expect(mocks.cancelDocumentExport).toHaveBeenCalledWith("export-token");
+  });
+
+  it("updates references in dirty background tabs while preserving their edits and history", async () => {
+    const files = { "a.md": "# A\n", "b.md": "[A](a.md)\n" };
+    await setupWorkspace(files);
+    await openPath("/notes/b.md");
+    editorView().dispatch({ changes: { from: editorView().state.doc.length, insert: "未保存\n" }, userEvent: "input.type" });
+    await openPath("/notes/a.md");
+    const task = appSetupState().renameWithDocumentReferences("a.md", "renamed.md", false);
+    await settle();
+    expect(dialog()?.textContent).toContain("更新 1 个 Markdown 文件");
+    expect(editorView().state.readOnly).toBe(true);
+    dialogButton("重命名并更新").click();
+    await task;
+    await settle();
+    expect(mocks.renameEntryWithReferences).toHaveBeenCalledWith(expect.objectContaining({ updates: [{ path: "b.md", content: "[A](renamed.md)\n" }] }));
+    const model = appSetupState().tabs.find((tab: { path: string }) => tab.path === "b.md");
+    expect(model.text).toBe("[A](renamed.md)\n未保存\n");
+    expect(model.originalText).toBe("[A](renamed.md)\n");
+    expect(editorView().state.readOnly).toBe(false);
+    tabNamed("b.md").click();
+    await settle();
+    window.dispatchEvent(new CustomEvent("nicole:edit-command", { detail: "undo" }));
+    expect(editorView().state.doc.toString()).toBe("[A](a.md)\n未保存\n");
+  });
+
+  it("reference rename barrier holds an already-taken system-open offer until the batch settles", async () => {
+    await setupWorkspace({ "a.md": "# A\n", "b.md": "[A](a.md)\n" });
+    await openPath("/notes/b.md");
+    await openPath("/notes/a.md");
+    const opened = deferred<TestOpenedEntry[]>();
+    mocks.takePendingOpenedEntries.mockReturnValueOnce(opened.promise);
+    openHandler?.();
+    await settle();
+    const renamed = deferred<{ path: string; updatedFiles: string[] }>();
+    mocks.renameEntryWithReferences.mockReturnValueOnce(renamed.promise);
+    const task = appSetupState().renameWithDocumentReferences("a.md", "renamed.md", false);
+    await settle();
+    dialogButton("重命名并更新").click();
+    await settle();
+    try {
+      expect(mocks.renameEntryWithReferences).toHaveBeenCalledTimes(1);
+      opened.resolve([{ path: "/notes/b.md", offerId: "held-reference-offer" }]);
+      await settle();
+      expect(editorView().state.doc.toString()).toBe("# A\n");
+      expect(editorView().state.readOnly).toBe(true);
+      expect(mocks.dismissOfferedFile).not.toHaveBeenCalledWith("/notes/b.md", "held-reference-offer");
+    } finally {
+      renamed.resolve({ path: "renamed.md", updatedFiles: ["b.md"] });
+      await task;
+      await settle();
+    }
+    expect(editorView().state.doc.toString()).toBe("[A](renamed.md)\n");
+    expect(editorView().state.readOnly).toBe(false);
+    expect(mocks.dismissOfferedFile).toHaveBeenCalledWith("/notes/b.md", "held-reference-offer");
+  });
+
+  it("reference rename barrier discards a watch read begun before the batch", async () => {
+    await setupWorkspace({ "a.md": "# A\n", "b.md": "[A](a.md)\n" });
+    await openPath("/notes/b.md");
+    const staleRead = deferred<string>();
+    mocks.readFile.mockReturnValueOnce(staleRead.promise);
+    watchEvents?.([{ op: "write", path: "b.md", isDir: false }]);
+    await settle();
+    expect(mocks.readFile).toHaveBeenLastCalledWith("b.md");
+    const task = appSetupState().renameWithDocumentReferences("a.md", "renamed.md", false);
+    await settle();
+    dialogButton("重命名并更新").click();
+    await task;
+    await settle();
+    staleRead.resolve("[A](a.md)\n");
+    await settle();
+    expect(editorView().state.doc.toString()).toBe("[A](renamed.md)\n");
+    const model = appSetupState().tabs.find((tab: { path: string }) => tab.path === "b.md");
+    expect(model.originalText).toBe("[A](renamed.md)\n");
+    expect(model.externalState).toBe("none");
+  });
+
+  it("reference rename barrier freezes remounted views and preserves an unexpected late edit at the committed path", async () => {
+    await setupWorkspace({ "a.md": "[A](a.md)\n", "b.md": "# B\n" });
+    await openPath("/notes/b.md");
+    await openPath("/notes/a.md");
+    const state = appSetupState();
+    const a = state.tabs.find((tab: { path: string }) => tab.path === "a.md");
+    const b = state.tabs.find((tab: { path: string }) => tab.path === "b.md");
+    const renamed = deferred<{ path: string; updatedFiles: string[] }>();
+    mocks.renameEntryWithReferences.mockReturnValueOnce(renamed.promise);
+    const task = state.renameWithDocumentReferences("a.md", "renamed.md", false);
+    await settle();
+    dialogButton("重命名并更新").click();
+    await settle();
+    try {
+      await state.activateTab(b.id);
+      expect(editorView().state.readOnly).toBe(true);
+      await state.activateTab(a.id);
+      expect(editorView().state.readOnly).toBe(true);
+      // Programmatic/external transactions can still bypass readOnly. The
+      // successful disk batch must preserve this unexpected current text.
+      replaceEditorText("[A](a.md)\n异步新编辑\n");
+    } finally {
+      renamed.resolve({ path: "renamed.md", updatedFiles: ["renamed.md"] });
+      await task;
+      await settle();
+    }
+    expect(a.path).toBe("renamed.md");
+    expect(a.text).toBe("[A](a.md)\n异步新编辑\n");
+    expect(editorView().state.doc.toString()).toBe(a.text);
+    expect(a.externalState).toBe("modified");
+    expect(a.savePhase).toBe("paused");
+    expect(editorView().state.readOnly).toBe(false);
+    vi.useFakeTimers();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+  });
+
+  it("reference rename barrier keeps autosave paused after a disk-baseline mismatch", async () => {
+    const files = { "a.md": "# A\n", "b.md": "[A](a.md)\n" };
+    await setupWorkspace(files);
+    await openPath("/notes/b.md");
+    vi.useFakeTimers();
+    replaceEditorText("[A](a.md)\n本地未保存\n");
+    files["b.md"] = "外部新内容\n";
+    await expect(appSetupState().renameWithDocumentReferences("a.md", "renamed.md", false))
+      .rejects.toThrow("请先处理");
+    await settle();
+    const model = appSetupState().tabs.find((tab: { path: string }) => tab.path === "b.md");
+    expect(model.text).toBe("[A](a.md)\n本地未保存\n");
+    expect(model.externalState).toBe("modified");
+    expect(mocks.renameEntryWithReferences).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+    expect(editorView().state.readOnly).toBe(false);
+  });
+});
+
 describe("renames", () => {
   it("keeps a folder rename from looking like an external deletion", async () => {
+    mocks.listFiles.mockResolvedValue(["notes/a.md", "root.md"]);
     tree = [
       entry("notes", "notes", { isDir: true }),
       entry("root.md", "root.md"),
@@ -3277,6 +3481,7 @@ describe("renames", () => {
   });
 
   it("clears the expected rename when RenameEntry fails", async () => {
+    mocks.listFiles.mockResolvedValue(["notes/a.md", "root.md"]);
     tree = [
       entry("notes", "notes", { isDir: true }),
       entry("root.md", "root.md"),
@@ -4471,6 +4676,83 @@ function typeSettingsFont(
 }
 
 describe("multi-tab shell", () => {
+  it("distinguishes same-name files in the comparison document selector", async () => {
+    await setupWorkspace({ "a/README.md": "# First\n", "b/README.md": "# Second\n" });
+    await openPath("/notes/a/README.md");
+    await openPath("/notes/b/README.md");
+    host.querySelector<HTMLButtonElement>("[data-comparison-toggle]")!.click();
+    await settle();
+    const options = [...host.querySelectorAll<HTMLOptionElement>("#comparison-document option")];
+    expect(options.map((option) => option.textContent)).toEqual(["a/README.md", "b/README.md"]);
+    expect(options[0]!.value).not.toBe(options[1]!.value);
+  });
+
+  it("keeps table drafts in charge of shortcuts and native undo", async () => {
+    await openFile("a.md", "# Title\n\n| A | B |\n| --- | --- |\n| one | two |\n");
+    const view = editorView();
+    view.dispatch({ changes: { from: 2, insert: "Edited " } });
+    await settle();
+    const edit = [...host.querySelectorAll<HTMLButtonElement>(".cm-nicole-table button")]
+      .find((button) => button.textContent === "编辑表格");
+    expect(edit).toBeDefined();
+    edit!.click();
+    await settle();
+    const field = host.querySelector<HTMLInputElement>("[data-nicole-table-dialog] input")!;
+    expect(field).not.toBeNull();
+    field.focus();
+    const shortcut = new KeyboardEvent("keydown", { key: "w", code: "KeyW", metaKey: true, bubbles: true, cancelable: true });
+    field.dispatchEvent(shortcut);
+    expect(shortcut.defaultPrevented).toBe(true);
+    expect(host.querySelector("[data-nicole-table-dialog]")).not.toBeNull();
+    expect(editorView()).toBe(view);
+    const doc = view.state.doc;
+    const original = Object.getOwnPropertyDescriptor(document, "execCommand");
+    const nativeUndo = vi.fn(() => true);
+    Object.defineProperty(document, "execCommand", { configurable: true, value: nativeUndo });
+    try {
+      window.dispatchEvent(new CustomEvent("nicole:edit-command", { detail: "undo" }));
+      expect(nativeUndo).toHaveBeenCalledWith("undo");
+      expect(view.state.doc).toBe(doc);
+    } finally {
+      if (original) Object.defineProperty(document, "execCommand", original);
+      else delete (document as unknown as { execCommand?: unknown }).execCommand;
+    }
+  });
+
+  it("reorders tabs and opens read-only comparison without replacing the active editor", async () => {
+    await setupWorkspace({ "a.md": "# A\n", "b.md": "# B\n" });
+    await openPath("/notes/a.md");
+    await openPath("/notes/b.md");
+    const view = editorView();
+    view.dispatch({ selection: { anchor: 2, head: 3 } });
+    vi.useFakeTimers();
+    tabNamed("a.md").dispatchEvent(new KeyboardEvent("keydown", {
+      key: "ArrowRight", altKey: true, shiftKey: true, bubbles: true, cancelable: true,
+    }));
+    await settle();
+    expect(tabElements().map((tab) => tab.textContent?.trim().split(/\s/)[0])).toEqual(["b.md", "a.md"]);
+    await vi.advanceTimersByTimeAsync(400);
+    await settle();
+    expect(mocks.saveWorkspaceTabs.mock.lastCall?.[1].map((tab: { path: string }) => tab.path)).toEqual(["b.md", "a.md"]);
+    host.querySelector<HTMLButtonElement>("[data-comparison-toggle]")!.click();
+    await settle();
+    const select = host.querySelector<HTMLSelectElement>("#comparison-document")!;
+    const aId = [...select.options].find((option) => option.textContent === "a.md")!.value;
+    select.value = aId;
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+    expect(host.querySelectorAll(".cm-editor")).toHaveLength(1);
+    expect(editorView()).toBe(view);
+    expect(view.state.doc.toString()).toBe("# B\n");
+    expect(view.state.selection.main.from).toBe(2);
+    expect(view.state.selection.main.to).toBe(3);
+    host.querySelector<HTMLButtonElement>('button[aria-label="关闭文档对照"]')!.click();
+    await settle();
+    expect(host.querySelector("#comparison-pane")).toBeNull();
+    expect(document.activeElement).toBe(host.querySelector("[data-comparison-toggle]"));
+    expect(editorView()).toBe(view);
+  });
+
   it("keeps one editor view, restores selection and undo history", async () => {
     await setupWorkspace({ "a.md": "one\ntwo\n", "b.md": "# B\n" });
     await openPath("/notes/a.md");
@@ -11595,6 +11877,64 @@ describe("link and image editing", () => {
 });
 
 describe("settings tab", () => {
+  it("writing preferences allow an editor command to reuse a replaced application key", async () => {
+    await openFile("a.md","hello\n");await openSettingsFromShortcut();
+    const save=host.querySelector<HTMLInputElement>('[aria-label="立即保存快捷键"]')!;
+    save.value="Mod-Alt-s";save.dispatchEvent(new Event("change"));await settle();
+    const bold=host.querySelector<HTMLInputElement>('[aria-label="加粗快捷键"]')!;
+    bold.value="Mod-s";bold.dispatchEvent(new Event("change"));await settle();
+    pressAppShortcut("w");await settle();
+    editorView().dispatch({selection:{anchor:0,head:5}});
+    pressMod("s","KeyS","macos");await settle();
+    expect(editorView().state.doc.toString()).toBe("**hello**\n");
+  });
+
+  it("writing preferences update existing shortcut hints and retain Settings access", async () => {
+    await openFile();
+    expect(sidebarToggle("hide").title).not.toContain("⌥⌘S");
+    await openSettingsFromShortcut();
+    const input=host.querySelector<HTMLInputElement>('[aria-label="显示或隐藏侧栏快捷键"]')!;
+    input.value="Mod-Alt-s";input.dispatchEvent(new Event("change"));await settle();
+    expect(sidebarToggle("hide").title).toContain("⌥⌘S");
+    const undo=host.querySelector<HTMLInputElement>('[aria-label="撤销快捷键"]')!;
+    undo.value="Mod-Alt-z";undo.dispatchEvent(new Event("change"));await settle();
+    expect(mocks.setEditAccelerators.mock.calls.at(-1)?.[0]).toBe("Alt+Cmd+z");
+    expect(host.querySelector('[aria-label="设置快捷键"]')).toBeNull();
+    expect(settingsView()).not.toBeNull();
+  });
+
+  it("writing preferences preserve the saved baseline and apply after returning to the document", async () => {
+    await setupWorkspace({"a.md":"你好 hello world\n"});
+    await openPath("/notes/a.md");
+    typeIntoEditor("新增");
+    await openSettingsFromShortcut();
+    const section=host.querySelector<HTMLElement>("[data-writing-settings]")!;
+    const focus=section.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+    focus.checked=true;focus.dispatchEvent(new Event("change"));
+    const size=section.querySelector<HTMLInputElement>('input[type="number"]')!;
+    size.value="24";size.dispatchEvent(new Event("change"));
+    await vi.waitFor(()=>expect(mocks.setWritingPreferences).toHaveBeenCalledWith(expect.objectContaining({focusMode:true,fontSize:24,lineHeight:1.7,contentWidth:65})));
+    pressAppShortcut("w");await settle();
+    expect(editorView().dom.classList.contains("cm-nicole-focus")).toBe(true);
+    expect(document.documentElement.style.getPropertyValue("--reading-font-size")).toBe("24px");
+    expect(editorView().state.doc.toString()).toContain("新增");
+    pressMod("z","KeyZ","macos");await settle();
+    expect(editorView().state.doc.toString()).toBe("你好 hello world\n");
+    await vi.waitFor(()=>expect(host.querySelector("[data-writing-statistics]")?.textContent).toContain("4 字"));
+  });
+
+  it("writing preferences wait for initial settings without issuing a competing read", async () => {
+    const loaded=deferred<any>();mocks.getSettings.mockReturnValue(loaded.promise);
+    await mountAppWithApi();await openSettingsFromShortcut();
+    const reads=mocks.getSettings.mock.calls.length;
+    const focus=host.querySelector<HTMLInputElement>('[data-writing-settings] input[type="checkbox"]')!;
+    focus.checked=true;focus.dispatchEvent(new Event("change"));
+    await new Promise((resolve)=>setTimeout(resolve,400));
+    expect(mocks.getSettings).toHaveBeenCalledTimes(reads);expect(mocks.setWritingPreferences).not.toHaveBeenCalled();
+    loaded.resolve({theme:"system",sidebarWidth:252,recentFolders:[],expandedFolders:{},writingPreferences:{fontSize:26,lineHeight:2,contentWidth:80,keybindings:{},customCss:"",focusMode:false,typewriterMode:false}});
+    await settle();await vi.waitFor(()=>expect(mocks.setWritingPreferences).toHaveBeenCalledWith(expect.objectContaining({focusMode:true,fontSize:26,lineHeight:2,contentWidth:80})));
+  });
+
   it("opens one global settings tab from every entry without a workspace", async () => {
     await mountAppWithApi();
     await openSettingsFromShortcut();

@@ -40,6 +40,13 @@ export interface AppCommandActions {
   saveCurrent(): void | Promise<void>;
   toggleSidebar(): void | Promise<void>;
   toggleOutline(): void | Promise<void>;
+  toggleComparison?(): void | Promise<void>;
+  toggleFocusMode?(): void | Promise<void>;
+  toggleTypewriterMode?(): void | Promise<void>;
+  editFrontmatter?(): void | Promise<void>;
+  exportHTML?(): void | Promise<void>;
+  exportPDF?(): void | Promise<void>;
+  copyRichText?(): void | Promise<void>;
   setFormatToolbarVisible(visible: boolean): void | Promise<void>;
   setMode(mode: CommandEditorMode): void | Promise<void>;
   toggleTheme(): void | Promise<void>;
