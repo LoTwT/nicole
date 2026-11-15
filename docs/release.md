@@ -48,7 +48,7 @@ updates: {
    2. **macOS job**（`macos-latest`）：`mygo build -platform darwin/universal -upload`，私钥经 `MYGO_UPDATER_PRIVATE_KEY`，`GH_TOKEN` 供上传；校验 `.app`、DMG、通用架构、Info.plist 版本、ad-hoc 签名、两个第三方声明、归档与清单（清单版本等于标签，归档 URL 指向本标签）。
    3. **Windows job**（`ubuntu-latest`，先安装 NSIS 与 7-Zip）：`mygo build -platform windows/amd64 -upload`；校验 EXE、NSIS 安装包（含两个第三方声明）、`install.ps1`、归档与清单。
    4. **Linux job**（`ubuntu-latest`）：`mygo build -platform linux/amd64 -upload`；校验可执行文件、`.deb`（版本字段等于标签，两个声明安装到 `/opt/nicole/`）、`install.sh`、归档与清单。
-   5. **发布 job**（三个平台都成功后）：校验 Release 资产齐全，下载三份清单核对版本与标签，按实际资产重新生成并复核 `SHA256SUMS`；测试渠道以 `--draft=false --prerelease=false --latest=false` 发布，标题“Nicole <版本>（测试版，勿用）”，说明前加警示；正式渠道以 `--draft=false --prerelease=false --latest=true` 发布，标题“Nicole <版本>”。
+   5. **发布 job**（三个平台都成功后）：校验 Release 资产齐全，下载三份清单核对版本与标签，按实际资产重新生成并复核 `SHA256SUMS`；然后用实际资产生成说明顶部的[下载入口](#release-下载入口)，保留原有更新说明。测试渠道以 `--draft=false --prerelease=false --latest=false` 发布，标题“Nicole <版本>（测试版，勿用）”，说明前加警示；正式渠道以 `--draft=false --prerelease=false --latest=true` 发布，标题“Nicole <版本>”。
 4. 失败处理：单平台失败可用 “Re-run failed jobs” 重跑，重跑以 `--clobber` 覆盖同一草稿里的同名资产；草稿 job 幂等（Release 已存在则不重建）。发布 job 会在发布前按实际资产重新生成并复核 `SHA256SUMS`：Release 上没有该文件时直接重建；复核发现缺行时补回，发现平台文件哈希与 MyGo 记录不一致时失败并指出应重跑的平台 job。GitHub Actions 的 “Re-run failed jobs” 会重跑失败的 job 及其下游依赖，单个 job 的 “Re-run job” 也会重跑该 job 及其 dependent jobs（见 [REST API 说明](https://docs.github.com/rest/actions/workflow-runs#re-run-a-job-from-a-workflow-run)），所以按提示重跑平台 job 即可，发布 job 会自动重跑，不需要再手动重跑；不要手动发布草稿。标签或 CHANGELOG 问题需要删远端标签重打（由主会话执行）或补小节后重新推送标签触发；已推送的标签不要在原标签上强推覆盖。
 5. **首次发布重点看**：`MYGO_UPDATER_PRIVATE_KEY` 是否就位（否则三个平台在构建/校验阶段失败）；Windows job 的 NSIS 是否安装成功；Linux job 的 `.deb` 是否生成；发布 job 的资产清单是否与下表一致；发布后 latest 是否指向正式版。
 
@@ -70,6 +70,16 @@ Release 资产一览（`<版本>` 为标签版本，表列为 GitHub 上的存�
 两个第三方声明（`THIRD-PARTY-NOTICES.md` 与生成的 `THIRD-PARTY-LICENSES.md`）不单独上传为 Release 资产：它们已内置于三个平台的安装包、`.deb` 和更新归档，安装或解压后即可获得；单独资产不会随安装或更新落到用户机器上，只会增加资产校验与 `SHA256SUMS` 的维护面。`release.yml` 的资产清单因此没有新增项，各平台 job 仍会核对产物内的两个声明。
 
 MyGo 0.9.0 的文件名都不含空格（与 0.7.3 相同；youkai 的 0.6.2 是 `Youkai 0.0.1 arm64.dmg`、`Youkai Setup 0.0.1 amd64.exe`）。GitHub 上传时仍会把文件名中的空格存成 `.`，发布 job 的资产校验因此按“空格转 `.`”后的存储名比对；当前这些名字转换后不变。
+
+## Release 下载入口
+
+Release 说明按“下载安装 → 更新内容”排列。顶部三平台下载表突出系统名称和下载链接，直接链接该版本的 macOS 通用 DMG、Windows x64 EXE 和 Debian / Ubuntu x64 DEB；表后保留 Linux tar.gz 安装版及两种 Linux 安装方式的升级区别。系统安全提示、`SHA256SUMS` 链接和其他 Assets 说明收进“安装提示与文件校验”折叠区，使用 GitHub 支持的 `<details>` / `<summary>`，并保留标签与 Markdown 正文之间的空行。README 引导用户进入最新正式版的下载表。
+
+`v0.0.1` 已于 2026-11-15 同步该下载表，五个资产链接均返回 HTTP 200；回读确认原有更新说明、12 份资产与 Release 属性保留，latest 仍为 `v0.0.1`。
+
+[`scripts/generate-release-downloads.mjs`](../scripts/generate-release-downloads.mjs) 读取 GitHub Release API 的 JSON，用资产的 `browser_download_url` 生成下载入口；缺少安装包、Linux 归档或校验文件时失败。发布 job 在资产与校验和核对完成后调用它，再用 `gh release edit --notes-file` 保存说明。`<!-- nicole-downloads:start -->` / `<!-- nicole-downloads:end -->` 之间的内容由脚本维护，重跑时替换，原有更新说明保留；测试渠道的警示始终位于下载表之前，且不会因重跑而重复。
+
+安装包、归档、清单、差量与脚本继续使用原资产名，以保持下载 URL、签名清单、安装脚本和 MyGo 自动更新兼容。优化下载入口不删除或重命名 Assets，也不改写应用内更新清单的 `notes`。调整已发布版本时，只更新目标 Release 的说明，不改标签、latest 或资产。
 
 ## 不依赖付费证书的分发路线
 

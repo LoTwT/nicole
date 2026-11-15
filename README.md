@@ -17,6 +17,10 @@
 
 基于 MyGo、Vue 3 和 CodeMirror 6，界面运行在系统 WebView 中。
 
+## 下载
+
+打开[最新正式版](https://github.com/LoTwT/nicole/releases/latest)，在说明顶部的“下载安装”表中选择系统：macOS 下载 DMG（Apple Silicon / Intel 通用），Windows x64 下载 EXE，Debian / Ubuntu x64 下载 DEB。其他 Linux 发行版可查看同一区域的 tar.gz 安装版。
+
 ## 当前能力
 
 下面介绍当前源码中的功能，已发布安装包的功能以对应版本说明为准。
