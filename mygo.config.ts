@@ -69,7 +69,7 @@ export default defineConfig({
   // AppKit and WebKit say their own texts (the Edit menu's dictation and
   // emoji items, the system items of the web view's context menu) in the
   // bundle's language at launch; App.SetLanguages does not change the bundle.
-  // Declare the same single language as main.go so those texts are Simplified
+  // Declare the same language as internal/app/app.go so those texts are Simplified
   // Chinese from the first launch. See docs/references/mygo.md.
   macos: {
     infoPlist: {

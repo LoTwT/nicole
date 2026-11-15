@@ -3,7 +3,7 @@
 概要：
 
 - 桌面外壳使用 MyGo Web 模式，前端是 Vue 3 + Vite + Tailwind CSS v4，编辑器是 CodeMirror 6。
-- `src/editor/` 是纯 TypeScript 模块，不依赖 Vue 和 MyGo；MyGo 调用只出现在 `src/services/` 和 `main.go`。
+- `src/editor/` 是纯 TypeScript 模块，不依赖 Vue 和 MyGo；MyGo 调用集中在前端 `src/services/` 和 Go 后端 `internal/app/`。
 - 前后端通过 MyGo 的类型化 IPC 通信。
 - 渲染的 HTML 必须经过 DOMPurify；文件与协议访问默认限制在当前工作区，工作区外的单个文件需要按文件授权。
 - 各功能的具体行为由对应规格定义，本文只记录结构和共享约束。
@@ -30,6 +30,25 @@ MyGo 的接口与版本情况见 [MyGo 参考](references/mygo.md)。
 ## 进程和模块结构
 
 ```text
+main.go                   Go 启动入口，仅调用 app.Run()
+internal/
+  app/                    Go 后端，同属 package app
+    app.go                应用信息服务、插件与服务绑定、语言、窗口及启动接线
+    workspace*.go         工作区、文件操作、监听、搜索、模板与引用更新
+    settings.go           全局设置存储与服务
+    writing_preferences.go  写作偏好的校验与默认值
+    single_file.go        单文件授权
+    recovery.go           恢复副本与磁盘哈希
+    tabs.go               标签页布局存储
+    assets*.go            图片导入与平台文件操作
+    export.go             导出目标、PDF 打印与富文本剪贴板
+    menu.go               原生菜单
+    open_file.go          系统打开文件队列
+    protocol.go           图片协议
+    single_instance.go    单实例锁与激活
+    user_data.go          用户数据目录
+    window_*.go           窗口选项与状态
+    *_test.go             与实现同包的后端测试
 src/
   App.vue                 单窗口外壳：装订册布局、多标签文档模型、自动保存、外部变化与主题
   main.ts                 挂载 Vue
@@ -123,7 +142,7 @@ src/
         │
         │ MyGo 类型化 IPC（绑定方法 / Channel / Event）
         ▼
-Go（main.go）
+Go（internal/app/，由根目录 main.go 启动）
   Application             版本、平台和 Go 版本（当前）
   updater.Plugin          Sparkle 风格更新窗口与“检查更新…”菜单（当前）
   Workspace               选择文件夹、列 Markdown、代际绑定写入、用户模板快照、关窗保存（当前）
@@ -143,16 +162,18 @@ Go（main.go）
   Workspace references    快照预检、批次重命名、引用更新与恢复备份（当前）
 ```
 
-`main.go` 负责注册插件、绑定服务、注册图片协议、设置菜单和创建窗口；`workspace.go` 实现工作区与路径守卫，`workspace_tree.go` 实现文件树和文件操作，`workspace_watch.go` 封装监听，`workspace_search.go` 实现当前工作区的磁盘全文搜索，`workspace_snippets.go` 读取固定的用户模板目录，`single_file.go` 实现单文件授权，`recovery.go` 实现未保存内容副本和磁盘哈希，`settings.go` 实现设置存储，`tabs.go` 实现标签页布局存储，`menu.go` 实现菜单与原生右键菜单，`assets.go` 实现图片保存，`protocol.go` 实现图片协议，`window_options.go` 定义窗口标题栏，`window_state.go` 实现窗口状态的居中策略。`index.html` 是 Vite 入口，`mygo.config.ts` 描述应用、文件关联、前端构建、生成客户端的位置和输出目录。
+根目录保留入口、依赖清单、构建配置、变更记录与第三方许可；前端代码放在 `src/`，Go 后端实现、平台变体和对应测试放在 `internal/app/`，构建辅助脚本放在 `scripts/`。`internal/app` 维持一个包，现有工作区、存储与恢复服务继续共享包内状态，外部由 `Run()` 统一装配，避免目录迁移迫使内部接线暴露为公共接口。新增 Go 后端文件沿用这个归属，测试与被测代码相邻。
+
+`main.go` 只调用 `app.Run()`；`internal/app/app.go` 注册插件、绑定服务、注册图片协议、设置菜单和创建窗口。`index.html` 是 Vite 入口，`mygo.config.ts` 描述应用、文件关联、前端构建、生成客户端的位置和输出目录。
 
 ## 依赖边界
 
 - `src/editor/` 是纯 TypeScript，不依赖 Vue，也不依赖 MyGo。编辑入口是 `createEditor`；只读呈现由 `src/editor/rendering/preview.ts` 的 `renderMarkdownPreview` 和 `renderInlineMarkdownPreview` 提供，两者返回 Promise HTML，接受图片解析器和可选 AbortSignal。调用方负责过期结果检查和链接导航，不创建第二个可编辑视图。
-- MyGo 调用只放在 `src/services/` 和 Go 入口（`main.go` 及同一包内直接使用 MyGo 的服务实现），其他前端模块通过 `src/services/` 间接使用后端能力。生成的客户端直接输出到 `src/services/mygo.ts`。
-- `main.go` 还注册 MyGo 的 `updater.Plugin`，绑定工作区、图片、设置、单文件、打开方式和原生菜单服务，注册图片协议并设置应用菜单；文件监听由 `Workspace.Watch` 在页面调用时开始。更新源、版本注入和发布流程见[发布与自动更新](release.md)。
+- MyGo 调用只放在 `src/services/` 和 `internal/app/`，其他前端模块通过 `src/services/` 间接使用后端能力。根目录的 `main.go` 只调用后端启动函数。生成的客户端直接输出到 `src/services/mygo.ts`。
+- `internal/app/app.go` 注册 MyGo 的 `updater.Plugin`，绑定工作区、图片、设置、单文件、打开方式和原生菜单服务，注册图片协议并设置应用菜单；文件监听由 `Workspace.Watch` 在页面调用时开始。更新源、版本注入和发布流程见[发布与自动更新](release.md)。
 - `src/services/` 是生成的 `mygo.ts` 客户端上的薄封装，不承载业务逻辑。`app.ts` 把 `Application.Info` 和 `Application.OpenExternalURL` 包装成 `getAppInfo` / `openExternalURL`；`workspace.ts` 包装 `Workspace` 的文件与模板方法、`PickFolder`/`OpenFolder` 和关窗保存事件；`files.ts`、`settings.ts`、`single-file.ts`、`menu.ts`、`open-file.ts`、`watch.ts` 和 `search.ts` 分别包装对应服务；`clipboard.ts` 只负责复制界面文字。封装不拼接路径，也不缓存文件内容。
 - `src/app/` 只放不依赖 Vue 组件实例的界面逻辑，`src/components/` 只负责渲染和交互事件；`App.vue` 负责把这些模块与 `services/` 接起来，不直接调用 MyGo。`src/app/workspace-search.ts` 只处理流式结果的分组、行片段、128 位内容指纹和点击定位校验，`WorkspaceSearch.vue` 只处理输入、开关、渲染和 Channel 会话；`src/app/outline.ts` 过滤大纲标题、定位活动章节并给出 840px 布局阈值。
-- `src/app/document-export.ts` 负责准备自包含文档，`export.go` 只处理原生目标授权、隐藏打印窗口、落盘与剪贴板；`workspace_references.go` 在既有根目录授权内固定 generation 并串行执行可恢复的多文件批次。它们的错误、取消和资源限制分别见[文档工具](specs/document-tools.md)与[重命名和引用更新](specs/workspace.md#重命名与引用更新)。
+- `src/app/document-export.ts` 负责准备自包含文档，`internal/app/export.go` 只处理原生目标授权、隐藏打印窗口、落盘与剪贴板；`internal/app/workspace_references.go` 在既有根目录授权内固定 generation 并串行执行可恢复的多文件批次。它们的错误、取消和资源限制分别见[文档工具](specs/document-tools.md)与[重命名和引用更新](specs/workspace.md#重命名与引用更新)。
 - `src/commands/` 保存唯一命令注册表、格式与插入命令、应用与文件树命令、键位匹配和显示、拼音搜索/最近使用逻辑；只依赖 CodeMirror、`src/app/platform.ts`，以及类型层面的 `src/app/file-tree.ts`，不依赖 Vue 或 MyGo。`src/commands/snippets.ts` 只接收服务层传来的 `id`/`label`/`body` 快照，把用户模板转成同一种 `CommandDefinition` 并负责变量展开；`App.vue` 负责调用 `Workspace.ListSnippets` 和维护当前快照，命令层不接触 MyGo。`src/editor/slash.ts` 负责 slash 触发、查询和菜单状态，`src/components/SlashMenu.vue` 只负责渲染和定位；`src/app/context-menu.ts` 组装右键菜单并从注册表读取快捷键。`src/app/command-palette.ts` 处理面板模式标识、文件与标题排序；`src/editor/headings.ts` 从 Lezer 树提取标题；`src/components/CommandPalette.vue` 和 `src/components/Outline.vue` 只负责渲染和交互。
 - 写作偏好与键位通过 `EditorHandle.setWritingPreferences` 和 `refreshKeybindings` 的 Compartment 原地更新；`setReadOnly` 在引用批次内冻结输入与格式快捷键，新挂载视图也必须继承批次只读状态，完成后恢复。
 - `createEditor` 的接口为：
@@ -273,6 +294,6 @@ Go（main.go）
 | 风险 | 应对 |
 |---|---|
 | 中文输入法在 macOS WKWebView 里的表现 | 技术验证第一周就测；拼音输入过程中不能重建当前行的渲染，见[中文输入法](specs/editor-modes.md#中文输入法)。 |
-| MyGo 的 API 可能变化 | MyGo 仍处于 0.x（当前锁定 0.9.0，见[参考](references/mygo.md)）；锁定版本，并把所有调用集中在 `src/services/` 和 `main.go`。 |
+| MyGo 的 API 可能变化 | MyGo 仍处于 0.x（当前锁定 0.9.0，见[参考](references/mygo.md)）；锁定版本，并把所有调用集中在 `src/services/` 和 `internal/app/`。 |
 | 沉浸模式的边界情况多 | 先把实时预览做好，再逐步补齐沉浸模式，见[编辑模式](specs/editor-modes.md)。 |
 | Linux 的 WebKitGTK 能力较弱 | 平台优先级排在最后，见[平台优先级](specs/product.md#平台优先级)。 |

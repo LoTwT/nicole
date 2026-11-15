@@ -3,7 +3,7 @@ export const IMAGE_SCHEME = "nicole-image";
 
 const IMAGE_ORIGIN = `${IMAGE_SCHEME}://localhost`;
 const ABSOLUTE_URL = /^([a-zA-Z][a-zA-Z0-9+.-]*):/;
-// Keep this list in step with imageContentTypes in protocol.go.
+// Keep this list in step with imageContentTypes in internal/app/protocol.go.
 const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg"]);
 
 function imageExtension(name: string): string | null {

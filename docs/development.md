@@ -27,6 +27,8 @@ TypeScript 使用 6.0.x（当前 `^6.0.3`）。MyGo 模板默认安装 TypeScrip
 
 jsdom 固定在 30.1.x（当前 `^30.1.3`）。31.0.1 的 `requestAnimationFrame` 与现有 fake timers 测试交互时，`App.test.ts` 的“restores the scroll position of a background tab”在整文件运行时会一直等待动画帧并超时；单独运行该用例仍通过。升级 jsdom 大版本前先运行完整 Vitest。
 
+根目录 `main.go` 只调用后端的 `app.Run()`；Go 后端及其测试放在 `internal/app/`，前端放在 `src/`，目录职责见[架构](architecture.md#进程和模块结构)。MyGo 仍以根目录的主包构建入口，并自动跟踪它导入的本地 Go 包；在项目根目录运行原有开发、构建与检查命令即可。
+
 MyGo 生成的 TypeScript 客户端放在 `src/services/mygo.ts`，由 `mygo.config.ts` 的 `bindings` 指定。修改 Go 服务后重新生成：
 
 ```sh
@@ -180,7 +182,7 @@ favicon 使用已解析的亮暗主题，跟随系统或手动选择均会同步
 
 | 场景 | 用法 |
 |---|---|
-| `go test` | 无需设置。`TestMain` 为整次测试创建 `nicole-test-user-data-*` 临时目录并通过 `NICOLE_USER_DATA_DIR` 指过去，结束后删除。 |
+| `go test ./...` | 无需设置。`internal/app/app_test.go` 的 `TestMain` 为后端测试创建 `nicole-test-user-data-*` 临时目录并通过 `NICOLE_USER_DATA_DIR` 指过去，结束后删除。 |
 | `mygo dev` | 开发版的应用名是 `Nicole Dev`，已与安装版分开；仍建议使用独立目录：`NICOLE_USER_DATA_DIR=$(mktemp -d) GOTOOLCHAIN=auto bun run dev`。 |
 | 直接运行构建出的 `.app` | `NICOLE_USER_DATA_DIR=$(mktemp -d) ./build/darwin-arm64/Nicole.app/Contents/MacOS/Nicole`；不要从 `/Applications` 启动正在使用的 Nicole。 |
 | 用 Launch Services 测试“打开方式” | `open --env NICOLE_USER_DATA_DIR="$(mktemp -d)" -a "$PWD/build/darwin-arm64/Nicole.app" --args`，或 `open --env ... -a ... /tmp/note.md`。 |
