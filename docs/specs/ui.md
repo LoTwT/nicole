@@ -31,8 +31,8 @@
 - 窗口使用 MyGo 的隐藏标题栏：`TitleBarStyle: mygo.TitleBarHidden`。`TitleBarHeight: 40` 只对 Windows 和 Linux 生效；macOS 上用 `TrafficLightPosition` 让红绿灯在 40px 内垂直居中（MyGo 按“按钮高度 + 2 × Y”计算标题栏高度，Y 取使结果等于 40 的值，X 与侧栏左边距对齐）。页面绘制的顶部区域固定为 40px，不随 `--mygo-titlebar-height` 变化（全屏时该变量为 `0px`）；MyGo 的变量只用 `--mygo-titlebar-inset-left`、`--mygo-titlebar-inset-right` 来让出左右两侧窗口控制按钮的位置。
 - macOS 的红绿灯在左上角，叠在侧栏顶部；侧栏隐藏时，顶栏左侧留出 `--mygo-titlebar-inset-left`。Windows 的最小化、最大化、关闭按钮在右上角，顶栏右侧留出 `--mygo-titlebar-inset-right`。Linux 按桌面环境给出的两个变量留白。全屏时左右两个变量为 `0px`，顶栏内容随之贴到左右边缘，高度仍是 40px。
 - 顶栏和侧栏顶部的空白处标记为 `--app-region: drag`，可以拖动窗口。MyGo 只自动排除按钮、输入框、链接等原生可交互元素，自绘的标签页、模式切换分段等元素要显式标记 `--app-region: no-drag`。双击拖动区域时按系统行为缩放或最大化窗口。
-- 菜单栏：macOS 使用 `main.go` 设置的应用菜单。Windows 隐藏标题栏后没有菜单栏位置，按 Alt 或 F10 时 MyGo 在左上角弹出菜单。Linux 默认隐藏菜单栏，按 Alt 或 F10 时显示。应用菜单之后是“文件”菜单，目前只有“关闭工作区”；菜单项通过页面事件调用命令注册表，不另写执行逻辑，也不绑定原生快捷键。
-- 菜单语言固定为简体中文，不提供语言设置。`main.go` 在创建菜单前声明应用语言并解析一次，同时链接 MyGo 的 `zh-Hans` 译文，使角色菜单、`customizeEditMenu` 改写的撤销/重做和更新菜单项都显示中文。macOS 上 AppKit/WebKit 自带的菜单文字和网页右键菜单系统项由 bundle 语言决定，`mygo.config.ts` 通过 `macos.infoPlist` 声明 `zh-Hans`，因此打包应用从启动起就显示中文，不存在切换语言后要下次启动才生效的情况；Windows 和 Linux 的菜单同样使用运行时中文译文。实现与 MyGo 源码依据见[语言与菜单](../references/mygo.md#语言与菜单)。
+- 菜单栏：macOS 使用 `internal/app/app.go` 设置的应用菜单。Windows 隐藏标题栏后没有菜单栏位置，按 Alt 或 F10 时 MyGo 在左上角弹出菜单。Linux 默认隐藏菜单栏，按 Alt 或 F10 时显示。应用菜单之后是“文件”菜单，目前只有“关闭工作区”；菜单项通过页面事件调用命令注册表，不另写执行逻辑，也不绑定原生快捷键。
+- 菜单语言固定为简体中文，不提供语言设置。`internal/app/app.go` 在创建菜单前声明应用语言并解析一次，同时链接 MyGo 的 `zh-Hans` 译文，使角色菜单、`customizeEditMenu` 改写的撤销/重做和更新菜单项都显示中文。macOS 上 AppKit/WebKit 自带的菜单文字和网页右键菜单系统项由 bundle 语言决定，`mygo.config.ts` 通过 `macos.infoPlist` 声明 `zh-Hans`，因此打包应用从启动起就显示中文，不存在切换语言后要下次启动才生效的情况；Windows 和 Linux 的菜单同样使用运行时中文译文。实现与 MyGo 源码依据见[语言与菜单](../references/mygo.md#语言与菜单)。
 - 菜单项的快捷键不能与[快捷键](#快捷键)表冲突，也不能提供会丢失页面状态的操作。MyGo 默认的“显示”菜单（`RoleViewMenu`）包含“重新载入”⌘R、“强制重新载入”⇧⌘R，默认的“窗口”菜单（`RoleWindowMenu`）在 Windows 和 Linux 上把 Ctrl+W 绑定到关闭窗口，这些都要去掉或替换；“显示”菜单中的“切换开发者工具”（⌥⌘I、Ctrl+Shift+I）只在开发构建中保留；缩放（⌘+、⌘-、⌘0）和全屏保留。
 - 应用主题与系统外观不同时，用 `mygo.Theme.SetSource` 同步，让原生菜单、右键菜单和对话框跟随应用主题。
 - MyGo 0.9.0 的 `RoleUndo`/`RoleRedo` 在 macOS 上使用 AppKit 的 `undo:`/`redo:` selector，不会进入 CodeMirror 的历史。这两个菜单项改为向页面发送 `nicole:edit-command`，由页面执行 CodeMirror 的历史命令；输入法组合期间（`EditorView.compositionStarted`）忽略该命令。此前在 MyGo 0.7.3 上实测菜单点击、⌘Z 和 ⇧⌘Z 都作用于 CodeMirror 的历史，组合期间的忽略也有 Vitest 覆盖；本轮升级到 0.9.0 未重测原生菜单。Windows 和 Linux 的菜单事件行为**待实测**，见[待办](#待办)。
@@ -82,7 +82,7 @@ A 红绿灯（macOS）　B 隐藏侧栏　C 标签页　D 模式切换与大纲�
 
 大纲按侧栏右侧整块区域（下称内容区）的宽度决定位置，与侧栏是否显示无关：内容区宽度不小于 840px 时，大纲固定在右侧，占据布局；小于 840px 时，打开的大纲浮在内容区右上角，带阴影，不挤压正文。内容区为 840px 时，固定大纲后正文区域约 620px，扣除左右各 2rem 的内边距后约 556px，比 `--reading-measure` 窄，但按 18px 的正文字号每行仍能放下约 30 个汉字；默认窗口 1100px 减去侧栏 252px 后为 848px，大纲可以固定显示。
 
-窗口最小尺寸为 640×480，由 `main.go` 限制。
+窗口最小尺寸为 640×480，由 `internal/app/window_options.go` 限制。
 
 验收：
 
@@ -802,5 +802,5 @@ A 红绿灯（macOS）　B 隐藏侧栏　C 标签页　D 模式切换与大纲�
 | Windows/Linux 的撤销/重做与 `.md` 文件关联实测 | 原生菜单、文件关联 | 后续平台手测 |
 | 输入法组合期间按 ⌘Z/⌘⇧Z 的 macOS 实机确认；组合期间忽略命令已有 Vitest 覆盖 | 页面编辑命令、编辑器输入法处理 | 后续手测 |
 | VoiceOver（macOS）和 Narrator（Windows）真机验收模式切换播报，包括打字时播报被打断，以及 Narrator 是否把模式读两遍 | 命令面板状态区域、[键盘与无障碍](#键盘与无障碍) | 后续手测 |
-| 多根目录：Go 端从单个根改为多个根，路径带根目录标识，全文搜索跨根目录 | `workspace.go`、`docs/specs/workspace.md` | P1 |
+| 多根目录：Go 端从单个根改为多个根，路径带根目录标识，全文搜索跨根目录 | `internal/app/workspace.go`、`docs/specs/workspace.md` | P1 |
 | 中文输入法在中文标点状态下输入 `>` 会得到 `》`，文件模式的空查询因此切不到命令模式；建议参照 slash 菜单把 `、` 当作 `/` 的规则，在文件模式空查询输入或输入法上屏 `》` 时按 `>` 处理，并决定是否同样处理 `@` 的全角形式 `＠` | 命令面板输入处理、[命令面板](#命令面板) | 后续命令面板改进 |

@@ -28,7 +28,7 @@ updates: {
 - 公钥与私钥为 Ed25519 对（`mygo keygen` 生成；私钥文件是 `mygo-update.key` 的内容）。**私钥只存于用户的密码管理器和仓库 secret `MYGO_UPDATER_PRIVATE_KEY`，绝不进仓库，也不交给 agent**。丢失私钥会使已安装应用无法再收到更新（搁浅，只能让用户手动重装新公钥的版本）；泄露则任何持有者都能向用户推送任意代码。
 - 发布构建必须带 `MYGO_UPDATER_PRIVATE_KEY`；私钥与 `updates.publicKey` 不匹配时构建失败，发布 workflow 缺私钥也会失败。
 - 平台签名不新增任何 secret：macOS 使用 ad-hoc 签名，不配置 Developer ID 与公证；Windows 不签名。见[不依赖付费证书的分发路线](#不依赖付费证书的分发路线)。
-- 应用侧使用 MyGo 的 `updater.Plugin`（`main.go`），提供 Sparkle 风格更新窗口和“检查更新…”菜单项；哪些构建能检查更新由 MyGo 决定，见 [MyGo 参考](references/mygo.md#自动更新)。
+- 应用侧使用 MyGo 的 `updater.Plugin`（`internal/app/app.go`），提供 Sparkle 风格更新窗口和“检查更新…”菜单项；哪些构建能检查更新由 MyGo 决定，见 [MyGo 参考](references/mygo.md#自动更新)。
 - 各平台的更新归档、差量和清单由 `mygo build` 生成，发布资产见下表；生成规则见 [MyGo 参考](references/mygo.md#自动更新)。
 
 ## 文件关联

@@ -1,0 +1,698 @@
+package app
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/egoist/mygo"
+)
+
+const (
+	settingsFileName = "settings.json"
+
+	defaultSidebarWidth = 252
+	minSidebarWidth     = 200
+	maxSidebarWidth     = 400
+	maxRecentFolders    = 10
+
+	themeSystem = "system"
+	themeLight  = "light"
+	themeDark   = "dark"
+
+	editorModeLive      = "live"
+	editorModeImmersive = "immersive"
+	editorModeSource    = "source"
+)
+
+var (
+	errInvalidTheme           = errors.New("settings: theme must be system, light or dark")
+	errInvalidEditorMode      = errors.New("settings: editor mode must be live, immersive or source")
+	errRecentFolderNotCurrent = errors.New("settings: recent folder must be the open workspace")
+)
+
+// SlashEnabledSettings is the per-mode slash menu switch. The page maps the
+// saved editor mode names to these fields.
+type SlashEnabledSettings struct {
+	Live      bool `json:"live"`
+	Immersive bool `json:"immersive"`
+	Source    bool `json:"source"`
+}
+
+// AppSettings is the user's global settings. It is stored in
+// PathUserData/settings.json and is independent of any workspace.
+type AppSettings struct {
+	WritingPreferences WritingPreferences `json:"writingPreferences,omitempty"`
+	// Theme is "system", "light" or "dark". System follows the desktop.
+	Theme string `json:"theme"`
+	// EditorMode is the global editor mode: "live", "immersive" or "source".
+	// It is shared by every tab.
+	EditorMode string `json:"editorMode"`
+	// OutlineVisible remembers whether the outline is open. The narrow
+	// floating outline is temporary and does not change this value.
+	OutlineVisible bool `json:"outlineVisible"`
+	// FormatToolbarVisible remembers the global fixed formatting toolbar
+	// switch. The toolbar itself is hidden while no Markdown tab is active;
+	// this value keeps the user's choice for the next Markdown tab.
+	FormatToolbarVisible bool `json:"formatToolbarVisible"`
+	// ShowAllFiles shows non-Markdown files in the tree. Directories are
+	// always shown; the preference only filters files.
+	ShowAllFiles bool `json:"showAllFiles"`
+	// HideMarkdownExtension removes the .md suffix from tree rows and tab
+	// labels. Paths, rename inputs and file access keep the full name.
+	HideMarkdownExtension bool `json:"hideMarkdownExtension"`
+	// UIFont, ReadingFont and CodeFont are installed font names. Empty keeps
+	// the interface's default stack. They never name bundled or downloaded
+	// fonts.
+	UIFont      string `json:"uiFont"`
+	ReadingFont string `json:"readingFont"`
+	CodeFont    string `json:"codeFont"`
+	// SlashEnabled switches the slash menu per editor mode. Every mode
+	// defaults to enabled when its field is missing.
+	SlashEnabled SlashEnabledSettings `json:"slashEnabled"`
+	// SidebarWidth is the sidebar width in CSS pixels, within
+	// [200, 400].
+	SidebarWidth int `json:"sidebarWidth"`
+	// RecentFolders lists the folders opened most recently, newest first.
+	RecentFolders []string `json:"recentFolders"`
+	// ExpandedFolders keeps the expanded folders of a workspace root, by
+	// the root's absolute path and with slash-separated relative paths.
+	ExpandedFolders map[string][]string `json:"expandedFolders"`
+	// WorkspaceClosed is set when the user closes the workspace and cleared
+	// by the next successful open. The page reads it at startup to decide
+	// whether to restore the last folder. It is omitted while false so older
+	// files stay unchanged.
+	WorkspaceClosed bool `json:"workspaceClosed,omitempty"`
+}
+
+// Settings serves the global settings to the page. `mygo generate` turns its
+// methods into functions in src/services/mygo.ts.
+type Settings struct {
+	store *settingsStore
+	// currentRoot reports the open workspace root. AddRecentFolder is kept
+	// for the generated client, but the page may only reorder the current
+	// root; RecentFolders must not become a way to authorize a new folder.
+	currentRoot func() string
+}
+
+// NewSettings returns the settings service backed by store.
+func NewSettings(store *settingsStore) *Settings {
+	return &Settings{store: store}
+}
+
+// useCurrentRoot lets AddRecentFolder verify that the page is not adding an
+// arbitrary folder to the recent list. It is set once during startup.
+func (s *Settings) useCurrentRoot(root func() string) {
+	s.currentRoot = root
+}
+
+// Get returns the saved settings, or the defaults when nothing was saved.
+func (s *Settings) Get() (AppSettings, error) {
+	return s.store.get()
+}
+
+// MigrateLegacyTheme moves a theme saved in the page's localStorage before
+// the settings file existed into the settings. It does nothing when the
+// settings already contain a theme; an invalid legacy value is ignored.
+// Callers remove the legacy value after this returns without an error.
+func (s *Settings) MigrateLegacyTheme(legacy string) (AppSettings, error) {
+	return s.store.migrateLegacyTheme(legacy)
+}
+
+// SetTheme saves the theme and makes the native appearance follow it.
+func (s *Settings) SetTheme(theme string) error {
+	return s.store.setTheme(theme)
+}
+
+// SetEditorMode saves the global editor mode. It rejects unknown modes before
+// touching the settings file.
+func (s *Settings) SetEditorMode(mode string) error {
+	return s.store.setEditorMode(mode)
+}
+
+// SetOutlineVisible remembers the global outline switch. Narrow windows keep
+// their temporary floating outline in the page, not here.
+func (s *Settings) SetOutlineVisible(visible bool) error {
+	return s.store.update(func(settings *AppSettings) {
+		settings.OutlineVisible = visible
+	})
+}
+
+// SetFormatToolbarVisible remembers the global formatting toolbar switch.
+func (s *Settings) SetFormatToolbarVisible(visible bool) error {
+	return s.store.setFormatToolbarVisible(visible)
+}
+
+// SetFonts saves the interface, reading and code font names. Empty strings
+// mean the built-in stack; the page decides how a missing font falls back.
+func (s *Settings) SetFonts(uiFont string, readingFont string, codeFont string) error {
+	return s.store.update(func(settings *AppSettings) {
+		settings.UIFont = strings.TrimSpace(uiFont)
+		settings.ReadingFont = strings.TrimSpace(readingFont)
+		settings.CodeFont = strings.TrimSpace(codeFont)
+	})
+}
+
+// SetShowAllFiles remembers whether the file tree includes non-Markdown files.
+func (s *Settings) SetShowAllFiles(visible bool) error {
+	return s.store.update(func(settings *AppSettings) {
+		settings.ShowAllFiles = visible
+	})
+}
+
+// SetHideMarkdownExtension remembers the tree and tab label preference. It
+// does not change stored paths, rename inputs or file operations.
+func (s *Settings) SetHideMarkdownExtension(hidden bool) error {
+	return s.store.update(func(settings *AppSettings) {
+		settings.HideMarkdownExtension = hidden
+	})
+}
+
+// SetSlashEnabled switches the slash menu for one editor mode. The page can
+// update one mode without replacing the other two values.
+func (s *Settings) SetSlashEnabled(mode string, enabled bool) error {
+	mode = strings.TrimSpace(strings.ToLower(mode))
+	switch mode {
+	case editorModeLive:
+		return s.store.update(func(settings *AppSettings) {
+			settings.SlashEnabled.Live = enabled
+		})
+	case editorModeImmersive:
+		return s.store.update(func(settings *AppSettings) {
+			settings.SlashEnabled.Immersive = enabled
+		})
+	case editorModeSource:
+		return s.store.update(func(settings *AppSettings) {
+			settings.SlashEnabled.Source = enabled
+		})
+	default:
+		return errInvalidEditorMode
+	}
+}
+
+// SetSidebarWidth saves the sidebar width, clamped to the range the interface
+// supports.
+func (s *Settings) SetSidebarWidth(width int) error {
+	return s.store.update(func(settings *AppSettings) {
+		settings.SidebarWidth = width
+	})
+}
+
+// SetExpandedFolders saves the expanded folders of root. The frontend owns
+// which paths are expanded; the backend only stores them.
+func (s *Settings) SetExpandedFolders(root string, folders []string) error {
+	root = filepath.Clean(root)
+	if root == "." || !filepath.IsAbs(root) {
+		return fmt.Errorf("settings: workspace root must be absolute: %q", root)
+	}
+	return s.store.update(func(settings *AppSettings) {
+		if folders = sanitizeRelativeFolders(folders); len(folders) == 0 {
+			delete(settings.ExpandedFolders, root)
+			return
+		}
+		settings.ExpandedFolders[root] = folders
+	})
+}
+
+// AddRecentFolder puts folder first in the recent folders, but only accepts
+// the workspace that is already open. Opening a folder records it in Go; the
+// page only updates its local display. This keeps the recent list from
+// becoming an authorization bypass for OpenFolder.
+func (s *Settings) AddRecentFolder(folder string) error {
+	folder = filepath.Clean(folder)
+	if !filepath.IsAbs(folder) {
+		return fmt.Errorf("settings: recent folder must be absolute: %q", folder)
+	}
+	if s.currentRoot == nil {
+		return errRecentFolderNotCurrent
+	}
+	root := filepath.Clean(s.currentRoot())
+	if root == "" || root != folder {
+		return fmt.Errorf("%w: %q", errRecentFolderNotCurrent, folder)
+	}
+	return s.store.recordRecentFolder(folder)
+}
+
+// RemoveRecentFolder drops folder from the recent folders.
+func (s *Settings) RemoveRecentFolder(folder string) error {
+	folder = filepath.Clean(folder)
+	return s.store.update(func(settings *AppSettings) {
+		kept := settings.RecentFolders[:0]
+		for _, item := range settings.RecentFolders {
+			if item != folder {
+				kept = append(kept, item)
+			}
+		}
+		settings.RecentFolders = append([]string(nil), kept...)
+	})
+}
+
+// settingsStore owns settings.json. It serializes changes and replaces the
+// file atomically, so a crash leaves the previous settings intact.
+type settingsStore struct {
+	mu       sync.Mutex
+	filePath string
+}
+
+// newSettingsStore returns the store in the app's user data directory.
+func newSettingsStore() (*settingsStore, error) {
+	dir, err := userDataDir()
+	if err != nil {
+		return nil, err
+	}
+	return newSettingsStoreIn(filepath.Join(dir, settingsFileName)), nil
+}
+
+// startupSettingsStore returns the store main uses. In MyGo's client-generation
+// run it is a path that is never read or created: the generator only needs the
+// service's method signatures.
+func startupSettingsStore() (*settingsStore, error) {
+	if generatingClient() {
+		return newSettingsStoreIn(filepath.Join(os.TempDir(), "nicole-generate", settingsFileName)), nil
+	}
+	return newSettingsStore()
+}
+
+// newSettingsStoreIn returns the store at filePath; tests use a temporary
+// file.
+func newSettingsStoreIn(filePath string) *settingsStore {
+	return &settingsStore{filePath: filePath}
+}
+
+// settingsFile mirrors AppSettings but distinguishes a missing theme from an
+// explicit one, which legacy migration needs.
+type settingsFile struct {
+	WritingPreferences    json.RawMessage     `json:"writingPreferences"`
+	Theme                 *string             `json:"theme"`
+	EditorMode            json.RawMessage     `json:"editorMode"`
+	OutlineVisible        json.RawMessage     `json:"outlineVisible"`
+	FormatToolbarVisible  json.RawMessage     `json:"formatToolbarVisible"`
+	ShowAllFiles          json.RawMessage     `json:"showAllFiles"`
+	HideMarkdownExtension json.RawMessage     `json:"hideMarkdownExtension"`
+	UIFont                json.RawMessage     `json:"uiFont"`
+	ReadingFont           json.RawMessage     `json:"readingFont"`
+	CodeFont              json.RawMessage     `json:"codeFont"`
+	SlashEnabled          json.RawMessage     `json:"slashEnabled"`
+	SidebarWidth          int                 `json:"sidebarWidth"`
+	RecentFolders         []string            `json:"recentFolders"`
+	ExpandedFolders       map[string][]string `json:"expandedFolders"`
+	WorkspaceClosed       bool                `json:"workspaceClosed"`
+}
+
+func defaultSettings() AppSettings {
+	return AppSettings{
+		WritingPreferences: defaultWritingPreferences(),
+		Theme:              themeSystem,
+		EditorMode:         editorModeLive,
+		OutlineVisible:     false,
+		ShowAllFiles:       true,
+		SlashEnabled:       SlashEnabledSettings{Live: true, Immersive: true, Source: true},
+		SidebarWidth:       defaultSidebarWidth,
+		RecentFolders:      []string{},
+		ExpandedFolders:    map[string][]string{},
+	}
+}
+
+func (s *settingsStore) get() (AppSettings, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	settings, _, err := s.readLocked()
+	return settings, err
+}
+
+func (s *settingsStore) setTheme(theme string) error {
+	theme = strings.TrimSpace(strings.ToLower(theme))
+	if !validTheme(theme) {
+		return errInvalidTheme
+	}
+	s.mu.Lock()
+	settings, _, err := s.readLocked()
+	if err == nil {
+		settings.Theme = theme
+		settings = normalizeSettings(settings)
+		err = s.writeLocked(settings)
+	}
+	s.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	applyThemeSource(theme)
+	return nil
+}
+
+func (s *settingsStore) setEditorMode(mode string) error {
+	mode = strings.TrimSpace(strings.ToLower(mode))
+	if !validEditorMode(mode) {
+		return errInvalidEditorMode
+	}
+	return s.update(func(settings *AppSettings) {
+		settings.EditorMode = mode
+	})
+}
+
+func (s *settingsStore) setFormatToolbarVisible(visible bool) error {
+	return s.update(func(settings *AppSettings) {
+		settings.FormatToolbarVisible = visible
+	})
+}
+
+func (s *settingsStore) migrateLegacyTheme(legacy string) (AppSettings, error) {
+	legacy = strings.TrimSpace(strings.ToLower(legacy))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	settings, themePresent, err := s.readLocked()
+	if err != nil {
+		return settings, err
+	}
+	if themePresent || !validTheme(legacy) {
+		return settings, nil
+	}
+	settings.Theme = legacy
+	settings = normalizeSettings(settings)
+	if err := s.writeLocked(settings); err != nil {
+		return settings, err
+	}
+	applyThemeSource(settings.Theme)
+	return settings, nil
+}
+
+// recordRecentFolder is used by Workspace after a folder opens. Keeping the
+// write here means the page never decides which paths enter the recent list.
+func (s *settingsStore) recordRecentFolder(folder string) error {
+	return s.update(func(settings *AppSettings) {
+		settings.RecentFolders = prependRecentFolder(settings.RecentFolders, folder)
+	})
+}
+
+// markWorkspaceClosed records that the app should start on the start page.
+// Opening any folder clears it again; the page has no direct setter.
+func (s *settingsStore) markWorkspaceClosed() error {
+	return s.update(func(settings *AppSettings) {
+		settings.WorkspaceClosed = true
+	})
+}
+
+// clearWorkspaceClosed is called after a folder opened. It keeps an explicit
+// false out of settings.json by relying on omitempty for the false value.
+func (s *settingsStore) clearWorkspaceClosed() error {
+	return s.update(func(settings *AppSettings) {
+		settings.WorkspaceClosed = false
+	})
+}
+
+// update reads, changes and writes the settings in one critical section.
+func (s *settingsStore) update(change func(*AppSettings)) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	settings, _, err := s.readLocked()
+	if err != nil {
+		return err
+	}
+	change(&settings)
+	settings = normalizeSettings(settings)
+	return s.writeLocked(settings)
+}
+
+// readLocked reads the settings and reports whether a theme was stored.
+func (s *settingsStore) readLocked() (AppSettings, bool, error) {
+	data, err := os.ReadFile(s.filePath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return defaultSettings(), false, nil
+	}
+	if err != nil {
+		return defaultSettings(), false, err
+	}
+	var file settingsFile
+	if err := json.Unmarshal(data, &file); err != nil {
+		if backupErr := s.backupCorruptLocked(); backupErr != nil {
+			return defaultSettings(), false, fmt.Errorf("settings: cannot read %s: %w (backup failed: %v)", s.filePath, err, backupErr)
+		}
+		return defaultSettings(), false, nil
+	}
+	themePresent := file.Theme != nil
+	settings := AppSettings{
+		WritingPreferences:    decodeWritingPreferences(file.WritingPreferences),
+		Theme:                 themeSystem,
+		EditorMode:            decodeEditorMode(file.EditorMode),
+		OutlineVisible:        decodeOutlineVisible(file.OutlineVisible),
+		FormatToolbarVisible:  decodeFormatToolbarVisible(file.FormatToolbarVisible),
+		ShowAllFiles:          decodeBoolWithDefault(file.ShowAllFiles, true),
+		HideMarkdownExtension: decodeBoolWithDefault(file.HideMarkdownExtension, false),
+		UIFont:                decodeString(file.UIFont),
+		ReadingFont:           decodeString(file.ReadingFont),
+		CodeFont:              decodeString(file.CodeFont),
+		SlashEnabled:          decodeSlashEnabled(file.SlashEnabled),
+		SidebarWidth:          file.SidebarWidth,
+		RecentFolders:         file.RecentFolders,
+		ExpandedFolders:       file.ExpandedFolders,
+		WorkspaceClosed:       file.WorkspaceClosed,
+	}
+	if file.Theme != nil {
+		settings.Theme = *file.Theme
+	}
+	return normalizeSettings(settings), themePresent, nil
+}
+
+// decodeEditorMode tolerates a wrong JSON type for this one field. A
+// hand-edited value must not turn the whole settings file into a corrupt
+// backup and reset unrelated settings. normalizeSettings handles string
+// values that are not known modes.
+func decodeEditorMode(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return editorModeLive
+	}
+	var mode string
+	if err := json.Unmarshal(raw, &mode); err != nil {
+		return editorModeLive
+	}
+	return mode
+}
+
+// decodeOutlineVisible applies the same one-field tolerance as editorMode:
+// a hand-edited wrong type falls back to the default (hidden) without
+// replacing every other valid setting with defaults.
+func decodeOutlineVisible(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var visible bool
+	if err := json.Unmarshal(raw, &visible); err != nil {
+		return false
+	}
+	return visible
+}
+
+// decodeFormatToolbarVisible keeps a missing or mistyped toolbar preference
+// from resetting the other saved settings. An explicit false round-trips.
+func decodeFormatToolbarVisible(raw json.RawMessage) bool {
+	return decodeBoolWithDefault(raw, false)
+}
+
+// decodeBoolWithDefault applies one field's fallback without treating a
+// hand-edited wrong type as a corrupt file.
+func decodeBoolWithDefault(raw json.RawMessage, fallback bool) bool {
+	if len(raw) == 0 || string(raw) == "null" {
+		return fallback
+	}
+	var value bool
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return fallback
+	}
+	return value
+}
+
+// decodeString accepts only a JSON string for a font name. A missing or
+// mistyped field keeps the built-in font stack.
+func decodeString(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return ""
+	}
+	return value
+}
+
+// decodeSlashEnabled defaults every missing mode to enabled. Each subfield is
+// decoded separately, so a valid false survives a bad sibling value.
+func decodeSlashEnabled(raw json.RawMessage) SlashEnabledSettings {
+	settings := SlashEnabledSettings{Live: true, Immersive: true, Source: true}
+	if len(raw) == 0 {
+		return settings
+	}
+	var file struct {
+		Live      json.RawMessage `json:"live"`
+		Immersive json.RawMessage `json:"immersive"`
+		Source    json.RawMessage `json:"source"`
+	}
+	if err := json.Unmarshal(raw, &file); err != nil {
+		return settings
+	}
+	settings.Live = decodeBoolWithDefault(file.Live, true)
+	settings.Immersive = decodeBoolWithDefault(file.Immersive, true)
+	settings.Source = decodeBoolWithDefault(file.Source, true)
+	return settings
+}
+
+// backupCorruptLocked moves a damaged settings file aside so the next write
+// can start from defaults without destroying the evidence. The caller holds
+// the store lock. A failed backup is returned instead of overwriting the file.
+func (s *settingsStore) backupCorruptLocked() error {
+	backup := s.filePath + ".corrupt-" + time.Now().UTC().Format("20060102T150405.000000000Z")
+	if err := os.Rename(s.filePath, backup); err != nil {
+		return fmt.Errorf("rename to %s: %w", backup, err)
+	}
+	return nil
+}
+
+func (s *settingsStore) writeLocked(settings AppSettings) error {
+	data, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(s.filePath), 0o755); err != nil {
+		return err
+	}
+	return writeFileAtomicAbs(s.filePath, append(data, '\n'))
+}
+
+// normalizeSettings returns a copy with every field in the shape the interface
+// expects: a known theme and editor mode, a width in range, non-nil
+// collections and no duplicate recent folders.
+func normalizeSettings(settings AppSettings) AppSettings {
+	settings.WritingPreferences = normalizeWritingPreferences(settings.WritingPreferences)
+	settings.Theme = strings.TrimSpace(strings.ToLower(settings.Theme))
+	if !validTheme(settings.Theme) {
+		settings.Theme = themeSystem
+	}
+	settings.EditorMode = strings.TrimSpace(strings.ToLower(settings.EditorMode))
+	if !validEditorMode(settings.EditorMode) {
+		settings.EditorMode = editorModeLive
+	}
+	settings.UIFont = strings.TrimSpace(settings.UIFont)
+	settings.ReadingFont = strings.TrimSpace(settings.ReadingFont)
+	settings.CodeFont = strings.TrimSpace(settings.CodeFont)
+	if settings.SidebarWidth <= 0 {
+		settings.SidebarWidth = defaultSidebarWidth
+	}
+	settings.SidebarWidth = min(max(settings.SidebarWidth, minSidebarWidth), maxSidebarWidth)
+
+	recent := make([]string, 0, len(settings.RecentFolders))
+	for _, folder := range settings.RecentFolders {
+		folder = filepath.Clean(strings.TrimSpace(folder))
+		if folder == "." || !filepath.IsAbs(folder) || containsString(recent, folder) {
+			continue
+		}
+		recent = append(recent, folder)
+		if len(recent) == maxRecentFolders {
+			break
+		}
+	}
+	settings.RecentFolders = recent
+
+	expanded := make(map[string][]string, len(settings.ExpandedFolders))
+	for root, folders := range settings.ExpandedFolders {
+		root = filepath.Clean(root)
+		if root == "." || !filepath.IsAbs(root) {
+			continue
+		}
+		if folders = sanitizeRelativeFolders(folders); len(folders) > 0 {
+			expanded[root] = folders
+		}
+	}
+	settings.ExpandedFolders = expanded
+	return settings
+}
+
+func validTheme(theme string) bool {
+	return theme == themeSystem || theme == themeLight || theme == themeDark
+}
+
+func validEditorMode(mode string) bool {
+	return mode == editorModeLive || mode == editorModeImmersive || mode == editorModeSource
+}
+
+func themeSource(theme string) mygo.ThemeSource {
+	switch theme {
+	case themeLight:
+		return mygo.ThemeLight
+	case themeDark:
+		return mygo.ThemeDark
+	default:
+		return mygo.ThemeSystem
+	}
+}
+
+// applyThemeSource is a variable so tests can observe the theme without a
+// running app.
+var applyThemeSource = func(theme string) {
+	mygo.Theme.SetSource(themeSource(theme))
+}
+
+// applySavedTheme makes the native appearance follow the saved theme before
+// the window appears. A missing or unreadable settings file keeps the system
+// appearance.
+func applySavedTheme(store *settingsStore) {
+	settings, err := store.get()
+	if err != nil {
+		return
+	}
+	applyThemeSource(settings.Theme)
+}
+
+func prependRecentFolder(folders []string, folder string) []string {
+	next := []string{folder}
+	for _, item := range folders {
+		if item != folder {
+			next = append(next, item)
+		}
+		if len(next) == maxRecentFolders {
+			break
+		}
+	}
+	return next
+}
+
+func containsString(items []string, item string) bool {
+	for _, candidate := range items {
+		if candidate == item {
+			return true
+		}
+	}
+	return false
+}
+
+// sanitizeRelativeFolders keeps slash-separated relative directory paths,
+// sorted and without duplicates. They are display state only: nothing here is
+// opened or trusted as a filesystem path.
+func sanitizeRelativeFolders(folders []string) []string {
+	seen := make(map[string]bool, len(folders))
+	kept := make([]string, 0, len(folders))
+	for _, folder := range folders {
+		folder = strings.TrimSpace(folder)
+		if folder == "" || folder == "." || strings.Contains(folder, `\`) || strings.Contains(folder, ":") {
+			continue
+		}
+		if !fs.ValidPath(folder) || !filepath.IsLocal(filepath.FromSlash(folder)) {
+			continue
+		}
+		folder = path.Clean(folder)
+		if seen[folder] {
+			continue
+		}
+		seen[folder] = true
+		kept = append(kept, folder)
+	}
+	sort.Strings(kept)
+	return kept
+}

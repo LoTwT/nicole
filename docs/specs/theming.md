@@ -65,7 +65,7 @@ CodeMirror 6 的主题直接使用 `var(--text-primary)` 这类 CSS 变量。切
 - 任务框变量同样在 `src/style.css` 定义：`--nicole-checkbox-border`、`--nicole-checkbox-bg`、`--nicole-checkbox-checked-border`、`--nicole-checkbox-checked-bg`、`--nicole-checkbox-mark` 和 `--nicole-checkbox-focus`。每个变量写成 `var(--reading-checkbox-*, …)`，主题包 0.4.0 仍未提供 `reading-checkbox-*` 时分别回退到 `--text-muted`、`transparent`、`--text-accent`、`--text-accent`、`--surface-canvas` 和 `--reading-focus`，满足[任务框](ui.md#任务框)的对比度要求。
 - `src/editor/index.ts` 的 `EditorView.theme` 和 `HighlightStyle` 只引用这些变量，不读主题状态，因此切换主题不会触发 `EditorView` 重建。
 - 选区背景由 CodeMirror 的选择层绘制。基础主题的聚焦规则写成 `&light.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground`，编译后是生成的亮色作用域类加 `.cm-focused` 和三层后代，共五类；`editorTheme` 写出的 `&.cm-editor > .cm-scroller > .cm-selectionLayer .cm-selectionBackground` 本身是四类，编译时再前置生成的作用域类，同为五类。应用主题晚于基础主题挂载，同优先级时后者胜，因此覆盖聚焦和失焦两种状态都不需要 `!important`。`selection.test.ts` 解析实际样式表的层叠，验证亮暗模式下胜出的规则、`--reading-selection` 钩子、`!important` 的缺席，以及 `:root`/`.dark` 的源码顺序和 `@media print` 不会改变结果。
-- `window_options.go` 的 `BackgroundColor` 直接写 Paper 和 Ink 的 `--surface-canvas` 值，避免窗口创建到页面绘制之间闪出旧底色；主题包调整画布颜色时需要同步。
+- `internal/app/window_options.go` 的 `BackgroundColor` 直接写 Paper 和 Ink 的 `--surface-canvas` 值，避免窗口创建到页面绘制之间闪出旧底色；主题包调整画布颜色时需要同步。
 - 没有引入 `@ayingott/theme/fonts.css`；构建产物只额外包含公式所需的 KaTeX 数学字体。代码高亮与只读预览共用 `rendering.css` 的 token 类，读取主题语义变量；Mermaid 的文字、节点和连接线通过宿主变量跟随亮暗切换，无需重新解析图表。
 
 ## 限制
