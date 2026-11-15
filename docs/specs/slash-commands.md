@@ -26,7 +26,7 @@
 | 内容块 | 表格、callout、公式、Mermaid |
 | 媒体与链接 | 图片、链接、日期、链接到文件 |
 
-当前实现已经登记表中的全部命令。图片和“链接到文件”需要文件列表或文件选择器的完整交互，现在先插入 Markdown 模板（`![](图片路径)`、`[文件名](相对路径)`）并选中待替换的文字；链接命令打开[链接与图片弹框](ui.md#链接与图片弹框)，不再插入模板。代码块插入后光标停在开头的围栏后，可以直接输入语言名称，还没有单独的语言选择器。
+当前实现已经登记表中的全部命令。图片和“链接到文件”插入 Markdown 模板（`![](图片路径)`、`[文件名](相对路径)`）并选中待替换的文字；工作区 Markdown 路径可继续使用[链接补全](workspace.md#链接导航)，这两个命令没有独立的文件选择器。链接命令打开[链接与图片弹框](ui.md#链接与图片弹框)。代码块插入后光标停在开头的围栏后，可以直接输入语言名称，没有单独的语言选择器。
 
 ## 用户模板
 
@@ -71,7 +71,7 @@
 
 Slash 菜单、快捷键、命令面板、格式工具栏和右键菜单都从这一份注册表读取，命令只注册一次。它们在界面上的位置和行为见[界面与交互](ui.md)。
 
-应用命令当前的状态要求：`app.new-file`、`nav.search`、`nav.toggle-sidebar`、`app.close-workspace`、`app.collapse-folders`、`app.reveal-workspace` 和 `tab.reopen` 需要工作区；`tab.close` 需要打开的标签页；`app.save` 和 `nav.toggle-outline` 需要活动标签页是 Markdown 文件；`tab.next`、`tab.previous` 需要至少两个打开的标签页；`tab.reopen` 还需要关闭历史非空。`app.show-format-toolbar` 和 `app.hide-format-toolbar` 按全局格式工具栏开关只显示当前可用的一项，不要求活动 Markdown 编辑器。关闭历史只记录工作区标签页，单文件标签页关闭后不进入历史。
+应用命令当前的状态要求：`app.new-file`、`nav.search`、`nav.toggle-sidebar`、`app.close-workspace`、`app.collapse-folders`、`app.reveal-workspace` 和 `tab.reopen` 需要工作区；`tab.close` 需要打开的标签页；`app.save`、`nav.toggle-outline`、`nav.toggle-comparison`、`view.toggle-focus`、`view.toggle-typewriter`、`document.frontmatter`、`document.export-html`、`document.export-pdf` 和 `document.copy-rich-text` 需要活动标签页是 Markdown 文件；`tab.next`、`tab.previous` 需要至少两个打开的标签页；`tab.reopen` 还需要关闭历史非空。`app.show-format-toolbar` 和 `app.hide-format-toolbar` 按全局格式工具栏开关只显示当前可用的一项，不要求活动 Markdown 编辑器。关闭历史只记录工作区标签页，单文件标签页关闭后不进入历史。
 
 ## 与编辑模式的关系
 

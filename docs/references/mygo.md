@@ -45,7 +45,7 @@ Web 模式下，界面运行在系统 WebView 里（macOS WKWebView、Windows We
 - 用 `mygo generate` 生成 TypeScript 客户端，输出路径由 `mygo.config.ts` 的 `bindings` 指定；默认是 `src/mygo.ts`，本项目改为 `src/services/mygo.ts`。
 - `*mygo.Channel[T]` 用于流式推送；页面未读数据超过 1MiB 时，Go 端的 `Send` 会等待。
 - `mygo.NewEvent[T]` 用来从 Go 向页面发事件（`Emit` / `Broadcast`）。
-- 生成客户端时，同一服务的两个方法或两个事件映射到同名属性会直接报错，并指出两处声明；0.8.3 起名为 `Record` 或 `Promise` 的生成类型会带包名前缀。本项目重新生成后客户端没有变化。
+- 生成客户端时，同一服务的两个方法或两个事件映射到同名属性会直接报错，并指出两处声明；0.8.3 起名为 `Record` 或 `Promise` 的生成类型会带包名前缀。Nicole 在该次 MyGo 版本升级时重新生成，既有客户端接口没有变化；后续新增应用服务会另行更新生成结果。
 
 生成的服务示例：
 
