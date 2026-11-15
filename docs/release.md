@@ -1,6 +1,6 @@
 # 发布与自动更新
 
-更新日期：2026-11-14。本文维护 Nicole 的版本规则、两条发布渠道、打标签与发布步骤、更新密钥管理、Release 资产一览和发布后验证清单；本地构建与打包 workflow 的用法见[开发指南](development.md#打包与自动更新)，MyGo 0.9.0 的事实与来源见 [MyGo 参考](references/mygo.md#分发)、[自动更新](references/mygo.md#自动更新)和 [GitHub Actions](references/mygo.md#github-actions)。发布由 `LoTwT/nicole` 的 GitHub Releases 承担，也是 MyGo 内置更新的下载源。
+更新日期：2026-11-15。本文维护 Nicole 的版本规则、两条发布渠道、打标签与发布步骤、更新密钥管理、Release 资产一览和发布后验证清单；本地构建与打包 workflow 的用法见[开发指南](development.md#打包与自动更新)，MyGo 0.9.0 的事实与来源见 [MyGo 参考](references/mygo.md#分发)、[自动更新](references/mygo.md#自动更新)和 [GitHub Actions](references/mygo.md#github-actions)。发布由 `LoTwT/nicole` 的 GitHub Releases 承担，也是 MyGo 内置更新的下载源。
 
 ## 版本号与两条渠道
 
@@ -91,22 +91,25 @@ Nicole 同时发布 `.deb` 与 `.tar.gz`；发布说明必须写清两种安装�
 
 ## 发布后验证
 
-以下清单在**真实发布之后**执行。`test-v0.0.1` 与 `test-v0.0.2` 已于 2026-11-01 发布并完成 macOS（Apple Silicon）实测；Windows、Linux、签名拒绝、正式渠道和部分更新行为仍待实测。正式渠道另发 `v0.0.1` 验证 latest。
+以下清单在**真实发布之后**执行。`test-v0.0.1` 与 `test-v0.0.2` 已于 2026-11-01 发布并完成 macOS（Apple Silicon）安装与升级实测；首个正式版 `v0.0.1` 已于 2026-11-15 发布并完成资产、包内容和 latest 核对。正式版的原生安装、应用内更新、Windows/Linux 实机交互和签名拒绝仍待实测。
 
-2026-11-01 的实测版本（两次 release workflow 的全部 job 均成功；均为普通 Release，非草稿、非预发布，标题带“（测试版，勿用）”）：
+已发布版本（各次 Release workflow 全部成功；均非草稿、非预发布，只有正式版设为 latest）：
 
 | 版本 | Release | 构建提交 | workflow run |
 |---|---|---|---|
 | `test-v0.0.1` | [test-v0.0.1](https://github.com/LoTwT/nicole/releases/tag/test-v0.0.1) | `b2fac4f` | 41259415237 |
 | `test-v0.0.2` | [test-v0.0.2](https://github.com/LoTwT/nicole/releases/tag/test-v0.0.2) | `545fb54` | 41262115772 |
+| `v0.0.1` | [v0.0.1](https://github.com/LoTwT/nicole/releases/tag/v0.0.1) | `a8279a8` | [43677184066](https://github.com/LoTwT/nicole/actions/runs/43677184066) |
 
-实测环境：macOS（Apple Silicon），使用 `darwin/universal` 的 DMG。
+2026-11-01 的安装与升级实测环境：macOS（Apple Silicon），使用 `darwin/universal` 的 DMG。2026-11-15 在 macOS 上只读检查实际下载的正式版产物，未启动或安装应用，也未扩展 Windows/Linux 实机验证。
+
+`v0.0.1` 发布后核对结果（2026-11-15）：12 份资产齐全，`SHA256SUMS` 覆盖的 8 份安装包、归档和脚本全部匹配；三份更新清单的版本为 `0.0.1`、URL 指向 `v0.0.1`，说明与该标签的 CHANGELOG 小节一致，三个更新归档均通过内置公钥的 Ed25519 验签。三平台二进制的 Go 构建信息均指向 `a8279a8`，且 `vcs.modified=false`；macOS DMG 的版本、arm64/x86_64 通用架构和 ad-hoc 签名检查通过，Debian 包的版本与 amd64 架构正确。三平台更新归档、macOS DMG 和 Debian 包中的第三方声明与标签源码一致。安装脚本均指向正式 latest；API 确认 latest 为 `v0.0.1`，按测试前缀筛选的最新版本仍为 `test-v0.0.2`，未改动既有测试 Release。
 
 - **资产核对** — 实测（2026-11-01，`test-v0.0.1`/`test-v0.0.2`）：两个 Release 的全部资产已下载并逐个核对 `SHA256SUMS`，全部一致；三个平台的 `update-*.json` 版本与 URL 都指向对应标签。
-- **第三方声明** — 待实测（下次发布）：macOS 检查 `Nicole.app/Contents/Resources/` 下的 `THIRD-PARTY-NOTICES.md` 与 `THIRD-PARTY-LICENSES.md`；Windows 检查 `%LOCALAPPDATA%\Programs\Nicole\`（或用户选择的安装目录）下的两个文件；Linux 检查 `/opt/nicole/` 下的两个文件和 `.tar.gz` 顶层。内容应与仓库根目录的同名文件一致；平台 job 已自动核对产物，这里确认安装后的实际路径。
+- **第三方声明**：包内内容已按上文核对，安装后路径待实测。macOS 检查 `Nicole.app/Contents/Resources/` 下的 `THIRD-PARTY-NOTICES.md` 与 `THIRD-PARTY-LICENSES.md`；Windows 检查 `%LOCALAPPDATA%\Programs\Nicole\`（或用户选择的安装目录）下的两个文件；Linux 检查 `/opt/nicole/` 下的两个文件和 `.tar.gz` 顶层。内容应与标签源码的同名文件一致；平台 job 已自动核对产物，这里确认安装后的实际路径。
 - **版本与渠道** — 部分实测（2026-11-01，macOS）：
   1. 实测确认测试版 0.0.1 能检测到 `test-v0.0.2`；测试版不读取正式版、正式版只检测最新正式版、首个正式版发布后测试版不会成为 `latest`：待实测。
-  2. 首个正式版发布后，`https://github.com/LoTwT/nicole/releases/latest` 指向该版本；测试渠道仍按 `test-v` 前缀查找：待实测。
+  2. 2026-11-15 已确认 `releases/latest` API 指向首个正式版 `v0.0.1`，测试前缀下最新仍为 `test-v0.0.2`；两类应用实际检查更新时的渠道隔离仍待实测。
   - 无正式版期间，`releases/latest` 依次返回 `test-v0.0.1` 和 `test-v0.0.2`，与[上文](#版本号与两条渠道)的首个正式版前回退说明一致。
 - **检测与说明** — 部分实测（2026-11-01，macOS）：0.0.1 的“检查更新…”窗口显示 0.0.2 和 CHANGELOG 中的说明；更新后的 0.0.2 在启动约 13 秒后自动检查了一次（`updater.json` 的 `lastCheck` 与进程启动时间的差值）。启动后自动检查发现新版本并显示版本号和说明：待实测。
   - 测试提示：0.0.1 在 0.0.2 发布前已启动，启动时的检查已经做过，所以本次没有自动弹窗；验证升级要在新版本发布后重启旧版本并等待启动检查完成，或直接使用“检查更新…”。检查周期见 [MyGo 参考](references/mygo.md#自动更新)。
