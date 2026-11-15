@@ -2,17 +2,17 @@
 
 概要：
 
-- 主题分三层：主题包基础变量、`reading-*` 阅读层、用户自定义 CSS。
+- 主题分三层：主题包基础变量、`reading-*` 阅读层、受限正文 CSS。
 - 应用自己管理字体，不引入主题包的 `fonts.css`。
 - CodeMirror 主题使用 CSS 变量，亮色/暗色切换不重建编辑器。
-- 主题不能局部嵌套，导出预览因此做成独立页面。
+- HTML 导出携带独立文档的样式；PDF 由隐藏 WebView 打印。
 - 建议主题包补充的阅读变量目前是 `LoTwT/design-system` 的待办。
 
 ## 主题分层
 
 1. `@ayingott/theme` 提供的基础变量。
 2. `reading-*` 阅读层：编辑区、阅读模式、导出 HTML 共用。
-3. 用户自定义 CSS：只能覆盖 `reading-*` 和字体变量，不影响应用界面。
+3. 受限正文 CSS：只对正文与对照区的后代施加规则，不影响应用界面；允许的选择器与属性见[写作偏好](#写作偏好)。
 
 主题包 0.4.0 提供的内容、与 0.3.0 的差异和限制见 [`@ayingott/theme` 参考](../references/ayingott-theme.md)。
 
@@ -20,7 +20,7 @@
 
 字体由应用自己管理，**不引入** `@ayingott/theme/fonts.css`：字体文件的体积和 `--font-sans` 的优先级都会拖累中文界面（事实见[参考](../references/ayingott-theme.md#字体文件)）。
 
-在自己的 CSS 里覆盖字体变量。下面的写法**已经用 Tailwind v4 实际编译验证过**：覆盖后 `--font-sans`、`--font-mono`、`--font-reading` 都换成了这里写的值；`--font-display` 也要一并覆盖。
+项目通过 `src/style.css` 的 Tailwind `@theme` 覆盖字体变量。下面是开发时修改应用样式的示例，已用 Tailwind v4 编译验证；设置页的阅读 CSS 不接受其中的 `@import` 和 `@theme`，日常字体选择使用设置页的字体字段。
 
 ```css
 @import "tailwindcss";
@@ -70,7 +70,7 @@ CodeMirror 6 的主题直接使用 `var(--text-primary)` 这类 CSS 变量。切
 
 ## 限制
 
-主题包不支持在一个主题里局部套用另一个主题（见[参考](../references/ayingott-theme.md#限制)）。因此如果要“应用暗色但预览亮色导出效果”，导出预览必须做成独立页面。
+主题包不支持在一个主题里局部套用另一个主题（见[参考](../references/ayingott-theme.md#限制)）。当前正文与对照跟随应用主题，HTML/PDF 导出捕获执行时的主题和阅读尺寸，输出方式见[文档工具](document-tools.md#导出与富文本)。
 
 界面组件自己写，或者搭配 Reka UI 这类不带样式的组件库（见[参考](../references/ayingott-theme.md#限制)）。
 

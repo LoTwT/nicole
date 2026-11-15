@@ -195,6 +195,7 @@ Go 的 `Workspace` 服务通过 `mygo.Bind` 暴露，前端经 `src/services/wor
 | `SetOutlineVisible(visible)` | 保存宽布局下的大纲开关；窄窗口的临时浮层只存在页面内，不调用这个接口。 |
 | `SetFormatToolbarVisible(visible)` | 保存全局固定格式工具栏开关；没有 Markdown 标签页时工具栏隐藏，但页面保留并继续写入这个选择。 |
 | `SetFonts(uiFont, readingFont, codeFont)` | 保存界面、阅读和代码字体名称；空字符串表示既有字体栈。只存名称，不枚举、下载或验证字体是否安装。 |
+| `SetWritingPreferences(value)` | 原子保存写作偏好组，其他设置保持不变；字段与校验范围见[写作偏好](theming.md#写作偏好)。 |
 | `SetShowAllFiles(visible)` | 保存文件树是否显示非 Markdown 文件；目录不受影响。 |
 | `SetHideMarkdownExtension(hidden)` | 保存文件树和标签页的 `.md` 显示后缀偏好；不改变真实路径、重命名输入或文件访问。 |
 | `SetSlashEnabled(mode, enabled)` | 按 `live`、`immersive`、`source` 保存 slash 菜单开关；非法模式返回错误，其他两个值保持不变。 |
@@ -202,11 +203,11 @@ Go 的 `Workspace` 服务通过 `mygo.Bind` 暴露，前端经 `src/services/wor
 | `SetExpandedFolders(root, folders)` | 按根目录保存文件树展开状态；`folders` 是相对路径，只存显示状态，不用于访问文件。 |
 | `AddRecentFolder(folder)` / `RemoveRecentFolder(folder)` | `AddRecentFolder` 只接受当前已打开的根目录，页面不能用它授权另一个目录；`Workspace.open` 成功后由 Go 写入最近列表，页面只更新本地显示。`RemoveRecentFolder` 只移除记录。 |
 
-`settings.json` 的字段为 `theme`、`editorMode`、`outlineVisible`、`formatToolbarVisible`、`showAllFiles`、`hideMarkdownExtension`、`uiFont`、`readingFont`、`codeFont`、`slashEnabled`、`sidebarWidth`、`recentFolders`、`expandedFolders`（根目录绝对路径 → 展开的相对路径数组）和 `workspaceClosed`。`slashEnabled` 是包含 `live`、`immersive`、`source` 三个布尔值的对象。默认主题是 `system`，默认编辑模式是 `live`（实时预览），大纲和格式工具栏默认隐藏，`showAllFiles` 默认 `true`，`hideMarkdownExtension` 默认 `false`，三个字体字段默认为空字符串，`slashEnabled` 的三个子字段默认都为 `true`，默认宽度 252px，最近文件夹和展开状态为空，`workspaceClosed` 缺省为 `false`。`editorMode` 缺失或非法时按 `live` 读取，`outlineVisible`、`formatToolbarVisible`、`showAllFiles` 或 `hideMarkdownExtension` 缺失或类型不对时按各自默认值读取；字体字段不是字符串时按空字符串读取。`slashEnabled` 缺失或不是对象时三个模式都按开启读取；对象内每个子字段独立解析，缺失或类型不对的子字段按开启读取，合法的 `false` 不会被相邻坏值重置。这些项的容错只影响自己的值，不会把其他合法字段重置为默认值；显式保存的 `false` 照常写入并读回。读取时为缺失字段补默认值不会主动写盘。`workspaceClosed` 由 `Workspace.CloseWorkspace()` 写成 `true`，由任何一次成功打开文件夹（`ChooseFolder`、`OpenFolder`、`OpenDroppedFolder`）清除；页面只在启动时读取它来决定是否恢复上次的文件夹，没有单独写入它的接口。写入在目标目录创建临时文件后改名替换，一次只写一个完整文件；损坏的设置文件不会被部分覆盖。
+`settings.json` 的字段为 `theme`、`editorMode`、`outlineVisible`、`formatToolbarVisible`、`showAllFiles`、`hideMarkdownExtension`、`uiFont`、`readingFont`、`codeFont`、`slashEnabled`、`sidebarWidth`、`recentFolders`、`expandedFolders`（根目录绝对路径 → 展开的相对路径数组）、`writingPreferences` 和 `workspaceClosed`。`slashEnabled` 是包含 `live`、`immersive`、`source` 三个布尔值的对象。默认主题是 `system`，默认编辑模式是 `live`（实时预览），大纲和格式工具栏默认隐藏，`showAllFiles` 默认 `true`，`hideMarkdownExtension` 默认 `false`，三个字体字段默认为空字符串，`slashEnabled` 的三个子字段默认都为 `true`，默认宽度 252px，最近文件夹和展开状态为空，`workspaceClosed` 缺省为 `false`。`editorMode` 缺失或非法时按 `live` 读取，`outlineVisible`、`formatToolbarVisible`、`showAllFiles` 或 `hideMarkdownExtension` 缺失或类型不对时按各自默认值读取；字体字段不是字符串时按空字符串读取。`slashEnabled` 缺失或不是对象时三个模式都按开启读取；对象内每个子字段独立解析，缺失或类型不对的子字段按开启读取，合法的 `false` 不会被相邻坏值重置。这些项的容错只影响自己的值，不会把其他合法字段重置为默认值；显式保存的 `false` 照常写入并读回。读取时为缺失字段补默认值不会主动写盘。`workspaceClosed` 由 `Workspace.CloseWorkspace()` 写成 `true`，由任何一次成功打开文件夹（`ChooseFolder`、`OpenFolder`、`OpenDroppedFolder`）清除；页面只在启动时读取它来决定是否恢复上次的文件夹，没有单独写入它的接口。写入在目标目录创建临时文件后改名替换，一次只写一个完整文件；损坏的设置文件不会被部分覆盖。
 
 文件已存在但不是合法 JSON 时，读取会先把原文件重命名为 `settings.json.corrupt-<UTC 时间>`，再以默认值继续，后续设置可以正常保存；原文件保留下来供排查。备份重命名失败时返回错误，不覆盖损坏文件。启动时的主题读取也遵循这个行为，失败时保持系统外观。
 
-主题从 `localStorage` 迁移后，系统的外观变化由页面监听 `prefers-color-scheme`；`system` 时原生外观也由 `Theme.SetSource(ThemeSystem)` 跟随系统。详见[主题与字体](theming.md#当前实现)。
+主题从 `localStorage` 迁移后，系统的外观变化由页面监听 `prefers-color-scheme`；`system` 时原生外观也由 `Theme.SetSource(ThemeSystem)` 跟随系统。详见[主题与字体](theming.md#编辑器主题)。
 
 长文写作与编辑偏好单独保存在 `settings.json` 的 `writingPreferences` 组，字段、范围、CSS 和快捷键边界见[写作偏好](theming.md#写作偏好)。`Settings.SetWritingPreferences` 原子更新这一组，不替换主题、字体族、文件树或其他设置；读取时每个字段独立容错，错误字段不使整个设置文件损坏。前端必须先获得真实已存基线，再将早期修改字段合并写回，不能把尚未读取的默认值写成用户偏好。
 
@@ -243,7 +244,7 @@ Go 的 `Workspace` 服务通过 `mygo.Bind` 暴露，前端经 `src/services/wor
 
 启动时页面按[设置存储](#设置存储)中的关闭状态决定是否恢复最近文件夹的第一项；系统“打开方式”传入的文件按上面的规则单独处理。关闭工作区只关闭根目录本身，不关闭窗口。
 
-界面按“单窗口多根目录”设计：P0 只有一个根目录，打开另一个文件夹时替换当前根目录；P1 允许同时添加多个根目录，仍在同一个窗口里，不增加 WebKit 进程（见[界面与交互](ui.md#根目录)）。
+界面按“单窗口多根目录”设计：P0 只有一个根目录，打开另一个文件夹时替换当前根目录；P1 允许同时添加多个根目录，仍在同一个窗口里，不增加 WebKit 进程（见[界面与交互](ui.md#根目录与工具行)）。
 
 ## 保存
 

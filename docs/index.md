@@ -6,6 +6,7 @@
 
 | 文档 | 何时阅读 |
 |---|---|
+| [README.md](../README.md) | 首次了解项目、查看当前能力，或寻找开发与构建入口时。 |
 | [architecture.md](architecture.md) | 了解技术选型、进程与模块结构、依赖边界、IPC 和安全约束，或确认主要风险时。 |
 | [development.md](development.md) | 准备开发环境、安装依赖、导出与接入应用图标、启动热更新、构建 `.app`、打测试安装包，或查看测试与 CI 命令时。 |
 | [release.md](release.md) | 打标签、发布正式版或测试版、管理更新密钥、核对 Release 资产或执行发布后验证时。 |
@@ -16,9 +17,9 @@
 | [specs/slash-commands.md](specs/slash-commands.md) | 添加命令、用户模板，或调整 slash 菜单、快捷键、命令面板和格式工具栏的命令来源时。 |
 | [specs/workspace.md](specs/workspace.md) | 处理工作区、标签页、保存、崩溃恢复、图片和搜索时。 |
 | [specs/theming.md](specs/theming.md) | 接入主题、字体或自定义 CSS，或处理亮暗切换和导出预览时。 |
-| [specs/performance.md](specs/performance.md) | 评估内存占用、实现性能优化或复测基线时。 |
+| [specs/performance.md](specs/performance.md) | 查阅性能预算、测量方法和当前暂停状态时。 |
 | [references/mygo.md](references/mygo.md) | 使用 MyGo 的绑定、IPC、插件、分发或自动更新，或核对版本状态时。 |
-| [references/memory-baseline.md](references/memory-baseline.md) | 查看当前内存基线、历史基线与演示数据、合并后空载记录、打包体积和口径说明时。 |
+| [references/memory-baseline.md](references/memory-baseline.md) | 查看历史内存测量、构建环境、合并后空载记录、打包体积和口径说明时。 |
 | [references/ayingott-theme.md](references/ayingott-theme.md) | 确认 `@ayingott/theme` 0.4.0 的能力、限制、与 0.3.0 的差异或字体文件问题时。 |
 
 ## 目录约定
