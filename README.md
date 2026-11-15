@@ -1,16 +1,25 @@
-# Nicole
+<p align="center">
+  <img src="src/assets/brand-mark.png" width="96" height="96" alt="Nicole 图标" />
+</p>
 
-<img src="src/assets/brand-mark.png" width="96" alt="Nicole 图标" />
+<h1 align="center">Nicole</h1>
 
-Nicole 是一款面向个人文章和文档的轻量桌面 Markdown 编辑器，支持 macOS、Windows 和 Linux。文件保持普通 `.md` 源码，可以继续用 Git 管理，也可以交给其他编辑器打开。
+<p align="center">
+  面向个人文章和文档的轻量桌面 Markdown 编辑器<br />
+  macOS · Windows · Linux
+</p>
+
+<p align="center">
+  <a href="https://github.com/LoTwT/nicole/releases">下载与版本记录</a> · <a href="docs/index.md">文档索引</a>
+</p>
+
+文件保持普通 `.md` 源码，可以继续用 Git 管理，也可以交给其他编辑器打开。
 
 基于 MyGo、Vue 3 和 CodeMirror 6，界面运行在系统 WebView 中。
 
-[下载与版本记录](https://github.com/LoTwT/nicole/releases) · [文档索引](docs/index.md)
+## 当前能力
 
 下面介绍当前源码中的功能，已发布安装包的功能以对应版本说明为准。
-
-## 当前能力
 
 - 实时预览、沉浸和源码三种编辑模式，支持 Slash 命令、格式快捷键和可选工具栏。
 - 文件夹工作区、多标签、文件树和工作区外单个 Markdown 文件；自动保存与崩溃恢复。
@@ -38,7 +47,7 @@ GOTOOLCHAIN=auto bun run dev
 
 这会生成前端调用接口，启动 Vite 和原生开发应用。前端修改走热更新，Go 代码修改后自动重新构建。环境配置、数据隔离和客户端生成的细节见[开发指南](docs/development.md)。
 
-## 本地构建
+### 本地构建
 
 构建关闭自动更新的本地测试包：
 
@@ -48,7 +57,7 @@ NICOLE_DISABLE_UPDATES=1 GOTOOLCHAIN=auto bun run build
 
 产物放在 `build/<os>-<arch>/`，比如 Apple Silicon 上的应用位于 `build/darwin-arm64/Nicole.app`。默认构建当前平台，跨平台打包、签名和正式发布见[开发指南](docs/development.md#构建)及[发布说明](docs/release.md)。
 
-## 检查
+### 检查
 
 在项目根目录运行：
 
