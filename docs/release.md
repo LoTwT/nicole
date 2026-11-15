@@ -39,7 +39,7 @@ updates: {
 
 ## 发布步骤
 
-1. 确认目标版本号已在 [CHANGELOG.md](../CHANGELOG.md) 有小节、相对上一发布版递增，且要发布的提交已合并 `main`。
+1. 确认目标版本号已在 [CHANGELOG.md](../CHANGELOG.md) 有小节、相对同一渠道的上一发布版递增，且要发布的提交已合并 `main`；首个正式版的版本号不与测试渠道比较，因此已有 `test-v0.0.2` 时仍可发布 `v0.0.1`。
 2. 在合并提交上打标签并推送（由主会话在用户批准后执行）：
    - 正式版：`git tag v0.0.2 && git push origin v0.0.2`
    - 测试版：`git tag test-v0.0.2 && git push origin test-v0.0.2`
